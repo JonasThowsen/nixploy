@@ -1,0 +1,8 @@
+bin/
+obj/
+.direnv/
+result
+result-*
+*.user
+*.suo
+.vs/

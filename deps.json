@@ -1,0 +1,77 @@
+[
+  {
+    "pname": "Microsoft.AspNetCore.App.Ref",
+    "version": "10.0.3",
+    "hash": "sha256-kYLjx0TjZXvht2YjI0V98HXC+9t8BPxVrGN5Os8NbVA="
+  },
+  {
+    "pname": "Microsoft.AspNetCore.App.Runtime.linux-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-BtUppoI/vgYke8o17lCPFnCFoFWkDpDTYIxwUzF8FkA="
+  },
+  {
+    "pname": "Microsoft.AspNetCore.App.Runtime.linux-x64",
+    "version": "10.0.3",
+    "hash": "sha256-5qeFuThcnZ9H70NSpJy98bqGHA0Nfld3FlOYcg9Ko1U="
+  },
+  {
+    "pname": "Microsoft.AspNetCore.App.Runtime.osx-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-osKPiRijz6DztwZ/6O/LUw9z4gqJtqajW4Y/MhKE5ZM="
+  },
+  {
+    "pname": "Microsoft.AspNetCore.App.Runtime.osx-x64",
+    "version": "10.0.3",
+    "hash": "sha256-Hv7pKL5gujSGceIWwrdkoiX2ykuLAhzVuJqpbi0Wy1Y="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Host.linux-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-+1nIeSoG8g1zBrgcrM+Jrxur55tRJsBoXkEZa+Kw5rA="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Host.linux-x64",
+    "version": "10.0.3",
+    "hash": "sha256-knbeMlvFLocei5lx/iJZSEzRnkmGru617onlnrbhfl8="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Host.osx-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-F2OBNxxxTL1l3ZanLa/8NAssC5EiptKU/r4c2MxxsC8="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Host.osx-x64",
+    "version": "10.0.3",
+    "hash": "sha256-FqrDlf04A/Q+DNwMnsCPfMgucGy04znMUIN2zD9+sGM="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Ref",
+    "version": "10.0.3",
+    "hash": "sha256-f5sLbauE1enJPFSExxxYAx7suMbOHU7biS6QVjuxGYg="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Runtime.linux-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-BRv8c/R/fSi/n7TO5hbfcQY//D2ohh7E8GRbDnNHbXg="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Runtime.linux-x64",
+    "version": "10.0.3",
+    "hash": "sha256-hkxP73zXhzokL1Hw3pZgn/IAfFLB+scWEjolkpVKgj8="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Runtime.osx-arm64",
+    "version": "10.0.3",
+    "hash": "sha256-CNG3jus1ZvDIbzldKsw5eSN136G5c8iHQbnzu5w7x80="
+  },
+  {
+    "pname": "Microsoft.NETCore.App.Runtime.osx-x64",
+    "version": "10.0.3",
+    "hash": "sha256-sKlQF6sqIv9qXBimoNeAEGjVZ0+S8uXo0W6OJ8356WE="
+  },
+  {
+    "pname": "System.CommandLine",
+    "version": "2.0.7",
+    "hash": "sha256-CGm46Hk7eZFvIySEynE+A0Hs5EXDs2FNKKhk/rU77jM="
+  }
+]
