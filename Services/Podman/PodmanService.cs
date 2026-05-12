@@ -35,7 +35,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         CommandRunResult infoResult = await commandRunner.RunAsync(
             "podman",
             ["--connection", connectionName, "info"],
-            new CommandRunOptions { Interactive = true }
+            new CommandRunOptions { StreamOutput = false }
         );
 
         if (infoResult.ExitCode == 0)
@@ -70,19 +70,20 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         CommandRunResult addResult = await commandRunner.RunAsync(
             "podman",
             arguments,
-            new CommandRunOptions { Interactive = true }
+            new CommandRunOptions { StreamOutput = false }
         );
 
         if (addResult.ExitCode != 0)
         {
             Console.Error.WriteLine($"Failed to create Podman connection '{connectionName}'.");
+            Console.Error.WriteLine(addResult.StdError);
             return false;
         }
 
         CommandRunResult verifyResult = await commandRunner.RunAsync(
             "podman",
             ["--connection", connectionName, "info"],
-            new CommandRunOptions { Interactive = true }
+            new CommandRunOptions { StreamOutput = false }
         );
 
         if (verifyResult.ExitCode == 0)

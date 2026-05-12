@@ -13,21 +13,16 @@ public class CommandRunner : ICommandRunner
     {
         options ??= new CommandRunOptions();
 
-        if (options.Interactive && options.StandardInput is not null)
-        {
-            throw new InvalidOperationException("Interactive commands cannot also provide StandardInput.");
-        }
-
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
                 FileName = fileName,
-                RedirectStandardInput = !options.Interactive && options.StandardInput is not null,
-                RedirectStandardOutput = !options.Interactive,
-                RedirectStandardError = !options.Interactive,
+                RedirectStandardInput = options.StandardInput is not null,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = !options.Interactive
+                CreateNoWindow = true
             }
         };
 
@@ -37,12 +32,6 @@ public class CommandRunner : ICommandRunner
         }
 
         process.Start();
-
-        if (options.Interactive)
-        {
-            await process.WaitForExitAsync();
-            return new CommandRunResult(process.ExitCode, "", "");
-        }
 
         if (options.StandardInput is not null)
         {

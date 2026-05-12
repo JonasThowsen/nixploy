@@ -6,5 +6,4 @@ public sealed class CommandRunOptions
 
     public string? StandardInput { get; init; }
 
-    public bool Interactive { get; init; }
 }
