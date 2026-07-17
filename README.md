@@ -196,8 +196,21 @@ NIXPLOY_ROLE=all mix phx.server
 
 `all` is the default for a simple development or single-node installation. The
 worker role starts the PostgreSQL repository, Oban, and shared coordination
-processes without starting the Phoenix endpoint. The web role starts the endpoint with Oban in
-enqueue-only mode.
+processes without starting the Phoenix endpoint. The web role starts the
+endpoint with Oban in enqueue-only mode.
+
+The dashboard at <http://localhost:4000> currently provides the durable walking
+skeleton for the rewrite:
+
+- register Git repositories and Podman targets
+- attach a flake service and optional domain
+- enqueue a durable Oban deployment
+- stream persisted deployment stages to the browser
+- request cooperative cancellation
+- run web and worker processes independently through PostgreSQL notifications
+
+Deployment execution is intentionally simulated at this stage. It does not yet
+run Git, Nix, SSH, Podman, Caddy, or SOPS commands.
 
 Run both implementations' test suites while behavior is being ported:
 
