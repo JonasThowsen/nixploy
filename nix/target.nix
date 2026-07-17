@@ -119,42 +119,44 @@ with lib;
     web = mkOption {
       default = null;
       description = "HTTP routing and blue/green deployment configuration.";
-      type = types.nullOr (types.submodule {
-        options = {
-          domain = mkOption {
-            type = types.str;
-            example = "app.example.com";
-            description = "Public domain Caddy should route to this target.";
-          };
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            domain = mkOption {
+              type = types.str;
+              example = "app.example.com";
+              description = "Public domain Caddy should route to this target.";
+            };
 
-          healthPath = mkOption {
-            type = types.str;
-            default = "/health";
-            example = "/health";
-            description = "HTTP path used to health-check a new slot before switching traffic.";
-          };
+            healthPath = mkOption {
+              type = types.str;
+              default = "/health";
+              example = "/health";
+              description = "HTTP path used to health-check a new slot before switching traffic.";
+            };
 
-          slots = mkOption {
-            type = types.submodule {
-              options = {
-                blue = mkOption {
-                  type = types.port;
-                  default = 8080;
-                  description = "Localhost port for the blue deployment slot.";
-                };
+            slots = mkOption {
+              type = types.submodule {
+                options = {
+                  blue = mkOption {
+                    type = types.port;
+                    default = 8080;
+                    description = "Localhost port for the blue deployment slot.";
+                  };
 
-                green = mkOption {
-                  type = types.port;
-                  default = 8081;
-                  description = "Localhost port for the green deployment slot.";
+                  green = mkOption {
+                    type = types.port;
+                    default = 8081;
+                    description = "Localhost port for the green deployment slot.";
+                  };
                 };
               };
+              default = { };
+              description = "Blue/green localhost ports used behind Caddy.";
             };
-            default = { };
-            description = "Blue/green localhost ports used behind Caddy.";
           };
-        };
-      });
+        }
+      );
     };
 
     secrets = mkOption {

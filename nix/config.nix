@@ -24,10 +24,14 @@ in
 {
   inherit schema;
 
-  makeConfig = config:
+  makeConfig =
+    config:
     let
       evaluated = lib.evalModules {
-        modules = [ configModule config ];
+        modules = [
+          configModule
+          config
+        ];
       };
     in
     evaluated.config
