@@ -9,7 +9,13 @@ import Config
 
 config :nixploy,
   ecto_repos: [Nixploy.Repo],
-  generators: [timestamp_type: :utc_datetime, binary_id: true]
+  generators: [timestamp_type: :utc_datetime, binary_id: true],
+  role: :all
+
+config :nixploy, Oban,
+  repo: Nixploy.Repo,
+  queues: false,
+  plugins: false
 
 # Configure the endpoint
 config :nixploy, NixployWeb.Endpoint,
