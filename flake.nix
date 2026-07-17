@@ -2,7 +2,7 @@
   description = "Flake for nixploy application";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
   };
 
   outputs =
@@ -12,22 +12,35 @@
       systems = [ "x86_64-linux" ];
       forAllSystems = lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      beamPackages = pkgs: pkgs.beam28Packages;
+      commonEnv = pkgs: {
+        MIX_ESBUILD_PATH = pkgs.lib.getExe pkgs.esbuild;
+        MIX_TAILWIND_PATH = pkgs.lib.getExe pkgs.tailwindcss_4;
+      };
       targetModule = import ./nix/target.nix;
       nixployConfigLib = import ./nix/config.nix {
         inherit lib targetModule;
       };
     in
     {
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt-tree);
+
       lib = nixployConfigLib // {
         evalConfiguration =
-          { modules ? [ ], specialArgs ? { } }:
+          {
+            modules ? [ ],
+            specialArgs ? { },
+          }:
           lib.evalModules {
             inherit specialArgs;
             modules = [ targetModule ] ++ modules;
           };
 
         evalDeployment =
-          { deployment, specialArgs ? { } }:
+          {
+            deployment,
+            specialArgs ? { },
+          }:
           self.lib.evalConfiguration {
             inherit specialArgs;
             modules = [ deployment ];
@@ -68,12 +81,20 @@
         {
           default = pkgs.mkShell {
             packages = [
+              (beamPackages pkgs).elixir_1_20
+              pkgs.postgresql_17
+              pkgs.tailwindcss_4
+              pkgs.esbuild
+              pkgs.inotify-tools
+              pkgs.watchman
               pkgs.dotnet-sdk_10
               pkgs.roslyn-ls
               pkgs.sops
               pkgs.podman
               pkgs.jq
             ];
+
+            env = commonEnv pkgs;
           };
         }
       );
