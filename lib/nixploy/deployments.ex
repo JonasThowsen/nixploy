@@ -4,8 +4,8 @@ defmodule Nixploy.Deployments do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
-  alias Nixploy.Deployments.{Deployment, Event}
-  alias Nixploy.Repo
+  alias Nixploy.Deployments.{Deployment, Event, SimulatedWorker}
+  alias Nixploy.{Notifications, Repo}
 
   @allowed_transitions %{
     queued: [:preparing, :failed, :cancelled],
@@ -39,19 +39,36 @@ defmodule Nixploy.Deployments do
   end
 
   def create_deployment(attrs) do
-    Multi.new()
-    |> Multi.insert(:deployment, Deployment.create_changeset(%Deployment{}, attrs))
-    |> Multi.insert(:event, fn %{deployment: deployment} ->
-      Event.changeset(%Event{}, %{
-        deployment_id: deployment.id,
-        stage: "queued",
-        message: "Deployment queued"
-      })
-    end)
+    attrs
+    |> deployment_multi()
     |> Repo.transaction()
-    |> case do
-      {:ok, %{deployment: deployment, event: event}} -> {:ok, deployment, event}
-      {:error, _operation, reason, _changes} -> {:error, reason}
+    |> unwrap_created_deployment()
+    |> publish_result()
+  end
+
+  def enqueue_deployment(attrs) do
+    result =
+      attrs
+      |> deployment_multi()
+      |> Oban.insert(:job, fn %{deployment: deployment} ->
+        SimulatedWorker.new(%{deployment_id: deployment.id})
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{deployment: deployment, event: event, job: job}} ->
+          {:ok, deployment, event, job}
+
+        {:error, _operation, reason, _changes} ->
+          {:error, reason}
+      end
+
+    case result do
+      {:ok, deployment, event, job} ->
+        publish(deployment.id)
+        {:ok, deployment, event, job}
+
+      error ->
+        error
     end
   end
 
@@ -90,6 +107,7 @@ defmodule Nixploy.Deployments do
     end)
     |> Repo.transaction()
     |> unwrap_transaction()
+    |> publish_result()
   end
 
   def request_cancellation(deployment_id) do
@@ -134,6 +152,7 @@ defmodule Nixploy.Deployments do
     end)
     |> Repo.transaction()
     |> unwrap_transaction()
+    |> publish_result()
   end
 
   def cancellation_requested?(deployment_id) do
@@ -145,6 +164,18 @@ defmodule Nixploy.Deployments do
 
   def change_deployment(%Deployment{} = deployment, attrs \\ %{}) do
     Deployment.create_changeset(deployment, attrs)
+  end
+
+  defp deployment_multi(attrs) do
+    Multi.new()
+    |> Multi.insert(:deployment, Deployment.create_changeset(%Deployment{}, attrs))
+    |> Multi.insert(:event, fn %{deployment: deployment} ->
+      Event.changeset(%Event{}, %{
+        deployment_id: deployment.id,
+        stage: "queued",
+        message: "Deployment queued"
+      })
+    end)
   end
 
   defp locked_deployment(repo, deployment_id) do
@@ -168,10 +199,27 @@ defmodule Nixploy.Deployments do
   defp event_level(:cancelled), do: :warning
   defp event_level(_state), do: :info
 
+  defp unwrap_created_deployment({:ok, %{deployment: deployment, event: event}}),
+    do: {:ok, deployment, event}
+
+  defp unwrap_created_deployment({:error, _operation, reason, _changes}), do: {:error, reason}
+
   defp unwrap_transaction({:ok, %{deployment: deployment, event: event}}),
     do: {:ok, deployment, event}
 
   defp unwrap_transaction({:error, _operation, reason, _changes}), do: {:error, reason}
+
+  defp publish_result({:ok, deployment, _event} = result) do
+    publish(deployment.id)
+    result
+  end
+
+  defp publish_result(error), do: error
+
+  defp publish(deployment_id) do
+    _ = Notifications.publish(deployment_id)
+    :ok
+  end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 end

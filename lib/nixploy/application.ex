@@ -26,6 +26,8 @@ defmodule Nixploy.Application do
   defp web_children(role) do
     if RuntimeRole.web?(role) do
       [
+        {Postgrex.Notifications, Nixploy.Notifications.connection_options()},
+        Nixploy.Notifications,
         NixployWeb.Telemetry,
         {DNSCluster, query: Application.get_env(:nixploy, :dns_cluster_query) || :ignore},
         NixployWeb.Endpoint

@@ -6,6 +6,7 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :nixploy, Oban, testing: :manual
+config :nixploy, :simulated_deployment_step_ms, 0
 
 config :nixploy, Nixploy.Repo,
   username: "postgres",

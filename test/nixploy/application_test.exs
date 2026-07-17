@@ -12,6 +12,8 @@ defmodule Nixploy.ApplicationTest do
 
     refute NixployWeb.Endpoint in ids
     refute NixployWeb.Telemetry in ids
+    refute Postgrex.Notifications in ids
+    refute Nixploy.Notifications in ids
     refute DNSCluster in ids
   end
 
@@ -21,6 +23,8 @@ defmodule Nixploy.ApplicationTest do
     assert Nixploy.Repo in ids
     assert Oban in ids
     assert Phoenix.PubSub.Supervisor in ids
+    assert Postgrex.Notifications in ids
+    assert Nixploy.Notifications in ids
     assert NixployWeb.Endpoint in ids
   end
 
