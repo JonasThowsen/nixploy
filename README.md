@@ -163,8 +163,45 @@ Build the image manually:
 nix build .#docker -o result-nixploy-image
 ```
 
-Run tests for nixploy itself:
+Run tests for the current CLI:
 
 ```bash
+dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
+```
+
+## Control plane rewrite development
+
+The Elixir/Phoenix control plane is being built alongside the current C# CLI so
+that existing deployment behavior remains available during the rewrite.
+
+Enter the reproducible development environment and initialize Phoenix:
+
+```bash
+nix develop
+mix setup
+mix phx.server
+```
+
+The development database defaults to PostgreSQL on `localhost` with the
+credentials `postgres:postgres`. Override the generated Ecto configuration when
+using a different local setup.
+
+The same OTP application supports separate runtime roles:
+
+```bash
+NIXPLOY_ROLE=web mix phx.server
+NIXPLOY_ROLE=worker mix run --no-halt
+NIXPLOY_ROLE=all mix phx.server
+```
+
+`all` is the default for a simple development or single-node installation. The
+worker role starts the PostgreSQL repository, Oban, and shared coordination
+processes without starting the Phoenix endpoint. The web role starts the endpoint with Oban in
+enqueue-only mode.
+
+Run both implementations' test suites while behavior is being ported:
+
+```bash
+mix test
 dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
 ```
