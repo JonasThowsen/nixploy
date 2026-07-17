@@ -195,11 +195,54 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
 
     private async Task<bool> EnsureRouteAsync(string resourcePrefix, NixployTarget target, int port)
     {
-        var existing = await CaddyRequestAsync(target, "GET", $"/id/{RouteId(resourcePrefix)}");
+        var routeId = RouteId(resourcePrefix);
+        var existing = await GetCaddyConfigAsync(target, $"/id/{routeId}");
 
-        if (existing.ExitCode == 0 && !IsNullJson(existing.StdOutput))
+        if (existing is null)
         {
-            return true;
+            return false;
+        }
+
+        if (existing.StatusCode == 200 && !IsNullJson(existing.Body))
+        {
+            if (RouteMatchesDomain(existing.Body, target.Web!.Domain))
+            {
+                return true;
+            }
+
+            Console.WriteLine($"Updating Caddy route hostname to {target.Web.Domain}...");
+
+            var matchJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    host = new[] { target.Web.Domain }
+                }
+            });
+
+            var update = await CaddyRequestAsync(
+                target,
+                "PATCH",
+                $"/id/{routeId}/match",
+                matchJson
+            );
+
+            if (update.ExitCode == 0)
+            {
+                return true;
+            }
+
+            Console.Error.WriteLine($"Failed to update Caddy route hostname to {target.Web.Domain}.");
+            Console.Error.WriteLine(update.StdError);
+            Console.Error.WriteLine(update.StdOutput);
+            return false;
+        }
+
+        if (existing.StatusCode != 404 && !(existing.StatusCode == 200 && IsNullJson(existing.Body)))
+        {
+            Console.Error.WriteLine($"Failed to inspect Caddy route '{routeId}' (HTTP {existing.StatusCode}).");
+            Console.Error.WriteLine(existing.Body);
+            return false;
         }
 
         Console.WriteLine($"Creating Caddy route for {target.Web!.Domain}...");
@@ -265,6 +308,71 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
         return false;
     }
 
+    private async Task<CaddyGetResponse?> GetCaddyConfigAsync(NixployTarget target, string path)
+    {
+        var command = $"curl -sS -X GET --write-out '\\n%{{http_code}}' {ShellQuote(CaddyApi + path)}";
+        var result = await remoteCommandRunner.RunAsync(
+            target,
+            command,
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (result.ExitCode != 0)
+        {
+            Console.Error.WriteLine($"Failed to query Caddy config at '{path}'.");
+            Console.Error.WriteLine(result.StdError);
+            Console.Error.WriteLine(result.StdOutput);
+            return null;
+        }
+
+        var statusSeparator = result.StdOutput.LastIndexOf('\n');
+
+        if (statusSeparator < 0 ||
+            !int.TryParse(result.StdOutput[(statusSeparator + 1)..].Trim(), out var statusCode))
+        {
+            Console.Error.WriteLine($"Caddy returned an invalid response while querying '{path}'.");
+            Console.Error.WriteLine(result.StdOutput);
+            return null;
+        }
+
+        return new CaddyGetResponse(statusCode, result.StdOutput[..statusSeparator]);
+    }
+
+    private static bool RouteMatchesDomain(string routeJson, string domain)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(routeJson);
+
+            if (!document.RootElement.TryGetProperty("match", out var match) ||
+                match.ValueKind != JsonValueKind.Array ||
+                match.GetArrayLength() != 1)
+            {
+                return false;
+            }
+
+            var matcher = match[0];
+
+            if (matcher.ValueKind != JsonValueKind.Object ||
+                !matcher.TryGetProperty("host", out var hosts) ||
+                hosts.ValueKind != JsonValueKind.Array ||
+                hosts.GetArrayLength() != 1)
+            {
+                return false;
+            }
+
+            return string.Equals(
+                hosts[0].GetString(),
+                domain,
+                StringComparison.OrdinalIgnoreCase
+            );
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static bool IsNullJson(string output)
     {
         return string.Equals(output.Trim(), "null", StringComparison.OrdinalIgnoreCase);
@@ -315,4 +423,6 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
     {
         return "'" + value.Replace("'", "'\\''") + "'";
     }
+
+    private sealed record CaddyGetResponse(int StatusCode, string Body);
 }
