@@ -1,0 +1,212 @@
+<Layouts.app flash={@flash}>
+  <div class="space-y-10">
+    <header class="space-y-2">
+      <p class="text-sm font-semibold uppercase tracking-[0.2em] text-primary">nixploy</p>
+      <h1 class="text-4xl font-bold tracking-tight">Deployment control plane</h1>
+      <p class="max-w-3xl text-base-content/70">
+        Attach a Nix flake service to a Podman target and follow its durable deployment workflow.
+        Execution is currently simulated while the control-plane foundation is built.
+      </p>
+    </header>
+
+    <section class="grid gap-4 md:grid-cols-3">
+      <div class="stat rounded-box border border-base-300 bg-base-100 shadow-sm">
+        <div class="stat-title">Repositories</div>
+        <div class="stat-value text-3xl">{length(@repositories)}</div>
+      </div>
+      <div class="stat rounded-box border border-base-300 bg-base-100 shadow-sm">
+        <div class="stat-title">Targets</div>
+        <div class="stat-value text-3xl">{length(@targets)}</div>
+      </div>
+      <div class="stat rounded-box border border-base-300 bg-base-100 shadow-sm">
+        <div class="stat-title">Services</div>
+        <div class="stat-value text-3xl">{length(@services)}</div>
+      </div>
+    </section>
+
+    <section class="grid gap-6 xl:grid-cols-3">
+      <div class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">1. Add repository</h2>
+          <.form
+            for={@repository_form}
+            id="repository-form"
+            phx-submit="save_repository"
+            class="space-y-3"
+          >
+            <.input field={@repository_form[:name]} label="Name" placeholder="my-app" required />
+            <.input
+              field={@repository_form[:url]}
+              type="url"
+              label="Git URL"
+              placeholder="https://github.com/example/my-app.git"
+              required
+            />
+            <.input field={@repository_form[:default_ref]} label="Default ref" required />
+            <.button class="w-full">Add repository</.button>
+          </.form>
+        </div>
+      </div>
+
+      <div class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">2. Add target</h2>
+          <.form for={@target_form} id="target-form" phx-submit="save_target" class="space-y-3">
+            <.input field={@target_form[:name]} label="Name" placeholder="production" required />
+            <.input
+              field={@target_form[:host]}
+              label="Host"
+              placeholder="vps.example.com"
+              required
+            />
+            <div class="grid grid-cols-2 gap-3">
+              <.input field={@target_form[:ssh_user]} label="SSH user" required />
+              <.input field={@target_form[:ssh_port]} type="number" label="SSH port" required />
+            </div>
+            <.button class="w-full">Add target</.button>
+          </.form>
+        </div>
+      </div>
+
+      <div class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">3. Attach service</h2>
+          <.form for={@service_form} id="service-form" phx-submit="save_service" class="space-y-3">
+            <.input field={@service_form[:name]} label="Name" placeholder="web" required />
+            <.input
+              field={@service_form[:repository_id]}
+              type="select"
+              label="Repository"
+              prompt="Select repository"
+              options={@repository_options}
+              required
+            />
+            <.input
+              field={@service_form[:target_id]}
+              type="select"
+              label="Target"
+              prompt="Select target"
+              options={@target_options}
+              required
+            />
+            <.input field={@service_form[:flake_output]} label="Flake output" required />
+            <.input field={@service_form[:domain]} label="Domain" placeholder="app.example.com" />
+            <.input field={@service_form[:health_path]} label="Health path" required />
+            <.button class="w-full" disabled={@repositories == [] or @targets == []}>
+              Attach service
+            </.button>
+          </.form>
+        </div>
+      </div>
+    </section>
+
+    <section class="card border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body gap-6">
+        <div>
+          <h2 class="card-title">Queue deployment</h2>
+          <p class="text-sm text-base-content/60">
+            The worker will persist and broadcast each simulated stage.
+          </p>
+        </div>
+
+        <.form
+          for={@deployment_form}
+          id="deployment-form"
+          phx-submit="enqueue_deployment"
+          class="grid items-end gap-4 md:grid-cols-[2fr_1fr_auto]"
+        >
+          <.input
+            field={@deployment_form[:service_id]}
+            type="select"
+            label="Service"
+            prompt="Select service"
+            options={@service_options}
+            required
+          />
+          <.input field={@deployment_form[:requested_ref]} label="Git ref" required />
+          <.button class="mb-2" disabled={@services == []}>Deploy</.button>
+        </.form>
+      </div>
+    </section>
+
+    <section class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-bold">Deployment history</h2>
+        <p class="text-sm text-base-content/60">Newest deployments appear first.</p>
+      </div>
+
+      <div :if={@deployments == []} id="empty-deployments" class="alert">
+        <.icon name="hero-information-circle" class="size-5" />
+        <span>No deployments have been queued.</span>
+      </div>
+
+      <article
+        :for={deployment <- @deployments}
+        id={"deployment-#{deployment.id}"}
+        class="card border border-base-300 bg-base-100 shadow-sm"
+      >
+        <div class="card-body gap-5">
+          <div class="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="card-title">{deployment.service.name}</h3>
+                <span class={["badge", state_class(deployment.state)]}>{deployment.state}</span>
+                <span
+                  :if={deployment.cancellation_requested_at}
+                  class="badge badge-warning badge-outline"
+                >
+                  cancelling
+                </span>
+              </div>
+              <p class="text-sm text-base-content/60">
+                {deployment.service.repository.name}@{deployment.requested_ref} → {deployment.service.target.name}
+                <span :if={deployment.service.domain}> ·  {deployment.service.domain}</span>
+              </p>
+              <p class="mt-1 font-mono text-xs text-base-content/50">{deployment.id}</p>
+            </div>
+
+            <.button
+              :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
+              id={"cancel-#{deployment.id}"}
+              phx-click="cancel_deployment"
+              phx-value-id={deployment.id}
+              data-confirm="Cancel this deployment?"
+              class="btn-warning btn-sm"
+            >
+              Cancel
+            </.button>
+          </div>
+
+          <div class="grid gap-3 text-sm sm:grid-cols-3">
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Current stage</span>
+              <span class="font-medium">{deployment.current_stage}</span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Started</span>
+              <span>{format_time(deployment.started_at)}</span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Finished</span>
+              <span>{format_time(deployment.finished_at)}</span>
+            </div>
+          </div>
+
+          <ol class="space-y-2 border-l border-base-300 pl-4">
+            <li :for={event <- @events_by_deployment[deployment.id]} id={"event-#{event.id}"}>
+              <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <span class="font-medium">{event.message}</span>
+                <time class="font-mono text-xs text-base-content/50">
+                  {format_time(event.inserted_at)}
+                </time>
+              </div>
+              <span class="text-xs uppercase tracking-wide text-base-content/50">
+                {event.stage}
+              </span>
+            </li>
+          </ol>
+        </div>
+      </article>
+    </section>
+  </div>
+</Layouts.app>

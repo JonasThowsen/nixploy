@@ -17,7 +17,7 @@ defmodule NixployWeb.Router do
   scope "/", NixployWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", DeploymentLive.Index, :index
   end
 
   # Other scopes may use custom stacks.
