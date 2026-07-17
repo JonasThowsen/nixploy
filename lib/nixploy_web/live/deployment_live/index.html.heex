@@ -160,7 +160,7 @@
               </div>
               <p class="text-sm text-base-content/60">
                 {deployment.service.repository.name}@{deployment.requested_ref} → {deployment.service.target.name}
-                <span :if={deployment.service.domain}> ·  {deployment.service.domain}</span>
+                <span :if={deployment.service.domain}>{" · #{deployment.service.domain}"}</span>
               </p>
               <p class="mt-1 font-mono text-xs text-base-content/50">{deployment.id}</p>
             </div>
