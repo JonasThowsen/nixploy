@@ -220,7 +220,7 @@ public sealed class CaddyServiceTests
 
     private static CommandRunResult RouteResponse(string body, int statusCode = 200)
     {
-        return new CommandRunResult(0, $"{body}\n{statusCode}", "");
+        return new CommandRunResult(0, $"{body}\n{statusCode}{Environment.NewLine}", "");
     }
 
     private static CommandRunResult Success()

@@ -325,17 +325,20 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
             return null;
         }
 
-        var statusSeparator = result.StdOutput.LastIndexOf('\n');
+        // CommandRunner reads output line by line and restores a trailing newline, so remove
+        // line endings before splitting curl's response body from its status-code trailer.
+        var response = result.StdOutput.TrimEnd('\r', '\n');
+        var statusSeparator = response.LastIndexOf('\n');
 
         if (statusSeparator < 0 ||
-            !int.TryParse(result.StdOutput[(statusSeparator + 1)..].Trim(), out var statusCode))
+            !int.TryParse(response[(statusSeparator + 1)..].Trim(), out var statusCode))
         {
             Console.Error.WriteLine($"Caddy returned an invalid response while querying '{path}'.");
             Console.Error.WriteLine(result.StdOutput);
             return null;
         }
 
-        return new CaddyGetResponse(statusCode, result.StdOutput[..statusSeparator]);
+        return new CaddyGetResponse(statusCode, response[..statusSeparator]);
     }
 
     private static bool RouteMatchesDomain(string routeJson, string domain)
