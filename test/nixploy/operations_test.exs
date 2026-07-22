@@ -4,7 +4,7 @@ defmodule Nixploy.OperationsTest do
 
   alias Nixploy.Fixtures
   alias Nixploy.Operations
-  alias Nixploy.Operations.StatusWorker
+  alias Nixploy.Operations.{LogWorker, StatusWorker}
 
   test "persists and enqueues a status refresh request" do
     service = Fixtures.service_fixture(%{domain: "app.example.com"})
@@ -15,6 +15,39 @@ defmodule Nixploy.OperationsTest do
     assert observation.requested_at
     assert job.worker == inspect(StatusWorker)
     assert_enqueued(worker: StatusWorker, args: %{service_id: service.id})
+  end
+
+  test "persists and enqueues a bounded log snapshot request" do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+
+    assert {:ok, snapshot, job} = Operations.request_log_snapshot(service.id)
+
+    assert snapshot.status == :pending
+    assert snapshot.requested_at
+    assert job.worker == inspect(LogWorker)
+    assert Operations.get_service_observation(service.id).status == :pending
+    assert_enqueued(worker: LogWorker, args: %{service_id: service.id})
+  end
+
+  test "persists an available log snapshot" do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    {:ok, _, _job} = Operations.request_log_snapshot(service.id)
+
+    assert {:ok, snapshot} =
+             Operations.complete_log_snapshot(service.id, %{
+               target_identity: "nixploy-app-123-production",
+               slot: "green",
+               container_name: "nixploy-app-123-production-green",
+               content: "first line\nsecond line",
+               line_count: 2,
+               truncated: false
+             })
+
+    assert snapshot.status == :available
+    assert snapshot.slot == "green"
+    assert snapshot.line_count == 2
+    assert snapshot.content == "first line\nsecond line"
+    assert snapshot.fetched_at
   end
 
   test "persists an available observation" do

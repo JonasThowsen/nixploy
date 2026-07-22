@@ -5,13 +5,16 @@ defmodule Nixploy.Execution do
 
   defmodule Result do
     @moduledoc false
-    defstruct [:exit_status, :output_tail]
+    defstruct [:exit_status, :output_tail, output_truncated?: false]
 
-    @type t :: %__MODULE__{exit_status: non_neg_integer(), output_tail: String.t()}
+    @type t :: %__MODULE__{
+            exit_status: non_neg_integer(),
+            output_tail: String.t(),
+            output_truncated?: boolean()
+          }
   end
 
   @poll_interval 250
-  @output_tail_bytes 65_536
   @line_bytes 4_096
 
   @spec run(Command.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
@@ -23,7 +26,19 @@ defmodule Nixploy.Execution do
       os_pid = port_os_pid(port)
       started_at = System.monotonic_time(:millisecond)
 
-      receive_output(port, command, opts, started_at, os_pid, termination_mode, "", "")
+      receive_output(
+        port,
+        command,
+        opts,
+        started_at,
+        os_pid,
+        termination_mode,
+        "",
+        "",
+        false,
+        nil,
+        false
+      )
     end
   rescue
     error -> {:error, {:spawn_failed, Exception.message(error)}}
@@ -51,6 +66,7 @@ defmodule Nixploy.Execution do
   defp open_port(executable, args, command) do
     options = [
       :binary,
+      :eof,
       :exit_status,
       :use_stdio,
       :stderr_to_stdout,
@@ -86,11 +102,15 @@ defmodule Nixploy.Execution do
          os_pid,
          termination_mode,
          line_buffer,
-         output_tail
+         output_tail,
+         output_truncated?,
+         exit_status,
+         eof?
        ) do
     receive do
       {^port, {:data, data}} ->
-        {line_buffer, output_tail} = consume(data, line_buffer, output_tail, command, opts)
+        {line_buffer, output_tail, output_truncated?} =
+          consume(data, line_buffer, output_tail, output_truncated?, command, opts)
 
         receive_output(
           port,
@@ -100,13 +120,49 @@ defmodule Nixploy.Execution do
           os_pid,
           termination_mode,
           line_buffer,
-          output_tail
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?
         )
 
-      {^port, {:exit_status, exit_status}} ->
-        emit_line(line_buffer, command, opts)
-        output_tail = output_tail |> valid_text() |> redact(command.redact)
-        {:ok, %Result{exit_status: exit_status, output_tail: output_tail}}
+      {^port, {:exit_status, status}} ->
+        if eof? do
+          finish(status, line_buffer, output_tail, output_truncated?, command, opts)
+        else
+          receive_output(
+            port,
+            command,
+            opts,
+            started_at,
+            os_pid,
+            termination_mode,
+            line_buffer,
+            output_tail,
+            output_truncated?,
+            status,
+            false
+          )
+        end
+
+      {^port, :eof} ->
+        if is_integer(exit_status) do
+          finish(exit_status, line_buffer, output_tail, output_truncated?, command, opts)
+        else
+          receive_output(
+            port,
+            command,
+            opts,
+            started_at,
+            os_pid,
+            termination_mode,
+            line_buffer,
+            output_tail,
+            output_truncated?,
+            nil,
+            true
+          )
+        end
     after
       @poll_interval ->
         cond do
@@ -127,18 +183,35 @@ defmodule Nixploy.Execution do
               os_pid,
               termination_mode,
               line_buffer,
-              output_tail
+              output_tail,
+              output_truncated?,
+              exit_status,
+              eof?
             )
         end
     end
   end
 
-  defp consume(data, line_buffer, output_tail, command, opts) do
-    output_tail = bounded_tail(output_tail <> data)
+  defp finish(exit_status, line_buffer, output_tail, output_truncated?, command, opts) do
+    emit_line(line_buffer, command, opts)
+    output_tail = output_tail |> valid_text() |> redact(command.redact)
+
+    {:ok,
+     %Result{
+       exit_status: exit_status,
+       output_tail: output_tail,
+       output_truncated?: output_truncated?
+     }}
+  end
+
+  defp consume(data, line_buffer, output_tail, output_truncated?, command, opts) do
+    {output_tail, truncated_now?} =
+      bounded_tail(output_tail <> data, command.max_output_bytes)
+
     parts = :binary.split(line_buffer <> data, "\n", [:global])
     {complete_lines, [next_buffer]} = Enum.split(parts, -1)
     Enum.each(complete_lines, &emit_line(&1, command, opts))
-    {next_buffer, output_tail}
+    {next_buffer, output_tail, output_truncated? or truncated_now?}
   end
 
   defp emit_line("", _command, _opts), do: :ok
@@ -176,10 +249,10 @@ defmodule Nixploy.Execution do
     |> Kernel.<>("…")
   end
 
-  defp bounded_tail(output) when byte_size(output) <= @output_tail_bytes, do: output
+  defp bounded_tail(output, limit) when byte_size(output) <= limit, do: {output, false}
 
-  defp bounded_tail(output) do
-    binary_part(output, byte_size(output) - @output_tail_bytes, @output_tail_bytes)
+  defp bounded_tail(output, limit) do
+    {binary_part(output, byte_size(output) - limit, limit), true}
   end
 
   defp valid_text(value), do: String.replace_invalid(value, "�")

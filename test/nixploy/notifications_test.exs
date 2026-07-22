@@ -13,6 +13,16 @@ defmodule Nixploy.NotificationsTest do
     assert_receive {:service_status_changed, ^service_id}
   end
 
+  test "publishes service log changes to the global topic" do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    Notifications.subscribe()
+
+    assert {:ok, _snapshot, _job} = Operations.request_log_snapshot(service.id)
+
+    service_id = service.id
+    assert_receive {:service_logs_changed, ^service_id}
+  end
+
   test "publishes durable deployment changes to global and deployment topics" do
     service = Fixtures.service_fixture()
 

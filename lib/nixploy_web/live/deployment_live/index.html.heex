@@ -154,6 +154,7 @@
         class="card border border-base-300 bg-base-100 shadow-sm"
       >
         <% observation = @observations_by_service[service.id] %>
+        <% log_snapshot = @log_snapshots_by_service[service.id] %>
         <div class="card-body gap-5">
           <div class="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
             <div>
@@ -169,15 +170,26 @@
                 <span :if={service.domain}>{" · " <> service.domain}</span>
               </p>
             </div>
-            <.button
-              id={"refresh-status-#{service.id}"}
-              phx-click="refresh_service_status"
-              phx-value-id={service.id}
-              class="btn-sm"
-              disabled={observation && observation.status == :pending}
-            >
-              Refresh status
-            </.button>
+            <div class="flex flex-wrap gap-2">
+              <.button
+                id={"refresh-status-#{service.id}"}
+                phx-click="refresh_service_status"
+                phx-value-id={service.id}
+                class="btn-sm"
+                disabled={observation && observation.status == :pending}
+              >
+                Refresh status
+              </.button>
+              <.button
+                id={"fetch-logs-#{service.id}"}
+                phx-click="fetch_service_logs"
+                phx-value-id={service.id}
+                class="btn-outline btn-sm"
+                disabled={log_snapshot && log_snapshot.status == :pending}
+              >
+                Fetch logs
+              </.button>
+            </div>
           </div>
 
           <div :if={is_nil(observation)} class="alert">
@@ -245,6 +257,43 @@
               </span>
             </div>
           </div>
+
+          <section class="space-y-3 border-t border-base-300 pt-4">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 class="font-semibold">Active container logs</h4>
+                <p class="text-xs text-base-content/50">Latest bounded 200-entry snapshot.</p>
+              </div>
+              <span
+                :if={log_snapshot}
+                class={["badge", log_snapshot_class(log_snapshot.status)]}
+              >
+                {log_snapshot.status}
+              </span>
+            </div>
+
+            <div :if={is_nil(log_snapshot)} class="rounded-box bg-base-200 p-4 text-sm">
+              No log snapshot has been requested.
+            </div>
+
+            <div :if={log_snapshot && log_snapshot.failure} class="alert alert-error text-sm">
+              <.icon name="hero-exclamation-circle" class="size-5" />
+              <span>{log_snapshot.failure["message"] || log_snapshot.failure[:message]}</span>
+            </div>
+
+            <div :if={log_snapshot && log_snapshot.content} class="space-y-2">
+              <div class="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-base-content/60">
+                <span>{log_snapshot.slot || "-"} · {log_snapshot.container_name || "-"}</span>
+                <span>{log_snapshot.line_count || 0} lines</span>
+                <span :if={log_snapshot.truncated} class="text-warning">output truncated</span>
+                <span>{format_time(log_snapshot.fetched_at)}</span>
+              </div>
+              <pre
+                id={"service-logs-#{service.id}"}
+                class="max-h-96 overflow-auto rounded-box bg-neutral p-4 font-mono text-xs leading-relaxed text-neutral-content shadow-inner"
+              ><code>{log_snapshot.content}</code></pre>
+            </div>
+          </section>
         </div>
       </article>
     </section>

@@ -208,6 +208,7 @@ skeleton for the rewrite:
 - stream persisted deployment stages to the browser
 - request cooperative cancellation
 - refresh persisted Podman, Caddy, slot, revision, and health observations through a worker
+- fetch a bounded 200-entry active-container log snapshot through a worker
 - run web and worker processes independently through PostgreSQL notifications
 
 The first real deployment tracer checks out the requested Git ref, records the

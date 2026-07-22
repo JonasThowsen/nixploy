@@ -7,7 +7,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   alias Nixploy.Deployments
   alias Nixploy.Deployments.SimulatedWorker
   alias Nixploy.Fixtures
-  alias Nixploy.Operations.StatusWorker
+  alias Nixploy.Operations.{LogWorker, StatusWorker}
 
   test "renders the deployment dashboard", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/")
@@ -90,6 +90,41 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
     assert_enqueued(worker: StatusWorker, args: %{service_id: service.id})
     assert has_element?(view, "#service-status-#{service.id}", "pending")
+  end
+
+  test "queues a worker-owned active-container log snapshot", %{conn: conn} do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#service-status-#{service.id}", "No log snapshot")
+
+    view
+    |> element("#fetch-logs-#{service.id}")
+    |> render_click()
+
+    assert_enqueued(worker: LogWorker, args: %{service_id: service.id})
+    assert has_element?(view, "#service-status-#{service.id}", "pending")
+  end
+
+  test "renders a persisted active-container log snapshot", %{conn: conn} do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    {:ok, _, _job} = Nixploy.Operations.request_log_snapshot(service.id)
+
+    {:ok, _snapshot} =
+      Nixploy.Operations.complete_log_snapshot(service.id, %{
+        target_identity: "nixploy-app-123-production",
+        slot: "green",
+        container_name: "nixploy-app-123-production-green",
+        content: "Application started",
+        line_count: 1,
+        truncated: false
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#service-logs-#{service.id}", "Application started")
+    assert has_element?(view, "#service-status-#{service.id}", "green")
+    assert has_element?(view, "#service-status-#{service.id}", "1 lines")
   end
 
   test "queues and streams a simulated deployment to completion", %{conn: conn} do

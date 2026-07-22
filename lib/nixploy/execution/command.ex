@@ -7,7 +7,8 @@ defmodule Nixploy.Execution.Command do
             cd: nil,
             env: %{},
             timeout: :timer.minutes(30),
-            redact: []
+            redact: [],
+            max_output_bytes: 65_536
 
   @type t :: %__MODULE__{
           executable: String.t(),
@@ -15,6 +16,7 @@ defmodule Nixploy.Execution.Command do
           cd: String.t() | nil,
           env: %{optional(String.t()) => String.t() | false},
           timeout: non_neg_integer() | :infinity,
-          redact: [String.t()]
+          redact: [String.t()],
+          max_output_bytes: pos_integer()
         }
 end

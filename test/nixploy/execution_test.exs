@@ -39,6 +39,18 @@ defmodule Nixploy.ExecutionTest do
     assert_receive {:redacted_line, "token=[REDACTED]"}
   end
 
+  test "bounds retained output and reports truncation" do
+    command = %Command{
+      executable: "printf",
+      args: ["0123456789abcdef"],
+      max_output_bytes: 10
+    }
+
+    assert {:ok, result} = Execution.run(command)
+    assert result.output_tail == "6789abcdef"
+    assert result.output_truncated?
+  end
+
   test "cancellation terminates the external process group" do
     marker =
       Path.join(System.tmp_dir!(), "nixploy-cancelled-#{System.unique_integer([:positive])}")

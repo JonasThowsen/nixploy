@@ -41,6 +41,13 @@ defmodule Nixploy.Notifications do
     notify(payload)
   end
 
+  def publish_service_logs(service_id) do
+    payload = "logs:#{service_id}"
+
+    broadcast_service_logs(to_string(service_id))
+    notify(payload)
+  end
+
   defp notify(payload) do
     case Repo.query("SELECT pg_notify($1, $2)", [@channel, payload]) do
       {:ok, _result} -> :ok
@@ -67,6 +74,7 @@ defmodule Nixploy.Notifications do
   end
 
   defp broadcast_payload("service:" <> service_id), do: broadcast_service_status(service_id)
+  defp broadcast_payload("logs:" <> service_id), do: broadcast_service_logs(service_id)
   defp broadcast_payload(deployment_id), do: broadcast_deployment(deployment_id)
 
   defp broadcast_deployment(deployment_id) do
@@ -80,6 +88,14 @@ defmodule Nixploy.Notifications do
       Nixploy.PubSub,
       @topic,
       {:service_status_changed, service_id}
+    )
+  end
+
+  defp broadcast_service_logs(service_id) do
+    Phoenix.PubSub.broadcast(
+      Nixploy.PubSub,
+      @topic,
+      {:service_logs_changed, service_id}
     )
   end
 

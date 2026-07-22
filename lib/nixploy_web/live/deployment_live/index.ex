@@ -83,6 +83,19 @@ defmodule NixployWeb.DeploymentLive.Index do
     end
   end
 
+  def handle_event("fetch_service_logs", %{"id" => service_id}, socket) do
+    case Operations.request_log_snapshot(service_id) do
+      {:ok, _snapshot, _job} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Log snapshot queued")
+         |> load_dashboard()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not queue log snapshot")}
+    end
+  end
+
   def handle_event("refresh_service_status", %{"id" => service_id}, socket) do
     case Operations.request_status_refresh(service_id) do
       {:ok, _observation, _job} ->
@@ -121,6 +134,10 @@ defmodule NixployWeb.DeploymentLive.Index do
     {:noreply, load_dashboard(socket)}
   end
 
+  def handle_info({:service_logs_changed, _service_id}, socket) do
+    {:noreply, load_dashboard(socket)}
+  end
+
   defp assign_forms(socket) do
     socket
     |> assign(:repository_form, repository_form())
@@ -139,6 +156,10 @@ defmodule NixployWeb.DeploymentLive.Index do
       Operations.list_service_observations()
       |> Map.new(&{&1.service_id, &1})
 
+    log_snapshots_by_service =
+      Operations.list_service_log_snapshots()
+      |> Map.new(&{&1.service_id, &1})
+
     events_by_deployment =
       Map.new(deployments, fn deployment ->
         {deployment.id, Deployments.list_events(deployment.id)}
@@ -150,6 +171,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       services: services,
       deployments: deployments,
       observations_by_service: observations_by_service,
+      log_snapshots_by_service: log_snapshots_by_service,
       events_by_deployment: events_by_deployment,
       repository_options: Enum.map(repositories, &{&1.name, &1.id}),
       target_options: Enum.map(targets, &{&1.name, &1.id}),
@@ -193,6 +215,10 @@ defmodule NixployWeb.DeploymentLive.Index do
   def observation_class(:available), do: "badge-success"
   def observation_class(:failed), do: "badge-error"
   def observation_class(:pending), do: "badge-warning"
+
+  def log_snapshot_class(:available), do: "badge-success"
+  def log_snapshot_class(:failed), do: "badge-error"
+  def log_snapshot_class(:pending), do: "badge-warning"
 
   def health_class(status) when status in 200..299, do: "badge-success"
   def health_class(nil), do: "badge-ghost"

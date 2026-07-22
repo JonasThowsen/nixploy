@@ -21,7 +21,7 @@ unless config_env() == :test do
   # TODO(tracer): Replace global deployment serialization with PostgreSQL
   # per-target leases before allowing more than one deployment worker.
   config :nixploy, Oban,
-    queues: if(worker?, do: [deployments: 1, health_checks: 2], else: false),
+    queues: if(worker?, do: [deployments: 1, health_checks: 2, logs: 2], else: false),
     plugins: if(worker?, do: [Oban.Plugins.Pruner], else: false)
 end
 
