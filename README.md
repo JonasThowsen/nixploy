@@ -184,7 +184,16 @@ mix phx.server
 
 The development database defaults to PostgreSQL on `localhost` with the
 credentials `postgres:postgres`. Override the generated Ecto configuration when
-using a different local setup.
+using a different local setup. Provision or rotate the initial operator before
+opening the dashboard:
+
+```bash
+NIXPLOY_OPERATOR_PASSWORD='use a long password' \\
+  mix nixploy.operator operator@example.com
+```
+
+There is intentionally no public registration or recovery flow in the first
+authentication tracer.
 
 The same OTP application supports separate runtime roles:
 
@@ -202,6 +211,7 @@ endpoint with Oban in enqueue-only mode.
 The dashboard at <http://localhost:4000> currently provides the durable walking
 skeleton for the rewrite:
 
+- authenticate a provisioned operator before exposing control-plane actions
 - register Git repositories and Podman targets
 - attach a flake service and optional domain
 - enqueue a durable Oban deployment

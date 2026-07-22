@@ -27,9 +27,7 @@ defmodule NixployWeb.Layouts do
   """
   attr :flash, :map, required: true, doc: "the map of flash messages"
 
-  attr :current_scope, :map,
-    default: nil,
-    doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
+  attr :current_operator, :map, default: nil, doc: "the authenticated operator"
 
   slot :inner_block, required: true
 
@@ -44,7 +42,18 @@ defmodule NixployWeb.Layouts do
           <span>nixploy</span>
         </a>
       </div>
-      <div class="flex-none">
+      <div class="flex flex-none items-center gap-3">
+        <span :if={@current_operator} class="hidden font-mono text-xs text-base-content/55 sm:inline">
+          {@current_operator.email}
+        </span>
+        <.link
+          :if={@current_operator}
+          href={~p"/logout"}
+          method="delete"
+          class="btn btn-ghost btn-sm"
+        >
+          Sign out
+        </.link>
         <.theme_toggle />
       </div>
     </header>

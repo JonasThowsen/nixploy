@@ -1,6 +1,8 @@
 defmodule NixployWeb.Router do
   use NixployWeb, :router
 
+  import NixployWeb.OperatorAuth
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -8,6 +10,11 @@ defmodule NixployWeb.Router do
     plug :put_root_layout, html: {NixployWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    plug :fetch_current_operator
+  end
+
+  pipeline :authenticated_operator do
+    plug :require_authenticated_operator
   end
 
   pipeline :api do
@@ -17,7 +24,18 @@ defmodule NixployWeb.Router do
   scope "/", NixployWeb do
     pipe_through :browser
 
-    live "/", DeploymentLive.Index, :index
+    get "/login", OperatorSessionController, :new
+    post "/login", OperatorSessionController, :create
+    delete "/logout", OperatorSessionController, :delete
+  end
+
+  scope "/", NixployWeb do
+    pipe_through [:browser, :authenticated_operator]
+
+    live_session :authenticated,
+      on_mount: [{NixployWeb.OperatorAuth, :ensure_authenticated}] do
+      live "/", DeploymentLive.Index, :index
+    end
   end
 
   # Other scopes may use custom stacks.
@@ -35,7 +53,7 @@ defmodule NixployWeb.Router do
     import Phoenix.LiveDashboard.Router
 
     scope "/dev" do
-      pipe_through :browser
+      pipe_through [:browser, :authenticated_operator]
 
       live_dashboard "/dashboard", metrics: NixployWeb.Telemetry
     end

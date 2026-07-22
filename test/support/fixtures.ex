@@ -1,5 +1,18 @@
 defmodule Nixploy.Fixtures do
-  alias Nixploy.{Applications, Fleet}
+  alias Nixploy.{Accounts, Applications, Fleet}
+
+  def operator_fixture(attrs \\ %{}) do
+    unique = System.unique_integer([:positive])
+    attrs = Map.new(attrs)
+
+    operator_attrs = %{
+      email: Map.get(attrs, :email, "operator-#{unique}@example.com"),
+      password: Map.get(attrs, :password, "correct horse battery staple")
+    }
+
+    {:ok, operator} = Accounts.provision_operator(operator_attrs)
+    operator
+  end
 
   def repository_fixture(attrs \\ %{}) do
     unique = System.unique_integer([:positive])

@@ -9,6 +9,11 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   alias Nixploy.Fixtures
   alias Nixploy.Operations.{LogWorker, StatusWorker}
 
+  setup %{conn: conn} do
+    operator = Fixtures.operator_fixture()
+    {:ok, conn: log_in_operator(conn, operator), operator: operator}
+  end
+
   test "renders the deployment dashboard", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/")
 

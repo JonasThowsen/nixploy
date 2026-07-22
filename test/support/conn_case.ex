@@ -35,4 +35,8 @@ defmodule NixployWeb.ConnCase do
     Nixploy.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
+
+  def log_in_operator(conn, operator) do
+    Plug.Test.init_test_session(conn, %{operator_id: operator.id})
+  end
 end

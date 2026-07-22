@@ -8,7 +8,11 @@ defmodule NixployWeb.Endpoint do
     store: :cookie,
     key: "_nixploy_key",
     signing_salt: "6U2EiQlr",
-    same_site: "Lax"
+    encryption_salt: "nt8G7xQv",
+    same_site: "Lax",
+    http_only: true,
+    secure: Application.compile_env(:nixploy, :secure_cookies, false),
+    max_age: 8 * 60 * 60
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
