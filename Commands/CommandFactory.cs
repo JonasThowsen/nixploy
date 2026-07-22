@@ -31,7 +31,7 @@ public static class CommandFactory
             if (string.IsNullOrWhiteSpace(targetName))
             {
                 Console.Error.WriteLine("Missing required target. Pass one with --target <name>.");
-                return;
+                return 1;
             }
 
             NixployConfig config;
@@ -43,7 +43,7 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                return;
+                return 1;
             }
 
             if (!config.Targets.TryGetValue(targetName, out var target))
@@ -60,13 +60,13 @@ public static class CommandFactory
                     }
                 }
 
-                return;
+                return 1;
             }
 
             if (string.IsNullOrWhiteSpace(target.Image))
             {
                 Console.Error.WriteLine($"Target '{targetName}' is missing required image.");
-                return;
+                return 1;
             }
 
             DeploymentMetadata metadata;
@@ -78,7 +78,7 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                return;
+                return 1;
             }
 
             var resourcePrefix = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
@@ -90,7 +90,7 @@ public static class CommandFactory
 
             if (!await podmanService.EnsureConnectionAsync(resourcePrefix, targetName, target))
             {
-                return;
+                return 1;
             }
 
             Console.WriteLine($"Building image '.#{target.Image}'...");
@@ -103,7 +103,7 @@ public static class CommandFactory
             if (buildResult.ExitCode != 0)
             {
                 Console.Error.WriteLine($"Image build failed with exit code {buildResult.ExitCode}.");
-                return;
+                return 1;
             }
 
             IReadOnlyList<Secret> secrets;
@@ -115,7 +115,7 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                return;
+                return 1;
             }
 
             IReadOnlyList<SecretMount>? secretMounts = await podmanService.InstallSecretsAsync(
@@ -126,7 +126,7 @@ public static class CommandFactory
 
             if (secretMounts is null)
             {
-                return;
+                return 1;
             }
 
             Console.WriteLine($"Loading image onto target '{targetName}' using Podman connection '{podmanConnection}'...");
@@ -135,12 +135,12 @@ public static class CommandFactory
 
             if (loadedImage is null)
             {
-                return;
+                return 1;
             }
 
             if (target.Web is not null)
             {
-                await DeployWebTargetAsync(
+                var deployed = await DeployWebTargetAsync(
                     resourcePrefix,
                     targetName,
                     target,
@@ -152,10 +152,10 @@ public static class CommandFactory
                     caddyService
                 );
 
-                return;
+                return deployed ? 0 : 1;
             }
 
-            await DeploySimpleTargetAsync(
+            var simpleDeployed = await DeploySimpleTargetAsync(
                 resourcePrefix,
                 targetName,
                 target,
@@ -165,6 +165,8 @@ public static class CommandFactory
                 metadata,
                 podmanService
             );
+
+            return simpleDeployed ? 0 : 1;
         });
 
         var pruneCommand = new Command("prune", "Remove nixploy resources for a project target")
@@ -179,7 +181,7 @@ public static class CommandFactory
             if (string.IsNullOrWhiteSpace(targetName))
             {
                 Console.Error.WriteLine("Missing required target. Pass one with --target <name>.");
-                return;
+                return 1;
             }
 
             NixployConfig config;
@@ -191,13 +193,13 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                return;
+                return 1;
             }
 
             if (!config.Targets.TryGetValue(targetName, out var target))
             {
                 Console.Error.WriteLine($"Unknown target '{targetName}'.");
-                return;
+                return 1;
             }
 
             DeploymentMetadata metadata;
@@ -209,7 +211,7 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                return;
+                return 1;
             }
 
             var resourcePrefix = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
@@ -219,20 +221,21 @@ public static class CommandFactory
 
             if (!await podmanService.EnsureConnectionAsync(resourcePrefix, targetName, target))
             {
-                return;
+                return 1;
             }
 
-            if (target.Web is not null)
+            if (target.Web is not null && !await caddyService.DeleteRouteAsync(resourcePrefix, target))
             {
-                await caddyService.DeleteRouteAsync(resourcePrefix, target);
+                return 1;
             }
 
             if (!await podmanService.PruneTargetAsync(podmanConnection, resourcePrefix))
             {
-                return;
+                return 1;
             }
 
             Console.WriteLine("Prune completed successfully.");
+            return 0;
         });
 
         var root = new RootCommand("Nixploy")
@@ -247,7 +250,7 @@ public static class CommandFactory
         return root;
     }
 
-    private static async Task DeployWebTargetAsync(
+    private static async Task<bool> DeployWebTargetAsync(
         string resourcePrefix,
         string targetName,
         NixployTarget target,
@@ -259,8 +262,15 @@ public static class CommandFactory
         ICaddyService caddyService
     )
     {
-        var activePort = await caddyService.GetActivePortAsync(resourcePrefix, target);
-        // var slot = SelectSlot(target.Web!, activePort);
+        var activePortResult = await caddyService.GetActivePortAsync(resourcePrefix, target);
+
+        if (!activePortResult.Success)
+        {
+            Console.Error.WriteLine("Cannot safely select an inactive slot because Caddy state is unavailable.");
+            return false;
+        }
+
+        var activePort = activePortResult.Port;
         var (slotName, slotPort) = SelectSlot(target.Web!, activePort);
         var newContainerName = $"{resourcePrefix}-{slotName}";
         var oldContainerName = activePort is null
@@ -284,7 +294,7 @@ public static class CommandFactory
                 secretMounts
             ))
         {
-            return;
+            return false;
         }
 
         Console.WriteLine($"Starting {slotName} container '{newContainerName}' from image '{imageReference}'...");
@@ -301,19 +311,19 @@ public static class CommandFactory
                 metadata
             ))
         {
-            return;
+            return false;
         }
 
         if (!await caddyService.CheckHealthAsync(target, slotPort))
         {
             Console.Error.WriteLine("New slot failed health check. Leaving existing Caddy route unchanged.");
-            return;
+            return false;
         }
 
         if (!await caddyService.SwitchAsync(resourcePrefix, target, slotPort))
         {
             Console.Error.WriteLine("New slot is healthy, but Caddy switch failed. Leaving new container running for inspection.");
-            return;
+            return false;
         }
 
         if (!string.IsNullOrWhiteSpace(oldContainerName) && oldContainerName != newContainerName)
@@ -323,9 +333,10 @@ public static class CommandFactory
         }
 
         Console.WriteLine($"Deployment completed successfully. {target.Web!.Domain} now routes to {slotName} ({slotPort}).");
+        return true;
     }
 
-    private static async Task DeploySimpleTargetAsync(
+    private static async Task<bool> DeploySimpleTargetAsync(
         string resourcePrefix,
         string targetName,
         NixployTarget target,
@@ -348,7 +359,7 @@ public static class CommandFactory
                 secretMounts
             ))
         {
-            return;
+            return false;
         }
 
         Console.WriteLine($"Starting container '{containerName}' from image '{imageReference}'...");
@@ -363,10 +374,11 @@ public static class CommandFactory
                 metadata
             ))
         {
-            return;
+            return false;
         }
 
         Console.WriteLine("Deployment completed successfully.");
+        return true;
     }
 
     private static async Task<DeploymentMetadata> CreateDeploymentMetadataAsync(

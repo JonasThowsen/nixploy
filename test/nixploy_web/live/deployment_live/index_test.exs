@@ -113,10 +113,10 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   test "renders a persisted active-container log snapshot", %{conn: conn} do
     service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, _, _job} = Nixploy.Operations.request_log_snapshot(service.id)
+    {:ok, requested, _job} = Nixploy.Operations.request_log_snapshot(service.id)
 
     {:ok, _snapshot} =
-      Nixploy.Operations.complete_log_snapshot(service.id, %{
+      Nixploy.Operations.complete_log_snapshot(service.id, requested.request_id, %{
         target_identity: "nixploy-app-123-production",
         slot: "green",
         container_name: "nixploy-app-123-production-green",

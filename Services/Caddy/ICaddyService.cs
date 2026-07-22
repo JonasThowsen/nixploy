@@ -1,8 +1,10 @@
 namespace Nixploy.Cli;
 
+public sealed record ActivePortResult(bool Success, int? Port);
+
 public interface ICaddyService
 {
-    Task<int?> GetActivePortAsync(string resourcePrefix, NixployTarget target);
+    Task<ActivePortResult> GetActivePortAsync(string resourcePrefix, NixployTarget target);
 
     Task<bool> CheckHealthAsync(NixployTarget target, int port);
 

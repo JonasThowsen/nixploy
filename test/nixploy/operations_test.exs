@@ -12,6 +12,7 @@ defmodule Nixploy.OperationsTest do
     assert {:ok, observation, job} = Operations.request_status_refresh(service.id)
 
     assert observation.status == :pending
+    assert observation.request_id
     assert observation.requested_at
     assert job.worker == inspect(StatusWorker)
     assert_enqueued(worker: StatusWorker, args: %{service_id: service.id})
@@ -23,6 +24,7 @@ defmodule Nixploy.OperationsTest do
     assert {:ok, snapshot, job} = Operations.request_log_snapshot(service.id)
 
     assert snapshot.status == :pending
+    assert snapshot.request_id
     assert snapshot.requested_at
     assert job.worker == inspect(LogWorker)
     assert Operations.get_service_observation(service.id).status == :pending
@@ -31,10 +33,10 @@ defmodule Nixploy.OperationsTest do
 
   test "persists an available log snapshot" do
     service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, _, _job} = Operations.request_log_snapshot(service.id)
+    {:ok, requested, _job} = Operations.request_log_snapshot(service.id)
 
     assert {:ok, snapshot} =
-             Operations.complete_log_snapshot(service.id, %{
+             Operations.complete_log_snapshot(service.id, requested.request_id, %{
                target_identity: "nixploy-app-123-production",
                slot: "green",
                container_name: "nixploy-app-123-production-green",
@@ -52,10 +54,10 @@ defmodule Nixploy.OperationsTest do
 
   test "persists an available observation" do
     service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, _, _job} = Operations.request_status_refresh(service.id)
+    {:ok, requested, _job} = Operations.request_status_refresh(service.id)
 
     assert {:ok, observation} =
-             Operations.complete_status_refresh(service.id, %{
+             Operations.complete_status_refresh(service.id, requested.request_id, %{
                target_identity: "nixploy-app-123-production",
                active_slot: "green",
                inactive_slot: "blue",
@@ -78,12 +80,36 @@ defmodule Nixploy.OperationsTest do
     assert observation.refreshed_at
   end
 
+  test "rejects stale status completion after a newer request" do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    {:ok, first, _job} = Operations.request_status_refresh(service.id)
+    {:ok, second, _job} = Operations.request_status_refresh(service.id)
+
+    attrs = %{
+      target_identity: "nixploy-app-production",
+      active_slot: "green",
+      active_container: "nixploy-app-production-green"
+    }
+
+    assert first.request_id != second.request_id
+
+    assert {:error, :stale_request} =
+             Operations.complete_status_refresh(service.id, first.request_id, attrs)
+
+    assert Operations.get_service_observation(service.id).request_id == second.request_id
+    assert Operations.get_service_observation(service.id).status == :pending
+  end
+
   test "persists probe failures" do
     service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, _, _job} = Operations.request_status_refresh(service.id)
+    {:ok, requested, _job} = Operations.request_status_refresh(service.id)
 
     assert {:ok, observation} =
-             Operations.fail_status_refresh(service.id, {:caddy_route_not_found, service.domain})
+             Operations.fail_status_refresh(
+               service.id,
+               requested.request_id,
+               {:caddy_route_not_found, service.domain}
+             )
 
     assert observation.status == :failed
 

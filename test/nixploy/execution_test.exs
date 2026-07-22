@@ -66,6 +66,26 @@ defmodule Nixploy.ExecutionTest do
     refute_receive {:chunk, _size}
   end
 
+  test "continuous output cannot starve cancellation checks" do
+    started_at = System.monotonic_time(:millisecond)
+
+    command = %Command{
+      executable: "sh",
+      args: ["-c", "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done"],
+      timeout: :timer.seconds(5),
+      max_output_bytes: 1_024
+    }
+
+    assert {:error, :cancelled} =
+             Execution.run(command,
+               cancelled?: fn ->
+                 System.monotonic_time(:millisecond) - started_at > 100
+               end
+             )
+
+    assert System.monotonic_time(:millisecond) - started_at < 2_000
+  end
+
   test "cancellation terminates the external process group" do
     marker =
       Path.join(System.tmp_dir!(), "nixploy-cancelled-#{System.unique_integer([:positive])}")

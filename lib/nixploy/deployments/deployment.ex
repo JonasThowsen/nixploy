@@ -24,6 +24,8 @@ defmodule Nixploy.Deployments.Deployment do
   schema "deployments" do
     field :requested_ref, :string
     field :resolved_commit, :string
+    field :service_snapshot, :map, default: %{}
+    field :configuration_digest, :string
     field :state, Ecto.Enum, values: @states, default: :queued
     field :current_stage, Ecto.Enum, values: @states, default: :queued
     field :cancellation_requested_at, :utc_datetime
@@ -32,7 +34,11 @@ defmodule Nixploy.Deployments.Deployment do
     field :failure, :map
 
     belongs_to :service, Nixploy.Applications.Service
+    belongs_to :requested_by_operator, Nixploy.Accounts.Operator
+    belongs_to :cancellation_requested_by_operator, Nixploy.Accounts.Operator
+    belongs_to :retry_of_deployment, __MODULE__
     has_many :events, Nixploy.Deployments.Event
+    has_one :output, Nixploy.Deployments.Output
 
     timestamps(type: :utc_datetime)
   end
@@ -46,10 +52,23 @@ defmodule Nixploy.Deployments.Deployment do
   @doc false
   def create_changeset(deployment, attrs) do
     deployment
-    |> cast(attrs, [:service_id, :requested_ref])
+    |> cast(attrs, [
+      :service_id,
+      :requested_ref,
+      :service_snapshot,
+      :requested_by_operator_id,
+      :retry_of_deployment_id
+    ])
     |> update_change(:requested_ref, &trim/1)
-    |> validate_required([:service_id, :requested_ref])
+    |> validate_required([:service_id, :requested_ref, :service_snapshot])
+    |> validate_change(:service_snapshot, fn :service_snapshot, snapshot ->
+      if map_size(snapshot) > 0,
+        do: [],
+        else: [service_snapshot: "must capture deployment inputs"]
+    end)
     |> assoc_constraint(:service)
+    |> assoc_constraint(:requested_by_operator)
+    |> assoc_constraint(:retry_of_deployment)
   end
 
   @doc false
@@ -59,6 +78,7 @@ defmodule Nixploy.Deployments.Deployment do
       :state,
       :current_stage,
       :resolved_commit,
+      :configuration_digest,
       :started_at,
       :finished_at,
       :failure
@@ -68,8 +88,11 @@ defmodule Nixploy.Deployments.Deployment do
   end
 
   @doc false
-  def cancellation_changeset(deployment, requested_at) do
-    change(deployment, cancellation_requested_at: requested_at)
+  def cancellation_changeset(deployment, requested_at, operator_id \\ nil) do
+    change(deployment,
+      cancellation_requested_at: requested_at,
+      cancellation_requested_by_operator_id: operator_id
+    )
   end
 
   defp trim(value) when is_binary(value), do: String.trim(value)

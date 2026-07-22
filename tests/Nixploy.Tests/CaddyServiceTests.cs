@@ -14,24 +14,39 @@ public sealed class CaddyServiceTests
     {
         var runner = new RecordingRemoteCommandRunner(new CommandRunResult(0, """
         [{"dial":"127.0.0.1:8081"}]
+        200
         """, ""));
         var service = new CaddyService(runner);
 
-        var port = await service.GetActivePortAsync(ResourcePrefix, new NixployTarget());
+        var result = await service.GetActivePortAsync(ResourcePrefix, new NixployTarget());
 
-        Assert.Equal(8081, port);
+        Assert.True(result.Success);
+        Assert.Equal(8081, result.Port);
         Assert.Contains($"/id/{ProxyId}/upstreams", runner.Calls[0].Command);
     }
 
     [Fact]
     public async Task GetActivePortAsync_ReturnsNullForMissingRoute()
     {
-        var runner = new RecordingRemoteCommandRunner(new CommandRunResult(22, "", "not found"));
+        var runner = new RecordingRemoteCommandRunner(new CommandRunResult(0, "null\n404\n", ""));
         var service = new CaddyService(runner);
 
-        var port = await service.GetActivePortAsync(ResourcePrefix, new NixployTarget());
+        var result = await service.GetActivePortAsync(ResourcePrefix, new NixployTarget());
 
-        Assert.Null(port);
+        Assert.True(result.Success);
+        Assert.Null(result.Port);
+    }
+
+    [Fact]
+    public async Task GetActivePortAsync_FailsClosedForUnavailableCaddyState()
+    {
+        var runner = new RecordingRemoteCommandRunner(new CommandRunResult(7, "", "connection refused"));
+        var service = new CaddyService(runner);
+
+        var result = await service.GetActivePortAsync(ResourcePrefix, new NixployTarget());
+
+        Assert.False(result.Success);
+        Assert.Null(result.Port);
     }
 
     [Fact]
@@ -135,6 +150,21 @@ public sealed class CaddyServiceTests
     }
 
     [Fact]
+    public async Task SwitchAsync_AbortsWhenServerInspectionFails()
+    {
+        var runner = new RecordingRemoteCommandRunner(
+            new CommandRunResult(7, "", "connection refused")
+        );
+        var service = new CaddyService(runner);
+
+        var success = await service.SwitchAsync(ResourcePrefix, WebTarget("app.example.com"), 8081);
+
+        Assert.False(success);
+        Assert.Single(runner.Calls);
+        Assert.DoesNotContain(runner.Calls, call => call.Command.Contains("-X PUT"));
+    }
+
+    [Fact]
     public async Task SwitchAsync_AbortsWhenRouteInspectionFails()
     {
         var runner = new RecordingRemoteCommandRunner(
@@ -215,7 +245,7 @@ public sealed class CaddyServiceTests
 
     private static CommandRunResult ExistingServer()
     {
-        return new CommandRunResult(0, "{}", "");
+        return new CommandRunResult(0, "{}\n200\n", "");
     }
 
     private static CommandRunResult RouteResponse(string body, int statusCode = 200)

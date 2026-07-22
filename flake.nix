@@ -49,6 +49,15 @@
 
       nixployModules.default = targetModule;
 
+      nixosModules.default =
+        { pkgs, ... }@args:
+        import ./nix/nixos-module.nix (
+          args
+          // {
+            defaultPackage = self.packages.${pkgs.system}.control-plane;
+          }
+        );
+
       packages = forAllSystems (
         system:
         let
@@ -65,13 +74,82 @@
 
             dotnet-sdk = pkgs.dotnet-sdk_10;
           };
+
+          control-plane = (beamPackages pkgs).mixRelease {
+            pname = "nixploy-control-plane";
+            version = "0.1.0";
+            src = ./.;
+            elixir = (beamPackages pkgs).elixir_1_20;
+
+            mixFodDeps = (beamPackages pkgs).fetchMixDeps {
+              pname = "nixploy-control-plane-mix-deps";
+              version = "0.1.0";
+              src = ./.;
+              hash = "sha256-T2kBVZqEiJgDTTQ8Lyo0tPg6aDPZbsJyPzFfisPqQiU=";
+            };
+
+            env = commonEnv pkgs;
+
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+              pkgs.tailwindcss_4
+              pkgs.esbuild
+              pkgs.gcc
+              pkgs.gnumake
+            ];
+
+            postBuild = ''
+              mix do deps.loadpaths --no-deps-check, tailwind nixploy --minify + esbuild nixploy --minify + phx.digest
+            '';
+
+            postInstall = ''
+              wrapProgram $out/bin/nixploy \
+                --set-default NIXPLOY_LEGACY_EXECUTABLE ${nixploy}/bin/nixploy \
+                --prefix PATH : ${
+                  lib.makeBinPath [
+                    nixploy
+                    pkgs.git
+                    pkgs.nix
+                    pkgs.bash
+                    pkgs.util-linux
+                    pkgs.openssh
+                    pkgs.curl
+                    pkgs.podman
+                    pkgs.sops
+                  ]
+                }
+            '';
+          };
         in
         {
-          inherit nixploy;
+          inherit nixploy control-plane;
           default = nixploy;
           fetch-deps = nixploy.fetch-deps;
         }
       );
+
+      checks = forAllSystems (system: {
+        control-plane = self.packages.${system}.control-plane;
+        nixos-module =
+          (lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              {
+                system.stateVersion = "26.05";
+                boot.loader.grub.devices = [ "/dev/vda" ];
+                fileSystems."/" = {
+                  device = "/dev/vda";
+                  fsType = "ext4";
+                };
+                services.nixploy-control-plane = {
+                  enable = true;
+                  environmentFile = "/run/keys/nixploy.env";
+                };
+              }
+            ];
+          }).config.system.build.toplevel;
+      });
 
       devShells = forAllSystems (
         system:

@@ -1,5 +1,5 @@
 defmodule Nixploy.Deployments.Worker do
-  @moduledoc "Runs the first real deployment tracer through Git and the existing nixploy CLI."
+  @moduledoc "Runs an immutable deployment through the compatibility CLI and independent verification."
 
   use Oban.Worker,
     queue: :deployments,
@@ -7,7 +7,20 @@ defmodule Nixploy.Deployments.Worker do
     unique: [period: :infinity, fields: [:args], states: :incomplete]
 
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.{Deployment, LegacyExecutor, Source}
+
+  alias Nixploy.Deployments.{
+    ConfigProbe,
+    Deployment,
+    LegacyExecutor,
+    OutputBuffer,
+    Source,
+    Spec,
+    TargetLease
+  }
+
+  alias Nixploy.Operations
+
+  @cancellation_poll_ms :timer.seconds(2)
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"deployment_id" => deployment_id}}) do
@@ -21,33 +34,78 @@ defmodule Nixploy.Deployments.Worker do
         cancel(deployment)
 
       true ->
-        run(deployment)
+        with_target_lease(deployment)
+    end
+  rescue
+    error ->
+      _ = fail(deployment_id, {:worker_exception, Exception.message(error)})
+      {:error, Exception.message(error)}
+  end
+
+  defp with_target_lease(deployment) do
+    target_id = Spec.target_id(deployment.service_snapshot)
+
+    case TargetLease.acquire(target_id, deployment.id) do
+      {:ok, lease} ->
+        try do
+          run(deployment, lease)
+        after
+          TargetLease.release(lease)
+        end
+
+      {:error, :target_busy} ->
+        {:snooze, 10}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
     end
   end
 
-  defp run(deployment) do
+  defp run(deployment, lease) do
+    resuming? = deployment.state in [:building, :deploying, :verifying]
+
     try do
-      do_run(deployment)
+      do_run(deployment, lease, resuming?)
     after
       _ = Source.cleanup(deployment.id)
     end
   end
 
-  defp do_run(deployment) do
+  defp do_run(deployment, lease, resuming?) do
     with {:ok, deployment} <- prepare(deployment),
-         {:ok, workspace, commit} <- checkout(deployment),
-         {:ok, deployment} <- record_commit(deployment, commit),
-         {:ok, _result} <- execute(deployment, workspace),
-         {:ok, _deployment} <- complete(deployment.id) do
+         {:ok, workspace, commit} <- checkout(deployment, lease),
+         {:ok, digest} <- preflight(deployment, workspace, lease),
+         {:ok, deployment} <- record_commit(deployment, commit, digest),
+         {:ok, observed} <- deploy_or_reconcile(deployment, workspace, lease, resuming?),
+         {:ok, _deployment} <- checkpoint(deployment.id, lease),
+         {:ok, deployment} <-
+           transition_if_needed(
+             deployment.id,
+             :deploying,
+             "Deployment command completed; reconciling target"
+           ),
+         {:ok, _deployment} <- checkpoint(deployment.id, lease),
+         {:ok, deployment} <-
+           transition_if_needed(deployment.id, :verifying, "Verifying observed target state"),
+         {:ok, _observed} <- observed_or_verify(deployment, observed, lease),
+         {:ok, _deployment} <- checkpoint(deployment.id, lease),
+         {:ok, _deployment} <-
+           transition_if_needed(
+             deployment.id,
+             :succeeded,
+             "Deployment succeeded and was verified"
+           ) do
       :ok
     else
       {:cancelled, deployment} -> cancel(deployment)
+      {:error, :cancellation_requested} -> cancel(Deployments.get_deployment!(deployment.id))
+      {:error, :target_lease_lost} -> {:error, "target lease lost"}
       {:error, reason} -> fail(deployment.id, reason)
     end
   end
 
   defp prepare(%{state: :queued} = deployment) do
-    case Deployments.transition(deployment.id, :preparing, "Preparing source checkout") do
+    case Deployments.transition(deployment.id, :preparing, "Preparing immutable source checkout") do
       {:ok, _deployment, _event} -> {:ok, Deployments.get_deployment!(deployment.id)}
       {:error, reason} -> {:error, reason}
     end
@@ -55,61 +113,166 @@ defmodule Nixploy.Deployments.Worker do
 
   defp prepare(deployment), do: {:ok, deployment}
 
-  defp checkout(deployment) do
-    opts = command_options(deployment.id, "source")
-
-    case Source.prepare(deployment, opts) do
+  defp checkout(deployment, lease) do
+    case Source.prepare(deployment, command_options(deployment.id, lease)) do
       {:ok, workspace, commit} -> {:ok, workspace, commit}
-      {:error, :cancelled} -> {:cancelled, Deployments.get_deployment!(deployment.id)}
+      {:error, :cancelled} -> stopped(deployment, lease)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp record_commit(%{state: :preparing} = deployment, commit) do
-    message = "Resolved #{deployment.requested_ref} to #{short_commit(commit)}"
+  defp preflight(deployment, workspace, lease) do
+    probe = Application.get_env(:nixploy, :deployment_config_probe, ConfigProbe)
 
-    case Deployments.transition(deployment.id, :building, message, %{resolved_commit: commit}) do
+    case probe.validate(deployment, workspace, command_options(deployment.id, lease)) do
+      {:ok, digest} -> {:ok, digest}
+      {:error, :cancelled} -> stopped(deployment, lease)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp record_commit(%{state: :preparing} = deployment, commit, digest) do
+    message =
+      "Resolved #{deployment.requested_ref} to #{short_commit(commit)} and validated flake target"
+
+    case Deployments.transition(deployment.id, :building, message, %{
+           resolved_commit: commit,
+           configuration_digest: digest
+         }) do
       {:ok, _deployment, _event} -> {:ok, Deployments.get_deployment!(deployment.id)}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp record_commit(deployment, _commit), do: {:ok, deployment}
+  defp record_commit(deployment, commit, digest) do
+    cond do
+      deployment.resolved_commit != commit ->
+        {:error, {:resolved_commit_mismatch, deployment.resolved_commit, commit}}
 
-  defp execute(deployment, workspace) do
-    _ =
-      Deployments.record_event(
-        deployment.id,
-        "execution",
-        :info,
-        "Delegating deployment to the existing nixploy CLI"
-      )
+      deployment.configuration_digest != digest ->
+        {:error, {:configuration_digest_mismatch, deployment.configuration_digest, digest}}
 
-    case LegacyExecutor.deploy(deployment, workspace, command_options(deployment.id, "execution")) do
-      {:error, :cancelled} ->
-        {:cancelled, Deployments.get_deployment!(deployment.id)}
-
-      result ->
-        result
+      true ->
+        {:ok, deployment}
     end
   end
 
-  # TODO(tracer): Transition stages at their real execution boundaries as the
-  # compatibility CLI is replaced; it currently returns only a final result.
-  defp complete(deployment_id) do
-    with {:ok, deployment} <-
-           transition_if_needed(
-             deployment_id,
-             :deploying,
-             "Image built and deployment command completed"
-           ),
-         {:ok, deployment} <-
-           transition_if_needed(deployment.id, :verifying, "Finalizing deployment result"),
-         {:ok, deployment} <-
-           transition_if_needed(deployment.id, :succeeded, "Deployment succeeded") do
-      {:ok, deployment}
+  defp deploy_or_reconcile(%{state: :building} = deployment, _workspace, lease, true) do
+    case verify(deployment, lease) do
+      {:ok, observed} ->
+        _ =
+          Deployments.record_event(
+            deployment.id,
+            "reconciliation",
+            :info,
+            "Recovered an already-applied healthy deployment after worker restart"
+          )
+
+        {:ok, observed}
+
+      {:cancelled, _deployment} = cancelled ->
+        cancelled
+
+      {:error, :target_lease_lost} = error ->
+        error
+
+      {:error, reason} ->
+        {:error, {:reconciliation_required, reason}}
     end
   end
+
+  defp deploy_or_reconcile(%{state: :building} = deployment, workspace, lease, _resuming?) do
+    execute(deployment, workspace, lease)
+  end
+
+  defp deploy_or_reconcile(%{state: state}, _workspace, _lease, _resuming?)
+       when state in [:deploying, :verifying],
+       do: {:ok, nil}
+
+  defp execute(deployment, workspace, lease) do
+    with :ok <- OutputBuffer.start(deployment.id),
+         {:ok, _event} <-
+           Deployments.record_event(
+             deployment.id,
+             "execution",
+             :info,
+             "Delegating the validated immutable deployment to the compatibility CLI"
+           ) do
+      result =
+        LegacyExecutor.deploy(
+          deployment,
+          workspace,
+          command_options(deployment.id, lease, &OutputBuffer.append(deployment.id, &1))
+        )
+
+      output_result = OutputBuffer.finish(deployment.id)
+
+      cond do
+        lease_lost?(deployment.id) -> {:error, :target_lease_lost}
+        match?({:error, _reason}, output_result) -> output_result
+        result == {:error, :cancelled} -> stopped(deployment, lease)
+        true -> result |> normalize_execution_result()
+      end
+    end
+  end
+
+  defp normalize_execution_result({:ok, _result}), do: {:ok, nil}
+  defp normalize_execution_result(error), do: error
+
+  defp observed_or_verify(_deployment, observed, _lease) when is_map(observed),
+    do: {:ok, observed}
+
+  defp observed_or_verify(deployment, nil, lease), do: verify(deployment, lease)
+
+  defp verify(deployment, lease) do
+    probe =
+      Application.get_env(:nixploy, :deployment_status_probe, Nixploy.Operations.StatusProbe)
+
+    service = Spec.service(deployment.service_snapshot)
+
+    result =
+      if function_exported?(probe, :observe, 2),
+        do: probe.observe(service, command_options(deployment.id, lease)),
+        else: probe.observe(service)
+
+    with {:ok, observed} <- result,
+         {:ok, _observation} <-
+           Operations.record_status_observation(deployment.service_id, observed),
+         :ok <- validate_observation(deployment, observed) do
+      {:ok, observed}
+    else
+      {:error, :cancelled} -> stopped(deployment, lease)
+      error -> error
+    end
+  end
+
+  defp validate_observation(deployment, observed) do
+    cond do
+      not commit_matches?(deployment.resolved_commit, observed.git_commit) ->
+        {:error, {:verification_commit_mismatch, deployment.resolved_commit, observed.git_commit}}
+
+      not running?(observed.active_container_state) ->
+        {:error, {:verification_container_not_running, observed.active_container_state}}
+
+      observed.health_status not in 200..299 ->
+        {:error, {:verification_health_failed, observed.health_status, observed.health_error}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp commit_matches?(expected, observed)
+       when is_binary(expected) and is_binary(observed) and observed != "" do
+    String.starts_with?(expected, observed) or String.starts_with?(observed, expected)
+  end
+
+  defp commit_matches?(_expected, _observed), do: false
+
+  defp running?(state) when is_binary(state),
+    do: state |> String.downcase() |> String.contains?("running")
+
+  defp running?(_state), do: false
 
   defp transition_if_needed(deployment_id, next_state, message) do
     deployment = Deployments.get_deployment!(deployment_id)
@@ -132,20 +295,75 @@ defmodule Nixploy.Deployments.Worker do
     end
   end
 
-  # TODO(tracer): Move full command output into bounded artifact chunks and
-  # retain only structured progress events in PostgreSQL before logs grow large.
-  defp command_options(deployment_id, stage) do
-    [
-      cancelled?: fn -> Deployments.cancellation_requested?(deployment_id) end,
-      on_line: fn line ->
-        _ = Deployments.record_event(deployment_id, stage, :info, line)
-        :ok
-      end
-    ]
+  defp checkpoint(deployment_id, lease) do
+    case TargetLease.maintain(lease) do
+      {:error, :lease_lost} ->
+        {:error, :target_lease_lost}
+
+      :ok ->
+        deployment = Deployments.get_deployment!(deployment_id)
+
+        if deployment.cancellation_requested_at,
+          do: {:cancelled, deployment},
+          else: {:ok, deployment}
+    end
   end
 
+  defp command_options(deployment_id, lease, on_line \\ nil) do
+    options = [
+      cancelled?: fn -> stop_requested?(deployment_id, lease) end
+    ]
+
+    if is_function(on_line, 1), do: Keyword.put(options, :on_line, on_line), else: options
+  end
+
+  defp stop_requested?(deployment_id, lease) do
+    case TargetLease.maintain(lease) do
+      :ok ->
+        cancellation_requested?(deployment_id) or OutputBuffer.failed?(deployment_id)
+
+      {:error, :lease_lost} ->
+        Process.put({__MODULE__, deployment_id, :lease_lost}, true)
+        true
+    end
+  end
+
+  defp cancellation_requested?(deployment_id) do
+    key = {__MODULE__, deployment_id, :cancellation}
+    now = System.monotonic_time(:millisecond)
+
+    case Process.get(key) do
+      {checked_at, requested?} when now - checked_at < @cancellation_poll_ms ->
+        requested?
+
+      _stale ->
+        requested? = Deployments.cancellation_requested?(deployment_id)
+        Process.put(key, {now, requested?})
+        requested?
+    end
+  end
+
+  defp stopped(deployment, lease) do
+    if lease_lost?(deployment.id) do
+      {:error, :target_lease_lost}
+    else
+      _ = TargetLease.maintain(lease)
+      {:cancelled, Deployments.get_deployment!(deployment.id)}
+    end
+  end
+
+  defp lease_lost?(deployment_id) do
+    Process.delete({__MODULE__, deployment_id, :lease_lost}) == true
+  end
+
+  # TODO(tracer): Reconcile and persist identified remote side effects before
+  # distinguishing clean cancellation from cancellation requiring intervention.
   defp cancel(deployment) do
-    case Deployments.transition(deployment.id, :cancelled, "Deployment cancelled") do
+    case Deployments.transition(
+           deployment.id,
+           :cancelled,
+           "Local work stopped; refresh target status to reconcile remote side effects"
+         ) do
       {:ok, _deployment, _event} ->
         :ok
 
@@ -180,6 +398,12 @@ defmodule Nixploy.Deployments.Worker do
 
   defp failure_message({:git_failed, status, output}),
     do: "Git exited with status #{status}: #{tail(output)}"
+
+  defp failure_message({:nix_eval_failed, status, output}),
+    do: "Nix evaluation exited with status #{status}: #{tail(output)}"
+
+  defp failure_message({:configuration_mismatch, mismatches}),
+    do: "flake target differs from registered service: #{inspect(mismatches)}"
 
   defp failure_message({:legacy_cli_failed, status, output}),
     do: "nixploy exited with status #{status}: #{tail(output)}"

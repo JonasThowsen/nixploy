@@ -49,9 +49,25 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task EnsureConnectionAsync_FailsWhenStrictSshPreflightFails()
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(255, "", "host key verification failed"));
+        var service = new PodmanService(runner);
+        var target = new NixployTarget { Ip = "203.0.113.10", User = "deploy", Port = 22 };
+
+        var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
+
+        Assert.False(success);
+        var call = Assert.Single(runner.Calls);
+        Assert.Equal("ssh", call.FileName);
+        Assert.Contains("StrictHostKeyChecking=yes", call.Arguments);
+    }
+
+    [Fact]
     public async Task EnsureConnectionAsync_CreatesAndVerifiesMissingConnection()
     {
         var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
             new CommandRunResult(0, "[]", ""),
             new CommandRunResult(1, "", "missing"),
             new CommandRunResult(0, "", ""),
@@ -69,19 +85,22 @@ public sealed class PodmanServiceTests
         var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
 
         Assert.True(success);
-        Assert.Equal(["system", "connection", "list", "--format", "json"], runner.Calls[0].Arguments);
-        Assert.Equal("info", runner.Calls[1].Arguments[^1]);
+        Assert.Equal("ssh", runner.Calls[0].FileName);
+        Assert.Contains("StrictHostKeyChecking=yes", runner.Calls[0].Arguments);
+        Assert.Equal(["system", "connection", "list", "--format", "json"], runner.Calls[1].Arguments);
+        Assert.Equal("info", runner.Calls[2].Arguments[^1]);
         Assert.Equal(
             ["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@203.0.113.10"],
-            runner.Calls[2].Arguments
+            runner.Calls[3].Arguments
         );
-        Assert.Equal("info", runner.Calls[3].Arguments[^1]);
+        Assert.Equal("info", runner.Calls[4].Arguments[^1]);
     }
 
     [Fact]
     public async Task EnsureConnectionAsync_RecreatesExistingConnectionWithStoredIdentity()
     {
         var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
             new CommandRunResult(0, """
             [{"Name":"nixploy-my-app-prod","Identity":"/tmp/id_ed25519"}]
             """, ""),
@@ -102,14 +121,15 @@ public sealed class PodmanServiceTests
         var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
 
         Assert.True(success);
-        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[1].Arguments);
-        Assert.Equal(["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@203.0.113.10"], runner.Calls[3].Arguments);
+        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[2].Arguments);
+        Assert.Equal(["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@203.0.113.10"], runner.Calls[4].Arguments);
     }
 
     [Fact]
     public async Task EnsureConnectionAsync_UsesConnectionPointingToCurrentTarget()
     {
         var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
             new CommandRunResult(0, """
             [{"Name":"nixploy-my-app-prod","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
             """, ""),
@@ -126,14 +146,15 @@ public sealed class PodmanServiceTests
         var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
 
         Assert.True(success);
-        Assert.Equal(2, runner.Calls.Count);
-        Assert.Equal("info", runner.Calls[1].Arguments[^1]);
+        Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal("info", runner.Calls[2].Arguments[^1]);
     }
 
     [Fact]
     public async Task EnsureConnectionAsync_RecreatesConnectionPointingToDifferentTarget()
     {
         var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
             new CommandRunResult(0, """
             [{"Name":"nixploy-my-app-prod","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
             """, ""),
@@ -153,10 +174,10 @@ public sealed class PodmanServiceTests
         var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
 
         Assert.True(success);
-        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[1].Arguments);
+        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[2].Arguments);
         Assert.Equal(
             ["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@198.51.100.20"],
-            runner.Calls[3].Arguments
+            runner.Calls[4].Arguments
         );
     }
 

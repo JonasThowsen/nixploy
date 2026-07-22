@@ -9,10 +9,10 @@ defmodule Nixploy.Operations.LogProbe do
   @command_timeout :timer.seconds(30)
   @safe_name ~r/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
 
-  def fetch(observed) do
+  def fetch(service, observed) do
     with :ok <- validate_name(observed.target_identity, :target_identity),
          :ok <- validate_name(observed.active_container, :container_name),
-         {:ok, result} <- run_logs(observed) do
+         {:ok, result} <- run_logs(service.target, observed) do
       content = normalize_content(result.output_tail, result.output_truncated?)
 
       {:ok,
@@ -27,10 +27,8 @@ defmodule Nixploy.Operations.LogProbe do
     end
   end
 
-  defp run_logs(observed) do
-    # TODO(tracer): Establish worker-local Podman connections from explicit
-    # target credentials instead of relying on the compatibility deploy adapter.
-    executable = Application.get_env(:nixploy, :podman_executable, "podman")
+  defp run_logs(target, observed) do
+    executable = Application.get_env(:nixploy, :ssh_executable, "ssh")
 
     # TODO(tracer): Add follow mode, explicit slot selection, previous-container
     # lookup, search, retention, and secret-aware redaction after snapshots prove
@@ -38,12 +36,17 @@ defmodule Nixploy.Operations.LogProbe do
     command = %Command{
       executable: executable,
       args: [
-        "--connection",
-        observed.target_identity,
-        "logs",
-        "--tail",
-        Integer.to_string(@tail_lines),
-        observed.active_container
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-p",
+        Integer.to_string(target.ssh_port),
+        "--",
+        "#{target.ssh_user}@#{target.host}",
+        "podman logs --tail #{@tail_lines} #{observed.active_container}"
       ],
       timeout: @command_timeout,
       max_output_bytes: @max_output_bytes
@@ -54,10 +57,10 @@ defmodule Nixploy.Operations.LogProbe do
         {:ok, result}
 
       {:ok, result} ->
-        {:error, {:podman_logs_failed, result.exit_status, String.trim(result.output_tail)}}
+        {:error, {:ssh_logs_failed, result.exit_status, String.trim(result.output_tail)}}
 
       {:error, reason} ->
-        {:error, {:podman_logs_failed, reason}}
+        {:error, {:ssh_logs_failed, reason}}
     end
   end
 

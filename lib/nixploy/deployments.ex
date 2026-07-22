@@ -4,8 +4,12 @@ defmodule Nixploy.Deployments do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
-  alias Nixploy.Deployments.{Deployment, Event}
-  alias Nixploy.{Notifications, Repo}
+  alias Nixploy.Deployments.{Deployment, Event, Output, Spec}
+  alias Nixploy.{Audit, Notifications, Repo}
+
+  @history_limit 50
+  @event_limit 100
+  @output_bytes 65_536
 
   @allowed_transitions %{
     queued: [:preparing, :failed, :cancelled],
@@ -21,26 +25,29 @@ defmodule Nixploy.Deployments do
   def list_deployments do
     Deployment
     |> order_by([deployment], desc: deployment.inserted_at)
-    |> preload(service: [:repository, :target])
+    |> limit(^@history_limit)
+    |> preload([:output, :requested_by_operator, service: [:repository, :target]])
     |> Repo.all()
   end
 
   def get_deployment!(id) do
     Deployment
     |> Repo.get!(id)
-    |> Repo.preload(service: [:repository, :target])
+    |> Repo.preload([:output, :requested_by_operator, service: [:repository, :target]])
   end
 
   def list_events(deployment_id) do
     Event
     |> where([event], event.deployment_id == ^deployment_id)
-    |> order_by([event], asc: event.id)
+    |> order_by([event], desc: event.id)
+    |> limit(^@event_limit)
     |> Repo.all()
+    |> Enum.reverse()
   end
 
-  def create_deployment(attrs) do
+  def create_deployment(attrs, opts \\ []) do
     attrs
-    |> deployment_multi()
+    |> deployment_multi(Keyword.get(opts, :operator))
     |> Repo.transaction()
     |> unwrap_created_deployment()
     |> publish_result()
@@ -48,10 +55,11 @@ defmodule Nixploy.Deployments do
 
   def enqueue_deployment(attrs, opts \\ []) do
     worker = Keyword.get(opts, :worker, deployment_worker())
+    operator = Keyword.get(opts, :operator)
 
     result =
       attrs
-      |> deployment_multi()
+      |> deployment_multi(operator, Keyword.get(opts, :service_snapshot))
       |> Oban.insert(:job, fn %{deployment: deployment} ->
         worker.new(%{deployment_id: deployment.id})
       end)
@@ -83,19 +91,24 @@ defmodule Nixploy.Deployments do
     |> Multi.run(:deployment, fn repo, _changes ->
       deployment = locked_deployment(repo, deployment_id)
 
-      if next_state in Map.fetch!(@allowed_transitions, deployment.state) do
-        transition_attrs =
-          attrs
-          |> Map.put(:state, next_state)
-          |> Map.put(:current_stage, next_state)
-          |> maybe_put_started_at(deployment, now)
-          |> maybe_put_finished_at(next_state, now)
+      cond do
+        deployment.cancellation_requested_at && next_state not in [:cancelled, :failed] ->
+          {:error, :cancellation_requested}
 
-        deployment
-        |> Deployment.transition_changeset(transition_attrs)
-        |> repo.update()
-      else
-        {:error, {:invalid_transition, deployment.state, next_state}}
+        next_state in Map.fetch!(@allowed_transitions, deployment.state) ->
+          transition_attrs =
+            attrs
+            |> Map.put(:state, next_state)
+            |> Map.put(:current_stage, next_state)
+            |> maybe_put_started_at(deployment, now)
+            |> maybe_put_finished_at(next_state, now)
+
+          deployment
+          |> Deployment.transition_changeset(transition_attrs)
+          |> repo.update()
+
+        true ->
+          {:error, {:invalid_transition, deployment.state, next_state}}
       end
     end)
     |> Multi.insert(:event, fn %{deployment: deployment} ->
@@ -112,8 +125,31 @@ defmodule Nixploy.Deployments do
     |> publish_result()
   end
 
-  def request_cancellation(deployment_id) do
+  def retry_deployment(deployment_id, opts \\ []) do
+    deployment = get_deployment!(deployment_id)
+
+    cond do
+      not Deployment.terminal?(deployment) ->
+        {:error, {:not_terminal, deployment.state}}
+
+      is_nil(deployment.resolved_commit) ->
+        {:error, :unresolved_deployment}
+
+      true ->
+        enqueue_deployment(
+          %{
+            service_id: deployment.service_id,
+            requested_ref: deployment.resolved_commit,
+            retry_of_deployment_id: deployment.id
+          },
+          Keyword.put(opts, :service_snapshot, deployment.service_snapshot)
+        )
+    end
+  end
+
+  def request_cancellation(deployment_id, opts \\ []) do
     now = now()
+    operator = Keyword.get(opts, :operator)
 
     Multi.new()
     |> Multi.run(:locked_deployment, fn repo, _changes ->
@@ -130,7 +166,7 @@ defmodule Nixploy.Deployments do
         {:ok, deployment}
       else
         deployment
-        |> Deployment.cancellation_changeset(now)
+        |> Deployment.cancellation_changeset(now, operator_id(operator))
         |> repo.update()
       end
     end)
@@ -151,6 +187,11 @@ defmodule Nixploy.Deployments do
         })
         |> repo.insert()
       end
+    end)
+    |> Multi.insert(:audit, fn %{deployment: deployment} ->
+      Audit.changeset(operator, :cancellation_requested, :deployment, deployment.id,
+        outcome: :requested
+      )
     end)
     |> Repo.transaction()
     |> unwrap_transaction()
@@ -186,19 +227,87 @@ defmodule Nixploy.Deployments do
     end
   end
 
+  def reset_output(deployment_id) do
+    attrs = %{deployment_id: deployment_id, content: "", line_count: 0, truncated: false}
+
+    %Output{}
+    |> Output.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: [set: [content: "", line_count: 0, truncated: false, updated_at: now()]],
+      conflict_target: :deployment_id
+    )
+  end
+
+  def append_output(deployment_id, content, line_count)
+      when is_binary(content) and is_integer(line_count) and line_count >= 0 do
+    result =
+      Repo.transaction(fn ->
+        output =
+          Output
+          |> where([output], output.deployment_id == ^deployment_id)
+          |> lock("FOR UPDATE")
+          |> Repo.one!()
+
+        combined = output.content <> content
+        {retained, truncated_now?} = bounded_tail(combined, @output_bytes)
+
+        output
+        |> Output.changeset(%{
+          content: retained,
+          line_count: output.line_count + line_count,
+          truncated: output.truncated or truncated_now?
+        })
+        |> Repo.update!()
+      end)
+
+    case result do
+      {:ok, output} ->
+        publish(deployment_id)
+        {:ok, output}
+
+      error ->
+        error
+    end
+  end
+
   def change_deployment(%Deployment{} = deployment, attrs \\ %{}) do
     Deployment.create_changeset(deployment, attrs)
   end
 
-  defp deployment_multi(attrs) do
+  defp deployment_multi(attrs, operator, snapshot_override \\ nil) do
+    attrs = normalize_attrs(attrs)
+    service_id = attrs[:service_id]
+
     Multi.new()
-    |> Multi.insert(:deployment, Deployment.create_changeset(%Deployment{}, attrs))
+    |> Multi.run(:service, fn repo, _changes ->
+      case repo.get(Nixploy.Applications.Service, service_id) do
+        nil -> {:error, :service_not_found}
+        service -> {:ok, repo.preload(service, [:repository, :target])}
+      end
+    end)
+    |> Multi.insert(:deployment, fn %{service: service} ->
+      attrs =
+        attrs
+        |> Map.put(:service_snapshot, snapshot_override || Spec.snapshot(service))
+        |> Map.put(:requested_by_operator_id, operator_id(operator))
+
+      Deployment.create_changeset(%Deployment{}, attrs)
+    end)
     |> Multi.insert(:event, fn %{deployment: deployment} ->
       Event.changeset(%Event{}, %{
         deployment_id: deployment.id,
         stage: "queued",
         message: "Deployment queued"
       })
+    end)
+    |> Multi.insert(:audit, fn %{deployment: deployment} ->
+      Audit.changeset(operator, :queued, :deployment, deployment.id,
+        outcome: :requested,
+        metadata: %{
+          "requested_ref" => deployment.requested_ref,
+          "target_id" => Spec.target_id(deployment.service_snapshot)
+        }
+      )
     end)
   end
 
@@ -239,6 +348,31 @@ defmodule Nixploy.Deployments do
   end
 
   defp publish_result(error), do: error
+
+  defp normalize_attrs(attrs) do
+    Map.new(attrs, fn
+      {key, value} when is_binary(key) -> {String.to_existing_atom(key), value}
+      pair -> pair
+    end)
+  end
+
+  defp bounded_tail(output, limit) when byte_size(output) <= limit, do: {output, false}
+
+  defp bounded_tail(output, limit) do
+    retained = binary_part(output, byte_size(output) - limit, limit)
+
+    retained =
+      case :binary.split(retained, "\n") do
+        [_partial] -> retained
+        [_partial, complete] -> complete
+      end
+
+    {String.replace_invalid(retained, "�"), true}
+  end
+
+  defp operator_id(%{id: id}), do: id
+  defp operator_id(id) when is_binary(id), do: id
+  defp operator_id(nil), do: nil
 
   defp publish(deployment_id) do
     _ = Notifications.publish(deployment_id)

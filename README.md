@@ -208,17 +208,21 @@ worker role starts the PostgreSQL repository, Oban, and shared coordination
 processes without starting the Phoenix endpoint. The web role starts the
 endpoint with Oban in enqueue-only mode.
 
-The dashboard at <http://localhost:4000> currently provides the durable walking
-skeleton for the rewrite:
+The dashboard at <http://localhost:4000> provides the first scoped control-plane
+MVP. See [`MVP.md`](MVP.md) for the evaluation checklist, release deployment,
+NixOS module, security properties, and explicit limitations.
 
 - authenticate a provisioned operator before exposing control-plane actions
 - register Git repositories and Podman targets
 - attach a flake service and optional domain
-- enqueue a durable Oban deployment
-- stream persisted deployment stages to the browser
-- request cooperative cancellation
+- enqueue an immutable, audited Oban deployment
+- validate the committed flake target against the registered service before mutation
+- stream bounded output and persisted deployment stages to the browser
+- serialize target mutation with a renewable PostgreSQL lease
+- request bounded process-group cancellation or redeploy an exact historical revision
 - refresh persisted Podman, Caddy, slot, revision, and health observations through a worker
 - fetch a bounded 200-entry active-container log snapshot through a worker
+- independently verify the deployed commit, container, ingress, and health before success
 - run web and worker processes independently through PostgreSQL notifications
 
 The first real deployment tracer checks out the requested Git ref, records the
@@ -230,14 +234,15 @@ configuration source, and the target name registered in the control plane must
 match its flake target name. Repositories whose flake is not at the Git root can
 set a relative flake subdirectory when registered.
 
-Deployments are temporarily serialized through a single-worker Oban queue until
-PostgreSQL-backed per-target leases are implemented. Workers must have Git,
-Bash, `setsid`, OpenSSH, curl, and the existing `nixploy` executable on `PATH`.
+Deployments are serialized per target with renewable PostgreSQL leases in
+addition to the single-worker MVP queue. Workers must have Git, Nix, Bash,
+`setsid`, OpenSSH, curl, Podman, SOPS, and the existing `nixploy` executable on `PATH`.
 Set `NIXPLOY_LEGACY_EXECUTABLE` to an absolute executable path when it is
 installed elsewhere. This compatibility adapter is temporary; native Elixir execution
 adapters will replace it one end-to-end slice at a time. While the compatibility
-command runs, its detailed progress is persisted as events but the coarse
-control-plane stage remains `building` until the command completes.
+command runs, detailed output is retained as one bounded 64 KiB tail while
+structured progress remains in PostgreSQL. The coarse control-plane stage stays
+`building` until the compatibility command completes.
 
 Run both implementations' test suites while behavior is being ported:
 

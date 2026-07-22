@@ -8,22 +8,23 @@ defmodule Nixploy.Operations.StatusProbe do
   @health_timeout_seconds 10
   @route_prefix "nixploy-route-"
 
-  def observe(service) do
+  def observe(service, opts \\ []) do
     # TODO(tracer): Add strategy-specific probes after the web/blue-green path
     # proves the worker credential and persisted-observation boundary.
     # TODO(tracer): Replace whole-target JSON snapshots with scoped Podman and
     # Caddy API queries before large targets can exceed bounded command output.
     with :ok <- require_domain(service),
-         {:ok, podman_output} <- ssh(service.target, "podman ps -a --format json"),
+         {:ok, podman_output} <- ssh(service.target, "podman ps -a --format json", opts),
          {:ok, caddy_output} <-
            ssh(
              service.target,
-             "curl --fail --silent --show-error http://127.0.0.1:2019/config/apps/http/servers/nixploy/routes"
+             "curl --fail --silent --show-error http://127.0.0.1:2019/config/apps/http/servers/nixploy/routes",
+             opts
            ),
          {:ok, containers} <- decode_list(podman_output, :podman),
          {:ok, routes} <- decode_list(caddy_output, :caddy),
          {:ok, observed} <- observed_runtime(service, containers, routes),
-         health <- health(observed.health_url) do
+         {:ok, health} <- health(observed.health_url, opts) do
       {:ok, Map.merge(observed, health)}
     end
   end
@@ -61,7 +62,7 @@ defmodule Nixploy.Operations.StatusProbe do
     end
   end
 
-  defp ssh(target, remote_command) do
+  defp ssh(target, remote_command, opts) do
     # TODO(tracer): Resolve target credential references explicitly instead of
     # relying only on the worker process SSH agent.
     executable = Application.get_env(:nixploy, :ssh_executable, "ssh")
@@ -84,10 +85,10 @@ defmodule Nixploy.Operations.StatusProbe do
       timeout: @command_timeout
     }
 
-    run(command, :ssh)
+    run(command, :ssh, opts)
   end
 
-  defp health(url) do
+  defp health(url, opts) do
     executable = Application.get_env(:nixploy, :curl_executable, "curl")
 
     command = %Command{
@@ -107,22 +108,29 @@ defmodule Nixploy.Operations.StatusProbe do
       timeout: :timer.seconds(@health_timeout_seconds + 5)
     }
 
-    case run(command, :health) do
+    case run(command, :health, opts) do
       {:ok, status} ->
-        case Integer.parse(String.trim(status)) do
-          {status, ""} -> %{health_status: status, health_error: nil}
-          _invalid -> %{health_status: nil, health_error: "invalid HTTP status response"}
-        end
+        health =
+          case Integer.parse(String.trim(status)) do
+            {status, ""} -> %{health_status: status, health_error: nil}
+            _invalid -> %{health_status: nil, health_error: "invalid HTTP status response"}
+          end
+
+        {:ok, health}
+
+      {:error, :cancelled} ->
+        {:error, :cancelled}
 
       {:error, reason} ->
-        %{health_status: nil, health_error: format_error(reason)}
+        {:ok, %{health_status: nil, health_error: format_error(reason)}}
     end
   end
 
-  defp run(command, source) do
-    case Execution.run(command) do
+  defp run(command, source, opts) do
+    case Execution.run(command, opts) do
       {:ok, %{exit_status: 0, output_tail: output}} -> {:ok, output}
       {:ok, result} -> {:error, {source, :command_failed, result.exit_status, result.output_tail}}
+      {:error, :cancelled} -> {:error, :cancelled}
       {:error, reason} -> {:error, {source, reason}}
     end
   end

@@ -22,6 +22,13 @@ defmodule NixployWeb.Router do
   end
 
   scope "/", NixployWeb do
+    pipe_through :api
+
+    get "/health", HealthController, :live
+    get "/ready", HealthController, :ready
+  end
+
+  scope "/", NixployWeb do
     pipe_through :browser
 
     get "/login", OperatorSessionController, :new

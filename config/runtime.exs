@@ -18,8 +18,8 @@ if executable = System.get_env("NIXPLOY_LEGACY_EXECUTABLE") do
 end
 
 unless config_env() == :test do
-  # TODO(tracer): Replace global deployment serialization with PostgreSQL
-  # per-target leases before allowing more than one deployment worker.
+  # Keep the MVP queue deliberately narrow in addition to PostgreSQL target
+  # leases; increasing concurrency is safe only after production load testing.
   config :nixploy, Oban,
     queues: if(worker?, do: [deployments: 1, health_checks: 2, logs: 2], else: false),
     plugins: if(worker?, do: [Oban.Plugins.Pruner], else: false)

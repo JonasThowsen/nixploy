@@ -24,7 +24,14 @@ public sealed class RemoteCommandRunnerTests
         Assert.Equal(0, result.ExitCode);
         var call = Assert.Single(inner.Calls);
         Assert.Equal("ssh", call.FileName);
-        Assert.Equal(["-p", "2222", "-i", "/tmp/id_ed25519", "deploy@203.0.113.10", "echo hello"], call.Arguments);
+        Assert.Equal([
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ConnectTimeout=10",
+            "-p", "2222",
+            "-i", "/tmp/id_ed25519",
+            "--", "deploy@203.0.113.10", "echo hello"
+        ], call.Arguments);
         Assert.Same(options, call.Options);
     }
 }

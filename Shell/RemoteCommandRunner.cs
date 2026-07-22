@@ -10,6 +10,12 @@ public sealed class RemoteCommandRunner(ICommandRunner commandRunner) : IRemoteC
     {
         var arguments = new List<string>
         {
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ConnectTimeout=10",
             "-p",
             target.Port.ToString()
         };
@@ -20,6 +26,7 @@ public sealed class RemoteCommandRunner(ICommandRunner commandRunner) : IRemoteC
             arguments.Add(ExpandHome(target.IdentityFile));
         }
 
+        arguments.Add("--");
         arguments.Add($"{target.User}@{target.Ip}");
         arguments.Add(command);
 

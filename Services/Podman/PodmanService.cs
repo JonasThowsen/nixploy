@@ -14,6 +14,11 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
     {
         var connectionName = GetConnectionName(resourcePrefix);
 
+        if (!await VerifySshTargetAsync(target))
+        {
+            return false;
+        }
+
         Console.WriteLine($"Checking Podman connection '{connectionName}'...");
 
         var storedConnection = await GetStoredConnectionAsync(connectionName);
@@ -110,6 +115,42 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
 
         Console.Error.WriteLine($"Podman connection '{connectionName}' was created, but could not be used.");
         Console.Error.WriteLine(verifyResult.StdError);
+        return false;
+    }
+
+    private async Task<bool> VerifySshTargetAsync(NixployTarget target)
+    {
+        var arguments = new List<string>
+        {
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ConnectTimeout=10",
+            "-p", target.Port.ToString()
+        };
+
+        if (!string.IsNullOrWhiteSpace(target.IdentityFile))
+        {
+            arguments.Add("-i");
+            arguments.Add(ExpandHome(target.IdentityFile));
+        }
+
+        arguments.Add("--");
+        arguments.Add($"{target.User}@{target.Ip}");
+        arguments.Add("true");
+
+        var result = await commandRunner.RunAsync(
+            "ssh",
+            arguments,
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (result.ExitCode == 0)
+        {
+            return true;
+        }
+
+        Console.Error.WriteLine("Strict SSH host-key and authentication preflight failed.");
+        Console.Error.WriteLine(result.StdError);
         return false;
     }
 

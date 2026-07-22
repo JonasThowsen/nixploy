@@ -7,41 +7,50 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
     private const string CaddyApi = "http://127.0.0.1:2019";
     private const string ServerName = "nixploy";
 
-    public async Task<int?> GetActivePortAsync(string resourcePrefix, NixployTarget target)
+    public async Task<ActivePortResult> GetActivePortAsync(string resourcePrefix, NixployTarget target)
     {
-        var result = await CaddyRequestAsync(
-            target,
-            "GET",
-            $"/id/{ProxyId(resourcePrefix)}/upstreams"
-        );
+        var response = await GetCaddyConfigAsync(target, $"/id/{ProxyId(resourcePrefix)}/upstreams");
 
-        if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StdOutput))
+        if (response is null)
         {
-            return null;
+            return new ActivePortResult(false, null);
+        }
+
+        if (response.StatusCode == 404 ||
+            (response.StatusCode == 200 && IsNullJson(response.Body)))
+        {
+            return new ActivePortResult(true, null);
+        }
+
+        if (response.StatusCode != 200)
+        {
+            Console.Error.WriteLine($"Failed to inspect active Caddy upstream (HTTP {response.StatusCode}).");
+            Console.Error.WriteLine(response.Body);
+            return new ActivePortResult(false, null);
         }
 
         try
         {
-            using var document = JsonDocument.Parse(result.StdOutput);
+            using var document = JsonDocument.Parse(response.Body);
 
             if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
             {
-                return null;
+                Console.Error.WriteLine("Caddy active upstream response was empty or malformed.");
+                return new ActivePortResult(false, null);
             }
 
             var dial = document.RootElement[0].GetProperty("dial").GetString();
+            var portText = dial?.Split(':').LastOrDefault();
 
-            if (dial is null)
-            {
-                return null;
-            }
-
-            var portText = dial.Split(':').LastOrDefault();
-            return int.TryParse(portText, out var port) ? port : null;
+            return int.TryParse(portText, out var port)
+                ? new ActivePortResult(true, port)
+                : new ActivePortResult(false, null);
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
         {
-            return null;
+            Console.Error.WriteLine("Caddy active upstream response was malformed.");
+            Console.Error.WriteLine(exception.Message);
+            return new ActivePortResult(false, null);
         }
     }
 
@@ -137,11 +146,24 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
 
     private async Task<bool> EnsureServerAsync(NixployTarget target)
     {
-        var existing = await CaddyRequestAsync(target, "GET", $"/config/apps/http/servers/{ServerName}");
+        var existing = await GetCaddyConfigAsync(target, $"/config/apps/http/servers/{ServerName}");
 
-        if (existing.ExitCode == 0 && !IsNullJson(existing.StdOutput))
+        if (existing is null)
+        {
+            return false;
+        }
+
+        if (existing.StatusCode == 200 && !IsNullJson(existing.Body))
         {
             return true;
+        }
+
+        if (existing.StatusCode != 404 &&
+            !(existing.StatusCode == 200 && IsNullJson(existing.Body)))
+        {
+            Console.Error.WriteLine($"Failed to inspect the nixploy Caddy server (HTTP {existing.StatusCode}).");
+            Console.Error.WriteLine(existing.Body);
+            return false;
         }
 
         Console.WriteLine("Creating nixploy Caddy server config...");
@@ -165,31 +187,9 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
             return true;
         }
 
-        var fullConfig = """
-        {
-          "apps": {
-            "http": {
-              "servers": {
-                "nixploy": {
-                  "listen": [":80", ":443"],
-                  "routes": []
-                }
-              }
-            }
-          }
-        }
-        """;
-
-        var load = await CaddyRequestAsync(target, "POST", "/load", fullConfig);
-
-        if (load.ExitCode == 0)
-        {
-            return true;
-        }
-
-        Console.Error.WriteLine("Failed to initialize Caddy config. Is Caddy running with the admin API enabled?");
-        Console.Error.WriteLine(load.StdError);
-        Console.Error.WriteLine(load.StdOutput);
+        Console.Error.WriteLine("Failed to create the isolated nixploy Caddy server. Is the admin API enabled?");
+        Console.Error.WriteLine(putServer.StdError);
+        Console.Error.WriteLine(putServer.StdOutput);
         return false;
     }
 

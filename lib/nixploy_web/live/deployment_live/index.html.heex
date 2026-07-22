@@ -106,12 +106,165 @@
       </div>
     </section>
 
+    <section id="configuration-inventory" class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-bold">Configuration inventory</h2>
+        <p class="text-sm text-base-content/60">
+          Correct registrations here. Existing deployments retain their immutable snapshots.
+        </p>
+      </div>
+
+      <div class="grid gap-4 xl:grid-cols-3">
+        <details class="collapse-arrow collapse border border-base-300 bg-base-100">
+          <summary class="collapse-title font-semibold">
+            Repositories ({length(@repositories)})
+          </summary>
+          <div class="collapse-content space-y-4">
+            <.form
+              :for={repository <- @repositories}
+              for={edit_repository_form(repository)}
+              id={"edit-repository-#{repository.id}"}
+              phx-submit="update_repository"
+              class="space-y-2 border-t border-base-300 pt-4 first:border-0 first:pt-0"
+            >
+              <input type="hidden" name="_id" value={repository.id} />
+              <.input
+                id={"edit-repository-#{repository.id}-name"}
+                field={edit_repository_form(repository)[:name]}
+                label="Name"
+                required
+              />
+              <.input
+                id={"edit-repository-#{repository.id}-url"}
+                field={edit_repository_form(repository)[:url]}
+                label="Git URL"
+                required
+              />
+              <div class="grid grid-cols-2 gap-2">
+                <.input
+                  id={"edit-repository-#{repository.id}-default-ref"}
+                  field={edit_repository_form(repository)[:default_ref]}
+                  label="Default ref"
+                  required
+                />
+                <.input
+                  id={"edit-repository-#{repository.id}-subdirectory"}
+                  field={edit_repository_form(repository)[:subdirectory]}
+                  label="Subdirectory"
+                  required
+                />
+              </div>
+              <.button class="btn-sm w-full">Save repository</.button>
+            </.form>
+          </div>
+        </details>
+
+        <details class="collapse-arrow collapse border border-base-300 bg-base-100">
+          <summary class="collapse-title font-semibold">Targets ({length(@targets)})</summary>
+          <div class="collapse-content space-y-4">
+            <.form
+              :for={target <- @targets}
+              for={edit_target_form(target)}
+              id={"edit-target-#{target.id}"}
+              phx-submit="update_target"
+              class="space-y-2 border-t border-base-300 pt-4 first:border-0 first:pt-0"
+            >
+              <input type="hidden" name="_id" value={target.id} />
+              <.input
+                id={"edit-target-#{target.id}-name"}
+                field={edit_target_form(target)[:name]}
+                label="Name"
+                required
+              />
+              <.input
+                id={"edit-target-#{target.id}-host"}
+                field={edit_target_form(target)[:host]}
+                label="Host"
+                required
+              />
+              <div class="grid grid-cols-2 gap-2">
+                <.input
+                  id={"edit-target-#{target.id}-ssh-user"}
+                  field={edit_target_form(target)[:ssh_user]}
+                  label="SSH user"
+                  required
+                />
+                <.input
+                  id={"edit-target-#{target.id}-ssh-port"}
+                  field={edit_target_form(target)[:ssh_port]}
+                  type="number"
+                  label="Port"
+                  required
+                />
+              </div>
+              <.button class="btn-sm w-full">Save target</.button>
+            </.form>
+          </div>
+        </details>
+
+        <details class="collapse-arrow collapse border border-base-300 bg-base-100">
+          <summary class="collapse-title font-semibold">Services ({length(@services)})</summary>
+          <div class="collapse-content space-y-4">
+            <.form
+              :for={service <- @services}
+              for={edit_service_form(service)}
+              id={"edit-service-#{service.id}"}
+              phx-submit="update_service"
+              class="space-y-2 border-t border-base-300 pt-4 first:border-0 first:pt-0"
+            >
+              <input type="hidden" name="_id" value={service.id} />
+              <.input
+                id={"edit-service-#{service.id}-name"}
+                field={edit_service_form(service)[:name]}
+                label="Name"
+                required
+              />
+              <.input
+                id={"edit-service-#{service.id}-repository"}
+                field={edit_service_form(service)[:repository_id]}
+                type="select"
+                label="Repository"
+                options={@repository_options}
+                required
+              />
+              <.input
+                id={"edit-service-#{service.id}-target"}
+                field={edit_service_form(service)[:target_id]}
+                type="select"
+                label="Target"
+                options={@target_options}
+                required
+              />
+              <.input
+                id={"edit-service-#{service.id}-flake-output"}
+                field={edit_service_form(service)[:flake_output]}
+                label="Flake output"
+                required
+              />
+              <.input
+                id={"edit-service-#{service.id}-domain"}
+                field={edit_service_form(service)[:domain]}
+                label="Domain"
+              />
+              <.input
+                id={"edit-service-#{service.id}-health-path"}
+                field={edit_service_form(service)[:health_path]}
+                label="Health path"
+                required
+              />
+              <.button class="btn-sm w-full">Save service</.button>
+            </.form>
+          </div>
+        </details>
+      </div>
+    </section>
+
     <section class="card border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body gap-6">
         <div>
           <h2 class="card-title">Queue deployment</h2>
           <p class="text-sm text-base-content/60">
-            The worker will persist and broadcast each simulated stage.
+            The worker pins the commit, validates the flake target, serializes the target mutation, and independently verifies the result.
           </p>
         </div>
 
@@ -119,6 +272,7 @@
           for={@deployment_form}
           id="deployment-form"
           phx-submit="enqueue_deployment"
+          phx-change="select_deployment_service"
           class="grid items-end gap-4 md:grid-cols-[2fr_1fr_auto]"
         >
           <.input
@@ -130,7 +284,13 @@
             required
           />
           <.input field={@deployment_form[:requested_ref]} label="Git ref" required />
-          <.button class="mb-2" disabled={@services == []}>Deploy</.button>
+          <.button
+            class="mb-2"
+            disabled={@services == []}
+            data-confirm="Deploy this immutable revision to the selected target?"
+          >
+            Deploy
+          </.button>
         </.form>
       </div>
     </section>
@@ -332,18 +492,35 @@
                 <span :if={deployment.service.domain}>{" · #{deployment.service.domain}"}</span>
               </p>
               <p class="mt-1 font-mono text-xs text-base-content/50">{deployment.id}</p>
+              <p class="text-xs text-base-content/50">
+                Requested by {if deployment.requested_by_operator,
+                  do: deployment.requested_by_operator.email,
+                  else: "system"}
+              </p>
             </div>
 
-            <.button
-              :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
-              id={"cancel-#{deployment.id}"}
-              phx-click="cancel_deployment"
-              phx-value-id={deployment.id}
-              data-confirm="Cancel this deployment?"
-              class="btn-warning btn-sm"
-            >
-              Cancel
-            </.button>
+            <div class="flex flex-wrap gap-2">
+              <.button
+                :if={terminal?(deployment) and deployment.resolved_commit}
+                id={"retry-#{deployment.id}"}
+                phx-click="retry_deployment"
+                phx-value-id={deployment.id}
+                data-confirm="Queue this exact commit and immutable configuration again?"
+                class="btn-outline btn-sm"
+              >
+                Redeploy revision
+              </.button>
+              <.button
+                :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
+                id={"cancel-#{deployment.id}"}
+                phx-click="cancel_deployment"
+                phx-value-id={deployment.id}
+                data-confirm="Cancel this deployment?"
+                class="btn-warning btn-sm"
+              >
+                Cancel
+              </.button>
+            </div>
           </div>
 
           <div class="grid gap-3 text-sm sm:grid-cols-4">
@@ -363,6 +540,19 @@
               <span class="block text-xs uppercase text-base-content/50">Finished</span>
               <span>{format_time(deployment.finished_at)}</span>
             </div>
+          </div>
+
+          <div :if={deployment.output} class="space-y-2">
+            <div class="flex flex-wrap gap-3 font-mono text-xs text-base-content/55">
+              <span>{deployment.output.line_count} output lines retained as a bounded tail</span>
+              <span :if={deployment.output.truncated} class="text-warning">
+                earlier output truncated
+              </span>
+            </div>
+            <pre
+              id={"deployment-output-#{deployment.id}"}
+              class="max-h-72 overflow-auto rounded-box bg-neutral p-4 font-mono text-xs leading-relaxed text-neutral-content shadow-inner"
+            ><code>{deployment.output.content}</code></pre>
           </div>
 
           <div :if={deployment.failure} class="alert alert-error text-sm">
@@ -385,6 +575,42 @@
           </ol>
         </div>
       </article>
+    </section>
+
+    <section id="audit-history" class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-bold">Operator audit history</h2>
+        <p class="text-sm text-base-content/60">Latest append-only control-plane actions.</p>
+      </div>
+      <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Resource</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={event <- @audit_events} id={"audit-event-#{event.id}"}>
+              <td class="whitespace-nowrap font-mono text-xs">
+                {format_time(event.occurred_at)}
+              </td>
+              <td>{if event.operator, do: event.operator.email, else: "system"}</td>
+              <td class="font-medium">{event.action}</td>
+              <td class="font-mono text-xs">{event.resource_type}:{event.resource_id}</td>
+              <td><span class="badge badge-ghost badge-sm">{event.outcome}</span></td>
+            </tr>
+            <tr :if={@audit_events == []}>
+              <td colspan="5" class="text-center text-base-content/50">
+                No audited actions yet.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
   </div>
 </Layouts.app>

@@ -1,6 +1,7 @@
 defmodule Nixploy.Deployments.Source do
   @moduledoc "Checks out a deployment's requested Git revision into an isolated workspace."
 
+  alias Nixploy.Deployments.Spec
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
@@ -8,7 +9,9 @@ defmodule Nixploy.Deployments.Source do
 
   def prepare(deployment, opts \\ []) do
     workspace = workspace(deployment.id)
-    redactions = repository_redactions(deployment.service.repository.url)
+    repository_url = Spec.repository_url(deployment.service_snapshot)
+    revision = deployment.resolved_commit || deployment.requested_ref
+    redactions = repository_redactions(repository_url)
 
     with :ok <- reset_workspace(workspace),
          {:ok, _result} <-
@@ -18,7 +21,7 @@ defmodule Nixploy.Deployments.Source do
                "--quiet",
                "--no-checkout",
                "--",
-               deployment.service.repository.url,
+               repository_url,
                workspace
              ],
              opts,
@@ -35,7 +38,7 @@ defmodule Nixploy.Deployments.Source do
                "--no-tags",
                "--",
                "origin",
-               deployment.requested_ref
+               revision
              ],
              opts,
              redactions
@@ -48,8 +51,10 @@ defmodule Nixploy.Deployments.Source do
            ),
          {:ok, result} <-
            git(["-C", workspace, "rev-parse", "HEAD"], opts, redactions),
+         commit = String.trim(result.output_tail),
+         :ok <- verify_pinned_commit(deployment.resolved_commit, commit),
          {:ok, working_directory} <- working_directory(deployment, workspace) do
-      {:ok, working_directory, String.trim(result.output_tail)}
+      {:ok, working_directory, commit}
     end
   end
 
@@ -89,7 +94,7 @@ defmodule Nixploy.Deployments.Source do
   end
 
   defp working_directory(deployment, workspace) do
-    subdirectory = deployment.service.repository.subdirectory
+    subdirectory = Spec.repository_subdirectory(deployment.service_snapshot)
 
     with {:ok, safe_path} <- Path.safe_relative(subdirectory, workspace),
          working_directory = Path.join(workspace, safe_path),
@@ -100,6 +105,12 @@ defmodule Nixploy.Deployments.Source do
       false -> {:error, {:repository_subdirectory_not_found, subdirectory}}
     end
   end
+
+  defp verify_pinned_commit(nil, _commit), do: :ok
+  defp verify_pinned_commit(commit, commit), do: :ok
+
+  defp verify_pinned_commit(expected, actual),
+    do: {:error, {:resolved_commit_mismatch, expected, actual}}
 
   defp repository_redactions(url) do
     uri = URI.parse(url)

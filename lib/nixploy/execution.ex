@@ -117,7 +117,7 @@ defmodule Nixploy.Execution do
         {line_buffer, output_tail, output_truncated?} =
           consume(data, line_buffer, output_tail, output_truncated?, command, opts)
 
-        receive_output(
+        continue(
           port,
           command,
           opts,
@@ -192,80 +192,111 @@ defmodule Nixploy.Execution do
         end
     after
       @poll_interval ->
-        cond do
-          termination_reason &&
-              System.monotonic_time(:millisecond) - termination_started_at >=
-                @termination_grace ->
-            signal_process(os_pid, "KILL")
-            close_port(port)
-            {:error, termination_reason}
+        continue(
+          port,
+          command,
+          opts,
+          started_at,
+          os_pid,
+          termination_mode,
+          line_buffer,
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?,
+          termination_reason,
+          termination_started_at
+        )
+    end
+  end
 
-          termination_reason ->
-            receive_output(
-              port,
-              command,
-              opts,
-              started_at,
-              os_pid,
-              termination_mode,
-              line_buffer,
-              output_tail,
-              output_truncated?,
-              exit_status,
-              eof?,
-              termination_reason,
-              termination_started_at
-            )
+  defp continue(
+         port,
+         command,
+         opts,
+         started_at,
+         os_pid,
+         termination_mode,
+         line_buffer,
+         output_tail,
+         output_truncated?,
+         exit_status,
+         eof?,
+         termination_reason,
+         termination_started_at
+       ) do
+    cond do
+      termination_reason &&
+          System.monotonic_time(:millisecond) - termination_started_at >= @termination_grace ->
+        signal_process(os_pid, "KILL")
+        close_port(port)
+        {:error, termination_reason}
 
-          cancelled?(opts) ->
-            begin_termination(
-              port,
-              command,
-              opts,
-              started_at,
-              os_pid,
-              termination_mode,
-              line_buffer,
-              output_tail,
-              output_truncated?,
-              exit_status,
-              eof?,
-              :cancelled
-            )
+      termination_reason ->
+        receive_output(
+          port,
+          command,
+          opts,
+          started_at,
+          os_pid,
+          termination_mode,
+          line_buffer,
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?,
+          termination_reason,
+          termination_started_at
+        )
 
-          timed_out?(command.timeout, started_at) ->
-            begin_termination(
-              port,
-              command,
-              opts,
-              started_at,
-              os_pid,
-              termination_mode,
-              line_buffer,
-              output_tail,
-              output_truncated?,
-              exit_status,
-              eof?,
-              :timeout
-            )
+      cancelled?(opts) ->
+        begin_termination(
+          port,
+          command,
+          opts,
+          started_at,
+          os_pid,
+          termination_mode,
+          line_buffer,
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?,
+          :cancelled
+        )
 
-          true ->
-            receive_output(
-              port,
-              command,
-              opts,
-              started_at,
-              os_pid,
-              termination_mode,
-              line_buffer,
-              output_tail,
-              output_truncated?,
-              exit_status,
-              eof?,
-              nil,
-              nil
-            )
-        end
+      timed_out?(command.timeout, started_at) ->
+        begin_termination(
+          port,
+          command,
+          opts,
+          started_at,
+          os_pid,
+          termination_mode,
+          line_buffer,
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?,
+          :timeout
+        )
+
+      true ->
+        receive_output(
+          port,
+          command,
+          opts,
+          started_at,
+          os_pid,
+          termination_mode,
+          line_buffer,
+          output_tail,
+          output_truncated?,
+          exit_status,
+          eof?,
+          nil,
+          nil
+        )
     end
   end
 

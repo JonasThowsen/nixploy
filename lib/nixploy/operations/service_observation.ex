@@ -8,6 +8,7 @@ defmodule Nixploy.Operations.ServiceObservation do
   @foreign_key_type :binary_id
 
   schema "service_observations" do
+    field :request_id, Ecto.UUID
     field :status, Ecto.Enum, values: [:pending, :available, :failed], default: :pending
     field :target_identity, :string
     field :active_slot, :string
@@ -53,10 +54,10 @@ defmodule Nixploy.Operations.ServiceObservation do
 
   def request_changeset(observation, attrs) do
     observation
-    |> cast(attrs, [:service_id, :requested_at])
+    |> cast(attrs, [:service_id, :request_id, :requested_at])
     |> put_change(:status, :pending)
     |> put_change(:failure, nil)
-    |> validate_required([:service_id, :status, :requested_at])
+    |> validate_required([:service_id, :request_id, :status, :requested_at])
     |> assoc_constraint(:service)
     |> unique_constraint(:service_id)
     |> check_constraint(:status, name: :valid_status)
