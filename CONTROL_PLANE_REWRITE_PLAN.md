@@ -8,6 +8,14 @@ The system should let an operator connect a Git repository containing a Nix flak
 
 NixOS infrastructure provisioning remains outside this project. A target may be provisioned by `nixos-infra`, another NixOS configuration, or manually, as long as it satisfies nixploy's target contract.
 
+## Development method
+
+Use a tracer-bullet approach for every feature. Implement each capability first as the smallest useful end-to-end slice with one observable behavior and a concrete acceptance criterion. A tracer should cross the real boundaries needed to prove the path and become a production foundation, not a disposable prototype.
+
+Prefer a thin vertical path over completing disconnected horizontal layers. Exercise the production artifact or a deployed-style build where practical, add focused tests around invariants and failure-prone boundaries, and broaden behavior only after the basic path works and can be evaluated. Temporary shortcuts must be explicit, safe, reversible, and recorded with a concrete follow-up. Refactor after a working slice reveals actual coupling rather than introducing abstractions for hypothetical needs.
+
+For the current walking skeleton, this means replacing simulation with one narrow real deployment path end to end before expanding every execution adapter or adding more simulated capabilities.
+
 ## Product boundary
 
 ### nixploy owns
