@@ -4,6 +4,8 @@ defmodule Nixploy.Deployments.LegacyExecutor do
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
+  # TODO(tracer): Remove output-marker detection when native execution returns
+  # structured results or the compatibility CLI reports operational exit codes.
   # The current CLI reports operational failures in output without setting a
   # non-zero process exit status, so success requires its explicit final marker.
   @success_marker "Deployment completed successfully."
@@ -12,6 +14,8 @@ defmodule Nixploy.Deployments.LegacyExecutor do
     executable = Application.get_env(:nixploy, :legacy_nixploy_executable, "nixploy")
     timeout = Application.get_env(:nixploy, :legacy_deployment_timeout, :timer.hours(1))
 
+    # TODO(tracer): Replace the flake-target-name compatibility contract with
+    # native adapters consuming the normalized service and target records.
     command = %Command{
       executable: executable,
       args: ["deploy", "--target", deployment.service.target.name],

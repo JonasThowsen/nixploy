@@ -94,6 +94,8 @@ defmodule Nixploy.Deployments.Worker do
     end
   end
 
+  # TODO(tracer): Transition stages at their real execution boundaries as the
+  # compatibility CLI is replaced; it currently returns only a final result.
   defp complete(deployment_id) do
     with {:ok, deployment} <-
            transition_if_needed(
@@ -130,6 +132,8 @@ defmodule Nixploy.Deployments.Worker do
     end
   end
 
+  # TODO(tracer): Move full command output into bounded artifact chunks and
+  # retain only structured progress events in PostgreSQL before logs grow large.
   defp command_options(deployment_id, stage) do
     [
       cancelled?: fn -> Deployments.cancellation_requested?(deployment_id) end,
