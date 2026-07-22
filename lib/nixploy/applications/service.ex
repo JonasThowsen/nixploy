@@ -34,6 +34,9 @@ defmodule Nixploy.Applications.Service do
     |> trim_fields([:name, :flake_output, :domain, :health_path])
     |> empty_domain_to_nil()
     |> validate_required([:name, :flake_output, :health_path, :repository_id, :target_id])
+    |> validate_format(:domain, ~r/^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/,
+      message: "must be a hostname without a scheme or path"
+    )
     |> validate_format(:health_path, ~r|^/|, message: "must start with /")
     |> assoc_constraint(:repository)
     |> assoc_constraint(:target)

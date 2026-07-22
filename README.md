@@ -207,6 +207,7 @@ skeleton for the rewrite:
 - enqueue a durable Oban deployment
 - stream persisted deployment stages to the browser
 - request cooperative cancellation
+- refresh persisted Podman, Caddy, slot, revision, and health observations through a worker
 - run web and worker processes independently through PostgreSQL notifications
 
 The first real deployment tracer checks out the requested Git ref, records the
@@ -220,8 +221,8 @@ set a relative flake subdirectory when registered.
 
 Deployments are temporarily serialized through a single-worker Oban queue until
 PostgreSQL-backed per-target leases are implemented. Workers must have Git,
-Bash, `setsid`, and the existing `nixploy` executable on
-`PATH`. Set `NIXPLOY_LEGACY_EXECUTABLE` to an absolute executable path when it is
+Bash, `setsid`, OpenSSH, curl, and the existing `nixploy` executable on `PATH`.
+Set `NIXPLOY_LEGACY_EXECUTABLE` to an absolute executable path when it is
 installed elsewhere. This compatibility adapter is temporary; native Elixir execution
 adapters will replace it one end-to-end slice at a time. While the compatibility
 command runs, its detailed progress is persisted as events but the coarse

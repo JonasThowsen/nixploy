@@ -1,7 +1,17 @@
 defmodule Nixploy.NotificationsTest do
   use Nixploy.DataCase, async: true
 
-  alias Nixploy.{Deployments, Fixtures, Notifications}
+  alias Nixploy.{Deployments, Fixtures, Notifications, Operations}
+
+  test "publishes service status changes to the global topic" do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    Notifications.subscribe()
+
+    assert {:ok, _observation, _job} = Operations.request_status_refresh(service.id)
+
+    service_id = service.id
+    assert_receive {:service_status_changed, ^service_id}
+  end
 
   test "publishes durable deployment changes to global and deployment topics" do
     service = Fixtures.service_fixture()

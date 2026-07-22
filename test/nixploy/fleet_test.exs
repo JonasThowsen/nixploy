@@ -15,6 +15,18 @@ defmodule Nixploy.FleetTest do
     assert target.ssh_port == 22
   end
 
+  test "rejects SSH destinations that could be interpreted as command syntax" do
+    assert {:error, changeset} =
+             Fleet.create_target(%{
+               name: "production",
+               host: "example.com attacker",
+               ssh_user: "deploy;whoami"
+             })
+
+    assert "must be a hostname or IP address" in errors_on(changeset).host
+    assert "must be a valid SSH user" in errors_on(changeset).ssh_user
+  end
+
   test "validates the SSH port" do
     assert {:error, changeset} =
              Fleet.create_target(%{

@@ -135,6 +135,120 @@
       </div>
     </section>
 
+    <section id="service-statuses" class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-bold">Observed service status</h2>
+        <p class="text-sm text-base-content/60">
+          Status is read by a credentialed worker and persisted for the web role.
+        </p>
+      </div>
+
+      <div :if={@services == []} class="alert">
+        <.icon name="hero-information-circle" class="size-5" />
+        <span>Attach a service before refreshing status.</span>
+      </div>
+
+      <article
+        :for={service <- @services}
+        id={"service-status-#{service.id}"}
+        class="card border border-base-300 bg-base-100 shadow-sm"
+      >
+        <% observation = @observations_by_service[service.id] %>
+        <div class="card-body gap-5">
+          <div class="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="card-title">{service.name}</h3>
+                <span :if={observation} class={["badge", observation_class(observation.status)]}>
+                  {observation.status}
+                </span>
+                <span :if={is_nil(observation)} class="badge badge-ghost">not observed</span>
+              </div>
+              <p class="text-sm text-base-content/60">
+                {service.target.name}
+                <span :if={service.domain}>{" · " <> service.domain}</span>
+              </p>
+            </div>
+            <.button
+              id={"refresh-status-#{service.id}"}
+              phx-click="refresh_service_status"
+              phx-value-id={service.id}
+              class="btn-sm"
+              disabled={observation && observation.status == :pending}
+            >
+              Refresh status
+            </.button>
+          </div>
+
+          <div :if={is_nil(observation)} class="alert">
+            <span>No worker observation has been requested.</span>
+          </div>
+
+          <div :if={observation && observation.failure} class="alert alert-error text-sm">
+            <.icon name="hero-exclamation-circle" class="size-5" />
+            <span>{observation.failure["message"] || observation.failure[:message]}</span>
+          </div>
+
+          <div :if={observation} class="grid gap-4 text-sm md:grid-cols-2 xl:grid-cols-4">
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Slots</span>
+              <span class="font-medium">
+                {observation.active_slot || "-"} active · {observation.inactive_slot || "-"} inactive
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Active container</span>
+              <span class="font-mono text-xs">{observation.active_container || "-"}</span>
+              <span class="block text-base-content/60">
+                {observation.active_container_state || "-"}
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Inactive container</span>
+              <span class="font-mono text-xs">{observation.inactive_container || "-"}</span>
+              <span class="block text-base-content/60">
+                {observation.inactive_container_state || "-"}
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Image</span>
+              <span class="font-mono text-xs">{observation.image || "-"}</span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Revision</span>
+              <span class="font-mono">{short_commit(observation.git_commit)}</span>
+              <span class="block text-base-content/60">
+                {format_time(observation.deployed_at)}
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Caddy</span>
+              <span class="font-mono text-xs">{observation.upstream || "-"}</span>
+              <span class="block truncate text-base-content/60">
+                {observation.caddy_route || "-"}
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Health</span>
+              <span class={["badge", health_class(observation.health_status)]}>
+                {observation.health_status || observation.health_error || "pending"}
+              </span>
+              <span class="block truncate text-base-content/60">
+                {observation.health_url || "-"}
+              </span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Observed</span>
+              <span>{format_time(observation.refreshed_at)}</span>
+              <span class="block font-mono text-xs text-base-content/60">
+                {observation.target_identity || "-"}
+              </span>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
     <section class="space-y-4">
       <div>
         <h2 class="text-2xl font-bold">Deployment history</h2>

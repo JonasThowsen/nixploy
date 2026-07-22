@@ -65,6 +65,21 @@ defmodule Nixploy.ApplicationsTest do
     assert service.domain == "app.example.com"
   end
 
+  test "requires service domains without schemes or paths" do
+    repository = Fixtures.repository_fixture()
+    target = Fixtures.target_fixture()
+
+    assert {:error, changeset} =
+             Applications.create_service(%{
+               name: "web",
+               repository_id: repository.id,
+               target_id: target.id,
+               domain: "https://app.example.com/path"
+             })
+
+    assert "must be a hostname without a scheme or path" in errors_on(changeset).domain
+  end
+
   test "requires health paths to start with a slash" do
     repository = Fixtures.repository_fixture()
     target = Fixtures.target_fixture()

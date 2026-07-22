@@ -7,6 +7,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   alias Nixploy.Deployments
   alias Nixploy.Deployments.SimulatedWorker
   alias Nixploy.Fixtures
+  alias Nixploy.Operations.StatusWorker
 
   test "renders the deployment dashboard", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/")
@@ -16,6 +17,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#target-form")
     assert has_element?(view, "#service-form")
     assert has_element?(view, "#deployment-form")
+    assert has_element?(view, "#service-statuses")
     assert has_element?(view, "#empty-deployments")
   end
 
@@ -74,6 +76,20 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert [service] = Nixploy.Applications.list_services()
     assert service.name == "web"
     assert render(view) =~ "1"
+  end
+
+  test "queues a worker-owned service status refresh", %{conn: conn} do
+    service = Fixtures.service_fixture(%{domain: "app.example.com"})
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#service-status-#{service.id}", "not observed")
+
+    view
+    |> element("#refresh-status-#{service.id}")
+    |> render_click()
+
+    assert_enqueued(worker: StatusWorker, args: %{service_id: service.id})
+    assert has_element?(view, "#service-status-#{service.id}", "pending")
   end
 
   test "queues and streams a simulated deployment to completion", %{conn: conn} do

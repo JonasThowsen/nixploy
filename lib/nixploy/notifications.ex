@@ -30,8 +30,18 @@ defmodule Nixploy.Notifications do
   def publish(deployment_id) do
     payload = to_string(deployment_id)
 
-    broadcast(payload)
+    broadcast_deployment(payload)
+    notify(payload)
+  end
 
+  def publish_service_status(service_id) do
+    payload = "service:#{service_id}"
+
+    broadcast_service_status(to_string(service_id))
+    notify(payload)
+  end
+
+  defp notify(payload) do
     case Repo.query("SELECT pg_notify($1, $2)", [@channel, payload]) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
@@ -49,17 +59,28 @@ defmodule Nixploy.Notifications do
 
   @impl true
   def handle_info(
-        {:notification, _pid, listen_ref, @channel, deployment_id},
+        {:notification, _pid, listen_ref, @channel, payload},
         %{listen_ref: listen_ref} = state
       ) do
-    broadcast(deployment_id)
+    broadcast_payload(payload)
     {:noreply, state}
   end
 
-  defp broadcast(deployment_id) do
+  defp broadcast_payload("service:" <> service_id), do: broadcast_service_status(service_id)
+  defp broadcast_payload(deployment_id), do: broadcast_deployment(deployment_id)
+
+  defp broadcast_deployment(deployment_id) do
     message = {:deployment_changed, deployment_id}
     Phoenix.PubSub.broadcast(Nixploy.PubSub, @topic, message)
     Phoenix.PubSub.broadcast(Nixploy.PubSub, topic(deployment_id), message)
+  end
+
+  defp broadcast_service_status(service_id) do
+    Phoenix.PubSub.broadcast(
+      Nixploy.PubSub,
+      @topic,
+      {:service_status_changed, service_id}
+    )
   end
 
   defp topic(deployment_id), do: "deployment:#{deployment_id}"

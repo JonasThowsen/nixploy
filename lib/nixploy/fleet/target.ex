@@ -26,6 +26,10 @@ defmodule Nixploy.Fleet.Target do
     |> update_change(:host, &trim/1)
     |> update_change(:ssh_user, &trim/1)
     |> validate_required([:name, :host, :ssh_port, :ssh_user])
+    |> validate_format(:host, ~r/^[a-zA-Z0-9._:-]+$/, message: "must be a hostname or IP address")
+    |> validate_format(:ssh_user, ~r/^[a-zA-Z_][a-zA-Z0-9_-]*\$?$/,
+      message: "must be a valid SSH user"
+    )
     |> validate_number(:ssh_port, greater_than: 0, less_than_or_equal_to: 65_535)
     |> unique_constraint(:name)
   end
