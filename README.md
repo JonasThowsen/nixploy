@@ -209,8 +209,22 @@ skeleton for the rewrite:
 - request cooperative cancellation
 - run web and worker processes independently through PostgreSQL notifications
 
-Deployment execution is intentionally simulated at this stage. It does not yet
-run Git, Nix, SSH, Podman, Caddy, or SOPS commands.
+The first real deployment tracer checks out the requested Git ref, records the
+resolved commit, and delegates the checked-out repository to the existing
+`nixploy deploy` CLI. This preserves the proven Nix, SSH, Podman, Caddy, and SOPS
+behavior while the durable Elixir orchestration path is validated. During this
+tracer the checked-out repository's `.#nixploy` output remains the deployment
+configuration source, and the target name registered in the control plane must
+match its flake target name.
+
+Deployments are temporarily serialized through a single-worker Oban queue until
+PostgreSQL-backed per-target leases are implemented. Workers must have Git,
+Bash, `setsid`, and the existing `nixploy` executable on
+`PATH`. Set `NIXPLOY_LEGACY_EXECUTABLE` to an absolute executable path when it is
+installed elsewhere. This compatibility adapter is temporary; native Elixir execution
+adapters will replace it one end-to-end slice at a time. While the compatibility
+command runs, its detailed progress is persisted as events but the coarse
+control-plane stage remains `building` until the command completes.
 
 Run both implementations' test suites while behavior is being ported:
 

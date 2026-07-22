@@ -4,7 +4,7 @@ defmodule Nixploy.Deployments do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
-  alias Nixploy.Deployments.{Deployment, Event, SimulatedWorker}
+  alias Nixploy.Deployments.{Deployment, Event}
   alias Nixploy.{Notifications, Repo}
 
   @allowed_transitions %{
@@ -46,12 +46,14 @@ defmodule Nixploy.Deployments do
     |> publish_result()
   end
 
-  def enqueue_deployment(attrs) do
+  def enqueue_deployment(attrs, opts \\ []) do
+    worker = Keyword.get(opts, :worker, deployment_worker())
+
     result =
       attrs
       |> deployment_multi()
       |> Oban.insert(:job, fn %{deployment: deployment} ->
-        SimulatedWorker.new(%{deployment_id: deployment.id})
+        worker.new(%{deployment_id: deployment.id})
       end)
       |> Repo.transaction()
       |> case do
@@ -162,6 +164,28 @@ defmodule Nixploy.Deployments do
     |> Repo.one!()
   end
 
+  def record_event(deployment_id, stage, level, message, metadata \\ %{}) do
+    result =
+      %Event{}
+      |> Event.changeset(%{
+        deployment_id: deployment_id,
+        stage: stage,
+        level: level,
+        message: message,
+        metadata: metadata
+      })
+      |> Repo.insert()
+
+    case result do
+      {:ok, event} ->
+        publish(deployment_id)
+        {:ok, event}
+
+      error ->
+        error
+    end
+  end
+
   def change_deployment(%Deployment{} = deployment, attrs \\ %{}) do
     Deployment.create_changeset(deployment, attrs)
   end
@@ -219,6 +243,10 @@ defmodule Nixploy.Deployments do
   defp publish(deployment_id) do
     _ = Notifications.publish(deployment_id)
     :ok
+  end
+
+  defp deployment_worker do
+    Application.get_env(:nixploy, :deployment_worker, Nixploy.Deployments.Worker)
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)

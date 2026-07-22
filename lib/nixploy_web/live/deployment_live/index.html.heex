@@ -177,10 +177,14 @@
             </.button>
           </div>
 
-          <div class="grid gap-3 text-sm sm:grid-cols-3">
+          <div class="grid gap-3 text-sm sm:grid-cols-4">
             <div>
               <span class="block text-xs uppercase text-base-content/50">Current stage</span>
               <span class="font-medium">{deployment.current_stage}</span>
+            </div>
+            <div>
+              <span class="block text-xs uppercase text-base-content/50">Revision</span>
+              <span class="font-mono">{short_commit(deployment.resolved_commit)}</span>
             </div>
             <div>
               <span class="block text-xs uppercase text-base-content/50">Started</span>
@@ -190,6 +194,11 @@
               <span class="block text-xs uppercase text-base-content/50">Finished</span>
               <span>{format_time(deployment.finished_at)}</span>
             </div>
+          </div>
+
+          <div :if={deployment.failure} class="alert alert-error text-sm">
+            <.icon name="hero-exclamation-circle" class="size-5" />
+            <span>{deployment.failure["message"] || deployment.failure[:message]}</span>
           </div>
 
           <ol class="space-y-2 border-l border-base-300 pl-4">

@@ -13,9 +13,13 @@ worker? = role in [:worker, :all]
 
 config :nixploy, role: role
 
+if executable = System.get_env("NIXPLOY_LEGACY_EXECUTABLE") do
+  config :nixploy, :legacy_nixploy_executable, executable
+end
+
 unless config_env() == :test do
   config :nixploy, Oban,
-    queues: if(worker?, do: [deployments: 5, health_checks: 2], else: false),
+    queues: if(worker?, do: [deployments: 1, health_checks: 2], else: false),
     plugins: if(worker?, do: [Oban.Plugins.Pruner], else: false)
 end
 

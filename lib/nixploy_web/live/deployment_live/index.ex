@@ -168,6 +168,9 @@ defmodule NixployWeb.DeploymentLive.Index do
   def state_class(:cancelled), do: "badge-warning"
   def state_class(_state), do: "badge-info"
 
+  def short_commit(nil), do: "-"
+  def short_commit(commit), do: String.slice(commit, 0, 12)
+
   def format_time(nil), do: "-"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")
 end

@@ -10,7 +10,9 @@ import Config
 config :nixploy,
   ecto_repos: [Nixploy.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true],
-  role: :all
+  role: :all,
+  deployment_worker: Nixploy.Deployments.Worker,
+  legacy_nixploy_executable: "nixploy"
 
 config :nixploy, Oban,
   repo: Nixploy.Repo,

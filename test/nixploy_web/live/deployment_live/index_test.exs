@@ -96,6 +96,28 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert render(view) =~ "Deployment succeeded"
   end
 
+  test "shows the resolved revision and deployment failure", %{conn: conn} do
+    deployment = Fixtures.deployment_fixture()
+    commit = String.duplicate("a", 40)
+
+    {:ok, _, _} = Deployments.transition(deployment.id, :preparing, "Preparing")
+
+    {:ok, _, _} =
+      Deployments.transition(deployment.id, :building, "Resolved revision", %{
+        resolved_commit: commit
+      })
+
+    {:ok, _, _} =
+      Deployments.transition(deployment.id, :failed, "Deployment failed", %{
+        failure: %{message: "Podman connection failed"}
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#deployment-#{deployment.id}", "aaaaaaaaaaaa")
+    assert has_element?(view, "#deployment-#{deployment.id}", "Podman connection failed")
+  end
+
   test "requests cancellation from the dashboard", %{conn: conn} do
     deployment = Fixtures.deployment_fixture()
     {:ok, view, _html} = live(conn, ~p"/")
