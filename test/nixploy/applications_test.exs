@@ -13,6 +13,27 @@ defmodule Nixploy.ApplicationsTest do
              })
 
     assert repository.default_ref == "main"
+    assert repository.subdirectory == "."
+  end
+
+  test "accepts safe flake subdirectories and rejects traversal" do
+    assert {:ok, repository} =
+             Applications.create_repository(%{
+               name: "monorepo",
+               url: "https://example.com/monorepo.git",
+               subdirectory: "apps/web"
+             })
+
+    assert repository.subdirectory == "apps/web"
+
+    assert {:error, changeset} =
+             Applications.create_repository(%{
+               name: "unsafe-monorepo",
+               url: "https://example.com/monorepo.git",
+               subdirectory: "../outside"
+             })
+
+    assert "must be a relative path without parent traversal" in errors_on(changeset).subdirectory
   end
 
   test "repository names are unique" do

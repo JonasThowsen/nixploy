@@ -40,7 +40,7 @@ defmodule Nixploy.Deployments.WorkerTest do
     printf 'Deployment completed successfully. target=%s\\n' "$3"
     """)
 
-    deployment = enqueue_real_deployment(context.repository_path)
+    deployment = enqueue_real_deployment(context.repository_path, "fixture-app")
 
     assert_enqueued(worker: Worker, args: %{deployment_id: deployment.id})
     assert :ok = perform_job(Worker, %{deployment_id: deployment.id})
@@ -53,6 +53,7 @@ defmodule Nixploy.Deployments.WorkerTest do
     messages = Enum.map(Deployments.list_events(deployment.id), & &1.message)
     assert Enum.any?(messages, &String.contains?(&1, "Resolved main to"))
     assert Enum.any?(messages, &String.contains?(&1, "target=production"))
+    assert Enum.any?(messages, &String.contains?(&1, "/fixture-app"))
     assert List.last(messages) == "Deployment succeeded"
   end
 
@@ -74,8 +75,10 @@ defmodule Nixploy.Deployments.WorkerTest do
     assert failed.failure["message"] =~ "remote Podman connection failed"
   end
 
-  defp enqueue_real_deployment(repository_path) do
-    repository = Fixtures.repository_fixture(%{url: repository_path})
+  defp enqueue_real_deployment(repository_path, subdirectory \\ ".") do
+    repository =
+      Fixtures.repository_fixture(%{url: repository_path, subdirectory: subdirectory})
+
     target = Fixtures.target_fixture(%{name: "production"})
     service = Fixtures.service_fixture(%{repository: repository, target: target})
 
@@ -94,7 +97,9 @@ defmodule Nixploy.Deployments.WorkerTest do
     git!(["-C", path, "config", "user.name", "Nixploy Test"])
     git!(["-C", path, "config", "user.email", "nixploy@example.test"])
     File.write!(Path.join(path, "flake.nix"), "{ outputs = _: {}; }\n")
-    git!(["-C", path, "add", "flake.nix"])
+    File.mkdir_p!(Path.join(path, "fixture-app"))
+    File.write!(Path.join(path, "fixture-app/flake.nix"), "{ outputs = _: {}; }\n")
+    git!(["-C", path, "add", "."])
     git!(["-C", path, "commit", "--quiet", "-m", "initial"])
     git!(["-C", path, "rev-parse", "HEAD"])
   end

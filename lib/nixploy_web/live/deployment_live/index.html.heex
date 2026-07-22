@@ -5,7 +5,7 @@
       <h1 class="text-4xl font-bold tracking-tight">Deployment control plane</h1>
       <p class="max-w-3xl text-base-content/70">
         Attach a Nix flake service to a Podman target and follow its durable deployment workflow.
-        Execution is currently simulated while the control-plane foundation is built.
+        The current tracer delegates real deployments to the existing nixploy CLI.
       </p>
     </header>
 
@@ -43,6 +43,12 @@
               required
             />
             <.input field={@repository_form[:default_ref]} label="Default ref" required />
+            <.input
+              field={@repository_form[:subdirectory]}
+              label="Flake subdirectory"
+              placeholder="."
+              required
+            />
             <.button class="w-full">Add repository</.button>
           </.form>
         </div>

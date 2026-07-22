@@ -183,6 +183,12 @@ defmodule Nixploy.Deployments.Worker do
   defp failure_message({:missing_success_marker, output}),
     do: "nixploy did not report successful completion: #{tail(output)}"
 
+  defp failure_message({:invalid_repository_subdirectory, subdirectory}),
+    do: "invalid repository subdirectory: #{subdirectory}"
+
+  defp failure_message({:repository_subdirectory_not_found, subdirectory}),
+    do: "repository subdirectory not found: #{subdirectory}"
+
   defp failure_message(:process_group_support_unavailable),
     do: "safe command execution requires bash and setsid"
 

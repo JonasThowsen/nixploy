@@ -215,7 +215,8 @@ resolved commit, and delegates the checked-out repository to the existing
 behavior while the durable Elixir orchestration path is validated. During this
 tracer the checked-out repository's `.#nixploy` output remains the deployment
 configuration source, and the target name registered in the control plane must
-match its flake target name.
+match its flake target name. Repositories whose flake is not at the Git root can
+set a relative flake subdirectory when registered.
 
 Deployments are temporarily serialized through a single-worker Oban queue until
 PostgreSQL-backed per-target leases are implemented. Workers must have Git,

@@ -47,8 +47,9 @@ defmodule Nixploy.Deployments.Source do
              redactions
            ),
          {:ok, result} <-
-           git(["-C", workspace, "rev-parse", "HEAD"], opts, redactions) do
-      {:ok, workspace, String.trim(result.output_tail)}
+           git(["-C", workspace, "rev-parse", "HEAD"], opts, redactions),
+         {:ok, working_directory} <- working_directory(deployment, workspace) do
+      {:ok, working_directory, String.trim(result.output_tail)}
     end
   end
 
@@ -84,6 +85,19 @@ defmodule Nixploy.Deployments.Source do
       {:ok, %{exit_status: 0} = result} -> {:ok, result}
       {:ok, result} -> {:error, {:git_failed, result.exit_status, result.output_tail}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp working_directory(deployment, workspace) do
+    subdirectory = deployment.service.repository.subdirectory
+
+    with {:ok, safe_path} <- Path.safe_relative(subdirectory, workspace),
+         working_directory = Path.join(workspace, safe_path),
+         true <- File.dir?(working_directory) do
+      {:ok, working_directory}
+    else
+      :error -> {:error, {:invalid_repository_subdirectory, subdirectory}}
+      false -> {:error, {:repository_subdirectory_not_found, subdirectory}}
     end
   end
 

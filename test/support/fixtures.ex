@@ -9,7 +9,8 @@ defmodule Nixploy.Fixtures do
         %{
           name: "repository-#{unique}",
           url: "https://example.com/repository-#{unique}.git",
-          default_ref: "main"
+          default_ref: "main",
+          subdirectory: "."
         },
         Map.new(attrs)
       )
