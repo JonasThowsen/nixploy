@@ -15,6 +15,7 @@ defmodule Nixploy.Execution do
   end
 
   @poll_interval 250
+  @termination_grace :timer.seconds(7)
   @line_bytes 4_096
 
   @spec run(Command.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
@@ -37,7 +38,9 @@ defmodule Nixploy.Execution do
         "",
         false,
         nil,
-        false
+        false,
+        nil,
+        nil
       )
     end
   rescue
@@ -105,7 +108,9 @@ defmodule Nixploy.Execution do
          output_tail,
          output_truncated?,
          exit_status,
-         eof?
+         eof?,
+         termination_reason,
+         termination_started_at
        ) do
     receive do
       {^port, {:data, data}} ->
@@ -123,12 +128,22 @@ defmodule Nixploy.Execution do
           output_tail,
           output_truncated?,
           exit_status,
-          eof?
+          eof?,
+          termination_reason,
+          termination_started_at
         )
 
       {^port, {:exit_status, status}} ->
         if eof? do
-          finish(status, line_buffer, output_tail, output_truncated?, command, opts)
+          finish(
+            status,
+            line_buffer,
+            output_tail,
+            output_truncated?,
+            command,
+            opts,
+            termination_reason
+          )
         else
           receive_output(
             port,
@@ -141,13 +156,23 @@ defmodule Nixploy.Execution do
             output_tail,
             output_truncated?,
             status,
-            false
+            false,
+            termination_reason,
+            termination_started_at
           )
         end
 
       {^port, :eof} ->
         if is_integer(exit_status) do
-          finish(exit_status, line_buffer, output_tail, output_truncated?, command, opts)
+          finish(
+            exit_status,
+            line_buffer,
+            output_tail,
+            output_truncated?,
+            command,
+            opts,
+            termination_reason
+          )
         else
           receive_output(
             port,
@@ -160,19 +185,69 @@ defmodule Nixploy.Execution do
             output_tail,
             output_truncated?,
             nil,
-            true
+            true,
+            termination_reason,
+            termination_started_at
           )
         end
     after
       @poll_interval ->
         cond do
+          termination_reason &&
+              System.monotonic_time(:millisecond) - termination_started_at >=
+                @termination_grace ->
+            signal_process(os_pid, "KILL")
+            close_port(port)
+            {:error, termination_reason}
+
+          termination_reason ->
+            receive_output(
+              port,
+              command,
+              opts,
+              started_at,
+              os_pid,
+              termination_mode,
+              line_buffer,
+              output_tail,
+              output_truncated?,
+              exit_status,
+              eof?,
+              termination_reason,
+              termination_started_at
+            )
+
           cancelled?(opts) ->
-            terminate(port, os_pid, termination_mode)
-            {:error, :cancelled}
+            begin_termination(
+              port,
+              command,
+              opts,
+              started_at,
+              os_pid,
+              termination_mode,
+              line_buffer,
+              output_tail,
+              output_truncated?,
+              exit_status,
+              eof?,
+              :cancelled
+            )
 
           timed_out?(command.timeout, started_at) ->
-            terminate(port, os_pid, termination_mode)
-            {:error, :timeout}
+            begin_termination(
+              port,
+              command,
+              opts,
+              started_at,
+              os_pid,
+              termination_mode,
+              line_buffer,
+              output_tail,
+              output_truncated?,
+              exit_status,
+              eof?,
+              :timeout
+            )
 
           true ->
             receive_output(
@@ -186,13 +261,70 @@ defmodule Nixploy.Execution do
               output_tail,
               output_truncated?,
               exit_status,
-              eof?
+              eof?,
+              nil,
+              nil
             )
         end
     end
   end
 
-  defp finish(exit_status, line_buffer, output_tail, output_truncated?, command, opts) do
+  defp begin_termination(
+         port,
+         command,
+         opts,
+         started_at,
+         os_pid,
+         termination_mode,
+         line_buffer,
+         output_tail,
+         output_truncated?,
+         exit_status,
+         eof?,
+         reason
+       ) do
+    signal_termination(port, os_pid, termination_mode)
+
+    receive_output(
+      port,
+      command,
+      opts,
+      started_at,
+      os_pid,
+      termination_mode,
+      line_buffer,
+      output_tail,
+      output_truncated?,
+      exit_status,
+      eof?,
+      reason,
+      System.monotonic_time(:millisecond)
+    )
+  end
+
+  defp finish(
+         _exit_status,
+         line_buffer,
+         _output_tail,
+         _output_truncated?,
+         command,
+         opts,
+         termination_reason
+       )
+       when not is_nil(termination_reason) do
+    emit_line(line_buffer, command, opts)
+    {:error, termination_reason}
+  end
+
+  defp finish(
+         exit_status,
+         line_buffer,
+         output_tail,
+         output_truncated?,
+         command,
+         opts,
+         nil
+       ) do
     emit_line(line_buffer, command, opts)
     output_tail = output_tail |> valid_text() |> redact(command.redact)
 
@@ -211,8 +343,17 @@ defmodule Nixploy.Execution do
     parts = :binary.split(line_buffer <> data, "\n", [:global])
     {complete_lines, [next_buffer]} = Enum.split(parts, -1)
     Enum.each(complete_lines, &emit_line(&1, command, opts))
+    next_buffer = emit_complete_chunks(next_buffer, command, opts)
     {next_buffer, output_tail, output_truncated? or truncated_now?}
   end
+
+  defp emit_complete_chunks(buffer, command, opts) when byte_size(buffer) > @line_bytes do
+    <<chunk::binary-size(@line_bytes), rest::binary>> = buffer
+    emit_line(chunk, command, opts)
+    emit_complete_chunks(rest, command, opts)
+  end
+
+  defp emit_complete_chunks(buffer, _command, _opts), do: buffer
 
   defp emit_line("", _command, _opts), do: :ok
 
@@ -277,15 +418,20 @@ defmodule Nixploy.Execution do
     end
   end
 
-  defp terminate(port, os_pid, :wrapper) when is_integer(os_pid) do
-    if kill = System.find_executable("kill") do
-      _ = System.cmd(kill, ["-TERM", "#{os_pid}"], stderr_to_stdout: true)
-    end
-
-    close_port(port)
+  defp signal_termination(_port, os_pid, :wrapper) when is_integer(os_pid) do
+    signal_process(os_pid, "TERM")
   end
 
-  defp terminate(port, _os_pid, _termination_mode), do: close_port(port)
+  defp signal_termination(port, _os_pid, _termination_mode), do: close_port(port)
+
+  defp signal_process(os_pid, signal) do
+    if kill = System.find_executable("kill") do
+      _ =
+        System.cmd(kill, ["-#{signal}", "--", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end
+
+    :ok
+  end
 
   defp close_port(port) do
     if Port.info(port), do: Port.close(port)

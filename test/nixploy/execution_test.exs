@@ -51,6 +51,21 @@ defmodule Nixploy.ExecutionTest do
     assert result.output_truncated?
   end
 
+  test "bounds streamed chunks even when output contains no newlines" do
+    parent = self()
+    payload = String.duplicate("x", 12_000)
+    command = %Command{executable: "printf", args: ["%s", payload], max_output_bytes: 16_000}
+
+    assert {:ok, result} =
+             Execution.run(command, on_line: &send(parent, {:chunk, byte_size(&1)}))
+
+    assert result.exit_status == 0
+    assert_receive {:chunk, 4_096}
+    assert_receive {:chunk, 4_096}
+    assert_receive {:chunk, 3_808}
+    refute_receive {:chunk, _size}
+  end
+
   test "cancellation terminates the external process group" do
     marker =
       Path.join(System.tmp_dir!(), "nixploy-cancelled-#{System.unique_integer([:positive])}")
