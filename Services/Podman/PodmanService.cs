@@ -16,20 +16,36 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
 
         Console.WriteLine($"Checking Podman connection '{connectionName}'...");
 
-        var storedIdentity = await GetStoredConnectionIdentityAsync(connectionName);
+        var storedConnection = await GetStoredConnectionAsync(connectionName);
 
-        if (!string.IsNullOrWhiteSpace(storedIdentity))
+        if (storedConnection is not null)
         {
-            Console.WriteLine(
-                $"Existing Podman connection '{connectionName}' stores identity '{storedIdentity}'. " +
-                "Recreating it without a stored identity so SSH/ssh-agent can handle authentication."
-            );
+            string? recreationReason = null;
 
-            await commandRunner.RunAsync(
-                "podman",
-                ["system", "connection", "rm", connectionName],
-                new CommandRunOptions { StreamOutput = false }
-            );
+            if (!string.IsNullOrWhiteSpace(storedConnection.Identity))
+            {
+                recreationReason =
+                    $"it stores identity '{storedConnection.Identity}', but SSH/ssh-agent should handle authentication.";
+            }
+            else if (!ConnectionMatchesTarget(storedConnection.Uri, target))
+            {
+                recreationReason =
+                    $"it points to '{storedConnection.Uri ?? "an unknown endpoint"}' instead of " +
+                    $"'{target.User}@{target.Ip}:{target.Port}'.";
+            }
+
+            if (recreationReason is not null)
+            {
+                Console.WriteLine(
+                    $"Existing Podman connection '{connectionName}' is stale because {recreationReason} Recreating it."
+                );
+
+                await commandRunner.RunAsync(
+                    "podman",
+                    ["system", "connection", "rm", connectionName],
+                    new CommandRunOptions { StreamOutput = false }
+                );
+            }
         }
 
         CommandRunResult infoResult = await commandRunner.RunAsync(
@@ -309,7 +325,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         return true;
     }
 
-    private async Task<string?> GetStoredConnectionIdentityAsync(string connectionName)
+    private async Task<StoredPodmanConnection?> GetStoredConnectionAsync(string connectionName)
     {
         var result = await commandRunner.RunAsync(
             "podman",
@@ -338,9 +354,14 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
                     continue;
                 }
 
-                return connection.TryGetProperty("Identity", out var identity)
-                    ? identity.GetString()
+                var uri = connection.TryGetProperty("URI", out var uriElement)
+                    ? uriElement.GetString()
                     : null;
+                var identity = connection.TryGetProperty("Identity", out var identityElement)
+                    ? identityElement.GetString()
+                    : null;
+
+                return new StoredPodmanConnection(uri, identity);
             }
         }
         catch (JsonException)
@@ -350,6 +371,24 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
 
         return null;
     }
+
+    private static bool ConnectionMatchesTarget(string? connectionUri, NixployTarget target)
+    {
+        if (!Uri.TryCreate(connectionUri, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, "ssh", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var user = Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[0]);
+        var targetHost = target.Ip.Trim('[', ']');
+
+        return string.Equals(user, target.User, StringComparison.Ordinal) &&
+            string.Equals(uri.Host, targetHost, StringComparison.OrdinalIgnoreCase) &&
+            uri.Port == target.Port;
+    }
+
+    private sealed record StoredPodmanConnection(string? Uri, string? Identity);
 
     private static List<string> BuildRunArguments(
         string connectionName,

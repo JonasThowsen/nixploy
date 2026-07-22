@@ -107,6 +107,60 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task EnsureConnectionAsync_UsesConnectionPointingToCurrentTarget()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, """
+            [{"Name":"nixploy-my-app-prod","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
+            """, ""),
+            new CommandRunResult(0, "", "")
+        );
+        var service = new PodmanService(runner);
+        var target = new NixployTarget
+        {
+            Ip = "203.0.113.10",
+            User = "deploy",
+            Port = 2222
+        };
+
+        var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
+
+        Assert.True(success);
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.Equal("info", runner.Calls[1].Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task EnsureConnectionAsync_RecreatesConnectionPointingToDifferentTarget()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, """
+            [{"Name":"nixploy-my-app-prod","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
+            """, ""),
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(1, "", "missing"),
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(0, "", "")
+        );
+        var service = new PodmanService(runner);
+        var target = new NixployTarget
+        {
+            Ip = "198.51.100.20",
+            User = "deploy",
+            Port = 2222
+        };
+
+        var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
+
+        Assert.True(success);
+        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[1].Arguments);
+        Assert.Equal(
+            ["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@198.51.100.20"],
+            runner.Calls[3].Arguments
+        );
+    }
+
+    [Fact]
     public async Task LoadImageAsync_ParsesLoadedImageReference()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(0, "Loaded image: localhost/app:latest\n", ""));
