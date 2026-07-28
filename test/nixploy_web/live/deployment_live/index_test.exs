@@ -6,81 +6,81 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   alias Nixploy.Deployments
   alias Nixploy.Deployments.SimulatedWorker
+  alias Nixploy.LocalHost
   alias Nixploy.Fixtures
   alias Nixploy.Operations.{LogWorker, StatusWorker}
 
   setup %{conn: conn} do
+    previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
+
+    inventory = %LocalHost.Inventory{
+      hostname: "nixploy-vps",
+      runtime_user: "nixploy",
+      observed_at: ~U[2026-07-27 12:00:00Z],
+      workloads: [
+        %LocalHost.Workload{
+          id: "abcdef123456",
+          name: "nixploy-jomat-production-green",
+          image: "localhost/jomat:latest",
+          state: "running",
+          status: "Up 2 hours",
+          project: "jomat",
+          target: "production",
+          revision: "55ef9e674e5d",
+          repository: "https://github.com/JonasThowsen/jomat",
+          slot: "green",
+          managed?: true
+        },
+        %LocalHost.Workload{
+          id: "123456abcdef",
+          name: "postgres",
+          image: "docker.io/postgres:17",
+          state: "running",
+          status: "Up 1 day"
+        }
+      ]
+    }
+
+    Application.put_env(:nixploy, :local_inventory_probe, fn -> {:ok, inventory} end)
+
+    on_exit(fn ->
+      if previous_probe do
+        Application.put_env(:nixploy, :local_inventory_probe, previous_probe)
+      else
+        Application.delete_env(:nixploy, :local_inventory_probe)
+      end
+    end)
+
     operator = Fixtures.operator_fixture()
     {:ok, conn: log_in_operator(conn, operator), operator: operator}
   end
 
-  test "renders the deployment dashboard", %{conn: conn} do
-    {:ok, view, html} = live(conn, ~p"/")
+  test "discovers the local Podman host without manual registration", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
 
-    assert html =~ "Deployment control plane"
-    assert has_element?(view, "#repository-form")
-    assert has_element?(view, "#target-form")
-    assert has_element?(view, "#service-form")
-    assert has_element?(view, "#deployment-form")
-    assert has_element?(view, "#service-statuses")
+    assert has_element?(view, "#local-host-inventory", "nixploy-vps")
+    assert has_element?(view, "#local-workload-abcdef123456", "jomat")
+    assert has_element?(view, "#local-workload-abcdef123456", "55ef9e674e5d")
+    assert has_element?(view, "#local-workload-123456abcdef", "unmanaged")
+    refute has_element?(view, "#repository-form")
+    refute has_element?(view, "#target-form")
+    refute has_element?(view, "#service-form")
+    refute has_element?(view, "#deployment-form")
     assert has_element?(view, "#empty-deployments")
   end
 
-  test "renders validation errors", %{conn: conn} do
+  test "refreshes local inventory and renders probe failures", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
-    view
-    |> form("#repository-form", %{
-      "repository" => %{"name" => "", "url" => "", "default_ref" => ""}
-    })
-    |> render_submit()
-
-    assert has_element?(view, "#repository-form p.text-error", "can't be blank")
-  end
-
-  test "creates repository, target, and service records", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+    Application.put_env(:nixploy, :local_inventory_probe, fn ->
+      {:error, {:podman_failed, 125, "Podman socket unavailable"}}
+    end)
 
     view
-    |> form("#repository-form", %{
-      "repository" => %{
-        "name" => "demo",
-        "url" => "https://example.com/demo.git",
-        "default_ref" => "main"
-      }
-    })
-    |> render_submit()
+    |> element("#refresh-local-inventory")
+    |> render_click()
 
-    view
-    |> form("#target-form", %{
-      "target" => %{
-        "name" => "production",
-        "host" => "prod.example.com",
-        "ssh_user" => "deploy",
-        "ssh_port" => "22"
-      }
-    })
-    |> render_submit()
-
-    [repository] = Nixploy.Applications.list_repositories()
-    [target] = Nixploy.Fleet.list_targets()
-
-    view
-    |> form("#service-form", %{
-      "service" => %{
-        "name" => "web",
-        "repository_id" => repository.id,
-        "target_id" => target.id,
-        "flake_output" => "docker",
-        "domain" => "demo.example.com",
-        "health_path" => "/health"
-      }
-    })
-    |> render_submit()
-
-    assert [service] = Nixploy.Applications.list_services()
-    assert service.name == "web"
-    assert render(view) =~ "1"
+    assert has_element?(view, "#local-inventory-error", "Podman socket unavailable")
   end
 
   test "queues a worker-owned service status refresh", %{conn: conn} do

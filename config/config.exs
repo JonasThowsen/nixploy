@@ -11,6 +11,7 @@ config :nixploy,
   ecto_repos: [Nixploy.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true],
   role: :all,
+  auth_mode: :password,
   secure_cookies: false,
   deployment_worker: Nixploy.Deployments.Worker,
   legacy_nixploy_executable: "nixploy"

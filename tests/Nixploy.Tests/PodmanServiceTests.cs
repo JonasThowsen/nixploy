@@ -24,6 +24,7 @@ public sealed class PodmanServiceTests
             "my-app",
             "abc123",
             "production",
+            "https://github.com/example/my-app",
             "deadbeefcafe",
             "2026-05-06T12:00:00.0000000+00:00"
         );
@@ -44,8 +45,13 @@ public sealed class PodmanServiceTests
         Assert.Contains("nixploy.project=my-app", run.Arguments);
         Assert.Contains("nixploy.project_id=abc123", run.Arguments);
         Assert.Contains("nixploy.target=production", run.Arguments);
+        Assert.Contains("nixploy.repository=https://github.com/example/my-app", run.Arguments);
         Assert.Contains("nixploy.git_commit=deadbeefcafe", run.Arguments);
         Assert.Contains("nixploy.deployed_at=2026-05-06T12:00:00.0000000+00:00", run.Arguments);
+        Assert.Contains("io.nixploy.managed=true", run.Arguments);
+        Assert.Contains("io.nixploy.repository=https://github.com/example/my-app", run.Arguments);
+        Assert.Contains("org.opencontainers.image.source=https://github.com/example/my-app", run.Arguments);
+        Assert.Contains("org.opencontainers.image.revision=deadbeefcafe", run.Arguments);
     }
 
     [Fact]

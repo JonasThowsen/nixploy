@@ -398,7 +398,7 @@ public static class CommandFactory
         var projectId = ShortHash(origin);
         var deployedAt = DateTimeOffset.UtcNow.ToString("O");
 
-        return new DeploymentMetadata(project, projectId, targetName, commit, deployedAt);
+        return new DeploymentMetadata(project, projectId, targetName, origin, commit, deployedAt);
     }
 
     private static async Task<string?> GitOutputAsync(ICommandRunner commandRunner, IReadOnlyList<string> arguments)

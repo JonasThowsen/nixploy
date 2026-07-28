@@ -47,7 +47,7 @@ defmodule NixployWeb.Layouts do
           {@current_operator.email}
         </span>
         <.link
-          :if={@current_operator}
+          :if={@current_operator && NixployWeb.OperatorAuth.password_auth?()}
           href={~p"/logout"}
           method="delete"
           class="btn btn-ghost btn-sm"

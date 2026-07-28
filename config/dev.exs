@@ -1,14 +1,35 @@
 import Config
 
-# Configure your database
+# Configure your database. The default keeps plain `mix` commands convenient,
+# while the SOPS-backed Justfile can supply the complete connection URL.
+database_url =
+  System.get_env("DATABASE_URL", "ecto://postgres:postgres@localhost/nixploy_dev")
+
 config :nixploy, Nixploy.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  database: "nixploy_dev",
+  url: database_url,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
-  pool_size: 10
+  pool_size: String.to_integer(System.get_env("POOL_SIZE", "10"))
+
+external_scheme =
+  case System.get_env("PHX_SCHEME", "http") do
+    scheme when scheme in ["http", "https"] -> scheme
+    invalid -> raise "invalid PHX_SCHEME #{inspect(invalid)}; expected http or https"
+  end
+
+external_host = System.get_env("PHX_HOST", "localhost")
+
+external_port =
+  System.get_env(
+    "PHX_URL_PORT",
+    if(external_scheme == "https", do: "443", else: System.get_env("PORT", "4000"))
+  )
+  |> String.to_integer()
+
+# Development is accessed exclusively through the Tailscale HTTPS proxy.
+# Keep this compile-time session setting stable across plain Mix commands and
+# `just dev`, which loads the external URL variables from SOPS.
+config :nixploy, secure_cookies: true
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
@@ -20,10 +41,15 @@ config :nixploy, NixployWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
-  check_origin: false,
+  url: [scheme: external_scheme, host: external_host, port: external_port],
+  check_origin: true,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base: "hU3drq4zPRHTW/43XS4wIG0myuenKVSjbSL7XAbZaKrEzAWr0VpUD4y+DyG3Zw4r",
+  secret_key_base:
+    System.get_env(
+      "SECRET_KEY_BASE",
+      "hU3drq4zPRHTW/43XS4wIG0myuenKVSjbSL7XAbZaKrEzAWr0VpUD4y+DyG3Zw4r"
+    ),
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:nixploy, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:nixploy, ~w(--watch)]}

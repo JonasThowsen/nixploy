@@ -4,12 +4,44 @@ defmodule NixployWeb.OperatorSessionController do
   alias Nixploy.{Accounts, Audit}
   alias NixployWeb.OperatorAuth
 
-  def new(conn, _params) do
-    form = Phoenix.Component.to_form(%{"email" => ""}, as: :operator)
-    render(conn, :new, form: form)
+  def new(%{assigns: %{current_operator: operator}} = conn, _params) when not is_nil(operator) do
+    redirect(conn, to: ~p"/")
   end
 
-  def create(conn, %{"operator" => %{"email" => email, "password" => password}}) do
+  def new(conn, _params) do
+    if OperatorAuth.tailscale_auth?() do
+      send_resp(conn, :forbidden, "Access nixploy through an authorized Tailscale identity")
+    else
+      form = Phoenix.Component.to_form(%{"email" => ""}, as: :operator)
+      render(conn, :new, form: form)
+    end
+  end
+
+  def create(conn, params) do
+    if OperatorAuth.tailscale_auth?() do
+      send_resp(
+        conn,
+        :forbidden,
+        "Password login is disabled when Tailscale authentication is enabled"
+      )
+    else
+      create_password_session(conn, params)
+    end
+  end
+
+  def delete(conn, _params) do
+    _ = Audit.record(conn.assigns.current_operator, :logout, :session, request_id(conn))
+
+    conn
+    |> OperatorAuth.log_out_operator()
+    |> put_flash(:info, "Signed out")
+    |> redirect(to: if(OperatorAuth.tailscale_auth?(), do: ~p"/", else: ~p"/login"))
+  end
+
+  defp create_password_session(
+         conn,
+         %{"operator" => %{"email" => email, "password" => password}}
+       ) do
     fingerprint = email_fingerprint(email)
     origin = remote_origin(conn)
 
@@ -20,7 +52,9 @@ defmodule NixployWeb.OperatorSessionController do
 
     case authentication do
       {:ok, operator} ->
-        case Audit.record(operator, :login, :session, request_id(conn)) do
+        case Audit.record(operator, :login, :session, request_id(conn),
+               metadata: %{"authentication" => "password"}
+             ) do
           {:ok, _event} ->
             {conn, return_to} = OperatorAuth.log_in_operator(conn, operator)
 
@@ -53,20 +87,11 @@ defmodule NixployWeb.OperatorSessionController do
     end
   end
 
-  def create(conn, _params) do
+  defp create_password_session(conn, _params) do
     conn
     |> put_flash(:error, "Invalid email or password")
     |> put_status(:unprocessable_entity)
     |> render(:new, form: Phoenix.Component.to_form(%{"email" => ""}, as: :operator))
-  end
-
-  def delete(conn, _params) do
-    _ = Audit.record(conn.assigns.current_operator, :logout, :session, request_id(conn))
-
-    conn
-    |> OperatorAuth.log_out_operator()
-    |> put_flash(:info, "Signed out")
-    |> redirect(to: ~p"/login")
   end
 
   defp request_id(conn), do: List.first(get_resp_header(conn, "x-request-id")) || "unknown"

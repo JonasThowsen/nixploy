@@ -7,7 +7,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Deployments.Deployment
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
-  alias Nixploy.{Notifications, Operations}
+  alias Nixploy.{LocalHost, Notifications, Operations}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -15,9 +15,14 @@ defmodule NixployWeb.DeploymentLive.Index do
 
     socket =
       socket
-      |> assign(:page_title, "Deployments")
+      |> assign(:page_title, "Local host")
+      |> assign(:local_inventory, nil)
+      |> assign(:local_inventory_error, nil)
+      |> assign(:local_inventory_status, :loading)
       |> load_dashboard()
       |> assign_forms()
+
+    if connected?(socket), do: send(self(), :load_local_inventory)
 
     {:ok, socket}
   end
@@ -142,6 +147,16 @@ defmodule NixployWeb.DeploymentLive.Index do
     {:noreply, assign(socket, :deployment_form, form)}
   end
 
+  def handle_event("refresh_local_inventory", _params, socket) do
+    send(self(), :load_local_inventory)
+
+    {:noreply,
+     assign(socket,
+       local_inventory_status: :loading,
+       local_inventory_error: nil
+     )}
+  end
+
   def handle_event("fetch_service_logs", %{"id" => service_id}, socket) do
     case Operations.request_log_snapshot(service_id, operator: socket.assigns.current_operator) do
       {:ok, _snapshot, _job} ->
@@ -200,6 +215,28 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   @impl true
+  def handle_info(:load_local_inventory, socket) do
+    # TODO(tracer): Move local observation to a supervised worker before adding
+    # polling or multi-host inventory; this first slice keeps one bounded probe
+    # observable directly from the LiveView.
+    case local_inventory_probe().() do
+      {:ok, inventory} ->
+        {:noreply,
+         assign(socket,
+           local_inventory: inventory,
+           local_inventory_status: :available,
+           local_inventory_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           local_inventory_status: :failed,
+           local_inventory_error: local_inventory_error(reason)
+         )}
+    end
+  end
+
   def handle_info({:deployment_changed, _deployment_id}, socket) do
     {:noreply, load_dashboard(socket)}
   end
@@ -211,6 +248,40 @@ defmodule NixployWeb.DeploymentLive.Index do
   def handle_info({:service_logs_changed, _service_id}, socket) do
     {:noreply, load_dashboard(socket)}
   end
+
+  defp local_inventory_probe do
+    Application.get_env(:nixploy, :local_inventory_probe, &LocalHost.inventory/0)
+  end
+
+  defp local_inventory_error({:executable_not_found, executable}),
+    do: "#{executable} is not available to the nixploy service"
+
+  defp local_inventory_error({:podman_failed, _status, output}) when output != "",
+    do: String.trim(output)
+
+  defp local_inventory_error(:podman_inventory_too_large),
+    do: "Podman returned more than the bounded 1 MiB inventory limit"
+
+  defp local_inventory_error(reason), do: inspect(reason)
+
+  def managed_workload_count(nil), do: 0
+
+  def managed_workload_count(inventory) do
+    Enum.count(inventory.workloads, & &1.managed?)
+  end
+
+  def workload_state_class(state) when state in ["running", "Running"], do: "badge-success"
+  def workload_state_class(state) when state in ["paused", "Paused"], do: "badge-warning"
+  def workload_state_class(_state), do: "badge-ghost"
+
+  def repository_link?(repository) when is_binary(repository) do
+    case URI.new(repository) do
+      {:ok, %URI{scheme: scheme}} when scheme in ["http", "https"] -> true
+      _other -> false
+    end
+  end
+
+  def repository_link?(_repository), do: false
 
   defp assign_forms(socket) do
     socket

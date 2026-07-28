@@ -12,29 +12,41 @@ This branch contains the first deployable control-plane MVP. It is intentionally
 
 ## What to evaluate
 
-1. Sign in with a provisioned operator.
-2. Register or correct a repository, target, and service.
-3. Queue a branch, tag, or commit.
-4. Observe the request resolve once to an immutable commit.
-5. Confirm that a mismatched flake target is rejected before deployment.
-6. Follow bounded deployment output and structured stages.
-7. Confirm success only after an independent SSH/Caddy/health observation sees the expected commit.
-8. Refresh status and fetch bounded active-container logs.
-9. Cancel active work or redeploy an exact historical revision.
-10. Review the append-only operator audit table.
-11. Restart the process and confirm all history and observations remain.
+1. Open the private Tailscale Service and confirm its identity header matches a provisioned operator without a second password prompt.
+2. Confirm the dashboard detects the local hostname, runtime user, and Podman installation without registering a target.
+3. Confirm managed and unmanaged containers appear automatically and probe failures can be retried.
+4. Confirm labeled workloads show project, repository, slot, and exact revision where available.
+5. For retained legacy service records, queue a branch, tag, or commit.
+6. Observe the request resolve once to an immutable commit.
+7. Confirm that a mismatched flake target is rejected before deployment.
+8. Follow bounded deployment output and structured stages.
+9. Confirm success only after an independent SSH/Caddy/health observation sees the expected commit.
+10. Refresh status, fetch logs, cancel active work, or redeploy an exact historical revision.
+11. Review the append-only operator audit table and confirm history survives a restart.
 
 ## Development quick start
 
 ```bash
 nix develop
-mix setup
-NIXPLOY_OPERATOR_PASSWORD='use a long password' \
-  mix nixploy.operator operator@example.com
-mix phx.server
+mix ecto.reset
+just dev
 ```
 
-Open <http://localhost:4000>. Liveness and database readiness are available at `/health` and `/ready` without authentication.
+Development seeds provision the operator from `secrets/dev.env`, so a reset
+recreates the configured account. (`mix setup` runs the same seeds on a fresh
+checkout.) The small Justfile mirrors jomat: `just dev` and `just dev-iex`
+decrypt `secrets/dev.env` directly into the server process environment. Edit
+the encrypted dotenv file with `sops secrets/dev.env`.
+
+Open <https://dev-nixploy.tailb61fd1.ts.net/login>. Development stays in
+password mode and Phoenix remains bound to `127.0.0.1:4000` behind the Tailscale
+HTTPS proxy. Liveness and database readiness are available at `/health` and
+`/ready` without authentication.
+
+The intended packaged production profile uses `NIXPLOY_AUTH_MODE=tailscale`
+and the private `svc:nixploy` Tailscale Service. Serve's trusted
+`Tailscale-User-Login` must match a provisioned operator; password login is
+disabled in that profile.
 
 ## Reproducible release
 
@@ -42,14 +54,19 @@ Open <http://localhost:4000>. Liveness and database readiness are available at `
 nix build .#control-plane
 ```
 
-The release includes the compatibility CLI and the worker runtime commands in its PATH. Configure it with an environment file readable only by the service user:
+The release includes the compatibility CLI and the worker runtime commands in
+its PATH. For a NixOS service, materialize the required production values as an
+environment file readable only by the service user (for example with sops-nix
+or another host-side secret provisioner):
 
 ```dotenv
 DATABASE_URL=ecto://nixploy:password@127.0.0.1/nixploy
 SECRET_KEY_BASE=replace-with-mix-phx-gen-secret-output
 RELEASE_COOKIE=replace-with-an-independent-random-value
 PHX_HOST=nixploy.example.com
+PHX_BIND_IP=127.0.0.1
 NIXPLOY_ROLE=all
+NIXPLOY_AUTH_MODE=tailscale
 ```
 
 Migrate and provision the first operator:
@@ -116,8 +133,19 @@ The MVP was validated against SSH target `nixploy-test` with fixture deployment 
 - retained 46 compatibility-output lines in the bounded deployment output
 - fetched a new generation-fenced 10-line log snapshot directly over strict SSH
 
-Automated validation includes 80 Elixir tests, 29 C# tests, repeated execution-runner stress tests, `nix flake check --no-build`, a successful `.#control-plane` build, release migrations, readiness checks, adapter path verification, and an authenticated packaged-dashboard smoke test.
+The local-host tracer was additionally exercised against the real Podman CLI on
+`netcup-dev`, where it observed the authenticated runtime user and a valid empty
+inventory without SSH or registration records.
+
+Automated validation includes 83 Elixir tests, 29 C# tests, repeated execution-runner stress tests, `nix flake check --no-build`, a successful `.#control-plane` build, release migrations, readiness checks, adapter path verification, and an authenticated packaged-dashboard smoke test.
 
 ## Explicitly after MVP
 
-Inline `TODO(tracer)` markers retain the next safe expansion points. Major post-MVP work includes native Elixir mutation adapters, remote fencing enforcement, split web/worker credential isolation, role-based authorization, revocable multi-device sessions, artifact-store log history, scheduled health checks, one-off tasks/exec, and broader CLI parity.
+Inline `TODO(tracer)` markers retain the next safe expansion points. The next
+product slice is a read-only GitHub connection that matches installed
+repositories to labeled local workloads and discovers their flake declarations.
+Major post-MVP work also includes native local mutation adapters, remote
+fencing enforcement, split web/worker credential isolation, richer Tailscale
+role mapping, identity-only operator provisioning, revocable sessions,
+artifact-store log history, scheduled health checks, one-off tasks/exec, and
+broader CLI parity.

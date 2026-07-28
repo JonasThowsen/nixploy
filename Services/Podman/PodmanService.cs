@@ -459,8 +459,17 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             ["nixploy.project"] = metadata.Project,
             ["nixploy.project_id"] = metadata.ProjectId,
             ["nixploy.target"] = metadata.Target,
+            ["nixploy.repository"] = metadata.Repository,
             ["nixploy.git_commit"] = metadata.GitCommit,
-            ["nixploy.deployed_at"] = metadata.DeployedAt
+            ["nixploy.deployed_at"] = metadata.DeployedAt,
+            ["io.nixploy.managed"] = "true",
+            ["io.nixploy.project"] = metadata.Project,
+            ["io.nixploy.target"] = metadata.Target,
+            ["io.nixploy.repository"] = metadata.Repository,
+            ["io.nixploy.revision"] = metadata.GitCommit,
+            ["io.nixploy.deployed_at"] = metadata.DeployedAt,
+            ["org.opencontainers.image.source"] = metadata.Repository,
+            ["org.opencontainers.image.revision"] = metadata.GitCommit
         };
 
         foreach (var (name, value) in labels)

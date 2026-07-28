@@ -160,6 +160,8 @@
           default = pkgs.mkShell {
             packages = [
               (beamPackages pkgs).elixir_1_20
+              pkgs.bash
+              pkgs.util-linux
               pkgs.postgresql_17
               pkgs.tailwindcss_4
               pkgs.esbuild
@@ -168,6 +170,7 @@
               pkgs.dotnet-sdk_10
               pkgs.roslyn-ls
               pkgs.sops
+              pkgs.just
               pkgs.podman
               pkgs.jq
             ];

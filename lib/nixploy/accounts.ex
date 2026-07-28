@@ -43,6 +43,12 @@ defmodule Nixploy.Accounts do
   def get_operator(id) when is_binary(id), do: Repo.get(Operator, id)
   def get_operator(_id), do: nil
 
+  def get_operator_by_email(email) when is_binary(email) do
+    Repo.get_by(Operator, email: normalize_email(email))
+  end
+
+  def get_operator_by_email(_email), do: nil
+
   defp normalize_email(email) when is_binary(email) do
     email
     |> String.trim()

@@ -13,6 +13,25 @@ worker? = role in [:worker, :all]
 
 config :nixploy, role: role
 
+auth_mode =
+  case System.get_env(
+         "NIXPLOY_AUTH_MODE",
+         if(config_env() == :prod, do: "tailscale", else: "password")
+       )
+       |> String.trim()
+       |> String.downcase() do
+    "password" ->
+      :password
+
+    "tailscale" ->
+      :tailscale
+
+    invalid ->
+      raise "invalid NIXPLOY_AUTH_MODE #{inspect(invalid)}; expected password or tailscale"
+  end
+
+config :nixploy, auth_mode: auth_mode
+
 if executable = System.get_env("NIXPLOY_LEGACY_EXECUTABLE") do
   config :nixploy, :legacy_nixploy_executable, executable
 end
@@ -53,12 +72,21 @@ if config_env() == :prod do
 
     host = System.get_env("PHX_HOST", "localhost")
 
+    bind_ip =
+      System.get_env("PHX_BIND_IP", "127.0.0.1")
+      |> String.to_charlist()
+      |> :inet.parse_address()
+      |> case do
+        {:ok, address} -> address
+        {:error, reason} -> raise "invalid PHX_BIND_IP: #{inspect(reason)}"
+      end
+
     config :nixploy, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
     config :nixploy, NixployWeb.Endpoint,
       server: true,
       url: [host: host, port: 443, scheme: "https"],
-      http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}],
+      http: [ip: bind_ip],
       secret_key_base: secret_key_base
   else
     config :nixploy, NixployWeb.Endpoint, server: false

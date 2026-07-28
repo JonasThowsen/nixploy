@@ -179,21 +179,43 @@ Enter the reproducible development environment and initialize Phoenix:
 ```bash
 nix develop
 mix setup
-mix phx.server
 ```
 
-The development database defaults to PostgreSQL on `localhost` with the
-credentials `postgres:postgres`. Override the generated Ecto configuration when
-using a different local setup. Provision or rotate the initial operator before
-opening the dashboard:
+`.sops.yaml` uses the same age recipient as jomat. `secrets/dev.env` is the
+encrypted development environment, including the operator login, database URL,
+Phoenix secrets, runtime role, host, and port. The small Justfile mirrors jomat:
 
 ```bash
-NIXPLOY_OPERATOR_PASSWORD='use a long password' \\
-  mix nixploy.operator operator@example.com
+just dev
+just dev-iex
 ```
 
-There is intentionally no public registration or recovery flow in the first
-authentication tracer.
+Both recipes decrypt the file directly into the server process environment
+without writing a plaintext dotenv file. Edit it with
+`sops secrets/dev.env`. Development seeds read the same encrypted operator
+credentials, so resetting the database recreates the account before the server
+starts:
+
+```bash
+mix ecto.reset
+just dev
+```
+
+`mix setup` also runs the seeds on a fresh checkout. The checked-in values
+target local PostgreSQL at `127.0.0.1` with the
+credentials `postgres:postgres` and publish the development endpoint as
+<https://dev-nixploy.tailb61fd1.ts.net/login>. Development uses password mode so
+localhost remains usable. Phoenix stays bound to `127.0.0.1:4000`; the
+Tailscale HTTPS proxy provides remote access, LiveView origin checks, and secure
+session cookies.
+
+The intended production deployment is the private `svc:nixploy` Tailscale
+Service at <https://nixploy.tailb61fd1.ts.net>. Packaged NixOS services default
+to Tailscale identity authentication: Serve injects a trusted
+`Tailscale-User-Login`, nixploy matches it to a provisioned operator, and no
+second password form is shown. Direct or unprovisioned identities receive HTTP
+403. See [`TAILSCALE_AUTH_TRACER.md`](TAILSCALE_AUTH_TRACER.md) for the acceptance
+criterion and trust boundary.
 
 The same OTP application supports separate runtime roles:
 
@@ -208,14 +230,17 @@ worker role starts the PostgreSQL repository, Oban, and shared coordination
 processes without starting the Phoenix endpoint. The web role starts the
 endpoint with Oban in enqueue-only mode.
 
-The dashboard at <http://localhost:4000> provides the first scoped control-plane
-MVP. See [`MVP.md`](MVP.md) for the evaluation checklist, release deployment,
-NixOS module, security properties, and explicit limitations.
+The Tailscale dashboard provides a local-host discovery tracer alongside the
+scoped deployment-engine MVP. See [`LOCAL_HOST_TRACER.md`](LOCAL_HOST_TRACER.md)
+for its acceptance criterion and [`MVP.md`](MVP.md) for release deployment,
+security properties, and explicit limitations.
 
-- authenticate a provisioned operator before exposing control-plane actions
-- register Git repositories and Podman targets
-- attach a flake service and optional domain
-- enqueue an immutable, audited Oban deployment
+- authenticate a provisioned operator through the private Tailscale Service before exposing control-plane actions
+- discover managed and unmanaged containers directly from the local Podman user
+- show repository and revision identity from nixploy and OCI labels
+- surface bounded probe failures and allow an operator refresh
+- retain existing registered services and immutable deployment history without presenting manual onboarding forms
+- enqueue an immutable, audited Oban deployment for retained services
 - validate the committed flake target against the registered service before mutation
 - stream bounded output and persisted deployment stages to the browser
 - serialize target mutation with a renewable PostgreSQL lease
