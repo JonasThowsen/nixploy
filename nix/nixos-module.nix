@@ -8,6 +8,11 @@
 
 let
   cfg = config.services.nixploy-control-plane;
+
+  startControlPlane = pkgs.writeShellScript "nixploy-control-plane-start" ''
+    export XDG_RUNTIME_DIR="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
+    exec ${cfg.package}/bin/nixploy start
+  '';
 in
 {
   options.services.nixploy-control-plane = {
@@ -125,7 +130,6 @@ in
         NIXPLOY_AUTH_MODE = cfg.authMode;
         PORT = toString cfg.port;
         RELEASE_DISTRIBUTION = "none";
-        XDG_RUNTIME_DIR = lib.mkIf cfg.localPodman "/run/user/%U";
       };
 
       serviceConfig = {
@@ -133,7 +137,7 @@ in
         User = cfg.user;
         Group = cfg.group;
         EnvironmentFile = cfg.environmentFile;
-        ExecStart = "${cfg.package}/bin/nixploy start";
+        ExecStart = startControlPlane;
         ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
         Restart = "on-failure";
         RestartSec = 5;
