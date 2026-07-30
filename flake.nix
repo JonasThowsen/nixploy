@@ -85,7 +85,7 @@
               pname = "nixploy-control-plane-mix-deps";
               version = "0.1.0";
               src = ./.;
-              hash = "sha256-T2kBVZqEiJgDTTQ8Lyo0tPg6aDPZbsJyPzFfisPqQiU=";
+              hash = "sha256-h/RiXWF6Zfa0G9NvrPPjU/nkjqcbh++YtVVVkZ7LsMg=";
             };
 
             env = commonEnv pkgs;
