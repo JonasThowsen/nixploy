@@ -1,5 +1,10 @@
 # nixploy Control Plane Rewrite Plan
 
+> **Current priorities:** This document records the rewrite architecture and its
+> original delivery plan. [`ROADMAP.md`](ROADMAP.md) now defines the local-first
+> product direction, tracer order, mobile UI expectations, incremental Ash
+> migration, and AshAI/AshLua MCP path.
+
 ## Objective
 
 Evolve nixploy from a small deployment CLI into a self-hosted control plane for deploying Nix-built OCI images to ordinary Podman servers.
