@@ -105,6 +105,28 @@ Salgsoversikt's `/ready` endpoints without repository onboarding or duplicated
 service forms. The fixed endpoint candidates are deliberately narrow until a
 native deployment can derive the exact path from the project flake.
 
+## Production evidence
+
+On 2026-07-30 the packaged release was exercised through the authenticated
+Tailscale UI and directly as the `nixploy` runtime user:
+
+- Jomat and Salgsoversikt appeared from the real rootless Podman store; root's
+  Podman store remained empty.
+- Opening Jomat showed its full container/image identity, revision, timestamps,
+  green slot, and a bounded 26-line log snapshot.
+- Opening Salgsoversikt showed the same runtime metadata and a bounded 200-line
+  log snapshot.
+- Neither detail probe rendered an inspect or log error, and no raw log content
+  was inserted into PostgreSQL.
+- UI-triggered loopback observations returned HTTP 200 for Jomat on port 4003
+  and Salgsoversikt on port 4005 with fresh timestamps.
+- The deployed service remained bound to `127.0.0.1:4000` as `nixploy`; all four
+  required public health/readiness checks returned HTTP 200 after activation.
+
+Malformed output, truncation, command failure, timeout, unmanaged refusal, and
+LiveView failure rendering are covered by the automated suite because inducing
+a production Podman outage would unnecessarily risk both applications.
+
 ## Deliberately deferred
 
 - GitHub App installation, repository metadata, webhooks, and revision selection

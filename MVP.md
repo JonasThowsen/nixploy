@@ -137,7 +137,7 @@ The local-host tracer was additionally exercised against the real Podman CLI on
 `netcup-dev`, where it observed the authenticated runtime user and a valid empty
 inventory without SSH or registration records.
 
-Automated validation includes 83 Elixir tests, 29 C# tests, repeated execution-runner stress tests, `nix flake check --no-build`, a successful `.#control-plane` build, release migrations, readiness checks, adapter path verification, and an authenticated packaged-dashboard smoke test.
+Automated validation includes 104 Elixir tests, 29 C# tests, repeated execution-runner stress tests, `nix flake check --no-build`, a successful `.#control-plane` build, release migrations, readiness checks, adapter path verification, and an authenticated packaged-dashboard smoke test. The deployed local observability and health slices were additionally exercised against Jomat and Salgsoversikt through the real rootless Podman store and authenticated LiveView.
 
 ## Explicitly after MVP
 

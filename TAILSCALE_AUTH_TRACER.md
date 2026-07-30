@@ -43,6 +43,15 @@ application-level check by requiring the Tailscale login to match a provisioned
 operator. Tagged client devices do not receive user identity headers and are
 therefore rejected from the dashboard.
 
+## Production evidence
+
+On 2026-07-30 the NixOS service migrated the operator schema and provisioned the
+configured Tailscale email as an identity-only record. The resulting operator
+has no password hash, `NIXPLOY_OPERATOR_PASSWORD` is absent from the decrypted
+service environment, and an authenticated Tailscale browser session reached the
+LiveView dashboard. Phoenix continued to run as `nixploy` on
+`127.0.0.1:4000`; `/health` and `/ready` both returned HTTP 200.
+
 ## Deliberately deferred
 
 - Group and role mapping beyond provisioned operator emails
