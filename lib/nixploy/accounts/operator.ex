@@ -17,13 +17,26 @@ defmodule Nixploy.Accounts.Operator do
   def provision_changeset(operator, attrs) do
     operator
     |> cast(attrs, [:email, :password])
+    |> validate_email()
+    |> validate_required([:password])
+    |> validate_length(:password, min: 12, max: 72)
+    |> hash_password()
+  end
+
+  def identity_changeset(operator, attrs) do
+    operator
+    |> cast(attrs, [:email])
+    |> validate_email()
+    |> put_change(:password_hash, nil)
+  end
+
+  defp validate_email(changeset) do
+    changeset
     |> update_change(:email, &normalize_email/1)
-    |> validate_required([:email, :password])
+    |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/)
     |> validate_length(:email, max: 160)
-    |> validate_length(:password, min: 12, max: 72)
     |> unique_constraint(:email)
-    |> hash_password()
   end
 
   defp hash_password(changeset) do

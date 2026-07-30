@@ -19,8 +19,8 @@ the operator email supplied by Tailscale.
 
 ## Acceptance criterion
 
-Given a database operator whose normalized email matches
-`Tailscale-User-Login`:
+Given an identity-only database operator whose normalized email matches
+`Tailscale-User-Login` (no password hash is required):
 
 1. `GET /` through Tailscale Serve returns the authenticated dashboard.
 2. The operator identity is copied into the Phoenix session for LiveView.
@@ -46,8 +46,8 @@ therefore rejected from the dashboard.
 ## Deliberately deferred
 
 - Group and role mapping beyond provisioned operator emails
-- Identity-only operator records; the current bootstrap still stores an unused
-  recovery password because the existing operator schema requires it
-- A separately secured break-glass login endpoint
+- A separately secured break-glass login endpoint; recovery currently requires
+  deliberately switching the service to password mode and provisioning a new
+  password credential through the release task
 - Session revocation and multi-device session management
 - Persisted display name and profile picture from optional Tailscale headers

@@ -4,21 +4,23 @@ defmodule Nixploy.Accounts do
   alias Nixploy.Accounts.Operator
   alias Nixploy.Repo
 
-  # TODO(tracer): Add invitation flows, self-service password changes and
-  # recovery, multiple roles, authorization policies, and operator audit
-  # records after one protected operator path proves the authentication boundary.
+  # TODO(tracer): Add invitation flows, explicit recovery credential rotation,
+  # multiple roles, authorization policies, and operator audit records after
+  # the identity-only Tailscale production path proves the boundary.
   def provision_operator(attrs) do
     attrs = Map.new(attrs)
     email = attrs[:email] || attrs["email"]
 
-    operator =
-      case normalize_email(email) do
-        nil -> %Operator{}
-        normalized -> Repo.get_by(Operator, email: normalized) || %Operator{}
-      end
-
-    operator
+    email
+    |> operator_for_email()
     |> Operator.provision_changeset(attrs)
+    |> Repo.insert_or_update()
+  end
+
+  def provision_identity_operator(email) do
+    email
+    |> operator_for_email()
+    |> Operator.identity_changeset(%{email: email})
     |> Repo.insert_or_update()
   end
 
@@ -28,10 +30,14 @@ defmodule Nixploy.Accounts do
         Bcrypt.no_user_verify()
         {:error, :invalid_credentials}
 
-      operator ->
-        if Bcrypt.verify_pass(password, operator.password_hash),
+      %{password_hash: password_hash} = operator when is_binary(password_hash) ->
+        if Bcrypt.verify_pass(password, password_hash),
           do: {:ok, operator},
           else: {:error, :invalid_credentials}
+
+      _identity_only_operator ->
+        Bcrypt.no_user_verify()
+        {:error, :invalid_credentials}
     end
   end
 
@@ -48,6 +54,13 @@ defmodule Nixploy.Accounts do
   end
 
   def get_operator_by_email(_email), do: nil
+
+  defp operator_for_email(email) do
+    case normalize_email(email) do
+      nil -> %Operator{}
+      normalized -> Repo.get_by(Operator, email: normalized) || %Operator{}
+    end
+  end
 
   defp normalize_email(email) when is_binary(email) do
     email

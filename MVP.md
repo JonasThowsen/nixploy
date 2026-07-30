@@ -75,7 +75,7 @@ Migrate and provision the first operator:
 set -a; . /run/keys/nixploy.env; set +a
 result/bin/nixploy eval 'Nixploy.Release.migrate()'
 result/bin/nixploy eval \
-  'Nixploy.Release.provision_operator("operator@example.com", System.fetch_env!("NIXPLOY_OPERATOR_PASSWORD"))'
+  'Nixploy.Release.provision_identity_operator("operator@example.com")'
 result/bin/nixploy start
 ```
 
@@ -146,7 +146,7 @@ capabilities come before any GitHub integration: workload inspection and bounded
 ephemeral logs are followed by one real local health/probe observation and then
 a native no-GitHub deployment slice derived from a project flake. Major post-MVP
 work also includes remote fencing enforcement, split web/worker credential
-isolation, richer Tailscale role mapping, identity-only operator provisioning,
-revocable sessions, artifact-store log history, scheduled health checks,
+isolation, richer Tailscale role mapping, revocable sessions, a deliberate
+break-glass recovery flow, artifact-store log history, scheduled health checks,
 one-off tasks/exec, and broader CLI parity. GitHub App installation, repository
 metadata, webhooks, and GitHub revision selection remain explicitly deferred.

@@ -15,11 +15,21 @@ defmodule Nixploy.Release do
   end
 
   def provision_operator(email, password) do
+    with_repo(fn ->
+      Nixploy.Accounts.provision_operator(%{email: email, password: password})
+    end)
+  end
+
+  def provision_identity_operator(email) do
+    with_repo(fn -> Nixploy.Accounts.provision_identity_operator(email) end)
+  end
+
+  defp with_repo(provision) do
     load_app()
 
     {:ok, _result, _apps} =
       Ecto.Migrator.with_repo(Nixploy.Repo, fn _repo ->
-        case Nixploy.Accounts.provision_operator(%{email: email, password: password}) do
+        case provision.() do
           {:ok, operator} ->
             operator.email
 
