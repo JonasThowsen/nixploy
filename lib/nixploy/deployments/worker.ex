@@ -198,6 +198,9 @@ defmodule Nixploy.Deployments.Worker do
              :info,
              "Delegating the validated immutable deployment to the compatibility CLI"
            ) do
+      # TODO(tracer): Select a native executor only for a persisted, verified
+      # local-store input after one no-secret fixture proves Caddy rollback;
+      # retain LegacyExecutor for existing Git-backed deployment recovery.
       result =
         LegacyExecutor.deploy(
           deployment,

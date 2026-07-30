@@ -252,6 +252,11 @@ security properties, and explicit limitations.
 - independently verify the deployed commit, container, ingress, and health before success
 - run web and worker processes independently through PostgreSQL notifications
 
+The next no-GitHub replacement path is documented in
+[`NATIVE_LOCAL_DEPLOYMENT_TRACER.md`](NATIVE_LOCAL_DEPLOYMENT_TRACER.md), including
+the immutable Nix store input boundary and the safety conditions learned from
+production rootless workloads.
+
 The first real deployment tracer checks out the requested Git ref, records the
 resolved commit, and delegates the checked-out repository to the existing
 `nixploy deploy` CLI. This preserves the proven Nix, SSH, Podman, Caddy, and SOPS

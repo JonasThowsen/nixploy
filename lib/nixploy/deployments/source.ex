@@ -7,6 +7,8 @@ defmodule Nixploy.Deployments.Source do
 
   @clone_timeout :timer.minutes(10)
 
+  # TODO(tracer): Dispatch persisted local-store inputs to a store-path
+  # verifier instead of teaching this Git adapter about non-Git sources.
   def prepare(deployment, opts \\ []) do
     workspace = workspace(deployment.id)
     repository_url = Spec.repository_url(deployment.service_snapshot)
