@@ -19,6 +19,10 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:local_inventory, nil)
       |> assign(:local_inventory_error, nil)
       |> assign(:local_inventory_status, :loading)
+      |> assign(:selected_workload, nil)
+      |> assign(:workload_details, nil)
+      |> assign(:workload_details_error, nil)
+      |> assign(:workload_details_status, :idle)
       |> load_dashboard()
       |> assign_forms()
 
@@ -153,7 +157,55 @@ defmodule NixployWeb.DeploymentLive.Index do
     {:noreply,
      assign(socket,
        local_inventory_status: :loading,
-       local_inventory_error: nil
+       local_inventory_error: nil,
+       selected_workload: nil,
+       workload_details: nil,
+       workload_details_error: nil,
+       workload_details_status: :idle
+     )}
+  end
+
+  def handle_event("inspect_local_workload", %{"id" => workload_id}, socket) do
+    case inventory_workload(socket.assigns.local_inventory, workload_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "That workload is no longer in the inventory")}
+
+      workload ->
+        send(self(), {:load_workload_details, workload.id})
+
+        {:noreply,
+         assign(socket,
+           selected_workload: workload,
+           workload_details: nil,
+           workload_details_error: nil,
+           workload_details_status: :loading
+         )}
+    end
+  end
+
+  def handle_event("refresh_local_workload", _params, socket) do
+    case socket.assigns.selected_workload do
+      nil ->
+        {:noreply, socket}
+
+      workload ->
+        send(self(), {:load_workload_details, workload.id})
+
+        {:noreply,
+         assign(socket,
+           workload_details_error: nil,
+           workload_details_status: :loading
+         )}
+    end
+  end
+
+  def handle_event("close_local_workload", _params, socket) do
+    {:noreply,
+     assign(socket,
+       selected_workload: nil,
+       workload_details: nil,
+       workload_details_error: nil,
+       workload_details_status: :idle
      )}
   end
 
@@ -237,6 +289,30 @@ defmodule NixployWeb.DeploymentLive.Index do
     end
   end
 
+  def handle_info({:load_workload_details, workload_id}, socket) do
+    if socket.assigns.selected_workload && socket.assigns.selected_workload.id == workload_id do
+      case local_workload_probe().(workload_id) do
+        {:ok, details} ->
+          {:noreply,
+           assign(socket,
+             workload_details: details,
+             workload_details_status: :available,
+             workload_details_error: nil
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           assign(socket,
+             workload_details: nil,
+             workload_details_status: :failed,
+             workload_details_error: local_workload_error(reason)
+           )}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info({:deployment_changed, _deployment_id}, socket) do
     {:noreply, load_dashboard(socket)}
   end
@@ -253,6 +329,16 @@ defmodule NixployWeb.DeploymentLive.Index do
     Application.get_env(:nixploy, :local_inventory_probe, &LocalHost.inventory/0)
   end
 
+  defp local_workload_probe do
+    Application.get_env(:nixploy, :local_workload_probe, &LocalHost.workload_details/1)
+  end
+
+  defp inventory_workload(nil, _workload_id), do: nil
+
+  defp inventory_workload(inventory, workload_id) do
+    Enum.find(inventory.workloads, &(&1.id == workload_id))
+  end
+
   defp local_inventory_error({:executable_not_found, executable}),
     do: "#{executable} is not available to the nixploy service"
 
@@ -263,6 +349,27 @@ defmodule NixployWeb.DeploymentLive.Index do
     do: "Podman returned more than the bounded 1 MiB inventory limit"
 
   defp local_inventory_error(reason), do: inspect(reason)
+
+  defp local_workload_error({:podman_inspect_failed, :timeout}),
+    do: "Podman inspection timed out after 15 seconds"
+
+  defp local_workload_error({:podman_inspect_failed, status, output})
+       when is_integer(status) and is_binary(output) and output != "",
+       do: "Podman inspect exited with status #{status}: #{String.trim(output)}"
+
+  defp local_workload_error(:podman_inspect_too_large),
+    do: "Podman inspect exceeded the bounded 1 MiB output limit"
+
+  defp local_workload_error(reason), do: inspect(reason)
+
+  def workload_logs_error({:podman_logs_failed, :timeout}),
+    do: "Podman logs timed out after 15 seconds"
+
+  def workload_logs_error({:podman_logs_failed, status, output})
+      when is_integer(status) and is_binary(output),
+      do: "Podman logs exited with status #{status}: #{String.trim(output)}"
+
+  def workload_logs_error(reason), do: inspect(reason)
 
   def managed_workload_count(nil), do: 0
 

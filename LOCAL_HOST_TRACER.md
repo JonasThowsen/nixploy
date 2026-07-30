@@ -50,13 +50,41 @@ org.opencontainers.image.revision=<commit>
 Older containers without a repository source remain visible as unlinked managed
 workloads. Arbitrary containers remain visible as unmanaged workloads.
 
+## Local workload observability increment
+
+### Observable behavior
+
+An authenticated operator selects a discovered workload and sees a fresh local
+Podman inspection plus a bounded recent log snapshot. This works for managed and
+unmanaged containers without repository, target, or service records.
+
+### Acceptance criterion
+
+- Inspection uses a fixed `podman container inspect` argument vector with a
+  15-second timeout and a 1 MiB output bound.
+- Logs use a fixed `podman logs --tail 200` argument vector with a 15-second
+  timeout and a 64 KiB output bound.
+- Container/image identity, labels, runtime timestamps, health metadata, and
+  published ports are parsed from inspect JSON.
+- Inspect and log failures render in the LiveView without terminating it.
+- Raw log content remains ephemeral LiveView state and is not stored in
+  PostgreSQL.
+
+### What this proves
+
+The dashboard can cross the real local rootless Podman boundary for an
+operator-selected container and return useful runtime evidence without a
+configuration database. The selected identifier must come from the current
+inventory, and subprocess arguments are never shell-interpolated.
+
 ## Deliberately deferred
 
-- GitHub App installation, repository metadata, and flake discovery
+- GitHub App installation, repository metadata, webhooks, and revision selection
 - Native local build and mutation adapters
-- Persisted inventory, polling, and reconciliation
+- Persisted inventory, polling, reconciliation, and raw log storage
+- Log following, search, retention, and secret-aware redaction
 - Podman pod grouping beyond the container's reported pod name
 - Split-role inventory collection through a worker boundary
 
-The next tracer should connect one GitHub repository read-only and match it to a
-labeled local workload without adding manual configuration forms.
+The next tracer should make one bounded local health/probe observation for a
+managed workload using runtime metadata and its existing health endpoint.

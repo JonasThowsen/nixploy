@@ -183,25 +183,221 @@
               <p class="mt-1 font-mono text-xs text-base-content/50">
                 {short_commit(workload.revision)}
               </p>
+              <.button
+                id={"inspect-workload-#{workload.id}"}
+                phx-click="inspect_local_workload"
+                phx-value-id={workload.id}
+                class="btn-outline btn-sm mt-3"
+              >
+                Inspect
+              </.button>
             </div>
           </article>
         </div>
       </div>
 
+      <section
+        :if={@selected_workload}
+        id="local-workload-details"
+        class="overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm"
+      >
+        <header class="flex flex-col gap-4 border-b border-base-300 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 class="text-2xl font-bold">
+                {@selected_workload.project || @selected_workload.name}
+              </h2>
+              <span class={[
+                "badge badge-sm",
+                @selected_workload.managed? && "badge-primary badge-outline",
+                not @selected_workload.managed? && "badge-ghost"
+              ]}>
+                {if @selected_workload.managed?, do: "nixploy managed", else: "unmanaged"}
+              </span>
+            </div>
+            <p class="mt-1 font-mono text-xs text-base-content/50">
+              {@selected_workload.name} · {@selected_workload.id}
+            </p>
+          </div>
+          <div class="flex gap-2">
+            <.button
+              id="refresh-local-workload"
+              phx-click="refresh_local_workload"
+              class="btn-outline btn-sm"
+              disabled={@workload_details_status == :loading}
+            >
+              <.icon
+                name="hero-arrow-path"
+                class={[
+                  "size-4",
+                  @workload_details_status == :loading && "animate-spin"
+                ]}
+              /> Refresh
+            </.button>
+            <.button
+              id="close-local-workload"
+              phx-click="close_local_workload"
+              class="btn-ghost btn-sm"
+            >
+              Close
+            </.button>
+          </div>
+        </header>
+
+        <div class="space-y-5 p-5">
+          <div :if={@workload_details_status == :loading} class="alert">
+            <span class="loading loading-spinner loading-sm"></span>
+            <span>Inspecting runtime metadata and recent logs…</span>
+          </div>
+
+          <div
+            :if={@workload_details_error}
+            id="local-workload-details-error"
+            class="alert alert-error"
+          >
+            <.icon name="hero-exclamation-triangle" class="size-5" />
+            <div>
+              <p class="font-semibold">Workload inspection failed</p>
+              <p class="text-sm">{@workload_details_error}</p>
+            </div>
+          </div>
+
+          <div :if={details = @workload_details} class="space-y-6">
+            <div class="grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Container</span>
+                <span class="font-mono text-xs">{details.id}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Runtime state</span>
+                <span class={["badge badge-sm", workload_state_class(details.state)]}>
+                  {details.state || "unknown"}
+                </span>
+                <span class="ml-2 text-base-content/60">{details.status || "-"}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Health</span>
+                <span class="font-medium">{details.health || "not reported"}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Observed</span>
+                <span>{format_time(details.observed_at)}</span>
+              </div>
+              <div class="sm:col-span-2">
+                <span class="block text-xs uppercase text-base-content/50">Image</span>
+                <span class="block font-mono text-xs">{details.image || "unknown"}</span>
+                <span class="block break-all font-mono text-xs text-base-content/50">
+                  {details.image_id || "image ID unavailable"}
+                </span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Created</span>
+                <span>{format_time(details.created_at)}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Started</span>
+                <span>{format_time(details.started_at)}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Project / target</span>
+                <span>{details.project || "-"} / {details.target || "-"}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Slot</span>
+                <span>{details.slot || "-"}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Revision</span>
+                <span class="font-mono">{short_commit(details.revision)}</span>
+              </div>
+              <div>
+                <span class="block text-xs uppercase text-base-content/50">Deployed</span>
+                <span>{details.deployed_at || "-"}</span>
+              </div>
+              <div class="sm:col-span-2 xl:col-span-4">
+                <span class="block text-xs uppercase text-base-content/50">Source</span>
+                <a
+                  :if={repository_link?(details.repository)}
+                  href={details.repository}
+                  target="_blank"
+                  rel="noreferrer"
+                  class="link link-hover break-all font-mono text-xs"
+                >
+                  {details.repository}
+                </a>
+                <span
+                  :if={not repository_link?(details.repository)}
+                  class="break-all font-mono text-xs"
+                >
+                  {details.repository || "not labeled"}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="font-semibold">Published ports</h3>
+              <p :if={details.published_ports == []} class="mt-1 text-sm text-base-content/50">
+                No published ports reported.
+              </p>
+              <div :if={details.published_ports != []} class="mt-2 flex flex-wrap gap-2">
+                <span :for={port <- details.published_ports} class="badge badge-ghost font-mono">
+                  {port}
+                </span>
+              </div>
+            </div>
+
+            <section class="space-y-3 border-t border-base-300 pt-5">
+              <div class="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h3 class="font-semibold">Recent container logs</h3>
+                  <p class="text-xs text-base-content/50">
+                    Ephemeral snapshot · at most 200 lines and 64 KiB
+                  </p>
+                </div>
+                <p
+                  :if={not is_nil(details.log_line_count)}
+                  class="font-mono text-xs text-base-content/55"
+                >
+                  {details.log_line_count} lines
+                  <span :if={details.logs_truncated?} class="text-warning">
+                    · bytes truncated
+                  </span>
+                </p>
+              </div>
+
+              <div
+                :if={details.logs_error}
+                id="local-workload-logs-error"
+                class="alert alert-error text-sm"
+              >
+                <.icon name="hero-exclamation-circle" class="size-5" />
+                <span>{workload_logs_error(details.logs_error)}</span>
+              </div>
+
+              <pre
+                :if={is_binary(details.logs)}
+                id="local-workload-logs"
+                class="max-h-96 overflow-auto rounded-box bg-neutral p-4 font-mono text-xs leading-relaxed text-neutral-content shadow-inner"
+              ><code>{details.logs}</code></pre>
+            </section>
+          </div>
+        </div>
+      </section>
+
       <div class="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center rounded-box border border-base-300 bg-base-200/45 px-5 py-4">
         <div>
-          <p class="font-semibold">Repository context is the next connection.</p>
+          <p class="font-semibold">Repository context is deliberately deferred.</p>
           <p class="text-sm text-base-content/55">
-            GitHub access will enrich labeled workloads and discover deployable flakes without copying their configuration into this UI.
+            Local runtime state stays useful without repository onboarding or database forms. Project flakes remain the configuration source.
           </p>
         </div>
-        <span class="badge badge-ghost">GitHub disconnected</span>
+        <span class="badge badge-ghost">local first</span>
       </div>
     </section>
 
-    <%!-- TODO(tracer): Delete the manual registration UI after repository discovery
-    replaces the legacy configuration path. Keep it non-rendered for this reversible
-    evaluation slice while existing context APIs and deployment history remain intact. --%>
+    <%!-- TODO(tracer): Delete the legacy registration UI after one native local
+    deployment derives project configuration directly from a flake. Keep it non-rendered
+    until retained deployment records no longer depend on this reversible compatibility path. --%>
     <section :if={false} class="grid gap-6 xl:grid-cols-3">
       <div class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body">

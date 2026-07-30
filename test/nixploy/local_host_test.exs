@@ -81,4 +81,135 @@ defmodule Nixploy.LocalHostTest do
     assert {:error, {:podman_failed, 125, "cannot connect to Podman"}} =
              LocalHost.inventory(execute: execute)
   end
+
+  test "decodes inspect metadata, labels, health, timestamps, and published ports" do
+    assert {:ok, details} = LocalHost.decode_details(inspect_output())
+
+    assert details.id == "abcdef1234567890"
+    assert details.name == "nixploy-jomat-production-green"
+    assert details.image == "localhost/jomat:latest"
+    assert details.image_id == "sha256:image-id"
+    assert details.state == "running"
+    assert details.health == "healthy"
+    assert details.created_at == ~U[2026-07-27 11:00:00Z]
+    assert details.started_at == ~U[2026-07-27 12:00:00Z]
+    assert details.managed?
+    assert details.project == "jomat"
+    assert details.target == "production"
+    assert details.revision == "55ef9e674e5d"
+    assert details.repository == "https://github.com/JonasThowsen/jomat"
+    assert details.slot == "green"
+    assert details.published_ports == ["127.0.0.1:8081 → 4000/tcp"]
+  end
+
+  test "inspects a container and fetches logs with fixed bounds" do
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case command.args do
+        ["container", "inspect" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
+
+        ["logs" | _rest] ->
+          {:ok,
+           %Result{
+             exit_status: 0,
+             output_tail: "partial line\ncomplete line\nlast line\n",
+             output_truncated?: true
+           }}
+      end
+    end
+
+    assert {:ok, details} = LocalHost.workload_details("abcdef1234567890", execute: execute)
+    assert details.logs == "complete line\nlast line"
+    assert details.log_line_count == 2
+    assert details.logs_truncated?
+
+    assert_receive {:command, inspect_command}
+
+    assert inspect_command.args == [
+             "container",
+             "inspect",
+             "--format",
+             "json",
+             "--",
+             "abcdef1234567890"
+           ]
+
+    assert inspect_command.timeout == :timer.seconds(15)
+    assert inspect_command.max_output_bytes == 1_048_576
+
+    assert_receive {:command, logs_command}
+    assert logs_command.args == ["logs", "--tail", "200", "--", "abcdef1234567890"]
+    assert logs_command.timeout == :timer.seconds(15)
+    assert logs_command.max_output_bytes == 65_536
+  end
+
+  test "returns inspect timeout and keeps log timeout on otherwise available details" do
+    assert {:error, {:podman_inspect_failed, :timeout}} =
+             LocalHost.workload_details("abcdef123456",
+               execute: fn _command, _opts -> {:error, :timeout} end
+             )
+
+    execute = fn command, _opts ->
+      case command.args do
+        ["container", "inspect" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
+
+        ["logs" | _rest] ->
+          {:error, :timeout}
+      end
+    end
+
+    assert {:ok, details} = LocalHost.workload_details("abcdef123456", execute: execute)
+    assert details.logs_error == {:podman_logs_failed, :timeout}
+    assert is_nil(details.logs)
+  end
+
+  test "rejects malformed inspect output and unsafe identifiers" do
+    assert {:error, :unexpected_podman_inspect_json} = LocalHost.decode_details("[]")
+
+    assert {:error, {:invalid_podman_inspect_json, _message}} =
+             LocalHost.decode_details("not json")
+
+    assert {:error, {:invalid_container_id, "container;rm"}} =
+             LocalHost.workload_details("container;rm",
+               execute: fn _command, _opts -> flunk() end
+             )
+  end
+
+  defp inspect_output do
+    Jason.encode!([
+      %{
+        "Id" => "abcdef1234567890",
+        "Name" => "nixploy-jomat-production-green",
+        "Image" => "sha256:image-id",
+        "ImageName" => "localhost/jomat:latest",
+        "Created" => "2026-07-27T11:00:00Z",
+        "State" => %{
+          "Status" => "running",
+          "Running" => true,
+          "StartedAt" => "2026-07-27T12:00:00Z",
+          "Healthcheck" => %{"Status" => "healthy"}
+        },
+        "Config" => %{
+          "Image" => "localhost/jomat:latest",
+          "Labels" => %{
+            "io.nixploy.managed" => "true",
+            "io.nixploy.project" => "jomat",
+            "io.nixploy.target" => "production",
+            "io.nixploy.slot" => "green",
+            "org.opencontainers.image.revision" => "55ef9e674e5d",
+            "org.opencontainers.image.source" => "https://github.com/JonasThowsen/jomat"
+          }
+        },
+        "NetworkSettings" => %{
+          "Ports" => %{
+            "4000/tcp" => [%{"HostIp" => "127.0.0.1", "HostPort" => "8081"}],
+            "4001/tcp" => nil
+          }
+        }
+      }
+    ])
+  end
 end

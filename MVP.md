@@ -141,11 +141,12 @@ Automated validation includes 83 Elixir tests, 29 C# tests, repeated execution-r
 
 ## Explicitly after MVP
 
-Inline `TODO(tracer)` markers retain the next safe expansion points. The next
-product slice is a read-only GitHub connection that matches installed
-repositories to labeled local workloads and discovers their flake declarations.
-Major post-MVP work also includes native local mutation adapters, remote
-fencing enforcement, split web/worker credential isolation, richer Tailscale
-role mapping, identity-only operator provisioning, revocable sessions,
-artifact-store log history, scheduled health checks, one-off tasks/exec, and
-broader CLI parity.
+Inline `TODO(tracer)` markers retain the next safe expansion points. Local host
+capabilities come before any GitHub integration: workload inspection and bounded
+ephemeral logs are followed by one real local health/probe observation and then
+a native no-GitHub deployment slice derived from a project flake. Major post-MVP
+work also includes remote fencing enforcement, split web/worker credential
+isolation, richer Tailscale role mapping, identity-only operator provisioning,
+revocable sessions, artifact-store log history, scheduled health checks,
+one-off tasks/exec, and broader CLI parity. GitHub App installation, repository
+metadata, webhooks, and GitHub revision selection remain explicitly deferred.

@@ -12,6 +12,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   setup %{conn: conn} do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
+    previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
 
     inventory = %LocalHost.Inventory{
       hostname: "nixploy-vps",
@@ -41,14 +42,35 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       ]
     }
 
+    details = %LocalHost.WorkloadDetails{
+      id: "abcdef123456",
+      name: "nixploy-jomat-production-green",
+      image: "localhost/jomat:latest",
+      image_id: "sha256:jomat-image-id",
+      state: "running",
+      status: "running",
+      health: "healthy",
+      created_at: ~U[2026-07-27 11:00:00Z],
+      started_at: ~U[2026-07-27 12:00:00Z],
+      project: "jomat",
+      target: "production",
+      revision: "55ef9e674e5d",
+      repository: "https://github.com/JonasThowsen/jomat",
+      deployed_at: "2026-07-27T12:00:00Z",
+      slot: "green",
+      published_ports: ["127.0.0.1:8081 → 4000/tcp"],
+      logs: "Application started\nServing requests",
+      log_line_count: 2,
+      observed_at: ~U[2026-07-27 12:05:00Z],
+      managed?: true
+    }
+
     Application.put_env(:nixploy, :local_inventory_probe, fn -> {:ok, inventory} end)
+    Application.put_env(:nixploy, :local_workload_probe, fn _id -> {:ok, details} end)
 
     on_exit(fn ->
-      if previous_probe do
-        Application.put_env(:nixploy, :local_inventory_probe, previous_probe)
-      else
-        Application.delete_env(:nixploy, :local_inventory_probe)
-      end
+      restore_env(:local_inventory_probe, previous_probe)
+      restore_env(:local_workload_probe, previous_workload_probe)
     end)
 
     operator = Fixtures.operator_fixture()
@@ -67,6 +89,53 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     refute has_element?(view, "#service-form")
     refute has_element?(view, "#deployment-form")
     assert has_element?(view, "#empty-deployments")
+  end
+
+  test "opens local workload details and bounded logs without registration", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> element("#inspect-workload-abcdef123456")
+    |> render_click()
+
+    assert has_element?(view, "#local-workload-details", "nixploy managed")
+    assert has_element?(view, "#local-workload-details", "sha256:jomat-image-id")
+    assert has_element?(view, "#local-workload-details", "healthy")
+    assert has_element?(view, "#local-workload-details", "127.0.0.1:8081 → 4000/tcp")
+    assert has_element?(view, "#local-workload-logs", "Application started")
+    assert has_element?(view, "#local-workload-details", "2 lines")
+  end
+
+  test "renders workload inspect and log timeout failures without crashing", %{conn: conn} do
+    Application.put_env(:nixploy, :local_workload_probe, fn _id ->
+      {:error, {:podman_inspect_failed, :timeout}}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> element("#inspect-workload-abcdef123456")
+    |> render_click()
+
+    assert has_element?(view, "#local-workload-details-error", "timed out after 15 seconds")
+
+    details = %LocalHost.WorkloadDetails{
+      id: "abcdef123456",
+      name: "nixploy-jomat-production-green",
+      state: "running",
+      logs_error: {:podman_logs_failed, :timeout},
+      observed_at: ~U[2026-07-27 12:05:00Z],
+      managed?: true
+    }
+
+    Application.put_env(:nixploy, :local_workload_probe, fn _id -> {:ok, details} end)
+
+    view
+    |> element("#refresh-local-workload")
+    |> render_click()
+
+    assert has_element?(view, "#local-workload-logs-error", "timed out after 15 seconds")
+    assert has_element?(view, "#local-workload-details", "running")
   end
 
   test "refreshes local inventory and renders probe failures", %{conn: conn} do
@@ -188,4 +257,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert :ok = perform_job(SimulatedWorker, %{deployment_id: deployment.id})
     assert has_element?(view, "#deployment-#{deployment.id}", "cancelled")
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:nixploy, key)
+  defp restore_env(key, value), do: Application.put_env(:nixploy, key, value)
 end

@@ -238,7 +238,8 @@ security properties, and explicit limitations.
 - authenticate a provisioned operator through the private Tailscale Service before exposing control-plane actions
 - discover managed and unmanaged containers directly from the local Podman user
 - show repository and revision identity from nixploy and OCI labels
-- surface bounded probe failures and allow an operator refresh
+- inspect a selected container's local runtime metadata and ephemeral recent logs with explicit time, line, and byte bounds
+- surface bounded Podman failures and allow an operator refresh without crashing the LiveView
 - retain existing registered services and immutable deployment history without presenting manual onboarding forms
 - enqueue an immutable, audited Oban deployment for retained services
 - validate the committed flake target against the registered service before mutation
