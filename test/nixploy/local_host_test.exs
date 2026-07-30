@@ -166,6 +166,109 @@ defmodule Nixploy.LocalHostTest do
     assert is_nil(details.logs)
   end
 
+  test "probes fixed local health candidates from allowlisted runtime metadata" do
+    [container] = Jason.decode!(inspect_output())
+    health_output = Jason.encode!([put_in(container, ["NetworkSettings", "Ports"], %{})])
+
+    execute = fn command, _opts ->
+      send(self(), {:health_command, command})
+
+      case command.args do
+        ["container", "inspect" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: health_output}}
+
+        args ->
+          status = if String.ends_with?(List.last(args), "/ready"), do: "204", else: "404"
+          {:ok, %Result{exit_status: 0, output_tail: status}}
+      end
+    end
+
+    assert {:ok, observation} =
+             LocalHost.observe_health("abcdef1234567890", execute: execute)
+
+    assert observation.status == :healthy
+    assert observation.container_state == "running"
+    assert observation.endpoint == "http://127.0.0.1:4003/ready"
+    assert observation.status_code == 204
+    assert is_nil(observation.failure)
+    assert %DateTime{} = observation.observed_at
+
+    assert_receive {:health_command, _inspect_command}
+    assert_receive {:health_command, health_command}
+    assert List.last(health_command.args) == "http://127.0.0.1:4003/health"
+    assert health_command.timeout == :timer.seconds(7)
+    assert health_command.max_output_bytes == 4_096
+    assert_receive {:health_command, ready_command}
+    assert List.last(ready_command.args) == "http://127.0.0.1:4003/ready"
+  end
+
+  test "refuses unmanaged health probes before invoking curl" do
+    [container] = Jason.decode!(inspect_output())
+    output = Jason.encode!([put_in(container, ["Config", "Labels"], %{})])
+
+    execute = fn command, _opts ->
+      assert command.args |> List.first() == "container"
+      {:ok, %Result{exit_status: 0, output_tail: output}}
+    end
+
+    assert {:error, :unmanaged_workload} =
+             LocalHost.observe_health("abcdef1234567890", execute: execute)
+  end
+
+  test "reports stopped containers and missing runtime ports without probing HTTP" do
+    [container] = Jason.decode!(inspect_output())
+
+    stopped =
+      container
+      |> put_in(["State", "Status"], "exited")
+      |> put_in(["State", "Running"], false)
+
+    execute_stopped = fn command, _opts ->
+      assert command.args |> List.first() == "container"
+      {:ok, %Result{exit_status: 0, output_tail: Jason.encode!([stopped])}}
+    end
+
+    assert {:ok, stopped_observation} =
+             LocalHost.observe_health("abcdef1234567890", execute: execute_stopped)
+
+    assert stopped_observation.status == :unhealthy
+    assert stopped_observation.failure == "container state is exited"
+
+    no_port =
+      container
+      |> put_in(["Config", "Env"], ["LANG=C.UTF-8"])
+      |> put_in(["NetworkSettings", "Ports"], %{})
+
+    execute_no_port = fn command, _opts ->
+      assert command.args |> List.first() == "container"
+      {:ok, %Result{exit_status: 0, output_tail: Jason.encode!([no_port])}}
+    end
+
+    assert {:ok, no_port_observation} =
+             LocalHost.observe_health("abcdef1234567890", execute: execute_no_port)
+
+    assert no_port_observation.status == :failed
+    assert no_port_observation.failure == "no allowlisted local runtime port was reported"
+  end
+
+  test "makes health command timeouts explicit" do
+    execute = fn command, _opts ->
+      case command.args do
+        ["container", "inspect" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
+
+        _health_args ->
+          {:error, :timeout}
+      end
+    end
+
+    assert {:ok, observation} =
+             LocalHost.observe_health("abcdef1234567890", execute: execute)
+
+    assert observation.status == :failed
+    assert observation.failure == "health probe timed out after 7 seconds"
+  end
+
   test "rejects malformed inspect output and unsafe identifiers" do
     assert {:error, :unexpected_podman_inspect_json} = LocalHost.decode_details("[]")
 
@@ -194,6 +297,7 @@ defmodule Nixploy.LocalHostTest do
         },
         "Config" => %{
           "Image" => "localhost/jomat:latest",
+          "Env" => ["PORT=4003", "LANG=C.UTF-8"],
           "Labels" => %{
             "io.nixploy.managed" => "true",
             "io.nixploy.project" => "jomat",

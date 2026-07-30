@@ -23,6 +23,9 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:workload_details, nil)
       |> assign(:workload_details_error, nil)
       |> assign(:workload_details_status, :idle)
+      |> assign(:local_health_observation, nil)
+      |> assign(:local_health_error, nil)
+      |> assign(:local_health_status, :idle)
       |> load_dashboard()
       |> assign_forms()
 
@@ -161,7 +164,10 @@ defmodule NixployWeb.DeploymentLive.Index do
        selected_workload: nil,
        workload_details: nil,
        workload_details_error: nil,
-       workload_details_status: :idle
+       workload_details_status: :idle,
+       local_health_observation: nil,
+       local_health_error: nil,
+       local_health_status: :idle
      )}
   end
 
@@ -178,7 +184,10 @@ defmodule NixployWeb.DeploymentLive.Index do
            selected_workload: workload,
            workload_details: nil,
            workload_details_error: nil,
-           workload_details_status: :loading
+           workload_details_status: :loading,
+           local_health_observation: nil,
+           local_health_error: nil,
+           local_health_status: :idle
          )}
     end
   end
@@ -199,13 +208,32 @@ defmodule NixployWeb.DeploymentLive.Index do
     end
   end
 
+  def handle_event("probe_local_health", _params, socket) do
+    case socket.assigns.selected_workload do
+      %{id: workload_id, managed?: true} ->
+        send(self(), {:probe_local_health, workload_id})
+
+        {:noreply,
+         assign(socket,
+           local_health_error: nil,
+           local_health_status: :loading
+         )}
+
+      _unavailable ->
+        {:noreply, put_flash(socket, :error, "Only a discovered managed workload can be probed")}
+    end
+  end
+
   def handle_event("close_local_workload", _params, socket) do
     {:noreply,
      assign(socket,
        selected_workload: nil,
        workload_details: nil,
        workload_details_error: nil,
-       workload_details_status: :idle
+       workload_details_status: :idle,
+       local_health_observation: nil,
+       local_health_error: nil,
+       local_health_status: :idle
      )}
   end
 
@@ -313,6 +341,30 @@ defmodule NixployWeb.DeploymentLive.Index do
     end
   end
 
+  def handle_info({:probe_local_health, workload_id}, socket) do
+    if socket.assigns.selected_workload && socket.assigns.selected_workload.id == workload_id do
+      case local_health_probe().(workload_id) do
+        {:ok, observation} ->
+          {:noreply,
+           assign(socket,
+             local_health_observation: observation,
+             local_health_status: observation.status,
+             local_health_error: nil
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           assign(socket,
+             local_health_observation: nil,
+             local_health_status: :failed,
+             local_health_error: local_health_error(reason)
+           )}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info({:deployment_changed, _deployment_id}, socket) do
     {:noreply, load_dashboard(socket)}
   end
@@ -331,6 +383,10 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp local_workload_probe do
     Application.get_env(:nixploy, :local_workload_probe, &LocalHost.workload_details/1)
+  end
+
+  defp local_health_probe do
+    Application.get_env(:nixploy, :local_health_probe, &LocalHost.observe_health/1)
   end
 
   defp inventory_workload(nil, _workload_id), do: nil
@@ -370,6 +426,16 @@ defmodule NixployWeb.DeploymentLive.Index do
       do: "Podman logs exited with status #{status}: #{String.trim(output)}"
 
   def workload_logs_error(reason), do: inspect(reason)
+
+  defp local_health_error(:unmanaged_workload),
+    do: "Health probes are restricted to workloads positively identified by nixploy labels"
+
+  defp local_health_error(reason), do: inspect(reason)
+
+  def local_health_class(:healthy), do: "badge-success"
+  def local_health_class(:unhealthy), do: "badge-error"
+  def local_health_class(:failed), do: "badge-warning"
+  def local_health_class(_status), do: "badge-ghost"
 
   def managed_workload_count(nil), do: 0
 

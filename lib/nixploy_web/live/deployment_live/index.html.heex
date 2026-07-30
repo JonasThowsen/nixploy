@@ -219,7 +219,21 @@
               {@selected_workload.name} · {@selected_workload.id}
             </p>
           </div>
-          <div class="flex gap-2">
+          <div class="flex flex-wrap gap-2">
+            <.button
+              :if={@selected_workload.managed?}
+              id="probe-local-health"
+              phx-click="probe_local_health"
+              class="btn-primary btn-sm"
+              disabled={@local_health_status == :loading}
+            >
+              <span
+                :if={@local_health_status == :loading}
+                class="loading loading-spinner loading-xs"
+              >
+              </span>
+              Probe health
+            </.button>
             <.button
               id="refresh-local-workload"
               phx-click="refresh_local_workload"
@@ -276,7 +290,7 @@
                 <span class="ml-2 text-base-content/60">{details.status || "-"}</span>
               </div>
               <div>
-                <span class="block text-xs uppercase text-base-content/50">Health</span>
+                <span class="block text-xs uppercase text-base-content/50">Runtime health</span>
                 <span class="font-medium">{details.health || "not reported"}</span>
               </div>
               <div>
@@ -345,6 +359,74 @@
                 </span>
               </div>
             </div>
+
+            <section
+              :if={@selected_workload.managed?}
+              class="space-y-3 border-t border-base-300 pt-5"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 class="font-semibold">Local HTTP health probe</h3>
+                  <p class="text-xs text-base-content/50">
+                    Loopback only · fixed /health and /ready candidates · 7-second command timeout
+                  </p>
+                </div>
+                <span
+                  :if={@local_health_status != :idle}
+                  class={["badge", local_health_class(@local_health_status)]}
+                >
+                  {@local_health_status}
+                </span>
+              </div>
+
+              <div :if={@local_health_status == :loading} class="alert">
+                <span class="loading loading-spinner loading-sm"></span>
+                <span>Observing container state and probing localhost…</span>
+              </div>
+
+              <div
+                :if={@local_health_error}
+                id="local-health-error"
+                class="alert alert-error text-sm"
+              >
+                <.icon name="hero-exclamation-triangle" class="size-5" />
+                <span>{@local_health_error}</span>
+              </div>
+
+              <div
+                :if={health = @local_health_observation}
+                id="local-health-observation"
+                class="grid gap-4 rounded-box bg-base-200/60 p-4 text-sm sm:grid-cols-2 xl:grid-cols-4"
+              >
+                <div>
+                  <span class="block text-xs uppercase text-base-content/50">
+                    Container state
+                  </span>
+                  <span>{health.container_state || "unknown"}</span>
+                </div>
+                <div>
+                  <span class="block text-xs uppercase text-base-content/50">Result</span>
+                  <span class={["badge badge-sm", local_health_class(health.status)]}>
+                    {health.status}
+                  </span>
+                  <span :if={health.status_code} class="ml-2 font-mono">
+                    HTTP {health.status_code}
+                  </span>
+                </div>
+                <div>
+                  <span class="block text-xs uppercase text-base-content/50">Endpoint</span>
+                  <span class="break-all font-mono text-xs">{health.endpoint || "-"}</span>
+                </div>
+                <div>
+                  <span class="block text-xs uppercase text-base-content/50">Observed</span>
+                  <span>{format_time(health.observed_at)}</span>
+                </div>
+                <div :if={health.failure} class="sm:col-span-2 xl:col-span-4 text-error">
+                  <span class="block text-xs uppercase">Failure reason</span>
+                  <span>{health.failure}</span>
+                </div>
+              </div>
+            </section>
 
             <section class="space-y-3 border-t border-base-300 pt-5">
               <div class="flex flex-wrap items-end justify-between gap-2">

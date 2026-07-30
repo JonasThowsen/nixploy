@@ -51,6 +51,31 @@ defmodule Nixploy.LocalHost do
           }
   end
 
+  defmodule HealthObservation do
+    @moduledoc false
+    defstruct [
+      :container_id,
+      :container_name,
+      :container_state,
+      :status,
+      :endpoint,
+      :status_code,
+      :failure,
+      :observed_at
+    ]
+
+    @type t :: %__MODULE__{
+            container_id: String.t(),
+            container_name: String.t(),
+            container_state: String.t() | nil,
+            status: :healthy | :unhealthy | :failed,
+            endpoint: String.t() | nil,
+            status_code: non_neg_integer() | nil,
+            failure: String.t() | nil,
+            observed_at: DateTime.t()
+          }
+  end
+
   defmodule WorkloadDetails do
     @moduledoc false
     defstruct [
@@ -107,6 +132,8 @@ defmodule Nixploy.LocalHost do
   @command_timeout :timer.seconds(15)
   @log_tail_lines 200
   @max_log_bytes 65_536
+  @health_paths ["/health", "/ready"]
+  @health_timeout_seconds 5
   @safe_container_id ~r/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
 
   @spec inventory(keyword()) :: {:ok, Inventory.t()} | {:error, term()}
@@ -153,6 +180,22 @@ defmodule Nixploy.LocalHost do
          {:ok, output} <- inspect_container(executable, container_id, execute),
          {:ok, details} <- decode_details(output) do
       {:ok, fetch_logs(details, executable, container_id, execute)}
+    end
+  end
+
+  @spec observe_health(String.t(), keyword()) ::
+          {:ok, HealthObservation.t()} | {:error, term()}
+  def observe_health(container_id, opts \\ []) do
+    podman = Application.get_env(:nixploy, :podman_executable, "podman")
+    curl = Application.get_env(:nixploy, :curl_executable, "curl")
+    execute = Keyword.get(opts, :execute, &Execution.run/2)
+
+    with :ok <- validate_container_id(container_id),
+         {:ok, output} <- inspect_container(podman, container_id, execute),
+         {:ok, details} <- decode_details(output),
+         :ok <- require_managed(details),
+         {:ok, container} <- decode_inspect_container(output) do
+      observe_container_health(details, container, curl, execute)
     end
   end
 
@@ -283,6 +326,211 @@ defmodule Nixploy.LocalHost do
 
       {:error, reason} ->
         %{details | logs_error: {:podman_logs_failed, reason}}
+    end
+  end
+
+  defp observe_container_health(details, container, curl, execute) do
+    observation = %HealthObservation{
+      container_id: details.id,
+      container_name: details.name,
+      container_state: details.state,
+      observed_at: DateTime.utc_now()
+    }
+
+    case {String.downcase(details.state || ""), runtime_port(container)} do
+      {state, _port} when state != "running" ->
+        {:ok,
+         %{
+           observation
+           | status: :unhealthy,
+             failure: "container state is #{details.state || "unknown"}"
+         }}
+
+      {"running", nil} ->
+        {:ok,
+         %{
+           observation
+           | status: :failed,
+             failure: "no allowlisted local runtime port was reported"
+         }}
+
+      {"running", port} ->
+        probe_health(observation, port, curl, execute)
+    end
+  end
+
+  # TODO(tracer): Replace the fixed local endpoint candidates with the health
+  # path derived from the project flake before supporting arbitrary paths.
+  defp probe_health(observation, port, curl, execute) do
+    Enum.reduce_while(@health_paths, [], fn path, failures ->
+      endpoint = "http://127.0.0.1:#{port}#{path}"
+
+      command = %Command{
+        executable: curl,
+        args: [
+          "--silent",
+          "--show-error",
+          "--output",
+          "/dev/null",
+          "--write-out",
+          "%{http_code}",
+          "--max-time",
+          Integer.to_string(@health_timeout_seconds),
+          "--",
+          endpoint
+        ],
+        timeout: :timer.seconds(@health_timeout_seconds + 2),
+        max_output_bytes: 4_096
+      }
+
+      case execute.(command, []) do
+        {:ok, %{exit_status: 0, output_tail: output}} ->
+          case Integer.parse(String.trim(output)) do
+            {status, ""} when status in 200..299 ->
+              {:halt,
+               {:ok,
+                %{
+                  observation
+                  | status: :healthy,
+                    endpoint: endpoint,
+                    status_code: status,
+                    observed_at: DateTime.utc_now()
+                }}}
+
+            {status, ""} ->
+              {:cont, [{endpoint, status} | failures]}
+
+            _invalid ->
+              {:halt,
+               {:ok,
+                %{
+                  observation
+                  | status: :failed,
+                    endpoint: endpoint,
+                    failure: "health probe returned an invalid HTTP status",
+                    observed_at: DateTime.utc_now()
+                }}}
+          end
+
+        {:ok, result} ->
+          {:halt,
+           {:ok,
+            %{
+              observation
+              | status: :failed,
+                endpoint: endpoint,
+                failure: "health probe exited with status #{result.exit_status}",
+                observed_at: DateTime.utc_now()
+            }}}
+
+        {:error, :timeout} ->
+          {:halt,
+           {:ok,
+            %{
+              observation
+              | status: :failed,
+                endpoint: endpoint,
+                failure: "health probe timed out after 7 seconds",
+                observed_at: DateTime.utc_now()
+            }}}
+
+        {:error, reason} ->
+          {:halt,
+           {:ok,
+            %{
+              observation
+              | status: :failed,
+                endpoint: endpoint,
+                failure: health_execution_error(reason),
+                observed_at: DateTime.utc_now()
+            }}}
+      end
+    end)
+    |> case do
+      {:ok, observation} ->
+        {:ok, observation}
+
+      failures when is_list(failures) ->
+        failures = Enum.reverse(failures)
+        {endpoint, status_code} = List.last(failures)
+
+        reason =
+          Enum.map_join(failures, "; ", fn {url, status} ->
+            "#{URI.parse(url).path} returned HTTP #{status}"
+          end)
+
+        {:ok,
+         %{
+           observation
+           | status: :unhealthy,
+             endpoint: endpoint,
+             status_code: status_code,
+             failure: reason,
+             observed_at: DateTime.utc_now()
+         }}
+    end
+  end
+
+  defp runtime_port(container) do
+    published_runtime_port(container) || environment_runtime_port(container)
+  end
+
+  defp published_runtime_port(container) do
+    ports =
+      container
+      |> value("NetworkSettings")
+      |> value("Ports")
+
+    if is_map(ports) do
+      ports
+      |> Map.values()
+      |> Enum.flat_map(&List.wrap/1)
+      |> Enum.map(&published_binding_port/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort()
+      |> List.first()
+    end
+  end
+
+  defp published_binding_port(binding) do
+    if value(binding, "HostIp") in [nil, "", "0.0.0.0", "127.0.0.1"] do
+      parse_port(value(binding, "HostPort"))
+    end
+  end
+
+  defp environment_runtime_port(container) do
+    container
+    |> value("Config")
+    |> value("Env")
+    |> List.wrap()
+    |> Enum.find_value(fn
+      "PORT=" <> port -> parse_port(port)
+      _environment_entry -> nil
+    end)
+  end
+
+  defp parse_port(port) when is_binary(port) do
+    case Integer.parse(port) do
+      {port, ""} when port in 1..65_535 -> port
+      _invalid -> nil
+    end
+  end
+
+  defp parse_port(_port), do: nil
+
+  defp health_execution_error({:executable_not_found, executable}),
+    do: "#{executable} is not available to the nixploy service"
+
+  defp health_execution_error(reason), do: "health probe failed: #{inspect(reason)}"
+
+  defp require_managed(%WorkloadDetails{managed?: true}), do: :ok
+  defp require_managed(_details), do: {:error, :unmanaged_workload}
+
+  defp decode_inspect_container(output) do
+    case Jason.decode(output) do
+      {:ok, [container]} when is_map(container) -> {:ok, container}
+      {:ok, _other} -> {:error, :unexpected_podman_inspect_json}
+      {:error, error} -> {:error, {:invalid_podman_inspect_json, Exception.message(error)}}
     end
   end
 

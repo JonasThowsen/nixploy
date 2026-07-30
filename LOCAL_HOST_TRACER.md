@@ -77,6 +77,34 @@ operator-selected container and return useful runtime evidence without a
 configuration database. The selected identifier must come from the current
 inventory, and subprocess arguments are never shell-interpolated.
 
+## Local health observation increment
+
+### Observable behavior
+
+An authenticated operator requests a health observation for a selected managed
+workload and sees its inspected container state, bounded loopback HTTP result,
+observation timestamp, and a useful failure reason.
+
+### Acceptance criterion
+
+- The container is re-inspected and must still carry positive nixploy-managed
+  labels before any HTTP request is made.
+- A localhost port is derived only from published Podman bindings or the
+  allowlisted `PORT` runtime variable; environment values are never rendered.
+- Only the fixed `/health` and `/ready` candidates are tried, each with a
+  5-second curl limit, 7-second command timeout, and 4 KiB output bound.
+- Stopped containers, missing ports, non-2xx responses, command failures, and
+  timeouts remain visible without crashing the LiveView.
+- The observation remains ephemeral because this tracer demonstrates no value
+  from a speculative persisted monitoring subsystem.
+
+### What this proves
+
+Locally declared runtime metadata is enough to observe Jomat's `/health` and
+Salgsoversikt's `/ready` endpoints without repository onboarding or duplicated
+service forms. The fixed endpoint candidates are deliberately narrow until a
+native deployment can derive the exact path from the project flake.
+
 ## Deliberately deferred
 
 - GitHub App installation, repository metadata, webhooks, and revision selection
@@ -86,5 +114,5 @@ inventory, and subprocess arguments are never shell-interpolated.
 - Podman pod grouping beyond the container's reported pod name
 - Split-role inventory collection through a worker boundary
 
-The next tracer should make one bounded local health/probe observation for a
-managed workload using runtime metadata and its existing health endpoint.
+The next tracer should design and prove one native no-GitHub deployment from an
+immutable local input, deriving application configuration from its project flake.

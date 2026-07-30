@@ -13,6 +13,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   setup %{conn: conn} do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
+    previous_health_probe = Application.get_env(:nixploy, :local_health_probe)
 
     inventory = %LocalHost.Inventory{
       hostname: "nixploy-vps",
@@ -65,12 +66,27 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       managed?: true
     }
 
+    health_observation = %LocalHost.HealthObservation{
+      container_id: "abcdef123456",
+      container_name: "nixploy-jomat-production-green",
+      container_state: "running",
+      status: :healthy,
+      endpoint: "http://127.0.0.1:4003/health",
+      status_code: 200,
+      observed_at: ~U[2026-07-27 12:06:00Z]
+    }
+
     Application.put_env(:nixploy, :local_inventory_probe, fn -> {:ok, inventory} end)
     Application.put_env(:nixploy, :local_workload_probe, fn _id -> {:ok, details} end)
+
+    Application.put_env(:nixploy, :local_health_probe, fn _id ->
+      {:ok, health_observation}
+    end)
 
     on_exit(fn ->
       restore_env(:local_inventory_probe, previous_probe)
       restore_env(:local_workload_probe, previous_workload_probe)
+      restore_env(:local_health_probe, previous_health_probe)
     end)
 
     operator = Fixtures.operator_fixture()
@@ -104,6 +120,43 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#local-workload-details", "127.0.0.1:8081 → 4000/tcp")
     assert has_element?(view, "#local-workload-logs", "Application started")
     assert has_element?(view, "#local-workload-details", "2 lines")
+  end
+
+  test "probes a selected managed workload and renders a timestamped observation", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> element("#inspect-workload-abcdef123456")
+    |> render_click()
+
+    view
+    |> element("#probe-local-health")
+    |> render_click()
+
+    assert has_element?(view, "#local-health-observation", "running")
+    assert has_element?(view, "#local-health-observation", "healthy")
+    assert has_element?(view, "#local-health-observation", "HTTP 200")
+    assert has_element?(view, "#local-health-observation", "http://127.0.0.1:4003/health")
+    assert has_element?(view, "#local-health-observation", "2026-07-27 12:06:00 UTC")
+  end
+
+  test "renders local health probe failures without crashing", %{conn: conn} do
+    Application.put_env(:nixploy, :local_health_probe, fn _id ->
+      {:error, :unmanaged_workload}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> element("#inspect-workload-abcdef123456")
+    |> render_click()
+
+    view
+    |> element("#probe-local-health")
+    |> render_click()
+
+    assert has_element?(view, "#local-health-error", "positively identified")
+    assert has_element?(view, "#local-workload-details", "running")
   end
 
   test "renders workload inspect and log timeout failures without crashing", %{conn: conn} do

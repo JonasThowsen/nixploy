@@ -239,7 +239,8 @@ security properties, and explicit limitations.
 - discover managed and unmanaged containers directly from the local Podman user
 - show repository and revision identity from nixploy and OCI labels
 - inspect a selected container's local runtime metadata and ephemeral recent logs with explicit time, line, and byte bounds
-- surface bounded Podman failures and allow an operator refresh without crashing the LiveView
+- probe a positively identified managed workload through bounded loopback `/health` and `/ready` observations derived from allowlisted runtime port metadata
+- surface bounded Podman and health failures and allow an operator refresh without crashing the LiveView
 - retain existing registered services and immutable deployment history without presenting manual onboarding forms
 - enqueue an immutable, audited Oban deployment for retained services
 - validate the committed flake target against the registered service before mutation
