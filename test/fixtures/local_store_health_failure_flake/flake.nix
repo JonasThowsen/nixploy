@@ -12,7 +12,7 @@
       fixtureServer = pkgs.writeShellScriptBin "fixture-server" ''
         set -eu
         ${pkgs.busybox}/bin/mkdir -p /tmp/nixploy-fixture-www
-        printf 'healthy-slice-1-3\n' > /tmp/nixploy-fixture-www/health
+        printf 'intentionally-unhealthy\n' > /tmp/nixploy-fixture-www/not-health
         exec ${pkgs.busybox}/bin/httpd -f -p "$PORT" -h /tmp/nixploy-fixture-www
       '';
 
@@ -52,7 +52,7 @@
           secrets = { };
           web = {
             domain = "fixture.nixploy.invalid";
-            healthPath = "/missing";
+            healthPath = "/health";
             slots = {
               blue = 18080;
               green = 18081;
