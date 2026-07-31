@@ -13,6 +13,30 @@ let
     export XDG_RUNTIME_DIR="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
     exec ${cfg.package}/bin/nixploy start
   '';
+
+  commonServiceConfig = {
+    Type = "exec";
+    User = cfg.user;
+    Group = cfg.group;
+    EnvironmentFile = cfg.environmentFile;
+    ExecStart = startControlPlane;
+    Restart = "on-failure";
+    RestartSec = 5;
+    StateDirectory = "nixploy";
+    WorkingDirectory = "/var/lib/nixploy";
+    UMask = "0077";
+    NoNewPrivileges = true;
+    PrivateTmp = true;
+    ProtectSystem = "strict";
+    # Rootless Podman needs the runtime user's home and /run/user state.
+    ProtectHome = false;
+    ReadWritePaths = [ "/var/lib/nixploy" ];
+  };
+
+  commonEnvironment = {
+    NIXPLOY_AUTH_MODE = cfg.authMode;
+    RELEASE_DISTRIBUTION = "none";
+  };
 in
 {
   options.services.nixploy-control-plane = {
@@ -31,7 +55,28 @@ in
         "worker"
       ];
       default = "all";
-      description = "Runtime role. The MVP profile supports one all-role service.";
+      description = "Runtime role used when splitRoles is disabled.";
+    };
+
+    splitRoles = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Run separate web and worker OS processes. Both retain the rootless
+        Podman owner identity, but only the worker receives deployment
+        credentials.
+      '';
+    };
+
+    workerSopsAgeSshKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/etc/ssh/ssh_host_ed25519_key";
+      description = ''
+        Runtime path to an SSH private key accepted by SOPS age recipients.
+        With splitRoles enabled, systemd exposes it only to the worker through
+        LoadCredential; the web process never receives the credential path.
+      '';
     };
 
     authMode = lib.mkOption {
@@ -117,39 +162,53 @@ in
         assertion = cfg.manageUser || builtins.hasAttr cfg.user config.users.users;
         message = "services.nixploy-control-plane.manageUser = false requires users.users.${cfg.user}";
       }
+      {
+        assertion = !cfg.splitRoles || cfg.role == "all";
+        message = "services.nixploy-control-plane.role must remain all when splitRoles is enabled";
+      }
+      {
+        assertion = !cfg.splitRoles || cfg.workerSopsAgeSshKeyFile != null;
+        message = "splitRoles requires workerSopsAgeSshKeyFile for worker-only credential access";
+      }
     ];
 
-    systemd.services.nixploy-control-plane = {
-      description = "nixploy deployment control plane";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+    systemd.services = {
+      nixploy-control-plane = {
+        description = "nixploy deployment control plane web service";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" ];
+        wants = [ "network-online.target" ];
 
-      environment = {
-        NIXPLOY_ROLE = cfg.role;
-        NIXPLOY_AUTH_MODE = cfg.authMode;
-        PORT = toString cfg.port;
-        RELEASE_DISTRIBUTION = "none";
+        environment = commonEnvironment // {
+          NIXPLOY_ROLE = if cfg.splitRoles then "web" else cfg.role;
+          PORT = toString cfg.port;
+        };
+
+        serviceConfig = commonServiceConfig // {
+          ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
+        };
       };
+    }
+    // lib.optionalAttrs cfg.splitRoles {
+      nixploy-control-plane-worker = {
+        description = "nixploy deployment control plane worker";
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          "network-online.target"
+          "nixploy-control-plane.service"
+        ];
+        wants = [ "network-online.target" ];
+        requires = [ "nixploy-control-plane.service" ];
 
-      serviceConfig = {
-        Type = "exec";
-        User = cfg.user;
-        Group = cfg.group;
-        EnvironmentFile = cfg.environmentFile;
-        ExecStart = startControlPlane;
-        ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
-        Restart = "on-failure";
-        RestartSec = 5;
-        StateDirectory = "nixploy";
-        WorkingDirectory = "/var/lib/nixploy";
-        UMask = "0077";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        # Rootless Podman needs the runtime user's home and /run/user state.
-        ProtectHome = false;
-        ReadWritePaths = [ "/var/lib/nixploy" ];
+        environment = commonEnvironment // {
+          NIXPLOY_ROLE = "worker";
+        };
+
+        serviceConfig = commonServiceConfig // {
+          LoadCredential = [
+            "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
+          ];
+        };
       };
     };
   };

@@ -149,6 +149,27 @@
               }
             ];
           }).config.system.build.toplevel;
+        nixos-module-split =
+          (lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              {
+                system.stateVersion = "26.05";
+                boot.loader.grub.devices = [ "/dev/vda" ];
+                fileSystems."/" = {
+                  device = "/dev/vda";
+                  fsType = "ext4";
+                };
+                services.nixploy-control-plane = {
+                  enable = true;
+                  splitRoles = true;
+                  workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
+                  environmentFile = "/run/keys/nixploy.env";
+                };
+              }
+            ];
+          }).config.system.build.toplevel;
       });
 
       devShells = forAllSystems (

@@ -69,11 +69,18 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
                "network" => nil,
                "ports" => []
              },
+             "credential_references" => %{"app" => "/nix/store/encrypted.env"},
              "pre_start_declared" => true,
              "secrets_declared" => true
            }
 
     refute Map.has_key?(targets["production"], "secrets")
+
+    invalid_secret =
+      put_in(config(), ["targets", "production", "secrets"], %{"app" => "/tmp/plain.env"})
+
+    assert {:error, {:invalid_target, "production", "secrets"}} =
+             LocalStoreInput.normalize_config(invalid_secret)
 
     invalid_action = put_in(config(), ["targets", "production", "run", "preStart"], [[]])
 

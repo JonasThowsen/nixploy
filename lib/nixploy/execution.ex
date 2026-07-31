@@ -22,8 +22,9 @@ defmodule Nixploy.Execution do
   def run(%Command{} = command, opts \\ []) do
     with {:ok, executable} <- find_executable(command.executable),
          {:ok, {port_executable, args, termination_mode}} <-
-           process(executable, command.args) do
+           process(executable, command.args, command.stdin) do
       port = open_port(port_executable, args, command)
+      :ok = write_stdin(port, command.stdin)
       os_pid = port_os_pid(port)
       started_at = System.monotonic_time(:millisecond)
 
@@ -54,16 +55,24 @@ defmodule Nixploy.Execution do
     end
   end
 
-  defp process(executable, args) do
+  defp process(executable, args, stdin) do
     wrapper = Path.join(:code.priv_dir(:nixploy), "execution_wrapper.sh")
 
     with bash when is_binary(bash) <- System.find_executable("bash"),
          setsid when is_binary(setsid) <- System.find_executable("setsid"),
+         head when is_binary(head) <- System.find_executable("head"),
          true <- File.regular?(wrapper) do
-      {:ok, {bash, [wrapper, setsid, executable | args], :wrapper}}
+      stdin_bytes = if is_binary(stdin), do: Integer.to_string(byte_size(stdin)), else: "-"
+      {:ok, {bash, [wrapper, setsid, head, stdin_bytes, executable | args], :wrapper}}
     else
       _unavailable -> {:error, :process_group_support_unavailable}
     end
+  end
+
+  defp write_stdin(_port, nil), do: :ok
+
+  defp write_stdin(port, stdin) when is_binary(stdin) do
+    if Port.command(port, stdin), do: :ok, else: raise("could not write command stdin")
   end
 
   defp open_port(executable, args, command) do

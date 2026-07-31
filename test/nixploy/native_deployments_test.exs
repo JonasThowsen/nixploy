@@ -57,6 +57,11 @@ defmodule Nixploy.NativeDeploymentsTest do
       :ok = stage.(:loading, "Loading", %{image_store_path: "/nix/store/image"})
 
       :ok =
+        stage.(:installing_credentials, "Resolving worker-only project credentials", %{
+          metadata: %{credential_file_count: 1}
+        })
+
+      :ok =
         stage.(:preparing_slot, "Preparing slot", %{
           image_reference: "fixture:latest",
           image_id: "sha256:image"
@@ -174,17 +179,26 @@ defmodule Nixploy.NativeDeploymentsTest do
            ]
   end
 
-  test "persists the concise pre-start stage and action count" do
+  test "persists concise credential and pre-start stages without values" do
     operator = Fixtures.operator_fixture()
-    input = staged_input(operator, pre_start: [["/app/migrate"]])
+
+    input =
+      staged_input(operator,
+        pre_start: [["/app/migrate"]],
+        secrets: %{"app" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"}
+      )
+
     {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
 
     Application.put_env(:nixploy, :native_deployment_executor, PreStartExecutorStub)
     assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
 
     events = NativeDeployments.list_events(deployment.id)
+    credentials = Enum.find(events, &(&1.stage == "installing_credentials"))
     pre_start = Enum.find(events, &(&1.stage == "pre_starting"))
 
+    assert credentials.message == "Resolving worker-only project credentials"
+    assert credentials.metadata == %{"credential_file_count" => 1}
     assert pre_start.message == "Running flake-declared pre-start actions"
     assert pre_start.metadata == %{"action_count" => 1}
 
@@ -273,22 +287,24 @@ defmodule Nixploy.NativeDeploymentsTest do
     assert {"has already been taken", _opts} = changeset.errors[:project]
   end
 
-  test "rejects secret inputs but accepts fixed pre-start argv" do
+  test "queues immutable credential references without resolving values in the web context" do
     operator = Fixtures.operator_fixture()
-    secret_input = staged_input(operator, secrets: %{"app" => "/nix/store/secret-ref"})
 
-    assert {:error, :native_secrets_not_supported} =
-             NativeDeployments.enqueue(secret_input.id, operator: operator)
+    input =
+      staged_input(operator,
+        secrets: %{"app" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"},
+        pre_start: [["/app/migrate"]]
+      )
 
-    pre_start_input = staged_input(operator, pre_start: [["/app/migrate"]])
+    assert {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
 
-    assert {:ok, deployment, _job} =
-             NativeDeployments.enqueue(pre_start_input.id, operator: operator)
+    assert get_in(deployment.deployment_input.derived_snapshot, [
+             "target",
+             "credential_references"
+           ]) == %{"app" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"}
 
     assert get_in(deployment.deployment_input.derived_snapshot, ["target", "run", "pre_start"]) ==
-             [
-               ["/app/migrate"]
-             ]
+             [["/app/migrate"]]
   end
 
   defp staged_input(operator, opts \\ []) do

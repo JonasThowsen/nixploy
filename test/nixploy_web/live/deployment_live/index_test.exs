@@ -362,8 +362,11 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
             "network" => "host",
             "ports" => []
           },
+          "credential_references" => %{
+            "app" => "/nix/store/cccccccccccccccccccccccccccccccc-encrypted.env"
+          },
           "pre_start_declared" => true,
-          "secrets_declared" => false
+          "secrets_declared" => true
         }
       }
     }
@@ -379,9 +382,12 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     {:ok, view, html} = live(conn, ~p"/deployment-inputs/#{input.id}")
 
     assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy native")
-    assert has_element?(view, "#deployment-input-detail", "Includes 1 flake-declared pre-start")
-    assert html =~ "run 1 flake-declared pre-start action(s) before candidate startup"
+    assert has_element?(view, "#deployment-input-detail", "1 worker-only credential file(s)")
+    assert has_element?(view, "#deployment-input-detail", "1 flake-declared pre-start action(s)")
+    assert html =~ "resolve 1 worker-only credential file(s)"
+    assert html =~ "run 1 pre-start action(s) before candidate startup"
     refute html =~ "/bin/private-migration-detail"
+    refute html =~ "cccccccccccccccccccccccccccccccc-encrypted.env"
   end
 
   test "keeps native operation history on its own utility route", %{

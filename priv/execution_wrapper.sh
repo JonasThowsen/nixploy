@@ -4,7 +4,9 @@
 set -u
 
 setsid_executable=$1
-shift
+head_executable=$2
+stdin_bytes=$3
+shift 3
 
 child_pid=""
 monitor_pid=""
@@ -29,23 +31,33 @@ terminate_child() {
 
 trap terminate_child TERM INT HUP
 
-"$setsid_executable" "$@" </dev/null &
-child_pid=$!
+if [ "$stdin_bytes" = "-" ]; then
+  "$setsid_executable" "$@" </dev/null &
+  child_pid=$!
 
-# Bash redirects stdin of asynchronous commands to /dev/null unless an explicit
-# redirection is supplied. Preserve the port pipe here; otherwise this monitor
-# races every command and can terminate it immediately.
-(
-  while IFS= read -r _; do :; done
-  kill -TERM "$PPID" 2>/dev/null || true
-) <&0 &
-monitor_pid=$!
+  # Bash redirects stdin of asynchronous commands to /dev/null unless an explicit
+  # redirection is supplied. Preserve the port pipe here; otherwise this monitor
+  # races every command and can terminate it immediately.
+  (
+    while IFS= read -r _; do :; done
+    kill -TERM "$PPID" 2>/dev/null || true
+  ) <&0 &
+  monitor_pid=$!
+else
+  # Read exactly the declared bytes and then close the child's input. This lets
+  # secret-consuming commands receive stdin without putting values in argv,
+  # environment variables, or temporary files.
+  "$head_executable" -c "$stdin_bytes" | "$setsid_executable" "$@" &
+  child_pid=$!
+fi
 
 wait "$child_pid"
 status=$?
 
-kill "$monitor_pid" 2>/dev/null || true
-wait "$monitor_pid" 2>/dev/null || true
+if [ -n "$monitor_pid" ]; then
+  kill "$monitor_pid" 2>/dev/null || true
+  wait "$monitor_pid" 2>/dev/null || true
+fi
 trap - TERM INT HUP
 
 exit "$status"

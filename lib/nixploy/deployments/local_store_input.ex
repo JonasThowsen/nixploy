@@ -24,6 +24,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   @max_value_bytes 4_096
   @max_pre_start_actions 32
   @max_argv_items 128
+  @max_credential_files 16
   @nar_hash ~r/^[A-Za-z0-9][A-Za-z0-9+\/_=.~:-]*$/
 
   @spec probe(String.t(), keyword()) :: {:ok, Source.t()} | {:error, term()}
@@ -324,9 +325,6 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   end
 
   defp normalize_target(name, target) do
-    # TODO(tracer): Add policy-safe credential references in the next Slice 1.4
-    # increment. This first increment persists only fixed pre-start argv and
-    # continues to reject every target that declares secrets.
     web = target["web"]
     slots = is_map(web) && web["slots"]
     run = target["run"] || %{}
@@ -342,7 +340,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          {:ok, green} <- target_port(slots, "green", name),
          true <- blue != green,
          {:ok, normalized_run} <- normalize_run(run, name),
-         true <- is_map(secrets) do
+         {:ok, credential_references} <- normalize_credentials(secrets, name) do
       {:ok,
        %{
          "name" => name,
@@ -351,8 +349,9 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          "health_path" => health_path,
          "slots" => %{"blue" => blue, "green" => green},
          "run" => normalized_run,
+         "credential_references" => credential_references,
          "pre_start_declared" => normalized_run["pre_start"] != [],
-         "secrets_declared" => map_size(secrets) > 0
+         "secrets_declared" => map_size(credential_references) > 0
        }}
     else
       false -> {:error, {:invalid_target, name, "web or runtime configuration"}}
@@ -379,6 +378,35 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defp normalize_run(_run, target_name),
     do: {:error, {:invalid_target, target_name, "run"}}
+
+  defp normalize_credentials(credentials, target_name)
+       when is_map(credentials) and map_size(credentials) <= @max_credential_files do
+    credentials
+    |> Enum.sort_by(fn {label, _reference} -> to_string(label) end)
+    |> Enum.reduce_while({:ok, %{}}, fn
+      {label, reference}, {:ok, normalized} when is_binary(label) and is_binary(reference) ->
+        if valid_credential_label?(label) and valid_credential_reference?(reference) do
+          {:cont, {:ok, Map.put(normalized, label, reference)}}
+        else
+          {:halt, {:error, {:invalid_target, target_name, "secrets"}}}
+        end
+
+      _invalid, _acc ->
+        {:halt, {:error, {:invalid_target, target_name, "secrets"}}}
+    end)
+  end
+
+  defp normalize_credentials(_credentials, target_name),
+    do: {:error, {:invalid_target, target_name, "secrets"}}
+
+  defp valid_credential_label?(label),
+    do: label != "" and byte_size(label) <= 255 and not String.contains?(label, <<0>>)
+
+  defp valid_credential_reference?(reference),
+    do:
+      byte_size(reference) <= @max_path_bytes and Path.type(reference) == :absolute and
+        Path.expand(reference) == reference and String.starts_with?(reference, "/nix/store/") and
+        not String.contains?(reference, <<0>>)
 
   defp optional_argv(nil, _target_name), do: {:ok, nil}
 

@@ -1,7 +1,7 @@
 defmodule Nixploy.Deployments.NativeExecutor do
   @moduledoc "Executes one verified local-store input against local Podman and Caddy."
 
-  alias Nixploy.Deployments.{LocalStoreInput, NativeDeployment}
+  alias Nixploy.Deployments.{LocalStoreInput, NativeDeployment, ProjectCredentials}
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
@@ -41,6 +41,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
          {:ok, image_id} <- inspect_image(image_reference, execute, cancelled?),
          :ok <- verify_expected_image(operation, image_id),
          :ok <- checkpoint(cancelled?),
+         {:ok, secret_mounts} <-
+           prepare_credentials(operation, plan, target, input, execute, cancelled?, stage, opts),
+         :ok <- checkpoint(cancelled?),
          :ok <-
            stage.(:preparing_slot, "Validating and preparing only the inactive managed slot", %{
              image_store_path: image_store_path,
@@ -55,6 +58,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
              target,
              input,
              image_reference,
+             secret_mounts,
              execute,
              cancelled?,
              stage
@@ -65,7 +69,15 @@ defmodule Nixploy.Deployments.NativeExecutor do
              container_name: plan.container_name
            }),
          {:ok, container_id} <-
-           start_candidate(plan, target, input, image_reference, execute, cancelled?),
+           start_candidate(
+             plan,
+             target,
+             input,
+             image_reference,
+             secret_mounts,
+             execute,
+             cancelled?
+           ),
          :ok <- verify_candidate(plan, input, image_id, execute, cancelled?),
          :ok <- checkpoint(cancelled?),
          :ok <-
@@ -107,8 +119,23 @@ defmodule Nixploy.Deployments.NativeExecutor do
   def error_message(:native_configuration_digest_changed),
     do: "the derived configuration digest no longer matches the staged input"
 
-  def error_message(:native_secrets_not_supported),
-    do: "project secrets are deferred; this native slice accepts only no-secret inputs"
+  def error_message(:credential_references_missing),
+    do: "the staged input declares secrets without immutable credential references"
+
+  def error_message(:credential_worker_required),
+    do: "project credentials may only be resolved by the dedicated worker process"
+
+  def error_message(:credential_identity_unavailable),
+    do: "the worker SOPS identity credential is unavailable"
+
+  def error_message({:credential_decryption_failed, label}),
+    do: "worker decryption failed for credential reference #{label}"
+
+  def error_message({:duplicate_credential, name}),
+    do: "credential name #{name} is declared more than once"
+
+  def error_message({:credential_resolution_failed, reason}),
+    do: "worker credential resolution failed: #{safe_inspect(reason)}"
 
   def error_message({:pre_start_failed, index, count, reason}),
     do:
@@ -180,9 +207,18 @@ defmodule Nixploy.Deployments.NativeExecutor do
              input.configuration_digest,
              :native_configuration_digest_changed
            ) do
-      if snapshot["target"]["secrets_declared"],
-        do: {:error, :native_secrets_not_supported},
-        else: {:ok, source}
+      references = snapshot["target"]["credential_references"] || %{}
+
+      cond do
+        not is_map(references) ->
+          {:error, :credential_references_missing}
+
+        snapshot["target"]["secrets_declared"] and map_size(references) == 0 ->
+          {:error, :credential_references_missing}
+
+        true ->
+          {:ok, source}
+      end
     else
       {:error, reason} -> {:error, reason}
     end
@@ -442,7 +478,91 @@ defmodule Nixploy.Deployments.NativeExecutor do
     run_ok(command, execute, cancelled?, :podman_remove)
   end
 
-  defp run_pre_start(plan, target, input, image_reference, execute, cancelled?, stage) do
+  defp prepare_credentials(operation, plan, target, input, execute, cancelled?, stage, opts) do
+    references = target["credential_references"] || %{}
+
+    if map_size(references) == 0 do
+      {:ok, []}
+    else
+      resolver = Keyword.get(opts, :resolve_credentials, &ProjectCredentials.resolve/2)
+
+      with :ok <-
+             stage.(:installing_credentials, "Resolving worker-only project credentials", %{
+               metadata: %{credential_file_count: map_size(references)}
+             }),
+           {:ok, secrets} <-
+             resolver.(references, execute: execute, cancelled?: cancelled?),
+           {:ok, mounts} <-
+             install_credentials(operation, plan, input, secrets, execute, cancelled?) do
+        {:ok, mounts}
+      else
+        {:error, reason} -> {:error, normalize_credential_error(reason)}
+      end
+    end
+  end
+
+  defp install_credentials(operation, plan, input, secrets, execute, cancelled?) do
+    secrets
+    |> Enum.reduce_while({:ok, []}, fn secret, {:ok, mounts} ->
+      source = secret_name(plan.prefix, operation.id, secret.name)
+
+      labels = %{
+        "io.nixploy.managed" => "true",
+        "io.nixploy.project" => plan.project,
+        "io.nixploy.target" => plan.target,
+        "io.nixploy.deployment_input" => input.id
+      }
+
+      args =
+        labels
+        |> Enum.sort()
+        |> Enum.reduce(["secret", "create"], fn {name, value}, args ->
+          args ++ ["--label", "#{name}=#{value}"]
+        end)
+        |> Kernel.++([source, "-"])
+
+      command = %Command{
+        executable: podman(),
+        args: args,
+        stdin: secret.value,
+        redact: [secret.value],
+        timeout: @short_timeout,
+        max_output_bytes: @diagnostic_limit
+      }
+
+      case run_ok(command, execute, cancelled?, :podman_secret_create) do
+        :ok ->
+          mount = %{source: source, target: secret.name, value: secret.value}
+          {:cont, {:ok, [mount | mounts]}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, mounts} -> {:ok, Enum.reverse(mounts)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_credential_error(reason)
+       when reason in [:credential_worker_required, :credential_identity_unavailable],
+       do: reason
+
+  defp normalize_credential_error({:credential_decryption_failed, _label} = reason), do: reason
+  defp normalize_credential_error({:duplicate_credential, _name} = reason), do: reason
+  defp normalize_credential_error(reason), do: {:credential_resolution_failed, reason}
+
+  defp run_pre_start(
+         plan,
+         target,
+         input,
+         image_reference,
+         secret_mounts,
+         execute,
+         cancelled?,
+         stage
+       ) do
     run = target["run"] || %{}
     actions = run["pre_start"] || []
 
@@ -458,6 +578,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
         |> Enum.reduce_while(:ok, fn {argv, index}, :ok ->
           args =
             ["run", "--rm"]
+            |> add_secret_mounts(secret_mounts)
             |> add_network(run["network"])
             |> add_environment(run["environment"] || %{}, plan.inactive_port)
             |> add_labels(plan, input)
@@ -468,6 +589,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
             executable: podman(),
             args: args,
             timeout: @pre_start_timeout,
+            redact: secret_values(secret_mounts),
             max_output_bytes: @diagnostic_limit
           }
 
@@ -483,11 +605,20 @@ defmodule Nixploy.Deployments.NativeExecutor do
     end
   end
 
-  defp start_candidate(plan, target, input, image_reference, execute, cancelled?) do
+  defp start_candidate(
+         plan,
+         target,
+         input,
+         image_reference,
+         secret_mounts,
+         execute,
+         cancelled?
+       ) do
     run = target["run"] || %{}
 
     args =
       ["run", "--detach", "--name", plan.container_name]
+      |> add_secret_mounts(secret_mounts)
       |> add_network(run["network"])
       |> add_environment(run["environment"] || %{}, plan.inactive_port)
       |> add_ports(run["ports"] || [], plan.inactive_port)
@@ -499,6 +630,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
       executable: podman(),
       args: args,
       timeout: :timer.minutes(2),
+      redact: secret_values(secret_mounts),
       max_output_bytes: @diagnostic_limit
     }
 
@@ -934,6 +1066,23 @@ defmodule Nixploy.Deployments.NativeExecutor do
     |> String.replace(~r/[^a-z0-9_-]+/, "-")
     |> String.trim("-")
     |> String.slice(0, 48)
+  end
+
+  defp add_secret_mounts(args, mounts) do
+    Enum.reduce(mounts, args, fn mount, acc ->
+      acc ++ ["--secret", "source=#{mount.source},type=env,target=#{mount.target}"]
+    end)
+  end
+
+  defp secret_values(mounts), do: Enum.map(mounts, & &1.value)
+
+  defp secret_name(prefix, operation_id, target) do
+    operation = operation_id |> String.replace("-", "") |> String.slice(0, 12)
+
+    target_hash =
+      :crypto.hash(:sha256, target) |> Base.encode16(case: :lower) |> String.slice(0, 12)
+
+    "#{prefix}-secret-#{operation}-#{target_hash}"
   end
 
   defp add_network(args, nil), do: args

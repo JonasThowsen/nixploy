@@ -12,6 +12,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
     :preparing,
     :building,
     :loading,
+    :installing_credentials,
     :preparing_slot,
     :pre_starting,
     :starting,

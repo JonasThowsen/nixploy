@@ -23,6 +23,22 @@ defmodule Nixploy.ExecutionTest do
     assert_receive {:line, "second=; touch /tmp/not-executed"}
   end
 
+  test "writes bounded command input through stdin without putting it in argv or environment" do
+    secret = "worker-only-secret-value"
+
+    command = %Command{
+      executable: "cat",
+      stdin: secret,
+      redact: [secret]
+    }
+
+    assert {:ok, result} = Execution.run(command)
+    assert result.exit_status == 0
+    assert result.output_tail == "[REDACTED]"
+    assert command.args == []
+    assert command.env == %{}
+  end
+
   test "redacts configured values from streamed and retained output" do
     command = %Command{
       executable: "printf",

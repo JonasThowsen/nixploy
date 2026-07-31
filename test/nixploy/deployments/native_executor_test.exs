@@ -142,6 +142,88 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     refute Enum.any?(commands, &(&1.executable in ["sh", "bash"]))
   end
 
+  test "resolves worker credentials and injects operation-scoped Podman secrets" do
+    parent = self()
+    secret_value = "worker-only-secret-value"
+
+    config =
+      config(
+        pre_start: [["/bin/fixture-pre-start"]],
+        secrets: %{"app" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"}
+      )
+
+    resolver = fn references, opts ->
+      send(parent, {:credential_resolver, references, opts})
+      {:ok, [%{name: "FIXTURE_TOKEN", value: secret_value}]}
+    end
+
+    execute = fn command, opts ->
+      send(parent, {:command, command, opts})
+
+      case {command.executable, command.args} do
+        {"nix", ["eval" | _]} -> ok(Jason.encode!(config))
+        {"podman", ["secret", "create" | _]} -> ok("secret-id\n")
+        {"podman", ["run", "--rm" | _]} -> ok("pre-start complete\n")
+        _other -> response(command)
+      end
+    end
+
+    stage = fn state, message, attrs ->
+      send(parent, {:stage, state, message, attrs})
+      :ok
+    end
+
+    assert :ok =
+             NativeExecutor.deploy(operation([], config),
+               execute: execute,
+               resolve_credentials: resolver,
+               path_exists?: fn _path -> true end,
+               stage: stage,
+               cancelled?: fn -> false end,
+               health_attempts: 1,
+               health_delay_ms: 0
+             )
+
+    messages = drain_messages([])
+
+    assert {:credential_resolver,
+            %{"app" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"},
+            [execute: resolver_execute, cancelled?: resolver_cancelled?]} =
+             Enum.find(messages, &match?({:credential_resolver, _, _}, &1))
+
+    assert is_function(resolver_execute, 2)
+    refute resolver_cancelled?.()
+
+    assert {:stage, :installing_credentials, "Resolving worker-only project credentials",
+            %{metadata: %{credential_file_count: 1}}} in messages
+
+    commands = for {:command, command, _opts} <- messages, do: command
+    secret_create = Enum.find(commands, &match?(["secret", "create" | _], &1.args))
+    pre_start = Enum.find(commands, &match?(["run", "--rm" | _], &1.args))
+    candidate = Enum.find(commands, &match?(["run", "--detach" | _], &1.args))
+
+    assert secret_create.stdin == secret_value
+    assert secret_create.redact == [secret_value]
+    refute secret_value in secret_create.args
+    refute secret_value in Map.values(secret_create.env)
+    assert List.last(secret_create.args) == "-"
+    assert "--label" in secret_create.args
+
+    secret_mount =
+      Enum.find(pre_start.args, &String.starts_with?(&1, "source=nixploy-native-fixture-"))
+
+    assert String.ends_with?(secret_mount, ",type=env,target=FIXTURE_TOKEN")
+    assert secret_mount in candidate.args
+    assert pre_start.redact == [secret_value]
+    assert candidate.redact == [secret_value]
+
+    secret_index = Enum.find_index(commands, &(&1 == secret_create))
+    pre_start_index = Enum.find_index(commands, &(&1 == pre_start))
+    candidate_index = Enum.find_index(commands, &(&1 == candidate))
+    assert secret_index < pre_start_index
+    assert pre_start_index < candidate_index
+  end
+
   test "pre-start failure preserves the healthy routed slot and never starts a candidate" do
     prefix = "nixploy-native-fixture-existing-production"
     active = active_green(prefix)
@@ -718,6 +800,7 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
 
   defp config(opts \\ []) do
     pre_start = Keyword.get(opts, :pre_start, [])
+    secrets = Keyword.get(opts, :secrets, %{})
 
     %{
       "__schema" => "v0.2",
@@ -732,7 +815,7 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
             "ports" => [],
             "preStart" => pre_start
           },
-          "secrets" => %{},
+          "secrets" => secrets,
           "web" => %{
             "domain" => "native-fixture.invalid",
             "healthPath" => "/health",
