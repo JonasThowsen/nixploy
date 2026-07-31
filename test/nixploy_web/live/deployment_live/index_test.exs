@@ -417,10 +417,17 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     refute html =~ "cccccccccccccccccccccccccccccccc-encrypted.env"
   end
 
-  test "keeps native operation history on its own utility route", %{
+  test "keeps application deployment history on its own utility route", %{
     conn: conn,
     operator: operator
   } do
+    probe = Application.fetch_env!(:nixploy, :local_store_input_probe)
+
+    Application.put_env(:nixploy, :local_store_input_probe, fn path, opts ->
+      {:ok, source} = probe.(path, opts)
+      {:ok, %{source | project: "jomat"}}
+    end)
+
     assert {:ok, input} =
              Deployments.stage_local_store(
                %{
@@ -434,7 +441,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     {:ok, view, html} = live(conn, ~p"/deployments")
 
     assert has_element?(view, "#deployments-page", "Deployments")
-    assert has_element?(view, "#native-deployment-#{deployment.id}", "mobile-fixture")
+    assert has_element?(view, "#native-deployment-#{deployment.id}", "jomat")
     assert has_element?(view, "a[aria-current='page'][href='/deployments']")
     refute has_element?(view, "#local-host-inventory")
     refute has_element?(view, "#immutable-input-staging")

@@ -736,15 +736,31 @@ defmodule NixployWeb.DeploymentLive.Index do
   def active_deployment_count(deployments),
     do: Enum.count(deployments, &(not Nixploy.Deployments.NativeDeployment.terminal?(&1)))
 
+  # TODO(tracer): Replace runtime-label matching with a durable application ID
+  # when Slice 1.5 adopts the first real project. Until then, hiding fixture-only
+  # evidence keeps the primary operator lists about applications that exist now;
+  # retained evidence remains reachable through its stable compatibility URL.
   def application_deployments(_deployments, nil), do: []
 
   def application_deployments(deployments, inventory) do
-    projects =
-      inventory.workloads
-      |> Enum.filter(& &1.managed?)
-      |> MapSet.new(& &1.project)
-
+    projects = managed_projects(inventory)
     Enum.filter(deployments, &MapSet.member?(projects, &1.project))
+  end
+
+  def application_releases(_inputs, nil), do: []
+
+  def application_releases(inputs, inventory) do
+    projects = managed_projects(inventory)
+
+    Enum.filter(inputs, fn input ->
+      MapSet.member?(projects, input.derived_snapshot["project"])
+    end)
+  end
+
+  defp managed_projects(inventory) do
+    inventory.workloads
+    |> Enum.filter(& &1.managed?)
+    |> MapSet.new(& &1.project)
   end
 
   def input_state_class(:staged), do: "badge-success"

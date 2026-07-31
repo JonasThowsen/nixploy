@@ -15,7 +15,7 @@
       <.button
         id="refresh-local-inventory"
         phx-click="refresh_local_inventory"
-        class="btn-outline btn-sm min-h-11 gap-2"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
         disabled={@local_inventory_status == :loading}
       >
         <.icon
@@ -190,7 +190,7 @@
       <.button
         id="refresh-local-inventory"
         phx-click="refresh_local_inventory"
-        class="btn-outline btn-sm min-h-11 gap-2"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
         disabled={@local_inventory_status == :loading}
       >
         <.icon
@@ -519,6 +519,7 @@
       </div>
     </header>
 
+    <% releases = application_releases(@deployment_inputs, @local_inventory) %>
     <section id="release-history" class="np-panel overflow-hidden">
       <div class="np-panel-header">
         <div>
@@ -528,15 +529,20 @@
           </p>
         </div>
         <span class="font-mono text-xs text-base-content/45">
-          {length(@deployment_inputs)} total
+          {length(releases)} available
         </span>
       </div>
-      <div :if={@deployment_inputs == []} id="empty-deployment-inputs" class="np-empty">
-        No releases have been registered yet.
+      <div :if={releases == []} id="empty-deployment-inputs" class="np-empty">
+        <strong class="block text-base-content/70">
+          No application releases are available yet.
+        </strong>
+        <span class="mt-1 block">
+          Releases will appear here after the build pipeline registers them.
+        </span>
       </div>
       <div class="divide-y divide-base-300">
         <article
-          :for={input <- @deployment_inputs}
+          :for={input <- releases}
           id={"deployment-input-#{input.id}"}
           class="grid min-w-0 gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
         >
@@ -664,6 +670,7 @@
   </section>
 
   <section :if={@live_action == :deployments} id="deployments-page" class="np-page-stack">
+    <% deployments = application_deployments(@native_deployments, @local_inventory) %>
     <header class="np-page-header">
       <div>
         <p class="np-kicker">Activity</p>
@@ -672,7 +679,10 @@
           Current progress, previous releases, failures, and rollback.
         </p>
       </div>
-      <.link navigate={~p"/releases"} class="btn btn-primary btn-sm min-h-11 gap-2">
+      <.link
+        navigate={~p"/releases"}
+        class="btn btn-primary btn-sm min-h-11 gap-2 self-start sm:self-auto"
+      >
         <.icon name="hero-rocket-launch" class="size-4" /> Deploy release
       </.link>
     </header>
@@ -680,15 +690,15 @@
     <div class="grid gap-3 sm:grid-cols-3">
       <article class="np-stat">
         <p class="np-stat-label">In progress</p>
-        <p class="np-stat-number">{active_deployment_count(@native_deployments)}</p>
+        <p class="np-stat-number">{active_deployment_count(deployments)}</p>
       </article>
       <article class="np-stat">
         <p class="np-stat-label">Successful</p>
-        <p class="np-stat-number">{Enum.count(@native_deployments, &(&1.state == :succeeded))}</p>
+        <p class="np-stat-number">{Enum.count(deployments, &(&1.state == :succeeded))}</p>
       </article>
       <article class="np-stat">
         <p class="np-stat-label">Failed</p>
-        <p class="np-stat-number">{failed_deployment_count(@native_deployments)}</p>
+        <p class="np-stat-number">{failed_deployment_count(deployments)}</p>
       </article>
     </div>
 
@@ -699,15 +709,15 @@
           <p class="np-panel-description">Newest activity first.</p>
         </div>
         <span class="font-mono text-xs text-base-content/45">
-          {length(@native_deployments)} deployments
+          {length(deployments)} deployments
         </span>
       </div>
-      <div :if={@native_deployments == []} id="empty-native-deployments" class="np-empty">
-        No deployments have been started.
+      <div :if={deployments == []} id="empty-native-deployments" class="np-empty">
+        No application deployments have been started yet.
       </div>
       <div class="divide-y divide-base-300">
         <article
-          :for={deployment <- @native_deployments}
+          :for={deployment <- deployments}
           id={"native-deployment-#{deployment.id}"}
           class="grid min-w-0 gap-4 p-4 sm:p-5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center"
         >
