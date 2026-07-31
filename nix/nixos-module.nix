@@ -9,17 +9,21 @@
 let
   cfg = config.services.nixploy-control-plane;
 
-  startControlPlane = pkgs.writeShellScript "nixploy-control-plane-start" ''
-    export XDG_RUNTIME_DIR="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
-    exec ${cfg.package}/bin/nixploy start
-  '';
+  startControlPlane =
+    role:
+    pkgs.writeShellScript "nixploy-control-plane-${role}-start" ''
+      export XDG_RUNTIME_DIR="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
+      # Export after EnvironmentFile is loaded so a legacy NIXPLOY_ROLE entry
+      # cannot collapse split services back into the combined process.
+      export NIXPLOY_ROLE="${role}"
+      exec ${cfg.package}/bin/nixploy start
+    '';
 
   commonServiceConfig = {
     Type = "exec";
     User = cfg.user;
     Group = cfg.group;
     EnvironmentFile = cfg.environmentFile;
-    ExecStart = startControlPlane;
     Restart = "on-failure";
     RestartSec = 5;
     StateDirectory = "nixploy";
@@ -180,11 +184,11 @@ in
         wants = [ "network-online.target" ];
 
         environment = commonEnvironment // {
-          NIXPLOY_ROLE = if cfg.splitRoles then "web" else cfg.role;
           PORT = toString cfg.port;
         };
 
         serviceConfig = commonServiceConfig // {
+          ExecStart = startControlPlane (if cfg.splitRoles then "web" else cfg.role);
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
         };
       };
@@ -200,11 +204,10 @@ in
         wants = [ "network-online.target" ];
         requires = [ "nixploy-control-plane.service" ];
 
-        environment = commonEnvironment // {
-          NIXPLOY_ROLE = "worker";
-        };
+        environment = commonEnvironment;
 
         serviceConfig = commonServiceConfig // {
+          ExecStart = startControlPlane "worker";
           LoadCredential = [
             "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
           ];
