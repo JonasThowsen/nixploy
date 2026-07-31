@@ -220,10 +220,38 @@ candidate, and left Caddy on the healthy blue upstream. The fixture route,
 containers, and images were removed after verification while durable operation
 and actor audit evidence were retained.
 
+## Completed worker-only credential increment
+
+Production now runs the same release as distinct `web` and `worker` OS
+processes. Both retain the `nixploy` rootless Podman identity, but systemd mounts
+the host SSH identity credential only into the worker namespace and makes
+`/run/credentials` inaccessible in the web namespace. A fixed `ssh-to-age` argv
+derives the in-memory age identity. SOPS decrypts only immutable store-path
+references in the worker, and strict bounded dotenv parsing rejects malformed,
+duplicate, empty, oversized, or invalid variable declarations.
+
+Secrets are created through bounded command stdin rather than argv, environment,
+or temporary files. Their names are operation-scoped and derived, with managed
+project/target/input labels. Pre-start and candidate containers receive explicit
+`source=...,type=env,target=...` mounts. Secret values are configured as
+redactions on secret creation, pre-start, and candidate commands. The UI and
+events show only credential-file and action counts.
+
+Credential input `ca0b6e95-402b-45e9-a6a3-08d2acd84722` and operation
+`d0d16605-1fc7-4c25-a4d4-6bebbc143bfa` proved decryption, secret installation,
+pre-start access, candidate access, health, ingress, and readback. Failure input
+`18fe7b8b-e1bd-4741-9231-f10e3ee7321f` and operation
+`021323a4-4a79-4d0c-8b5c-8e0faafba02f` printed its secret before exiting 23;
+retained failure contained `[REDACTED]`, no candidate or switching stage was
+created, and the healthy blue route remained selected. A full PostgreSQL data
+dump, LiveView HTML, event/audit metadata, and production journals contained no
+plaintext fixture value. All fixture runtime resources and operation-scoped
+secrets were removed after verification.
+
 ## Next smallest implementation slice
 
-Add one worker-only credential-reference handoff for a credential-backed fixture.
-Prove decrypted values never enter PostgreSQL, LiveView, retained diagnostics,
-or the web process; install only positively identified Podman secrets; and cover
-redaction on both successful and failing pre-start commands. Adoption of Jomat
-or Salgsoversikt remains deferred until that boundary is exercised safely.
+Start Slice 1.5 by adopting one existing application's unchanged flake-owned
+credential references and pre-start declarations. Deploy and roll it back
+through the native path while the other applications remain available, and keep
+the compatibility adapter until public-health and recovery evidence are
+recorded.

@@ -253,24 +253,28 @@ roll a successful deployment back to its previous verified image/configuration.
 
 ## Slice 1.4 — Project credentials and pre-start actions
 
-**Implementation status:** in progress. The first no-secret increment now
-persists bounded fixed argv from the immutable flake, runs each action in a
-bounded temporary container before candidate startup, and records one concise
-`pre_starting` stage with action count. It adds no standalone command page or
-editable command UI.
+**Implementation status:** completed. Immutable flake snapshots retain encrypted
+SOPS store-path references and bounded fixed pre-start argv, never decrypted
+values. Production now runs separate web and worker OS processes. Only the
+worker receives the host SSH identity through a systemd credential namespace;
+the web mount namespace cannot read `/run/credentials`. The worker derives an
+age identity, decrypts bounded dotenv content, creates operation-scoped labeled
+Podman secrets through stdin, and injects them into pre-start and candidate
+containers. The focused UI shows only credential-file and action counts on the
+existing deployment confirmation and timeline.
 
-Production input `a4c55e02-8051-4631-a1d2-90c1b52b5d93` and operation
-`3ae5e212-5921-4309-9154-bff8c3cd99dd` ran one declared action before starting,
-health-checking, and routing the fixture. Failure input
-`07497c81-0a9b-4182-9e44-6e7c2de5d681` and operation
-`957cee5c-b81b-4d36-be46-215b4aea9486` persisted `pre_start_failed`, emitted no
-starting or switching stage, left the healthy blue upstream selected, and
-created no green candidate. The fixture route, containers, and images were
-removed after verification; operation and audit evidence remain.
-
-Credential references, worker-only decryption, Podman secret installation, and
-secret-aware redaction remain deliberately incomplete, so targets declaring
-secrets still fail closed.
+Credential input `ca0b6e95-402b-45e9-a6a3-08d2acd84722` and successful operation
+`d0d16605-1fc7-4c25-a4d4-6bebbc143bfa` proved worker decryption, secret
+installation, pre-start access, candidate access, exact health, ingress switch,
+and independent readback. Failure input
+`18fe7b8b-e1bd-4741-9231-f10e3ee7321f` and operation
+`021323a4-4a79-4d0c-8b5c-8e0faafba02f` deliberately printed the decrypted value
+before exiting 23. Persisted failure contained `[REDACTED]`, emitted no starting
+or switching stage, created no green candidate, and left the healthy blue
+upstream selected. PostgreSQL data, LiveView HTML, events, audits, and production
+journals contained no plaintext fixture value. Test containers, routes, images,
+and operation-scoped secrets were removed after verification; durable evidence
+remains.
 
 **Observable behavior**
 
@@ -285,8 +289,9 @@ process.
 - Secret values are redacted from retained command output and events.
 - Pre-start commands use fixed argv and complete before the candidate starts.
 - Failure prevents ingress switching and preserves the active slot.
-- One real application can be deployed natively without changing its flake-owned
-  configuration into database fields.
+- One credential-backed production-style fixture deploys without changing its
+  flake-owned configuration into database fields; real application adoption is
+  reserved for Slice 1.5.
 
 ## Slice 1.5 — Native production adoption
 
@@ -631,9 +636,8 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Complete **Slice 1.4 — Project credentials and pre-start actions** with one
-narrow worker-only credential-reference handoff. Keep decrypted values out of
-PostgreSQL, events, command diagnostics, LiveView, and the web process; install
-only positively identified Podman secrets required by the immutable input; and
-exercise secret-aware redaction before a credential-backed fixture can pass.
-Production application adoption remains reserved for Slice 1.5.
+Start **Slice 1.5 — Native production adoption** with one existing application
+while the others remain available. Reuse its unchanged flake-owned credential
+references and pre-start declarations, adopt only its positively identified
+managed prefix, deploy and roll back through the native path, and retain the
+compatibility adapter until public health and recovery evidence are documented.
