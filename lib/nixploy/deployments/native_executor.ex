@@ -409,20 +409,29 @@ defmodule Nixploy.Deployments.NativeExecutor do
   end
 
   defp verify_candidate(plan, input, image_id, execute, cancelled?) do
-    with {:ok, container} <- inspect_container(plan.container_name, execute, cancelled?),
-         true <- get_in(container, ["State", "Running"]) == true,
-         true <- image_matches?(container["Image"], image_id),
-         labels when is_map(labels) <- get_in(container, ["Config", "Labels"]),
-         true <- labels["io.nixploy.managed"] == "true",
-         true <- labels["io.nixploy.project"] == plan.project,
-         true <- labels["io.nixploy.target"] == plan.target,
-         true <- labels["io.nixploy.slot"] == plan.inactive_slot,
-         true <- labels["io.nixploy.deployment_input"] == input.id do
-      :ok
-    else
-      false -> {:error, :candidate_identity_mismatch}
-      nil -> {:error, :candidate_identity_mismatch}
-      {:error, reason} -> {:error, reason}
+    with {:ok, container} <- inspect_container(plan.container_name, execute, cancelled?) do
+      labels = get_in(container, ["Config", "Labels"])
+
+      cond do
+        get_in(container, ["State", "Running"]) != true ->
+          {:error, :candidate_not_running}
+
+        not image_matches?(container["Image"], image_id) ->
+          {:error, :candidate_identity_mismatch}
+
+        not is_map(labels) ->
+          {:error, :candidate_identity_mismatch}
+
+        labels["io.nixploy.managed"] != "true" or
+          labels["io.nixploy.project"] != plan.project or
+          labels["io.nixploy.target"] != plan.target or
+          labels["io.nixploy.slot"] != plan.inactive_slot or
+            labels["io.nixploy.deployment_input"] != input.id ->
+          {:error, :candidate_identity_mismatch}
+
+        true ->
+          :ok
+      end
     end
   end
 

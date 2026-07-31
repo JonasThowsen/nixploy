@@ -11,7 +11,7 @@
 
       fixtureServer = pkgs.writeShellScriptBin "fixture-server" ''
         set -eu
-        mkdir -p /tmp/nixploy-fixture-www
+        ${pkgs.busybox}/bin/mkdir -p /tmp/nixploy-fixture-www
         printf 'healthy\n' > /tmp/nixploy-fixture-www/health
         exec ${pkgs.busybox}/bin/httpd -f -p "$PORT" -h /tmp/nixploy-fixture-www
       '';
