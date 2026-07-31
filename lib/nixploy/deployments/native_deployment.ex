@@ -13,6 +13,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
     :building,
     :loading,
     :preparing_slot,
+    :pre_starting,
     :starting,
     :health_checking,
     :switching,

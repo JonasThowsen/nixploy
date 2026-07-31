@@ -1,5 +1,5 @@
 defmodule Nixploy.Deployments.NativeExecutor do
-  @moduledoc "Executes one verified no-secret local-store input against local Podman and Caddy."
+  @moduledoc "Executes one verified local-store input against local Podman and Caddy."
 
   alias Nixploy.Deployments.{LocalStoreInput, NativeDeployment}
   alias Nixploy.Execution
@@ -9,6 +9,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
   @diagnostic_limit 65_536
   @short_timeout :timer.seconds(30)
   @build_timeout :timer.minutes(15)
+  @pre_start_timeout :timer.minutes(15)
   @health_attempts 20
 
   @spec deploy(NativeDeployment.t(), keyword()) :: :ok | {:error, term()}
@@ -47,6 +48,17 @@ defmodule Nixploy.Deployments.NativeExecutor do
              image_id: image_id
            }),
          :ok <- prepare_inactive_slot(plan, execute, cancelled?),
+         :ok <- checkpoint(cancelled?),
+         :ok <-
+           run_pre_start(
+             plan,
+             target,
+             input,
+             image_reference,
+             execute,
+             cancelled?,
+             stage
+           ),
          :ok <- checkpoint(cancelled?),
          :ok <-
            stage.(:starting, "Starting the inactive slot from the verified image", %{
@@ -98,9 +110,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
   def error_message(:native_secrets_not_supported),
     do: "project secrets are deferred; this native slice accepts only no-secret inputs"
 
-  def error_message(:native_pre_start_not_supported),
+  def error_message({:pre_start_failed, index, count, reason}),
     do:
-      "pre-start actions are deferred; this native slice accepts only empty pre-start declarations"
+      "flake-declared pre-start action #{index} of #{count} failed before candidate startup: #{safe_inspect(reason)}"
 
   def error_message(:managed_identity_ambiguous),
     do: "multiple managed resource identities match this project and target"
@@ -168,11 +180,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
              input.configuration_digest,
              :native_configuration_digest_changed
            ) do
-      cond do
-        snapshot["target"]["secrets_declared"] -> {:error, :native_secrets_not_supported}
-        snapshot["target"]["pre_start_declared"] -> {:error, :native_pre_start_not_supported}
-        true -> {:ok, source}
-      end
+      if snapshot["target"]["secrets_declared"],
+        do: {:error, :native_secrets_not_supported},
+        else: {:ok, source}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -430,6 +440,47 @@ defmodule Nixploy.Deployments.NativeExecutor do
     }
 
     run_ok(command, execute, cancelled?, :podman_remove)
+  end
+
+  defp run_pre_start(plan, target, input, image_reference, execute, cancelled?, stage) do
+    run = target["run"] || %{}
+    actions = run["pre_start"] || []
+
+    if actions == [] do
+      :ok
+    else
+      with :ok <-
+             stage.(:pre_starting, "Running flake-declared pre-start actions", %{
+               metadata: %{action_count: length(actions)}
+             }) do
+        actions
+        |> Enum.with_index(1)
+        |> Enum.reduce_while(:ok, fn {argv, index}, :ok ->
+          args =
+            ["run", "--rm"]
+            |> add_network(run["network"])
+            |> add_environment(run["environment"] || %{}, plan.inactive_port)
+            |> add_labels(plan, input)
+            |> Kernel.++([image_reference])
+            |> Kernel.++(argv)
+
+          command = %Command{
+            executable: podman(),
+            args: args,
+            timeout: @pre_start_timeout,
+            max_output_bytes: @diagnostic_limit
+          }
+
+          case run_ok(command, execute, cancelled?, :pre_start_action) do
+            :ok ->
+              {:cont, :ok}
+
+            {:error, reason} ->
+              {:halt, {:error, {:pre_start_failed, index, length(actions), reason}}}
+          end
+        end)
+      end
+    end
   end
 
   defp start_candidate(plan, target, input, image_reference, execute, cancelled?) do

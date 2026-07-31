@@ -42,6 +42,39 @@ defmodule Nixploy.NativeDeploymentsTest do
     end
   end
 
+  defmodule PreStartExecutorStub do
+    def deploy(_deployment, opts) do
+      stage = Keyword.fetch!(opts, :stage)
+      :ok = stage.(:preparing, "Preparing", %{})
+
+      :ok =
+        stage.(:building, "Building", %{
+          resource_prefix: "nixploy-native-fixture-prefix-production",
+          selected_slot: "blue",
+          selected_port: 18_080
+        })
+
+      :ok = stage.(:loading, "Loading", %{image_store_path: "/nix/store/image"})
+
+      :ok =
+        stage.(:preparing_slot, "Preparing slot", %{
+          image_reference: "fixture:latest",
+          image_id: "sha256:image"
+        })
+
+      :ok =
+        stage.(:pre_starting, "Running flake-declared pre-start actions", %{
+          metadata: %{action_count: 1}
+        })
+
+      :ok = stage.(:starting, "Starting", %{container_name: "fixture-blue"})
+      :ok = stage.(:health_checking, "Health", %{container_id: "container-id"})
+      :ok = stage.(:switching, "Switching", %{})
+      :ok = stage.(:verifying, "Verifying", %{})
+      stage.(:succeeded, "Succeeded", %{verified_upstream: "127.0.0.1:18080"})
+    end
+  end
+
   defmodule GreenExecutorStub do
     def deploy(_deployment, opts) do
       stage = Keyword.fetch!(opts, :stage)
@@ -141,6 +174,24 @@ defmodule Nixploy.NativeDeploymentsTest do
            ]
   end
 
+  test "persists the concise pre-start stage and action count" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator, pre_start: [["/app/migrate"]])
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+
+    Application.put_env(:nixploy, :native_deployment_executor, PreStartExecutorStub)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+
+    events = NativeDeployments.list_events(deployment.id)
+    pre_start = Enum.find(events, &(&1.stage == "pre_starting"))
+
+    assert pre_start.message == "Running flake-declared pre-start actions"
+    assert pre_start.metadata == %{"action_count" => 1}
+
+    assert Enum.find_index(events, &(&1.stage == "pre_starting")) <
+             Enum.find_index(events, &(&1.stage == "starting"))
+  end
+
   test "persists exact rollback identity, relationship, actor, and idempotency" do
     operator = Fixtures.operator_fixture()
     input = staged_input(operator)
@@ -222,7 +273,7 @@ defmodule Nixploy.NativeDeploymentsTest do
     assert {"has already been taken", _opts} = changeset.errors[:project]
   end
 
-  test "rejects secret and pre-start inputs before a job is inserted" do
+  test "rejects secret inputs but accepts fixed pre-start argv" do
     operator = Fixtures.operator_fixture()
     secret_input = staged_input(operator, secrets: %{"app" => "/nix/store/secret-ref"})
 
@@ -231,8 +282,13 @@ defmodule Nixploy.NativeDeploymentsTest do
 
     pre_start_input = staged_input(operator, pre_start: [["/app/migrate"]])
 
-    assert {:error, :native_pre_start_not_supported} =
+    assert {:ok, deployment, _job} =
              NativeDeployments.enqueue(pre_start_input.id, operator: operator)
+
+    assert get_in(deployment.deployment_input.derived_snapshot, ["target", "run", "pre_start"]) ==
+             [
+               ["/app/migrate"]
+             ]
   end
 
   defp staged_input(operator, opts \\ []) do

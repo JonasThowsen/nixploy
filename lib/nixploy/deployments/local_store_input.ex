@@ -22,6 +22,8 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   @schema "v0.2"
   @max_path_bytes 4_096
   @max_value_bytes 4_096
+  @max_pre_start_actions 32
+  @max_argv_items 128
   @nar_hash ~r/^[A-Za-z0-9][A-Za-z0-9+\/_=.~:-]*$/
 
   @spec probe(String.t(), keyword()) :: {:ok, Source.t()} | {:error, term()}
@@ -322,8 +324,9 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   end
 
   defp normalize_target(name, target) do
-    # TODO(tracer): Add policy-safe references for project secrets and execute
-    # declared pre-start argv only in Slice 1.4; only declaration flags are retained here.
+    # TODO(tracer): Add policy-safe credential references in the next Slice 1.4
+    # increment. This first increment persists only fixed pre-start argv and
+    # continues to reject every target that declares secrets.
     web = target["web"]
     slots = is_map(web) && web["slots"]
     run = target["run"] || %{}
@@ -348,7 +351,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          "health_path" => health_path,
          "slots" => %{"blue" => blue, "green" => green},
          "run" => normalized_run,
-         "pre_start_declared" => List.wrap(run["preStart"]) != [],
+         "pre_start_declared" => normalized_run["pre_start"] != [],
          "secrets_declared" => map_size(secrets) > 0
        }}
     else
@@ -359,12 +362,14 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defp normalize_run(run, target_name) when is_map(run) do
     with {:ok, command} <- optional_argv(run["command"], target_name),
+         {:ok, pre_start} <- pre_start_argv(run["preStart"] || [], target_name),
          {:ok, environment} <- string_map(run["environment"] || %{}, target_name),
          {:ok, network} <- optional_string(run["network"], target_name, "run.network"),
          {:ok, ports} <- string_list(run["ports"] || [], target_name, "run.ports") do
       {:ok,
        %{
          "command" => command,
+         "pre_start" => pre_start,
          "environment" => environment,
          "network" => network,
          "ports" => ports
@@ -378,11 +383,45 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   defp optional_argv(nil, _target_name), do: {:ok, nil}
 
   defp optional_argv(argv, target_name) do
-    string_list(argv, target_name, "run.command")
+    argv(argv, target_name, "run.command")
   end
 
+  defp pre_start_argv(actions, target_name)
+       when is_list(actions) and length(actions) <= @max_pre_start_actions do
+    actions
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {action, index}, {:ok, normalized} ->
+      case argv(action, target_name, "run.preStart[#{index}]") do
+        {:ok, action} -> {:cont, {:ok, [action | normalized]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp pre_start_argv(_actions, target_name),
+    do: {:error, {:invalid_target, target_name, "run.preStart"}}
+
+  defp argv(values, target_name, field)
+       when is_list(values) and values != [] and length(values) <= @max_argv_items do
+    if Enum.all?(values, &valid_argv_item?/1),
+      do: {:ok, values},
+      else: {:error, {:invalid_target, target_name, field}}
+  end
+
+  defp argv(_values, target_name, field),
+    do: {:error, {:invalid_target, target_name, field}}
+
+  defp valid_argv_item?(value),
+    do:
+      is_binary(value) and value != "" and byte_size(value) <= @max_value_bytes and
+        not String.contains?(value, <<0>>)
+
   defp string_list(values, target_name, field) when is_list(values) do
-    if Enum.all?(values, &(is_binary(&1) and &1 != "" and byte_size(&1) <= @max_value_bytes)),
+    if Enum.all?(values, &valid_argv_item?/1),
       do: {:ok, values},
       else: {:error, {:invalid_target, target_name, field}}
   end

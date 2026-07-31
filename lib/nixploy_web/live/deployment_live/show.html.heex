@@ -7,6 +7,7 @@
   <% snapshot = input.derived_snapshot || %{} %>
   <% target = snapshot["target"] || %{} %>
   <% slots = target["slots"] || %{} %>
+  <% pre_start = get_in(target, ["run", "pre_start"]) || [] %>
 
   <main id="deployment-input-detail" class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden">
     <header class="space-y-5 border-b border-base-300 pb-6">
@@ -31,16 +32,24 @@
             id="deploy-native-input"
             phx-click="deploy_native"
             class="btn-primary min-h-11"
-            disabled={target["secrets_declared"] == true or target["pre_start_declared"] == true}
-            data-confirm="Build and deploy this exact immutable input to local rootless Podman?"
+            disabled={target["secrets_declared"] == true}
+            data-confirm={
+              if pre_start == [],
+                do: "Build and deploy this exact immutable input to local rootless Podman?",
+                else:
+                  "Build this exact immutable input and run #{length(pre_start)} flake-declared pre-start action(s) before candidate startup?"
+            }
           >
             Deploy native
           </.button>
+          <p :if={pre_start != []} class="max-w-64 text-right text-xs text-base-content/55">
+            Includes {length(pre_start)} flake-declared pre-start action(s).
+          </p>
           <p
-            :if={target["secrets_declared"] == true or target["pre_start_declared"] == true}
-            class="max-w-56 text-right text-xs text-warning"
+            :if={target["secrets_declared"] == true}
+            class="max-w-64 text-right text-xs text-warning"
           >
-            Secrets and pre-start actions are deferred to Slice 1.4.
+            Secret-backed deployments remain unavailable until worker-only credential handoff is proven.
           </p>
         </div>
       </div>

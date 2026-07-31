@@ -340,6 +340,50 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert html =~ "min-w-0"
   end
 
+  test "keeps flake-declared pre-start intent concise on the deployment action", %{
+    conn: conn,
+    operator: operator
+  } do
+    source = %LocalStoreInput.Source{
+      store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pre-start-source",
+      nar_hash: "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+      project: "pre-start-fixture",
+      targets: %{
+        "production" => %{
+          "name" => "production",
+          "image_output" => "fixtureImage",
+          "domain" => "pre-start.invalid",
+          "health_path" => "/health",
+          "slots" => %{"blue" => 8080, "green" => 8081},
+          "run" => %{
+            "command" => nil,
+            "pre_start" => [["/bin/private-migration-detail", "--prepare"]],
+            "environment" => %{},
+            "network" => "host",
+            "ports" => []
+          },
+          "pre_start_declared" => true,
+          "secrets_declared" => false
+        }
+      }
+    }
+
+    Application.put_env(:nixploy, :local_store_input_probe, fn _path, _opts -> {:ok, source} end)
+
+    assert {:ok, input} =
+             Deployments.stage_local_store(
+               %{store_path: source.store_path, selected_target: "production"},
+               operator: operator
+             )
+
+    {:ok, view, html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+
+    assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy native")
+    assert has_element?(view, "#deployment-input-detail", "Includes 1 flake-declared pre-start")
+    assert html =~ "run 1 flake-declared pre-start action(s) before candidate startup"
+    refute html =~ "/bin/private-migration-detail"
+  end
+
   test "keeps native operation history on its own utility route", %{
     conn: conn,
     operator: operator

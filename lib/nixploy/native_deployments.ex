@@ -15,7 +15,8 @@ defmodule Nixploy.NativeDeployments do
     preparing: [:building, :failed, :cancelled],
     building: [:loading, :failed, :cancelled],
     loading: [:preparing_slot, :failed, :cancelled],
-    preparing_slot: [:starting, :failed, :cancelled],
+    preparing_slot: [:pre_starting, :starting, :failed, :cancelled],
+    pre_starting: [:starting, :failed, :cancelled],
     starting: [:health_checking, :failed, :cancelled],
     health_checking: [:switching, :failed, :cancelled],
     switching: [:verifying, :failed, :cancelled],
@@ -371,11 +372,9 @@ defmodule Nixploy.NativeDeployments do
 
   defp validate_native_config(%{"project" => project, "target" => target})
        when is_binary(project) and is_map(target) do
-    cond do
-      target["secrets_declared"] -> {:error, :native_secrets_not_supported}
-      target["pre_start_declared"] -> {:error, :native_pre_start_not_supported}
-      true -> {:ok, {project, target["name"]}}
-    end
+    if target["secrets_declared"],
+      do: {:error, :native_secrets_not_supported},
+      else: {:ok, {project, target["name"]}}
   end
 
   defp validate_native_config(_snapshot), do: {:error, :invalid_derived_snapshot}

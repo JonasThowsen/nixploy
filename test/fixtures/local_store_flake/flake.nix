@@ -1,5 +1,5 @@
 {
-  description = "No-secret nixploy native blue-green tracer fixture";
+  description = "No-secret nixploy native pre-start tracer fixture";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
@@ -16,16 +16,25 @@
         exec ${pkgs.busybox}/bin/httpd -f -p "$PORT" -h /tmp/nixploy-fixture-www
       '';
 
+      fixturePreStart = pkgs.writeShellScriptBin "fixture-pre-start" ''
+        set -eu
+        test "''${1:-}" = "--prepare"
+        printf 'fixture pre-start completed\n'
+      '';
+
       fixtureRoot = pkgs.buildEnv {
         name = "nixploy-native-fixture-root";
-        paths = [ fixtureServer ];
+        paths = [
+          fixtureServer
+          fixturePreStart
+        ];
         pathsToLink = [ "/bin" ];
       };
     in
     {
       fixtureImage = pkgs.dockerTools.buildLayeredImage {
         name = "nixploy-native-fixture";
-        tag = "slice-1-3";
+        tag = "slice-1-4";
         contents = [ fixtureRoot ];
         config.Cmd = [ "/bin/fixture-server" ];
       };
@@ -43,9 +52,9 @@
             command = null;
             environment = {
               PORT = "{port}";
-              FIXTURE_REVISION = "slice-1-3";
+              FIXTURE_REVISION = "slice-1-4";
             };
-            preStart = [ ];
+            preStart = [ [ "/bin/fixture-pre-start" "--prepare" ] ];
             network = "host";
             ports = [ ];
           };

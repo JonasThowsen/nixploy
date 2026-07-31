@@ -27,6 +27,23 @@ The UI should feel like a calm, compact operator console:
 - **Safe by construction.** Dangerous actions are visually distinct, explain
   their exact consequences, and require explicit confirmation.
 
+## Product surface priorities
+
+Keep the product centered on the recurring operator loop:
+
+1. observe runtime and health;
+2. inspect bounded logs and deployment history;
+3. run a flake-declared command when intervention is needed;
+4. deploy or roll back an immutable input;
+5. verify the resulting health and evidence.
+
+These capabilities may share focused pages as the product matures; they do not
+each require a dashboard card or primary navigation destination. Host facts,
+build internals, immutable identifiers, audit metadata, and configuration digests
+are supporting evidence. Show them where they help investigation or confirmation,
+not merely because the data exists. Remove low-value summaries and controls when
+a stronger workflow makes them redundant.
+
 ## Information architecture
 
 The primary navigation is intentionally small:

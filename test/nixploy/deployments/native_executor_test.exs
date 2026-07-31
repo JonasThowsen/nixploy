@@ -88,6 +88,114 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
            end)
   end
 
+  test "runs fixed flake-declared pre-start argv before candidate startup" do
+    parent = self()
+    config = config(pre_start: [["/bin/fixture-pre-start", "--migrate"]])
+    operation = operation([], config)
+
+    execute = fn command, opts ->
+      send(parent, {:command, command, opts})
+
+      case {command.executable, command.args} do
+        {"nix", ["eval" | _]} -> ok(Jason.encode!(config))
+        {"podman", ["run", "--rm" | _]} -> ok("pre-start complete\n")
+        _other -> response(command)
+      end
+    end
+
+    stage = fn state, message, attrs ->
+      send(parent, {:stage, state, message, attrs})
+      :ok
+    end
+
+    assert :ok =
+             NativeExecutor.deploy(operation,
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: stage,
+               cancelled?: fn -> false end,
+               health_attempts: 1,
+               health_delay_ms: 0
+             )
+
+    messages = drain_messages([])
+
+    assert {:stage, :pre_starting, "Running flake-declared pre-start actions",
+            %{metadata: %{action_count: 1}}} in messages
+
+    commands = for {:command, command, _opts} <- messages, do: command
+    pre_start_index = Enum.find_index(commands, &match?(["run", "--rm" | _], &1.args))
+    candidate_index = Enum.find_index(commands, &match?(["run", "--detach" | _], &1.args))
+
+    assert is_integer(pre_start_index)
+    assert pre_start_index < candidate_index
+
+    pre_start = Enum.at(commands, pre_start_index)
+    assert pre_start.executable == "podman"
+    assert pre_start.timeout == 900_000
+    assert pre_start.max_output_bytes == 65_536
+    assert Enum.take(pre_start.args, 2) == ["run", "--rm"]
+    assert Enum.take(pre_start.args, -2) == ["/bin/fixture-pre-start", "--migrate"]
+    assert "PORT=18080" in pre_start.args
+    assert "host" in pre_start.args
+    refute "--publish" in pre_start.args
+    refute Enum.any?(commands, &(&1.executable in ["sh", "bash"]))
+  end
+
+  test "pre-start failure preserves the healthy routed slot and never starts a candidate" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+    config = config(pre_start: [["/bin/fixture-pre-start"]])
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} ->
+          ok(path_info_json())
+
+        {"nix", ["eval" | _]} ->
+          ok(Jason.encode!(config))
+
+        {"nix", ["build" | _]} ->
+          ok(Jason.encode!([%{"outputs" => %{"out" => "/nix/store/image-tar"}}]))
+
+        {"podman", ["ps", "-a", "--format", "json"]} ->
+          ok(Jason.encode!([active]))
+
+        {"podman", ["load" | _]} ->
+          ok("Loaded image: localhost/native-fixture:latest\n")
+
+        {"podman", ["image", "inspect" | _]} ->
+          ok(Jason.encode!([%{"Id" => @image_id}]))
+
+        {"podman", ["rm" | _]} ->
+          ok("")
+
+        {"podman", ["run", "--rm" | _]} ->
+          command_error(17, "migration rejected")
+
+        {"curl", args} ->
+          existing_route_response(args, prefix)
+      end
+    end
+
+    assert {:error,
+            {:pre_start_failed, 1, 1,
+             {:pre_start_action, :command_failed, 17, "migration rejected"}}} =
+             NativeExecutor.deploy(operation([], config),
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end
+             )
+
+    commands = drain_commands([])
+    refute Enum.any?(commands, &match?(["run", "--detach" | _], &1.args))
+    refute Enum.any?(commands, &(&1.executable == "curl" and "PATCH" in &1.args))
+    refute Enum.any?(commands, &match?(["stop" | _], &1.args))
+  end
+
   test "fails closed on an unmanaged candidate name before build or mutation" do
     operation = operation()
     prefix = derived_prefix("native-fixture", "production")
@@ -571,8 +679,8 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     end
   end
 
-  defp operation(attrs \\ []) do
-    snapshot = snapshot()
+  defp operation(attrs \\ [], config \\ config()) do
+    snapshot = snapshot(config)
 
     input = %DeploymentInput{
       id: "input-id",
@@ -594,13 +702,13 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     struct!(operation, attrs)
   end
 
-  defp snapshot do
+  defp snapshot(config) do
     {:ok, source} =
       LocalStoreInput.probe(@store_path,
         path_exists?: fn _path -> true end,
         execute: fn
           %{args: ["path-info" | _]}, _opts -> ok(path_info_json())
-          %{args: ["eval" | _]}, _opts -> ok(Jason.encode!(config()))
+          %{args: ["eval" | _]}, _opts -> ok(Jason.encode!(config))
         end
       )
 
@@ -608,7 +716,9 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     snapshot
   end
 
-  defp config do
+  defp config(opts \\ []) do
+    pre_start = Keyword.get(opts, :pre_start, [])
+
     %{
       "__schema" => "v0.2",
       "project" => "native-fixture",
@@ -620,7 +730,7 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
             "environment" => %{"PORT" => "{port}"},
             "network" => "host",
             "ports" => [],
-            "preStart" => []
+            "preStart" => pre_start
           },
           "secrets" => %{},
           "web" => %{

@@ -64,6 +64,7 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
              "slots" => %{"blue" => 8080, "green" => 8081},
              "run" => %{
                "command" => nil,
+               "pre_start" => [["/app/migrate"]],
                "environment" => %{},
                "network" => nil,
                "ports" => []
@@ -73,6 +74,17 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
            }
 
     refute Map.has_key?(targets["production"], "secrets")
+
+    invalid_action = put_in(config(), ["targets", "production", "run", "preStart"], [[]])
+
+    assert {:error, {:invalid_target, "production", "run.preStart[1]"}} =
+             LocalStoreInput.normalize_config(invalid_action)
+
+    nul_action =
+      put_in(config(), ["targets", "production", "run", "preStart"], [["/app/migrate\0bad"]])
+
+    assert {:error, {:invalid_target, "production", "run.preStart[1]"}} =
+             LocalStoreInput.normalize_config(nul_action)
 
     assert {:error, {:unsupported_config_schema, "v0.1"}} =
              config()
@@ -242,6 +254,7 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
     assert {:ok, target, snapshot} = LocalStoreInput.select_target(inspected, "production")
     assert target["image_output"] == "fixtureImage"
     assert target["slots"] == %{"blue" => 18_080, "green" => 18_081}
+    assert target["run"]["pre_start"] == [["/bin/fixture-pre-start", "--prepare"]]
     assert snapshot["target"]["health_path"] == "/health"
   end
 
