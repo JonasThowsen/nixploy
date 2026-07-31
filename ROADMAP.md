@@ -188,6 +188,14 @@ This is the next implementation slice. Its detailed constraints are in
 
 ## Slice 1.2 — No-secret native blue/green fixture
 
+**Implementation status:** completed and exercised against the packaged
+production control plane with the no-secret fixture. A first operation created
+the isolated managed route and blue slot; a second operation selected green as
+the inactive slot, built and loaded the persisted image, passed the exact
+`/health` check, switched the identified Caddy proxy to `127.0.0.1:18081`, read
+back container and ingress identity, and stopped blue. Existing application
+projects were excluded by positive project/target identity.
+
 **Observable behavior**
 
 An operator deploys one immutable no-secret fixture. The inactive rootless slot
@@ -588,9 +596,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Start **Slice 1.2 — No-secret native blue/green fixture** from the persisted
-Slice 1.1 input. Add only the native executor path needed to build/load the
-fixture image, identify and replace the inactive managed slot, verify the exact
-persisted health path, and switch the identified Caddy upstream after health.
-Keep closure transport, secrets, pre-start actions, rollback breadth, and
-production application adoption deferred to their named slices.
+Start **Slice 1.3 — Failure preservation and rollback** from the persisted
+native operation evidence. Inject build, start, health, and Caddy-switch
+failures, prove the previously routed healthy slot remains selected, then create
+rollback as a new audited operation over an exact prior input/image/digest/slot.
+Keep project secrets/pre-start actions and production application adoption
+reserved for their named slices.

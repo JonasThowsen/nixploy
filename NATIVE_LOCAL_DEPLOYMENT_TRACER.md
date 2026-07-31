@@ -129,11 +129,32 @@ state, failure, timestamps, and audit evidence without creating legacy
 repository, target, or service rows, enqueueing a worker, or invoking either
 deployment adapter.
 
+## Completed native blue/green increment
+
+Slice 1.2 now persists native operations and append-only stages, serializes an
+active project/target operation in PostgreSQL, re-verifies the staged source and
+digest, builds with bounded machine-readable Nix output, loads and identifies
+the image in rootless Podman, refuses unmanaged collisions, mutates only the
+inactive managed slot, retries the exact health path, and creates or patches
+only the derived Caddy route/proxy IDs after health. Success requires Caddy,
+container, image, labels, and health readback.
+
+The packaged production exercise used input
+`eb552f49-a3a7-4f0f-95e5-ccb7ad3a4472`. Operation
+`076100f1-49f3-47fe-8e9d-17353d46cdf4` established the isolated blue fixture;
+operation `d851af15-a71d-4046-a4e7-d1e83156b32e` then selected green as the
+inactive slot, switched the proxy to `127.0.0.1:18081`, and stopped blue. The
+fixture's direct and Caddy-routed `/health` responses both returned 2xx.
+
+The source closure was copied manually with unprivileged `nix copy` to
+`nixploy@nixploy`. Productized operator transport remains a deliberate future
+boundary; no root application operation or production application input was
+used.
+
 ## Next smallest implementation slice
 
-Use the persisted Slice 1.1 input unchanged for one no-secret native blue/green
-fixture: build/load its declared image as `nixploy`, replace only the identified
-inactive managed slot, verify the exact persisted health path, and switch the
-identified Caddy upstream only after health succeeds. Operator-side closure
-transport, project secrets/pre-start actions, rollback, and production
-application adoption remain explicitly deferred.
+Inject native build, start, health, and Caddy-switch failures while asserting
+the old upstream remains selected, then add rollback as a new audited operation
+referencing an exact prior store path, NAR hash, image identity, configuration
+digest, and slot. Project secrets/pre-start actions and adoption of existing
+production applications remain explicitly deferred.
