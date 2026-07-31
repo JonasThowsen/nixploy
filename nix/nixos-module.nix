@@ -190,6 +190,7 @@ in
         serviceConfig = commonServiceConfig // {
           ExecStart = startControlPlane (if cfg.splitRoles then "web" else cfg.role);
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
+          InaccessiblePaths = lib.optional cfg.splitRoles "/run/credentials";
         };
       };
     }
