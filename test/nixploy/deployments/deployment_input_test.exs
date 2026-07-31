@@ -130,7 +130,7 @@ defmodule Nixploy.Deployments.DeploymentInputTest do
     assert persisted.store_path == store_path
     assert String.starts_with?(persisted.nar_hash, "sha256-")
     assert persisted.derived_snapshot["project"] == "local-store-tracer"
-    assert persisted.derived_snapshot["target"]["domain"] == "fixture.nixploy.test"
+    assert persisted.derived_snapshot["target"]["domain"] == "fixture.nixploy.invalid"
     assert persisted.requested_by_operator.id == operator.id
   end
 

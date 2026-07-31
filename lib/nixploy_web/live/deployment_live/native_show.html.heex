@@ -1,0 +1,172 @@
+<Layouts.app flash={@flash} current_operator={@current_operator}>
+  <% deployment = @deployment %>
+  <% input = deployment.deployment_input %>
+  <% target = input.derived_snapshot["target"] || %{} %>
+
+  <main
+    id="native-deployment-detail"
+    class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden"
+  >
+    <header class="space-y-5 border-b border-base-300 pb-6">
+      <.link
+        navigate={~p"/deployment-inputs/#{input.id}"}
+        class="btn btn-ghost btn-sm -ml-3 gap-2"
+      >
+        <.icon name="hero-arrow-left" class="size-4" /> Immutable input
+      </.link>
+
+      <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div class="min-w-0">
+          <p class="font-mono text-xs font-bold uppercase tracking-[0.24em] text-primary">
+            Native blue / green
+          </p>
+          <h1 class="mt-2 break-words text-3xl font-bold tracking-[-0.035em] sm:text-5xl">
+            {deployment.project} → {deployment.target}
+          </h1>
+          <p class="mt-2 break-all font-mono text-xs text-base-content/50">{deployment.id}</p>
+        </div>
+        <div class="flex shrink-0 flex-col gap-2 sm:items-end">
+          <span class={["badge badge-lg", state_class(deployment.state)]}>
+            {deployment.state}
+          </span>
+          <.button
+            :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
+            id="cancel-native-deployment"
+            phx-click="cancel_native_deployment"
+            class="btn-warning btn-sm min-h-11"
+            data-confirm="Cancel this native deployment? Identified side effects will remain visible for reconciliation."
+          >
+            Cancel
+          </.button>
+        </div>
+      </div>
+    </header>
+
+    <section
+      :if={deployment.failure}
+      id="native-deployment-failure"
+      class="alert alert-error items-start"
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Native deployment failed</p>
+        <p class="break-words text-sm">{deployment.failure["message"]}</p>
+        <p class="mt-1 break-all font-mono text-xs opacity-70">{deployment.failure["code"]}</p>
+      </div>
+    </section>
+
+    <section class="overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm">
+      <div class="border-b border-base-300 bg-base-200/45 px-5 py-4">
+        <h2 class="text-lg font-bold">Current operation state</h2>
+        <p class="text-sm text-base-content/55">
+          Persisted before each external mutation boundary.
+        </p>
+      </div>
+      <dl class="grid min-w-0 gap-px bg-base-300 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Stage</dt>
+          <dd id="native-current-stage" class="mt-1 font-semibold">{deployment.current_stage}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Candidate slot</dt>
+          <dd class="mt-1 font-mono">
+            {deployment.selected_slot || "—"}:{deployment.selected_port || "—"}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="text-xs uppercase text-base-content/50">Previous upstream</dt>
+          <dd class="mt-1 break-all font-mono">{deployment.previous_upstream || "none"}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="text-xs uppercase text-base-content/50">Managed identity</dt>
+          <dd class="mt-1 break-all font-mono text-sm">
+            {deployment.resource_prefix || "pending"}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="text-xs uppercase text-base-content/50">Verified upstream</dt>
+          <dd id="native-verified-upstream" class="mt-1 break-all font-mono text-sm">
+            {deployment.verified_upstream || "pending"}
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm">
+      <div class="border-b border-base-300 bg-base-200/45 px-5 py-4">
+        <h2 class="text-lg font-bold">Artifact and candidate evidence</h2>
+      </div>
+      <dl class="grid min-w-0 gap-px bg-base-300 sm:grid-cols-2">
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="text-xs uppercase text-base-content/50">Immutable source</dt>
+          <dd class="mt-1 break-all font-mono text-xs">{input.store_path}</dd>
+          <dd class="mt-1 break-all font-mono text-xs text-base-content/50">{input.nar_hash}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="text-xs uppercase text-base-content/50">Image output path</dt>
+          <dd class="mt-1 break-all font-mono text-xs">
+            {deployment.image_store_path || target["image_output"]}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Loaded image</dt>
+          <dd class="mt-1 break-all font-mono text-xs">
+            {deployment.image_reference || "pending"}
+          </dd>
+          <dd class="mt-1 break-all font-mono text-xs text-base-content/50">
+            {deployment.image_id || "—"}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Candidate container</dt>
+          <dd class="mt-1 break-all font-mono text-xs">
+            {deployment.container_name || "pending"}
+          </dd>
+          <dd class="mt-1 break-all font-mono text-xs text-base-content/50">
+            {deployment.container_id || "—"}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Exact health path</dt>
+          <dd class="mt-1 break-all font-mono">{target["health_path"]}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Domain</dt>
+          <dd class="mt-1 break-all font-mono">{target["domain"]}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section id="native-deployment-events" class="space-y-3">
+      <div>
+        <h2 class="text-lg font-bold">Durable stage history</h2>
+        <p class="text-sm text-base-content/55">
+          Newest evidence appears after the transaction commits.
+        </p>
+      </div>
+      <ol class="space-y-2 border-l border-base-300 pl-4">
+        <li :for={event <- @events} id={"native-event-#{event.id}"} class="min-w-0">
+          <div class="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+            <span class="break-words font-medium">{event.message}</span>
+            <time class="shrink-0 font-mono text-xs text-base-content/50">
+              {format_time(event.inserted_at)}
+            </time>
+          </div>
+          <span class="font-mono text-xs uppercase tracking-wide text-base-content/45">
+            {event.stage}
+          </span>
+        </li>
+      </ol>
+    </section>
+
+    <section class="rounded-box border border-base-300 bg-base-100 p-5 text-sm shadow-sm">
+      <h2 class="font-bold">Audit actor</h2>
+      <p class="mt-1 break-all">{deployment.requested_by_operator.email}</p>
+      <p class="mt-1 text-base-content/50">
+        Requested {format_time(deployment.inserted_at)} · finished {format_time(
+          deployment.finished_at
+        )}
+      </p>
+    </section>
+  </main>
+</Layouts.app>

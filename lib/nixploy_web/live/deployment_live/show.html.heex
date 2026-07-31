@@ -20,9 +20,25 @@
           </h1>
           <p class="break-all font-mono text-xs text-base-content/50">{input.id}</p>
         </div>
-        <span class={["badge badge-lg shrink-0", input_state_class(input.state)]}>
-          {input.state}
-        </span>
+        <div class="flex shrink-0 flex-col gap-2 sm:items-end">
+          <span class={["badge badge-lg", input_state_class(input.state)]}>{input.state}</span>
+          <.button
+            :if={input.state == :staged}
+            id="deploy-native-input"
+            phx-click="deploy_native"
+            class="btn-primary min-h-11"
+            disabled={target["secrets_declared"] == true or target["pre_start_declared"] == true}
+            data-confirm="Build and deploy this exact immutable input to local rootless Podman?"
+          >
+            Deploy native
+          </.button>
+          <p
+            :if={target["secrets_declared"] == true or target["pre_start_declared"] == true}
+            class="max-w-56 text-right text-xs text-warning"
+          >
+            Secrets and pre-start actions are deferred to Slice 1.4.
+          </p>
+        </div>
       </div>
     </header>
 
@@ -137,6 +153,52 @@
           </dd>
         </div>
       </dl>
+    </section>
+
+    <section id="native-deployment-history" class="space-y-3">
+      <div>
+        <h2 class="text-lg font-bold">Native deployment operations</h2>
+        <p class="text-sm text-base-content/55">
+          Durable build, slot, health, ingress, and independent-readback evidence.
+        </p>
+      </div>
+
+      <div :if={@native_deployments == []} class="alert">
+        <.icon name="hero-information-circle" class="size-5" />
+        <span>This immutable input has not been deployed natively.</span>
+      </div>
+
+      <article
+        :for={deployment <- @native_deployments}
+        id={"native-deployment-#{deployment.id}"}
+        class="min-w-0 overflow-hidden rounded-box border border-base-300 bg-base-100 p-5 shadow-sm"
+      >
+        <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class={["badge badge-sm", native_state_class(deployment.state)]}>
+                {deployment.state}
+              </span>
+              <span class="font-mono text-xs">{deployment.current_stage}</span>
+              <span :if={deployment.selected_slot} class="badge badge-ghost badge-sm">
+                {deployment.selected_slot}:{deployment.selected_port}
+              </span>
+            </div>
+            <p class="mt-2 break-all font-mono text-xs text-base-content/50">
+              {deployment.id}
+            </p>
+            <p :if={deployment.failure} class="mt-2 break-words text-sm text-error">
+              {deployment.failure["message"]}
+            </p>
+          </div>
+          <.link
+            navigate={~p"/native-deployments/#{deployment.id}"}
+            class="btn btn-outline btn-sm min-h-11 w-full sm:w-auto"
+          >
+            Follow operation
+          </.link>
+        </div>
+      </article>
     </section>
 
     <section class="rounded-box border border-base-300 bg-base-100 p-5 shadow-sm">

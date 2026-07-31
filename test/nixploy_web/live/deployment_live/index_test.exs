@@ -5,16 +5,45 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   import Phoenix.LiveViewTest
 
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.{LocalStoreInput, SimulatedWorker}
+  alias Nixploy.Deployments.{LocalStoreInput, NativeWorker, SimulatedWorker}
   alias Nixploy.LocalHost
   alias Nixploy.Fixtures
   alias Nixploy.Operations.{LogWorker, StatusWorker}
+
+  defmodule NativeExecutorStub do
+    def deploy(_deployment, opts) do
+      stage = Keyword.fetch!(opts, :stage)
+      :ok = stage.(:preparing, "Preparing", %{})
+
+      :ok =
+        stage.(:building, "Building", %{
+          resource_prefix: "nixploy-mobile-fixture",
+          selected_slot: "blue",
+          selected_port: 8080
+        })
+
+      :ok = stage.(:loading, "Loading", %{image_store_path: "/nix/store/image"})
+
+      :ok =
+        stage.(:preparing_slot, "Preparing slot", %{
+          image_reference: "fixture:latest",
+          image_id: "sha256:image"
+        })
+
+      :ok = stage.(:starting, "Starting", %{container_name: "nixploy-mobile-fixture-blue"})
+      :ok = stage.(:health_checking, "Healthy", %{container_id: "container-id"})
+      :ok = stage.(:switching, "Switching", %{})
+      :ok = stage.(:verifying, "Verifying", %{})
+      stage.(:succeeded, "Succeeded", %{verified_upstream: "127.0.0.1:8080"})
+    end
+  end
 
   setup %{conn: conn} do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
     previous_health_probe = Application.get_env(:nixploy, :local_health_probe)
     previous_store_probe = Application.get_env(:nixploy, :local_store_input_probe)
+    previous_native_executor = Application.get_env(:nixploy, :native_deployment_executor)
 
     inventory = %LocalHost.Inventory{
       hostname: "nixploy-vps",
@@ -103,11 +132,14 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       {:ok, store_source}
     end)
 
+    Application.put_env(:nixploy, :native_deployment_executor, NativeExecutorStub)
+
     on_exit(fn ->
       restore_env(:local_inventory_probe, previous_probe)
       restore_env(:local_workload_probe, previous_workload_probe)
       restore_env(:local_health_probe, previous_health_probe)
       restore_env(:local_store_input_probe, previous_store_probe)
+      restore_env(:native_deployment_executor, previous_native_executor)
     end)
 
     operator = Fixtures.operator_fixture()
@@ -275,6 +307,42 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert html =~ "overflow-x-hidden"
     assert html =~ "break-all"
     assert html =~ "min-w-0"
+  end
+
+  test "queues and follows native deployment progress from the immutable input page", %{
+    conn: conn,
+    operator: operator
+  } do
+    assert {:ok, input} =
+             Deployments.stage_local_store(
+               %{
+                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+                 selected_target: "production"
+               },
+               operator: operator
+             )
+
+    {:ok, input_view, _html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+
+    input_view
+    |> element("#deploy-native-input")
+    |> render_click()
+
+    [deployment] = Nixploy.NativeDeployments.list_for_input(input.id)
+    assert_redirect(input_view, ~p"/native-deployments/#{deployment.id}")
+    assert_enqueued(worker: NativeWorker, args: %{native_deployment_id: deployment.id})
+
+    {:ok, operation_view, queued_html} = live(conn, ~p"/native-deployments/#{deployment.id}")
+    assert queued_html =~ "overflow-x-hidden"
+    assert has_element?(operation_view, "#native-current-stage", "queued")
+    assert has_element?(operation_view, "#native-deployment-events", "Native deployment queued")
+
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+
+    assert has_element?(operation_view, "#native-current-stage", "succeeded")
+    assert has_element?(operation_view, "#native-verified-upstream", "127.0.0.1:8080")
+    assert has_element?(operation_view, "#native-deployment-events", "Succeeded")
+    assert render(operation_view) =~ "break-all"
   end
 
   test "renders immutable source failures without crashing LiveView", %{conn: conn} do

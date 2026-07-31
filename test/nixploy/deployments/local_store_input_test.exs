@@ -61,11 +61,18 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
              "image_output" => "fixtureImage",
              "domain" => "fixture.example.test",
              "health_path" => "/ready",
-             "slots" => %{"blue" => 8080, "green" => 8081}
+             "slots" => %{"blue" => 8080, "green" => 8081},
+             "run" => %{
+               "command" => nil,
+               "environment" => %{},
+               "network" => nil,
+               "ports" => []
+             },
+             "pre_start_declared" => true,
+             "secrets_declared" => true
            }
 
     refute Map.has_key?(targets["production"], "secrets")
-    refute Map.has_key?(targets["production"], "run")
 
     assert {:error, {:unsupported_config_schema, "v0.1"}} =
              config()

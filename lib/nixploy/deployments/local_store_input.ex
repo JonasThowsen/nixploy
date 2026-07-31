@@ -265,6 +265,9 @@ defmodule Nixploy.Deployments.LocalStoreInput do
       {:error, :timeout} ->
         {:error, command_timeout(boundary)}
 
+      {:error, :cancelled} ->
+        {:error, :cancelled}
+
       {:error, reason} ->
         {:error, command_execution_failed(boundary, reason)}
     end
@@ -320,9 +323,11 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defp normalize_target(name, target) do
     # TODO(tracer): Add policy-safe references for project secrets and execute
-    # declared pre-start argv only in Slice 1.4; neither value is persisted here.
+    # declared pre-start argv only in Slice 1.4; only declaration flags are retained here.
     web = target["web"]
     slots = is_map(web) && web["slots"]
+    run = target["run"] || %{}
+    secrets = target["secrets"] || %{}
 
     with {:ok, image} <- target_string(target, "image", name),
          true <- is_map(web),
@@ -332,20 +337,81 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          true <- is_map(slots),
          {:ok, blue} <- target_port(slots, "blue", name),
          {:ok, green} <- target_port(slots, "green", name),
-         true <- blue != green do
+         true <- blue != green,
+         {:ok, normalized_run} <- normalize_run(run, name),
+         true <- is_map(secrets) do
       {:ok,
        %{
          "name" => name,
          "image_output" => image,
          "domain" => domain,
          "health_path" => health_path,
-         "slots" => %{"blue" => blue, "green" => green}
+         "slots" => %{"blue" => blue, "green" => green},
+         "run" => normalized_run,
+         "pre_start_declared" => List.wrap(run["preStart"]) != [],
+         "secrets_declared" => map_size(secrets) > 0
        }}
     else
-      false -> {:error, {:invalid_target, name, "web blue/green configuration"}}
+      false -> {:error, {:invalid_target, name, "web or runtime configuration"}}
       {:error, _reason} = error -> error
     end
   end
+
+  defp normalize_run(run, target_name) when is_map(run) do
+    with {:ok, command} <- optional_argv(run["command"], target_name),
+         {:ok, environment} <- string_map(run["environment"] || %{}, target_name),
+         {:ok, network} <- optional_string(run["network"], target_name, "run.network"),
+         {:ok, ports} <- string_list(run["ports"] || [], target_name, "run.ports") do
+      {:ok,
+       %{
+         "command" => command,
+         "environment" => environment,
+         "network" => network,
+         "ports" => ports
+       }}
+    end
+  end
+
+  defp normalize_run(_run, target_name),
+    do: {:error, {:invalid_target, target_name, "run"}}
+
+  defp optional_argv(nil, _target_name), do: {:ok, nil}
+
+  defp optional_argv(argv, target_name) do
+    string_list(argv, target_name, "run.command")
+  end
+
+  defp string_list(values, target_name, field) when is_list(values) do
+    if Enum.all?(values, &(is_binary(&1) and &1 != "" and byte_size(&1) <= @max_value_bytes)),
+      do: {:ok, values},
+      else: {:error, {:invalid_target, target_name, field}}
+  end
+
+  defp string_list(_values, target_name, field),
+    do: {:error, {:invalid_target, target_name, field}}
+
+  defp string_map(values, target_name) when is_map(values) do
+    if Enum.all?(values, fn {key, value} ->
+         is_binary(key) and key != "" and byte_size(key) <= 255 and is_binary(value) and
+           byte_size(value) <= @max_value_bytes
+       end),
+       do: {:ok, values},
+       else: {:error, {:invalid_target, target_name, "run.environment"}}
+  end
+
+  defp string_map(_values, target_name),
+    do: {:error, {:invalid_target, target_name, "run.environment"}}
+
+  defp optional_string(nil, _target_name, _field), do: {:ok, nil}
+
+  defp optional_string(value, target_name, field) when is_binary(value) do
+    if value != "" and byte_size(value) <= @max_value_bytes,
+      do: {:ok, value},
+      else: {:error, {:invalid_target, target_name, field}}
+  end
+
+  defp optional_string(_value, target_name, field),
+    do: {:error, {:invalid_target, target_name, field}}
 
   defp target_string(map, key, target_name) do
     case required_string(map[key], key) do
