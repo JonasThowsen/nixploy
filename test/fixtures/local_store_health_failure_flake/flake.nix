@@ -1,5 +1,5 @@
 {
-  description = "No-secret nixploy native blue-green tracer fixture";
+  description = "No-secret nixploy native health-failure tracer fixture";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
@@ -52,7 +52,7 @@
           secrets = { };
           web = {
             domain = "fixture.nixploy.invalid";
-            healthPath = "/health";
+            healthPath = "/missing";
             slots = {
               blue = 18080;
               green = 18081;

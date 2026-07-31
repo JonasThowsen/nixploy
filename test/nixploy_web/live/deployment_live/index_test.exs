@@ -38,6 +38,35 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     end
   end
 
+  defmodule NativeGreenExecutorStub do
+    def deploy(_deployment, opts) do
+      stage = Keyword.fetch!(opts, :stage)
+      :ok = stage.(:preparing, "Preparing", %{})
+
+      :ok =
+        stage.(:building, "Building", %{
+          resource_prefix: "nixploy-mobile-fixture",
+          previous_upstream: "127.0.0.1:8080",
+          selected_slot: "green",
+          selected_port: 8081
+        })
+
+      :ok = stage.(:loading, "Loading", %{image_store_path: "/nix/store/image"})
+
+      :ok =
+        stage.(:preparing_slot, "Preparing slot", %{
+          image_reference: "fixture:latest",
+          image_id: "sha256:image"
+        })
+
+      :ok = stage.(:starting, "Starting", %{container_name: "nixploy-mobile-fixture-green"})
+      :ok = stage.(:health_checking, "Healthy", %{container_id: "green-container-id"})
+      :ok = stage.(:switching, "Switching", %{})
+      :ok = stage.(:verifying, "Verifying", %{})
+      stage.(:succeeded, "Succeeded", %{verified_upstream: "127.0.0.1:8081"})
+    end
+  end
+
   setup %{conn: conn} do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
@@ -343,6 +372,49 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(operation_view, "#native-verified-upstream", "127.0.0.1:8080")
     assert has_element?(operation_view, "#native-deployment-events", "Succeeded")
     assert render(operation_view) =~ "break-all"
+  end
+
+  test "confirms and queues an exact rollback from a verified operation", %{
+    conn: conn,
+    operator: operator
+  } do
+    assert {:ok, input} =
+             Deployments.stage_local_store(
+               %{
+                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+                 selected_target: "production"
+               },
+               operator: operator
+             )
+
+    {:ok, blue, _job} = Nixploy.NativeDeployments.enqueue(input.id, operator: operator)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: blue.id})
+
+    Application.put_env(:nixploy, :native_deployment_executor, NativeGreenExecutorStub)
+    {:ok, green, _job} = Nixploy.NativeDeployments.enqueue(input.id, operator: operator)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: green.id})
+
+    {:ok, view, html} = live(conn, ~p"/native-deployments/#{blue.id}")
+    assert html =~ "overflow-x-hidden"
+    assert has_element?(view, "#rollback-native-deployment", "Roll back to this result")
+
+    view
+    |> element("#rollback-native-deployment")
+    |> render_click()
+
+    [rollback | _] = Nixploy.NativeDeployments.list_for_input(input.id)
+    assert rollback.operation_kind == :rollback
+    assert rollback.rollback_of_id == blue.id
+    assert rollback.expected_image_id == "sha256:image"
+    assert rollback.expected_slot == "blue"
+    assert_redirect(view, ~p"/native-deployments/#{rollback.id}")
+
+    {:ok, rollback_view, rollback_html} =
+      live(conn, ~p"/native-deployments/#{rollback.id}")
+
+    assert has_element?(rollback_view, "#native-rollback-identity", blue.id)
+    assert has_element?(rollback_view, "#native-rollback-identity", "sha256:image")
+    assert rollback_html =~ "break-all"
   end
 
   test "renders immutable source failures without crashing LiveView", %{conn: conn} do

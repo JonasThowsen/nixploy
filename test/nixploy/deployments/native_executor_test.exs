@@ -176,7 +176,10 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
             String.contains?(url, "/upstreams") ->
               ok("[{\"dial\":\"127.0.0.1:18081\"}]\n200")
 
-            String.contains?(url, "/health") ->
+            String.starts_with?(url, "http://127.0.0.1:18081/health") ->
+              ok("")
+
+            String.starts_with?(url, "http://127.0.0.1:18080/health") ->
               {:ok, %Result{exit_status: 22, output_tail: "HTTP 503", output_truncated?: false}}
           end
       end
@@ -201,6 +204,301 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
 
     refute Enum.any?(commands, &match?(["stop" | _], &1.args))
     refute Enum.any?(commands, &match?(["rm" | _], &1.args))
+  end
+
+  test "build failure preserves the healthy routed slot" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} -> ok(path_info_json())
+        {"nix", ["eval" | _]} -> ok(Jason.encode!(config()))
+        {"nix", ["build" | _]} -> command_error(1, "injected build failure")
+        {"podman", ["ps", "-a", "--format", "json"]} -> ok(Jason.encode!([active]))
+        {"curl", args} -> existing_route_response(args, prefix)
+      end
+    end
+
+    assert {:error, {:nix_build, :command_failed, 1, "injected build failure"}} =
+             NativeExecutor.deploy(operation(),
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end
+             )
+
+    commands = drain_commands([])
+    refute Enum.any?(commands, &(&1.executable == "curl" and "PATCH" in &1.args))
+    refute Enum.any?(commands, &match?(["stop" | _], &1.args))
+  end
+
+  test "candidate start failure preserves the healthy routed slot" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} ->
+          ok(path_info_json())
+
+        {"nix", ["eval" | _]} ->
+          ok(Jason.encode!(config()))
+
+        {"nix", ["build" | _]} ->
+          ok(Jason.encode!([%{"outputs" => %{"out" => "/nix/store/image-tar"}}]))
+
+        {"podman", ["ps", "-a", "--format", "json"]} ->
+          ok(Jason.encode!([active]))
+
+        {"podman", ["load" | _]} ->
+          ok("Loaded image: localhost/native-fixture:latest\n")
+
+        {"podman", ["image", "inspect" | _]} ->
+          ok(Jason.encode!([%{"Id" => @image_id}]))
+
+        {"podman", ["run", "--detach" | _]} ->
+          command_error(125, "injected start failure")
+
+        {"curl", args} ->
+          existing_route_response(args, prefix)
+      end
+    end
+
+    assert {:error, {:podman_run, :command_failed, 125, "injected start failure"}} =
+             NativeExecutor.deploy(operation(),
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end
+             )
+
+    commands = drain_commands([])
+    refute Enum.any?(commands, &(&1.executable == "curl" and "PATCH" in &1.args))
+    refute Enum.any?(commands, &match?(["stop" | _], &1.args))
+  end
+
+  test "Caddy mutation failure reads back the unchanged old upstream" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} ->
+          ok(path_info_json())
+
+        {"nix", ["eval" | _]} ->
+          ok(Jason.encode!(config()))
+
+        {"nix", ["build" | _]} ->
+          ok(Jason.encode!([%{"outputs" => %{"out" => "/nix/store/image-tar"}}]))
+
+        {"podman", ["ps", "-a", "--format", "json"]} ->
+          ok(Jason.encode!([active]))
+
+        {"podman", ["load" | _]} ->
+          ok("Loaded image: localhost/native-fixture:latest\n")
+
+        {"podman", ["image", "inspect" | _]} ->
+          ok(Jason.encode!([%{"Id" => @image_id}]))
+
+        {"podman", ["run", "--detach" | _]} ->
+          ok("candidate-container-id\n")
+
+        {"podman", ["container", "inspect" | _]} ->
+          response(command)
+
+        {"curl", args} ->
+          if "PATCH" in args,
+            do: command_error(22, "injected Caddy failure"),
+            else: existing_route_response(args, prefix)
+      end
+    end
+
+    assert {:error,
+            {:caddy_switch_failed_previous_preserved,
+             {:caddy_mutation, :command_failed, 22, "injected Caddy failure"}, "127.0.0.1:18081"}} =
+             NativeExecutor.deploy(operation(),
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end,
+               health_attempts: 1,
+               health_delay_ms: 0
+             )
+
+    commands = drain_commands([])
+    assert Enum.count(commands, &(&1.executable == "curl" and "PATCH" in &1.args)) == 1
+
+    assert Enum.count(commands, fn command ->
+             command.executable == "curl" and
+               Enum.any?(command.args, &String.ends_with?(&1, "/upstreams"))
+           end) >= 2
+
+    refute Enum.any?(commands, &match?(["stop" | _], &1.args))
+  end
+
+  test "post-switch verification failure restores and reads back the old upstream" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+    {:ok, state} = Agent.start_link(fn -> %{upstream: 18_081, candidate_healths: 0} end)
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} ->
+          ok(path_info_json())
+
+        {"nix", ["eval" | _]} ->
+          ok(Jason.encode!(config()))
+
+        {"nix", ["build" | _]} ->
+          ok(Jason.encode!([%{"outputs" => %{"out" => "/nix/store/image-tar"}}]))
+
+        {"podman", ["ps", "-a", "--format", "json"]} ->
+          ok(Jason.encode!([active]))
+
+        {"podman", ["load" | _]} ->
+          ok("Loaded image: localhost/native-fixture:latest\n")
+
+        {"podman", ["image", "inspect" | _]} ->
+          ok(Jason.encode!([%{"Id" => @image_id}]))
+
+        {"podman", ["run", "--detach" | _]} ->
+          ok("candidate-container-id\n")
+
+        {"podman", ["container", "inspect" | _]} ->
+          response(command)
+
+        {"curl", args} ->
+          if "PATCH" in args do
+            body = Enum.at(args, Enum.find_index(args, &(&1 == "--data-binary")) + 1)
+            port = if String.contains?(body, "18080"), do: 18_080, else: 18_081
+            Agent.update(state, &%{&1 | upstream: port})
+            ok("")
+          else
+            url = List.last(args)
+
+            cond do
+              String.contains?(url, "nixploy-route-") ->
+                ok(
+                  Jason.encode!(%{"match" => [%{"host" => ["native-fixture.invalid"]}]}) <>
+                    "\n200"
+                )
+
+              String.contains?(url, "/upstreams") ->
+                port = Agent.get(state, & &1.upstream)
+                ok("[{\"dial\":\"127.0.0.1:#{port}\"}]\n200")
+
+              String.starts_with?(url, "http://127.0.0.1:18081/health") ->
+                ok("")
+
+              String.starts_with?(url, "http://127.0.0.1:18080/health") ->
+                count =
+                  Agent.get_and_update(
+                    state,
+                    &{&1.candidate_healths, %{&1 | candidate_healths: &1.candidate_healths + 1}}
+                  )
+
+                if count == 0,
+                  do: ok(""),
+                  else: command_error(22, "injected readback health failure")
+            end
+          end
+      end
+    end
+
+    assert {:error,
+            {:caddy_switch_failed_previous_preserved,
+             {:candidate_health, :command_failed, 22, "injected readback health failure"},
+             "127.0.0.1:18081"}} =
+             NativeExecutor.deploy(operation(),
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end,
+               health_attempts: 1,
+               health_delay_ms: 0
+             )
+
+    assert Agent.get(state, & &1.upstream) == 18_081
+    commands = drain_commands([])
+    assert Enum.count(commands, &(&1.executable == "curl" and "PATCH" in &1.args)) == 2
+    refute Enum.any?(commands, &match?(["stop" | _], &1.args))
+  end
+
+  test "rollback requires the exact persisted inactive slot and image ID before mutation" do
+    prefix = "nixploy-native-fixture-existing-production"
+    active = active_green(prefix)
+
+    execute = fn command, _opts ->
+      send(self(), {:command, command})
+
+      case {command.executable, command.args} do
+        {"nix", ["path-info" | _]} ->
+          ok(path_info_json())
+
+        {"nix", ["eval" | _]} ->
+          ok(Jason.encode!(config()))
+
+        {"nix", ["build" | _]} ->
+          ok(Jason.encode!([%{"outputs" => %{"out" => "/nix/store/image-tar"}}]))
+
+        {"podman", ["ps", "-a", "--format", "json"]} ->
+          ok(Jason.encode!([active]))
+
+        {"podman", ["load" | _]} ->
+          ok("Loaded image: localhost/native-fixture:latest\n")
+
+        {"podman", ["image", "inspect" | _]} ->
+          ok(Jason.encode!([%{"Id" => @image_id}]))
+
+        {"curl", args} ->
+          existing_route_response(args, prefix)
+      end
+    end
+
+    rollback =
+      operation(
+        operation_kind: :rollback,
+        expected_slot: "blue",
+        expected_image_id: "sha256:different-image"
+      )
+
+    assert {:error, :rollback_image_mismatch} =
+             NativeExecutor.deploy(rollback,
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end
+             )
+
+    commands = drain_commands([])
+    refute Enum.any?(commands, &match?(["rm" | _], &1.args))
+    refute Enum.any?(commands, &match?(["run" | _], &1.args))
+    refute Enum.any?(commands, &(&1.executable == "curl" and "PATCH" in &1.args))
+
+    wrong_slot =
+      operation(
+        operation_kind: :rollback,
+        expected_slot: "green",
+        expected_image_id: @image_id
+      )
+
+    assert {:error, :rollback_target_not_inactive} =
+             NativeExecutor.deploy(wrong_slot,
+               execute: execute,
+               path_exists?: fn _path -> true end,
+               stage: fn _state, _message, _attrs -> :ok end,
+               cancelled?: fn -> false end
+             )
   end
 
   test "propagates cancellation to every bounded command" do
@@ -273,7 +571,7 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     end
   end
 
-  defp operation do
+  defp operation(attrs \\ []) do
     snapshot = snapshot()
 
     input = %DeploymentInput{
@@ -286,12 +584,14 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
       configuration_digest: LocalStoreInput.digest(snapshot)
     }
 
-    %NativeDeployment{
+    operation = %NativeDeployment{
       id: "operation-id",
       project: "native-fixture",
       target: "production",
       deployment_input: input
     }
+
+    struct!(operation, attrs)
   end
 
   defp snapshot do
@@ -333,7 +633,40 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
     }
   end
 
+  defp active_green(prefix) do
+    %{
+      "Names" => ["#{prefix}-green"],
+      "State" => "running",
+      "Labels" => %{
+        "io.nixploy.managed" => "true",
+        "io.nixploy.project" => "native-fixture",
+        "io.nixploy.target" => "production"
+      }
+    }
+  end
+
+  defp existing_route_response(args, prefix) do
+    url = List.last(args)
+
+    cond do
+      String.contains?(url, "nixploy-route-#{prefix}") ->
+        ok(Jason.encode!(%{"match" => [%{"host" => ["native-fixture.invalid"]}]}) <> "\n200")
+
+      String.contains?(url, "/upstreams") ->
+        ok("[{\"dial\":\"127.0.0.1:18081\"}]\n200")
+
+      String.starts_with?(url, "http://127.0.0.1:18081/health") ->
+        ok("")
+
+      String.starts_with?(url, "http://127.0.0.1:18080/health") ->
+        ok("")
+    end
+  end
+
   defp path_info_json, do: Jason.encode!(%{@store_path => %{"narHash" => @nar_hash}})
+
+  defp command_error(status, output),
+    do: {:ok, %Result{exit_status: status, output_tail: output, output_truncated?: false}}
 
   defp ok(output),
     do: {:ok, %Result{exit_status: 0, output_tail: output, output_truncated?: false}}

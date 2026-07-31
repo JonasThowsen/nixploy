@@ -24,6 +24,8 @@ defmodule Nixploy.Deployments.NativeExecutor do
          :ok <- stage.(:preparing, "Re-verifying immutable source and local runtime", %{}),
          {:ok, source} <- probe_source(input, opts, cancelled?),
          {:ok, plan} <- prepare_plan(operation, source, target, execute, cancelled?),
+         :ok <- verify_operation_plan(operation, plan),
+         :ok <- verify_previous_health(plan, target["health_path"], execute, cancelled?),
          :ok <- checkpoint(cancelled?),
          :ok <-
            stage.(:building, "Building the persisted flake image output", plan_attrs(plan)),
@@ -36,6 +38,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
            }),
          {:ok, image_reference} <- load_image(image_store_path, execute, cancelled?),
          {:ok, image_id} <- inspect_image(image_reference, execute, cancelled?),
+         :ok <- verify_expected_image(operation, image_id),
          :ok <- checkpoint(cancelled?),
          :ok <-
            stage.(:preparing_slot, "Validating and preparing only the inactive managed slot", %{
@@ -61,11 +64,17 @@ defmodule Nixploy.Deployments.NativeExecutor do
          :ok <- checkpoint(cancelled?),
          :ok <-
            stage.(:switching, "Candidate is healthy; switching the identified Caddy route", %{}),
-         :ok <- switch_caddy(plan, target["domain"], execute, cancelled?),
-         :ok <- checkpoint(cancelled?),
          :ok <-
-           stage.(:verifying, "Reading back Caddy, container identity, and exact health", %{}),
-         :ok <- verify_switch(plan, target["health_path"], input, image_id, execute, cancelled?),
+           switch_and_verify(
+             plan,
+             target["domain"],
+             target["health_path"],
+             input,
+             image_id,
+             execute,
+             cancelled?,
+             stage
+           ),
          :ok <- stop_previous(plan, execute, cancelled?),
          :ok <-
            stage.(:succeeded, "Native deployment succeeded after independent readback", %{
@@ -110,6 +119,22 @@ defmodule Nixploy.Deployments.NativeExecutor do
   def error_message(:active_slot_unmanaged),
     do: "the routed active slot is not positively managed by nixploy"
 
+  def error_message(:active_slot_unhealthy),
+    do: "the currently routed slot is not healthy; refusing to replace its peer"
+
+  def error_message(:rollback_target_not_inactive),
+    do: "the exact rollback slot is not inactive in the observed Caddy state"
+
+  def error_message(:rollback_image_mismatch),
+    do: "the rebuilt rollback image does not match the persisted verified image ID"
+
+  def error_message({:caddy_switch_failed_previous_preserved, reason, upstream}),
+    do:
+      "Caddy switch failed, but the previous upstream #{upstream} was independently preserved: #{safe_inspect(reason)}"
+
+  def error_message(:caddy_preservation_failed),
+    do: "Caddy switch failed and the previous upstream could not be restored and verified"
+
   def error_message(:candidate_not_running), do: "the candidate container is not running"
 
   def error_message(:candidate_identity_mismatch),
@@ -150,6 +175,32 @@ defmodule Nixploy.Deployments.NativeExecutor do
       end
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp verify_operation_plan(%NativeDeployment{operation_kind: :deploy}, _plan), do: :ok
+
+  defp verify_operation_plan(%NativeDeployment{operation_kind: :rollback} = operation, plan) do
+    if operation.expected_slot == plan.inactive_slot and is_binary(plan.previous_upstream),
+      do: :ok,
+      else: {:error, :rollback_target_not_inactive}
+  end
+
+  defp verify_expected_image(%NativeDeployment{operation_kind: :deploy}, _image_id), do: :ok
+
+  defp verify_expected_image(%NativeDeployment{operation_kind: :rollback} = operation, image_id) do
+    if image_matches?(image_id, operation.expected_image_id),
+      do: :ok,
+      else: {:error, :rollback_image_mismatch}
+  end
+
+  defp verify_previous_health(%{active_port: nil}, _path, _execute, _cancelled?), do: :ok
+
+  defp verify_previous_health(plan, path, execute, cancelled?) do
+    case health_once(plan.active_port, path, execute, cancelled?) do
+      :ok -> :ok
+      {:error, :cancelled} = error -> error
+      {:error, _reason} -> {:error, :active_slot_unhealthy}
     end
   end
 
@@ -284,9 +335,10 @@ defmodule Nixploy.Deployments.NativeExecutor do
         {:error, :active_slot_unmanaged}
 
       container ->
-        if managed_for?(container, project, target),
-          do: :ok,
-          else: {:error, :active_slot_unmanaged}
+        if managed_for?(container, project, target) and
+             String.downcase(to_string(container["State"])) == "running",
+           do: :ok,
+           else: {:error, :active_slot_unmanaged}
     end
   end
 
@@ -495,6 +547,116 @@ defmodule Nixploy.Deployments.NativeExecutor do
     run_ok(command, execute, cancelled?, :candidate_health)
   end
 
+  defp switch_and_verify(
+         plan,
+         domain,
+         health_path,
+         input,
+         image_id,
+         execute,
+         cancelled?,
+         stage
+       ) do
+    case switch_caddy(plan, domain, execute, cancelled?) do
+      :ok ->
+        result =
+          with :ok <- checkpoint(cancelled?),
+               :ok <-
+                 stage.(
+                   :verifying,
+                   "Reading back Caddy, container identity, and exact health",
+                   %{}
+                 ),
+               :ok <-
+                 verify_switch(plan, health_path, input, image_id, execute, cancelled?) do
+            :ok
+          end
+
+        case result do
+          :ok ->
+            :ok
+
+          # Once ingress mutation was attempted, cancellation cannot interrupt
+          # the bounded preservation readback/compensation sequence.
+          {:error, reason} ->
+            preserve_after_applied_switch(plan, reason, execute, fn -> false end)
+        end
+
+      {:error, reason} ->
+        preserve_after_uncertain_switch(plan, reason, execute, fn -> false end)
+    end
+  end
+
+  defp preserve_after_applied_switch(
+         %{previous_upstream: nil} = plan,
+         reason,
+         execute,
+         cancelled?
+       ) do
+    remove_new_route(plan, reason, execute, cancelled?)
+  end
+
+  defp preserve_after_applied_switch(plan, reason, execute, cancelled?) do
+    restore_previous_upstream(plan, reason, execute, cancelled?)
+  end
+
+  defp preserve_after_uncertain_switch(
+         %{previous_upstream: nil} = plan,
+         reason,
+         execute,
+         cancelled?
+       ) do
+    case caddy_get("/id/#{route_id(plan.prefix)}", execute, cancelled?) do
+      {:ok, 404, _body} -> {:error, reason}
+      {:ok, 200, _body} -> remove_new_route(plan, reason, execute, cancelled?)
+      _other -> {:error, :caddy_preservation_failed}
+    end
+  end
+
+  defp preserve_after_uncertain_switch(plan, reason, execute, cancelled?) do
+    case active_port(:existing, execute, cancelled?, plan.prefix) do
+      {:ok, port} when port == plan.active_port ->
+        preserved_switch_error(plan, reason)
+
+      {:ok, port} when port == plan.inactive_port ->
+        restore_previous_upstream(plan, reason, execute, cancelled?)
+
+      _other ->
+        {:error, :caddy_preservation_failed}
+    end
+  end
+
+  defp restore_previous_upstream(plan, original_reason, execute, cancelled?) do
+    body = Jason.encode!([%{"dial" => plan.previous_upstream}])
+
+    with :ok <-
+           caddy_mutate(
+             "PATCH",
+             "/id/#{proxy_id(plan.prefix)}/upstreams",
+             body,
+             execute,
+             cancelled?
+           ),
+         {:ok, restored_port} <- active_port(:existing, execute, cancelled?, plan.prefix),
+         true <- restored_port == plan.active_port do
+      preserved_switch_error(plan, original_reason)
+    else
+      _failure -> {:error, :caddy_preservation_failed}
+    end
+  end
+
+  defp preserved_switch_error(plan, reason),
+    do: {:error, {:caddy_switch_failed_previous_preserved, reason, plan.previous_upstream}}
+
+  defp remove_new_route(plan, original_reason, execute, cancelled?) do
+    with :ok <- caddy_delete("/id/#{route_id(plan.prefix)}", execute, cancelled?),
+         {:ok, 404, _body} <- caddy_get("/id/#{route_id(plan.prefix)}", execute, cancelled?) do
+      {:error, original_reason}
+    else
+      _failure -> {:error, :caddy_preservation_failed}
+    end
+  end
+
   defp switch_caddy(%{route_exists?: false} = plan, domain, execute, cancelled?) do
     body = route_json(plan, domain)
     caddy_mutate("POST", "/config/apps/http/servers/nixploy/routes", body, execute, cancelled?)
@@ -568,6 +730,25 @@ defmodule Nixploy.Deployments.NativeExecutor do
         "Content-Type: application/json",
         "--data-binary",
         body,
+        "--",
+        caddy_url(path)
+      ],
+      timeout: @short_timeout,
+      max_output_bytes: @diagnostic_limit
+    }
+
+    run_ok(command, execute, cancelled?, :caddy_mutation)
+  end
+
+  defp caddy_delete(path, execute, cancelled?) do
+    command = %Command{
+      executable: curl(),
+      args: [
+        "--fail-with-body",
+        "--silent",
+        "--show-error",
+        "--request",
+        "DELETE",
         "--",
         caddy_url(path)
       ],
@@ -758,8 +939,14 @@ defmodule Nixploy.Deployments.NativeExecutor do
   defp curl, do: Application.get_env(:nixploy, :curl_executable, "curl")
 
   defp failure_code(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp failure_code({code, _rest}) when is_atom(code), do: Atom.to_string(code)
-  defp failure_code({code, _a, _b, _c}) when is_atom(code), do: Atom.to_string(code)
+
+  defp failure_code(reason) when is_tuple(reason) and tuple_size(reason) > 0 do
+    case elem(reason, 0) do
+      code when is_atom(code) -> Atom.to_string(code)
+      _other -> "native_execution_failed"
+    end
+  end
+
   defp failure_code(_reason), do: "native_execution_failed"
 
   defp safe_tail(output),

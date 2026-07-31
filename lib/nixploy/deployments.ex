@@ -394,20 +394,10 @@ defmodule Nixploy.Deployments do
 
     case result do
       {:ok, %{deployment_input: staged_input}} ->
-        # TODO(tracer): Slice 1.2 must dispatch this persisted local-store input
-        # to a native executor; staging intentionally enqueues no deployment job.
-        # TODO(tracer): Operator-side Nix closure transport must be added before
-        # store paths from another machine can be staged safely.
-        # TODO(tracer): The native executor must build and load the declared image
-        # into the nixploy user's Podman store without touching root's store.
-        # TODO(tracer): The native executor must identify and replace only the
-        # inactive managed slot after failing closed on unmanaged collisions.
-        # TODO(tracer): The candidate must pass the exact persisted health path
-        # before any ingress mutation is permitted.
-        # TODO(tracer): Caddy switching and independent readback belong to Slice
-        # 1.2 and must preserve the previously routed slot on every failure.
-        # TODO(tracer): Rollback must create a new operation referencing an exact
-        # previously healthy store path, NAR hash, image, digest, and slot.
+        # Staging deliberately enqueues no job: the authenticated input detail
+        # is the confirmation boundary for deploy or rollback operations.
+        # TODO(tracer): Productize unprivileged operator-side Nix closure
+        # transport before accepting store paths from another machine.
         {:ok, Repo.preload(staged_input, :requested_by_operator)}
 
       {:error, _operation, reason, _changes} ->

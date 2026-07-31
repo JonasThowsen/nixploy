@@ -18,7 +18,9 @@
       <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div class="min-w-0">
           <p class="font-mono text-xs font-bold uppercase tracking-[0.24em] text-primary">
-            Native blue / green
+            {if deployment.operation_kind == :rollback,
+              do: "Native rollback",
+              else: "Native blue / green"}
           </p>
           <h1 class="mt-2 break-words text-3xl font-bold tracking-[-0.035em] sm:text-5xl">
             {deployment.project} → {deployment.target}
@@ -29,6 +31,17 @@
           <span class={["badge badge-lg", state_class(deployment.state)]}>
             {deployment.state}
           </span>
+          <.button
+            :if={@rollback_status == :available}
+            id="rollback-native-deployment"
+            phx-click="rollback_native_deployment"
+            class="btn-error btn-sm min-h-11"
+            data-confirm={
+              "Roll back to exact image #{deployment.image_id} in #{deployment.selected_slot}? The current healthy slot remains routed until this candidate passes health."
+            }
+          >
+            Roll back to this result
+          </.button>
           <.button
             :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
             id="cancel-native-deployment"
@@ -41,6 +54,31 @@
         </div>
       </div>
     </header>
+
+    <section
+      :if={deployment.operation_kind == :rollback}
+      id="native-rollback-identity"
+      class="alert items-start border border-warning/30 bg-warning/10"
+    >
+      <.icon name="hero-arrow-uturn-left" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Exact verified rollback</p>
+        <p class="break-words text-sm">
+          This new operation rebuilds the immutable input and requires the persisted image and slot
+          identity before switching traffic.
+        </p>
+        <.link
+          :if={deployment.rollback_of}
+          navigate={~p"/native-deployments/#{deployment.rollback_of.id}"}
+          class="link mt-2 block break-all font-mono text-xs"
+        >
+          Source operation {deployment.rollback_of.id}
+        </.link>
+        <p class="mt-1 break-all font-mono text-xs opacity-70">
+          {deployment.expected_slot} · {deployment.expected_image_id}
+        </p>
+      </div>
+    </section>
 
     <section
       :if={deployment.failure}

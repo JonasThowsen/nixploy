@@ -28,6 +28,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
   schema "native_deployments" do
     field :project, :string
     field :target, :string
+    field :operation_kind, Ecto.Enum, values: [:deploy, :rollback], default: :deploy
     field :state, Ecto.Enum, values: @states, default: :queued
     field :current_stage, Ecto.Enum, values: @states, default: :queued
     field :resource_prefix, :string
@@ -47,6 +48,9 @@ defmodule Nixploy.Deployments.NativeDeployment do
 
     belongs_to :deployment_input, Nixploy.Deployments.DeploymentInput
     belongs_to :requested_by_operator, Nixploy.Accounts.Operator
+    belongs_to :rollback_of, __MODULE__
+    field :expected_image_id, :string
+    field :expected_slot, :string
     has_many :events, Nixploy.Deployments.NativeEvent
 
     timestamps(type: :utc_datetime_usec)
@@ -62,13 +66,21 @@ defmodule Nixploy.Deployments.NativeDeployment do
       :deployment_input_id,
       :requested_by_operator_id,
       :project,
-      :target
+      :target,
+      :operation_kind,
+      :rollback_of_id,
+      :expected_image_id,
+      :expected_slot
     ])
     |> validate_required([:deployment_input_id, :requested_by_operator_id, :project, :target])
     |> validate_length(:project, max: 4_096)
     |> validate_length(:target, max: 255)
+    |> validate_inclusion(:expected_slot, ["blue", "green"])
     |> assoc_constraint(:deployment_input)
     |> assoc_constraint(:requested_by_operator)
+    |> assoc_constraint(:rollback_of)
+    |> check_constraint(:operation_kind, name: :valid_native_operation_kind)
+    |> check_constraint(:operation_kind, name: :valid_native_rollback_identity)
     |> unique_constraint([:project, :target], name: :one_active_native_deployment_per_target)
   end
 

@@ -16,6 +16,29 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   end
 
   @impl true
+  def handle_event("rollback_native_deployment", _params, socket) do
+    case NativeDeployments.request_rollback(socket.assigns.deployment.id,
+           operator: socket.assigns.current_operator
+         ) do
+      {:ok, rollback, _job} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Rollback queued from exact verified operation")
+         |> push_navigate(to: ~p"/native-deployments/#{rollback.id}")}
+
+      {:error, {:rollback_already_active, _id}} ->
+        {:noreply, put_flash(socket, :error, "This exact verified result is already active")}
+
+      {:error, {:rollback_target_not_succeeded, _state}} ->
+        {:noreply,
+         put_flash(socket, :error, "Only a succeeded native operation can be rolled back")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not queue rollback")}
+    end
+  end
+
+  @impl true
   def handle_event("cancel_native_deployment", _params, socket) do
     case NativeDeployments.request_cancellation(socket.assigns.deployment.id,
            operator: socket.assigns.current_operator
@@ -42,7 +65,8 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
 
     assign(socket,
       deployment: deployment,
-      events: NativeDeployments.list_events(deployment.id)
+      events: NativeDeployments.list_events(deployment.id),
+      rollback_status: NativeDeployments.rollback_status(deployment)
     )
   end
 

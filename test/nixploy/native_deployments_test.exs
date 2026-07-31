@@ -42,6 +42,35 @@ defmodule Nixploy.NativeDeploymentsTest do
     end
   end
 
+  defmodule GreenExecutorStub do
+    def deploy(_deployment, opts) do
+      stage = Keyword.fetch!(opts, :stage)
+      :ok = stage.(:preparing, "Preparing", %{})
+
+      :ok =
+        stage.(:building, "Building", %{
+          resource_prefix: "nixploy-native-fixture-prefix-production",
+          previous_upstream: "127.0.0.1:18080",
+          selected_slot: "green",
+          selected_port: 18_081
+        })
+
+      :ok = stage.(:loading, "Loading", %{image_store_path: "/nix/store/image"})
+
+      :ok =
+        stage.(:preparing_slot, "Preparing slot", %{
+          image_reference: "fixture:latest",
+          image_id: "sha256:image"
+        })
+
+      :ok = stage.(:starting, "Starting", %{container_name: "fixture-green"})
+      :ok = stage.(:health_checking, "Health", %{container_id: "green-container-id"})
+      :ok = stage.(:switching, "Switching", %{})
+      :ok = stage.(:verifying, "Verifying", %{})
+      stage.(:succeeded, "Succeeded", %{verified_upstream: "127.0.0.1:18081"})
+    end
+  end
+
   setup do
     previous = Application.get_env(:nixploy, :native_deployment_executor)
     Application.put_env(:nixploy, :native_deployment_executor, ExecutorStub)
@@ -110,6 +139,78 @@ defmodule Nixploy.NativeDeploymentsTest do
              "verifying",
              "succeeded"
            ]
+  end
+
+  test "persists exact rollback identity, relationship, actor, and idempotency" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+
+    {:ok, blue, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: blue.id})
+
+    Application.put_env(:nixploy, :native_deployment_executor, GreenExecutorStub)
+    {:ok, green, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: green.id})
+
+    blue = NativeDeployments.get_deployment!(blue.id)
+
+    assert {:ok, rollback, job} =
+             NativeDeployments.request_rollback(blue.id,
+               operator: operator,
+               worker: NativeWorker
+             )
+
+    assert rollback.operation_kind == :rollback
+    assert rollback.rollback_of_id == blue.id
+    assert rollback.deployment_input_id == input.id
+    assert rollback.expected_image_id == blue.image_id
+    assert rollback.expected_slot == "blue"
+    assert rollback.requested_by_operator_id == operator.id
+    assert job.worker == inspect(NativeWorker)
+
+    audit =
+      Event
+      |> where(
+        [event],
+        event.resource_type == "native_deployment" and event.resource_id == ^rollback.id
+      )
+      |> Nixploy.Repo.one!()
+
+    assert audit.action == "native_rollback_queued"
+    assert audit.operator_id == operator.id
+    assert audit.metadata["rollback_of_id"] == blue.id
+    assert audit.metadata["store_path"] == input.store_path
+    assert audit.metadata["nar_hash"] == input.nar_hash
+    assert audit.metadata["configuration_digest"] == input.configuration_digest
+    assert audit.metadata["image_id"] == blue.image_id
+    assert audit.metadata["slot"] == "blue"
+
+    Application.put_env(:nixploy, :native_deployment_executor, ExecutorStub)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: rollback.id})
+
+    completed = NativeDeployments.get_deployment!(rollback.id)
+    assert completed.state == :succeeded
+    assert completed.selected_slot == "blue"
+    assert completed.verified_upstream == "127.0.0.1:18080"
+
+    terminal_audit =
+      Event
+      |> where(
+        [event],
+        event.resource_type == "native_deployment" and event.resource_id == ^rollback.id and
+          event.action == "native_rollback_succeeded"
+      )
+      |> Nixploy.Repo.one!()
+
+    assert terminal_audit.operator_id == operator.id
+    assert terminal_audit.outcome == "succeeded"
+    assert terminal_audit.metadata["rollback_of_id"] == blue.id
+    assert terminal_audit.metadata["image_id"] == blue.image_id
+
+    rollback_id = rollback.id
+
+    assert {:error, {:rollback_already_active, ^rollback_id}} =
+             NativeDeployments.request_rollback(blue.id, operator: operator)
   end
 
   test "serializes active operations for the same flake-derived project and target" do

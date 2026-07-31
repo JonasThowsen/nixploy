@@ -59,8 +59,9 @@ defmodule Nixploy.Deployments.NativeWorker do
     end
   end
 
-  # TODO(tracer): Slice 1.3 must reconcile identified Podman/Caddy side effects
-  # before classifying interrupted cancellation as clean or intervention-required.
+  # TODO(tracer): Slice 3.3 must reconcile a worker process killed between an
+  # external side effect and its persisted transition. Cooperative cancellation
+  # now completes bounded Caddy preservation before it reaches this boundary.
   defp cancel(id) do
     case NativeDeployments.transition(
            id,

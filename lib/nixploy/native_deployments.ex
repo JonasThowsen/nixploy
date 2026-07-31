@@ -29,7 +29,7 @@ defmodule Nixploy.NativeDeployments do
     NativeDeployment
     |> order_by([deployment], desc: deployment.inserted_at)
     |> limit(^@history_limit)
-    |> preload([:requested_by_operator, :deployment_input])
+    |> preload([:requested_by_operator, :deployment_input, :rollback_of])
     |> Repo.all()
   end
 
@@ -38,14 +38,14 @@ defmodule Nixploy.NativeDeployments do
     |> where([deployment], deployment.deployment_input_id == ^input_id)
     |> order_by([deployment], desc: deployment.inserted_at)
     |> limit(^@history_limit)
-    |> preload([:requested_by_operator, :deployment_input])
+    |> preload([:requested_by_operator, :deployment_input, :rollback_of])
     |> Repo.all()
   end
 
   def get_deployment!(id) do
     NativeDeployment
     |> Repo.get!(id)
-    |> Repo.preload([:requested_by_operator, :deployment_input])
+    |> Repo.preload([:requested_by_operator, :deployment_input, :rollback_of])
   end
 
   def list_events(id) do
@@ -110,10 +110,77 @@ defmodule Nixploy.NativeDeployments do
     case result do
       {:ok, %{deployment: deployment, job: job}} ->
         publish(deployment.id)
-        {:ok, Repo.preload(deployment, [:requested_by_operator, :deployment_input]), job}
+
+        {:ok, Repo.preload(deployment, [:requested_by_operator, :deployment_input, :rollback_of]),
+         job}
 
       {:error, _operation, reason, _changes} ->
         {:error, reason}
+    end
+  end
+
+  def request_rollback(target_id, opts \\ []) do
+    operator = Keyword.get(opts, :operator)
+    worker = Keyword.get(opts, :worker, Nixploy.Deployments.NativeWorker)
+
+    result =
+      Multi.new()
+      |> Multi.run(:target, fn repo, _changes ->
+        target = repo |> locked(target_id) |> repo.preload(:deployment_input)
+
+        with :ok <- validate_rollback_target(target),
+             :ok <- ensure_rollback_changes_state(repo, target) do
+          {:ok, target}
+        end
+      end)
+      |> Multi.insert(:deployment, fn %{target: target} ->
+        NativeDeployment.create_changeset(%NativeDeployment{}, %{
+          deployment_input_id: target.deployment_input_id,
+          requested_by_operator_id: operator_id(operator),
+          project: target.project,
+          target: target.target,
+          operation_kind: :rollback,
+          rollback_of_id: target.id,
+          expected_image_id: target.image_id,
+          expected_slot: target.selected_slot
+        })
+      end)
+      |> Multi.insert(:event, fn %{deployment: deployment, target: target} ->
+        NativeEvent.changeset(%NativeEvent{}, %{
+          native_deployment_id: deployment.id,
+          stage: "queued",
+          message: "Rollback to verified native operation #{target.id} queued",
+          metadata: rollback_identity(target),
+          inserted_at: DateTime.utc_now()
+        })
+      end)
+      |> Multi.insert(:audit, fn %{deployment: deployment, target: target} ->
+        Audit.changeset(operator, :native_rollback_queued, :native_deployment, deployment.id,
+          outcome: :requested,
+          metadata: Map.put(rollback_identity(target), "rollback_of_id", target.id)
+        )
+      end)
+      |> Oban.insert(:job, fn %{deployment: deployment} ->
+        worker.new(%{native_deployment_id: deployment.id})
+      end)
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{deployment: deployment, job: job}} ->
+        publish(deployment.id)
+
+        {:ok, Repo.preload(deployment, [:requested_by_operator, :deployment_input, :rollback_of]),
+         job}
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  def rollback_status(%NativeDeployment{} = target) do
+    with :ok <- validate_rollback_target(target),
+         :ok <- ensure_rollback_changes_state(Repo, target) do
+      :available
     end
   end
 
@@ -157,6 +224,21 @@ defmodule Nixploy.NativeDeployments do
           inserted_at: now
         })
       end)
+      |> Multi.run(:audit, fn repo, %{deployment: deployment} ->
+        if NativeDeployment.terminal?(deployment) do
+          deployment.requested_by_operator_id
+          |> Audit.changeset(
+            terminal_audit_action(deployment),
+            :native_deployment,
+            deployment.id,
+            outcome: terminal_audit_outcome(deployment.state),
+            metadata: terminal_audit_metadata(deployment)
+          )
+          |> repo.insert()
+        else
+          {:ok, nil}
+        end
+      end)
       |> Repo.transaction()
 
     case result do
@@ -172,21 +254,9 @@ defmodule Nixploy.NativeDeployments do
   def fail(id, reason) do
     failure = Nixploy.Deployments.NativeExecutor.failure(reason)
 
-    case transition(id, :failed, "Native deployment failed: #{failure["message"]}", %{
-           failure: failure
-         }) do
-      {:ok, deployment, event} ->
-        _ =
-          Audit.record(nil, :native_deployment_failed, :native_deployment, id,
-            outcome: :failed,
-            metadata: %{"failure_code" => failure["code"]}
-          )
-
-        {:ok, deployment, event}
-
-      error ->
-        error
-    end
+    transition(id, :failed, "Native deployment failed: #{failure["message"]}", %{
+      failure: failure
+    })
   end
 
   def request_cancellation(id, opts \\ []) do
@@ -239,6 +309,66 @@ defmodule Nixploy.NativeDeployments do
     |> Repo.one!()
   end
 
+  defp validate_rollback_target(%NativeDeployment{
+         state: :succeeded,
+         image_id: image_id,
+         selected_slot: slot,
+         selected_port: port,
+         verified_upstream: upstream,
+         deployment_input: %DeploymentInput{} = input
+       })
+       when is_binary(image_id) and slot in ["blue", "green"] and is_integer(port) and
+              is_binary(upstream) do
+    if Enum.all?(
+         [input.store_path, input.nar_hash, input.configuration_digest],
+         &(is_binary(&1) and &1 != "")
+       ) do
+      :ok
+    else
+      {:error, :rollback_identity_incomplete}
+    end
+  end
+
+  defp validate_rollback_target(%NativeDeployment{state: state}) when state != :succeeded,
+    do: {:error, {:rollback_target_not_succeeded, state}}
+
+  defp validate_rollback_target(_deployment), do: {:error, :rollback_identity_incomplete}
+
+  defp ensure_rollback_changes_state(repo, target) do
+    current =
+      NativeDeployment
+      |> where(
+        [deployment],
+        deployment.project == ^target.project and deployment.target == ^target.target and
+          deployment.state == :succeeded
+      )
+      |> order_by([deployment], desc: deployment.finished_at, desc: deployment.inserted_at)
+      |> limit(1)
+      |> repo.one()
+
+    if current && same_verified_identity?(current, target),
+      do: {:error, {:rollback_already_active, current.id}},
+      else: :ok
+  end
+
+  defp same_verified_identity?(left, right) do
+    left.deployment_input_id == right.deployment_input_id and left.image_id == right.image_id and
+      left.selected_slot == right.selected_slot and
+      left.verified_upstream == right.verified_upstream
+  end
+
+  defp rollback_identity(target) do
+    %{
+      "deployment_input_id" => target.deployment_input_id,
+      "store_path" => target.deployment_input.store_path,
+      "nar_hash" => target.deployment_input.nar_hash,
+      "configuration_digest" => target.deployment_input.configuration_digest,
+      "image_id" => target.image_id,
+      "slot" => target.selected_slot,
+      "upstream" => target.verified_upstream
+    }
+  end
+
   defp validate_native_config(%{"project" => project, "target" => target})
        when is_binary(project) and is_map(target) do
     cond do
@@ -264,6 +394,34 @@ defmodule Nixploy.NativeDeployments do
     do: Map.put(attrs, :finished_at, now)
 
   defp maybe_finished(attrs, _state, _now), do: attrs
+
+  defp terminal_audit_action(%{operation_kind: :rollback, state: :succeeded}),
+    do: :native_rollback_succeeded
+
+  defp terminal_audit_action(%{operation_kind: :rollback, state: :failed}),
+    do: :native_rollback_failed
+
+  defp terminal_audit_action(%{operation_kind: :rollback, state: :cancelled}),
+    do: :native_rollback_cancelled
+
+  defp terminal_audit_action(%{state: :succeeded}), do: :native_deployment_succeeded
+  defp terminal_audit_action(%{state: :failed}), do: :native_deployment_failed
+  defp terminal_audit_action(%{state: :cancelled}), do: :native_deployment_cancelled
+
+  defp terminal_audit_outcome(:succeeded), do: :succeeded
+  defp terminal_audit_outcome(:failed), do: :failed
+  defp terminal_audit_outcome(:cancelled), do: :cancelled
+
+  defp terminal_audit_metadata(deployment) do
+    %{
+      "deployment_input_id" => deployment.deployment_input_id,
+      "rollback_of_id" => deployment.rollback_of_id,
+      "image_id" => deployment.image_id,
+      "selected_slot" => deployment.selected_slot,
+      "verified_upstream" => deployment.verified_upstream,
+      "failure_code" => deployment.failure && deployment.failure["code"]
+    }
+  end
 
   defp event_level(:failed), do: :error
   defp event_level(:cancelled), do: :warning
