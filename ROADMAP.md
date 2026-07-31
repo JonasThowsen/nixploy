@@ -95,7 +95,10 @@ Raw project configuration and decrypted secrets are not copied into PostgreSQL.
 
 ### Utility-first, mobile-first UI
 
-The UI is an operational tool, not a decorative dashboard.
+The UI is an operational tool, not a decorative dashboard. The canonical
+information architecture, responsive navigation, visual language, interaction
+rules, implementation conventions, and review checklist live in
+[`UI_DIRECTION.md`](UI_DIRECTION.md).
 
 Every new operator workflow must:
 

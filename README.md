@@ -173,9 +173,11 @@ dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
 
 The Elixir/Phoenix control plane is being built alongside the current C# CLI so
 that existing deployment behavior remains available during the rewrite. See
-[`ROADMAP.md`](ROADMAP.md) for the current local-first delivery order, mobile
-operator UI goals, incremental Ash migration, and the later AshAI/AshLua MCP
-composition model.
+[`ROADMAP.md`](ROADMAP.md) for the current local-first delivery order,
+incremental Ash migration, and the later AshAI/AshLua MCP composition model. See
+[`UI_DIRECTION.md`](UI_DIRECTION.md) for the canonical operator-interface
+structure, responsive shell, visual language, interaction rules, and review
+checklist.
 
 Enter the reproducible development environment and initialize Phoenix:
 
