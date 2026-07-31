@@ -193,4 +193,60 @@
   .np-empty {
     @apply p-8 text-center text-sm text-base-content/50;
   }
+
+  .np-status-dot {
+    @apply block size-2.5 rounded-full bg-base-content/20;
+  }
+
+  .np-status-dot-success {
+    @apply bg-success shadow-[0_0_0_3px] shadow-success/15;
+  }
+
+  .np-status-dot-warning {
+    @apply bg-warning shadow-[0_0_0_3px] shadow-warning/15;
+  }
+
+  .np-status-dot-error {
+    @apply bg-error shadow-[0_0_0_3px] shadow-error/15;
+  }
+
+  .np-status-dot-info {
+    @apply bg-info shadow-[0_0_0_3px] shadow-info/15;
+  }
+
+  .np-metric {
+    @apply min-w-0 rounded-box border border-base-300 bg-base-100 p-4;
+  }
+
+  .np-metric-label {
+    @apply font-mono text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-base-content/45;
+  }
+
+  .np-metric-value {
+    @apply mt-2 break-words text-lg font-semibold tracking-tight;
+  }
+
+  .np-metric-number {
+    @apply mt-1 text-3xl font-semibold tabular-nums tracking-tight;
+  }
+
+  .np-metric-meta {
+    @apply mt-1 text-xs leading-relaxed text-base-content/45;
+  }
+
+  .np-log-view {
+    @apply max-h-[30rem] min-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-box bg-neutral p-4 font-mono text-xs leading-relaxed text-neutral-content shadow-inner;
+  }
+
+  .np-technical-details {
+    @apply min-w-0 rounded-box border border-base-300 bg-base-100 p-4 shadow-sm sm:p-5;
+  }
+
+  .np-technical-details > summary {
+    @apply min-h-10 cursor-pointer content-center text-sm font-semibold text-base-content/65;
+  }
+
+  .np-step-number {
+    @apply grid size-7 place-items-center rounded-full bg-base-content font-mono text-xs font-bold text-base-100;
+  }
 }

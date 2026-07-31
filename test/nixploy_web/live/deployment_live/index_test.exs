@@ -121,6 +121,12 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       published_ports: ["127.0.0.1:8081 → 4000/tcp"],
       logs: "Application started\nServing requests",
       log_line_count: 2,
+      cpu_percent: "0.74%",
+      memory_usage: "507.3MB / 4.001GB",
+      memory_percent: "12.68%",
+      network_io: "1.2MB / 800kB",
+      block_io: "11.46MB / 0B",
+      pids: "25",
       observed_at: ~U[2026-07-27 12:05:00Z],
       managed?: true
     }
@@ -178,36 +184,47 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   test "discovers the local Podman host without manual registration", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/")
 
-    assert has_element?(view, "#local-host-inventory", "nixploy-vps")
-    assert has_element?(view, "#operations-overview", "Current runtime state")
+    assert has_element?(view, "#local-host-inventory", "Applications")
+    assert has_element?(view, "#operations-overview", "Everything at a glance")
     assert has_element?(view, "#local-workload-abcdef123456", "jomat")
-    assert has_element?(view, "nav[aria-label='Primary navigation']", "Workloads")
+    assert has_element?(view, "nav[aria-label='Primary navigation']", "Applications")
     assert has_element?(view, "#mobile-nav-open[aria-expanded='false']")
-    assert has_element?(view, "#mobile-nav[aria-hidden='true']", "Operations")
+    assert has_element?(view, "#mobile-nav[aria-hidden='true']", "Deployments")
     assert has_element?(view, "#mobile-nav-close")
     refute html =~ "&quot;to&quot;:&quot;body&quot;"
     refute has_element?(view, "#local-workload-123456abcdef")
     refute has_element?(view, "#local-store-inspect-form")
-    refute has_element?(view, "#native-operations-page")
+    refute has_element?(view, "#deployments-page")
   end
 
   test "opens local workload details and bounded logs without registration", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/workloads")
+    {:ok, view, _html} = live(conn, ~p"/applications")
 
     view
     |> element("#inspect-workload-abcdef123456")
     |> render_click()
 
-    assert has_element?(view, "#local-workload-details", "nixploy managed")
+    assert has_element?(view, "#local-workload-details", "Current vitals")
+    assert has_element?(view, "#local-workload-details", "0.74%")
+    assert has_element?(view, "#local-workload-details", "507.3MB / 4.001GB")
+    assert has_element?(view, "#local-workload-details", "25")
     assert has_element?(view, "#local-workload-details", "sha256:jomat-image-id")
-    assert has_element?(view, "#local-workload-details", "healthy")
     assert has_element?(view, "#local-workload-details", "127.0.0.1:8081 → 4000/tcp")
     assert has_element?(view, "#local-workload-logs", "Application started")
     assert has_element?(view, "#local-workload-details", "2 lines")
   end
 
+  test "links directly to a selected high-level application view", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/applications?application=abcdef123456")
+
+    assert has_element?(view, "#local-workload-details", "jomat")
+    assert has_element?(view, "#local-workload-details", "Current vitals")
+    assert has_element?(view, "#local-health-observation", "HTTP 200")
+    assert has_element?(view, "#local-workload-logs", "Application started")
+  end
+
   test "probes a selected managed workload and renders a timestamped observation", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/workloads")
+    {:ok, view, _html} = live(conn, ~p"/applications")
 
     view
     |> element("#inspect-workload-abcdef123456")
@@ -229,7 +246,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       {:error, :unmanaged_workload}
     end)
 
-    {:ok, view, _html} = live(conn, ~p"/workloads")
+    {:ok, view, _html} = live(conn, ~p"/applications")
 
     view
     |> element("#inspect-workload-abcdef123456")
@@ -248,7 +265,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       {:error, {:podman_inspect_failed, :timeout}}
     end)
 
-    {:ok, view, _html} = live(conn, ~p"/workloads")
+    {:ok, view, _html} = live(conn, ~p"/applications")
 
     view
     |> element("#inspect-workload-abcdef123456")
@@ -289,12 +306,23 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#local-inventory-error", "Podman socket unavailable")
   end
 
+  test "keeps release plumbing behind an advanced high-level boundary", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/releases")
+
+    assert has_element?(view, "#releases-page", "Available releases")
+    assert has_element?(view, "#advanced-release-import", "Advanced: register a release manually")
+    assert has_element?(view, "#local-store-inspect-form")
+    refute html =~ "Nix store"
+    refute html =~ "derivation"
+    refute html =~ "NAR hash"
+  end
+
   test "inspects and stages an immutable source through the authenticated UI", %{
     conn: conn,
     operator: operator
   } do
     jobs_before = Nixploy.Repo.aggregate(Oban.Job, :count)
-    {:ok, view, _html} = live(conn, ~p"/deployment-inputs")
+    {:ok, view, _html} = live(conn, ~p"/releases")
 
     view
     |> form("#local-store-inspect-form", %{
@@ -305,7 +333,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> render_submit()
 
     assert has_element?(view, "#local-store-candidate", "mobile-fixture")
-    assert has_element?(view, "#local-store-candidate", "sha256-AAAA")
+    assert has_element?(view, "#local-store-candidate", "verified")
     assert has_element?(view, "#local-store-target-preview", "container-image-with-a-long-name")
     assert has_element?(view, "#local-store-target-preview", "fixture.example.test")
     assert has_element?(view, "#local-store-target-preview", "/ready")
@@ -320,12 +348,12 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> render_submit()
 
     [input] = Deployments.list_deployment_inputs()
-    assert_redirect(view, ~p"/deployment-inputs/#{input.id}")
+    assert_redirect(view, ~p"/releases/#{input.id}")
     assert input.requested_by_operator_id == operator.id
     assert input.state == :staged
     assert Nixploy.Repo.aggregate(Oban.Job, :count) == jobs_before
 
-    {:ok, detail, html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+    {:ok, detail, html} = live(conn, ~p"/releases/#{input.id}")
     assert has_element?(detail, "#deployment-input-store-path", "/nix/store/")
     assert has_element?(detail, "#deployment-input-nar-hash", "sha256-AAAA")
     assert has_element?(detail, "#deployment-input-project", "mobile-fixture")
@@ -334,7 +362,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(detail, "#deployment-input-domain", "fixture.example.test")
     assert has_element?(detail, "#deployment-input-health", "/ready")
     assert has_element?(detail, "#deployment-input-actor", operator.email)
-    assert has_element?(detail, "#staging-no-mutation", "did not enqueue a deployment")
+    assert has_element?(detail, "#staging-no-mutation", "did not start a deployment")
     assert html =~ "overflow-x-hidden"
     assert html =~ "break-all"
     assert html =~ "min-w-0"
@@ -379,13 +407,12 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
                operator: operator
              )
 
-    {:ok, view, html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+    {:ok, view, html} = live(conn, ~p"/releases/#{input.id}")
 
-    assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy native")
-    assert has_element?(view, "#deployment-input-detail", "1 worker-only credential file(s)")
-    assert has_element?(view, "#deployment-input-detail", "1 flake-declared pre-start action(s)")
-    assert html =~ "resolve 1 worker-only credential file(s)"
-    assert html =~ "run 1 pre-start action(s) before candidate startup"
+    assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy to production")
+    assert has_element?(view, "#deployment-input-detail", "1 actions · 1 credentials")
+    assert html =~ "1 credential file(s)"
+    assert html =~ "1 preparation action(s)"
     refute html =~ "/bin/private-migration-detail"
     refute html =~ "cccccccccccccccccccccccccccccccc-encrypted.env"
   end
@@ -404,11 +431,11 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
              )
 
     {:ok, deployment, _job} = Nixploy.NativeDeployments.enqueue(input.id, operator: operator)
-    {:ok, view, html} = live(conn, ~p"/native-deployments")
+    {:ok, view, html} = live(conn, ~p"/deployments")
 
-    assert has_element?(view, "#native-operations-page", "Native operations")
+    assert has_element?(view, "#deployments-page", "Deployments")
     assert has_element?(view, "#native-deployment-#{deployment.id}", "mobile-fixture")
-    assert has_element?(view, "a[aria-current='page'][href='/native-deployments']")
+    assert has_element?(view, "a[aria-current='page'][href='/deployments']")
     refute has_element?(view, "#local-host-inventory")
     refute has_element?(view, "#immutable-input-staging")
     assert html =~ "min-w-0"
@@ -427,17 +454,17 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
                operator: operator
              )
 
-    {:ok, input_view, _html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+    {:ok, input_view, _html} = live(conn, ~p"/releases/#{input.id}")
 
     input_view
     |> element("#deploy-native-input")
     |> render_click()
 
     [deployment] = Nixploy.NativeDeployments.list_for_input(input.id)
-    assert_redirect(input_view, ~p"/native-deployments/#{deployment.id}")
+    assert_redirect(input_view, ~p"/deployments/#{deployment.id}")
     assert_enqueued(worker: NativeWorker, args: %{native_deployment_id: deployment.id})
 
-    {:ok, operation_view, queued_html} = live(conn, ~p"/native-deployments/#{deployment.id}")
+    {:ok, operation_view, queued_html} = live(conn, ~p"/deployments/#{deployment.id}")
     assert queued_html =~ "overflow-x-hidden"
     assert has_element?(operation_view, "#native-current-stage", "queued")
     assert has_element?(operation_view, "#native-deployment-events", "Native deployment queued")
@@ -470,9 +497,9 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     {:ok, green, _job} = Nixploy.NativeDeployments.enqueue(input.id, operator: operator)
     assert :ok = perform_job(NativeWorker, %{native_deployment_id: green.id})
 
-    {:ok, view, html} = live(conn, ~p"/native-deployments/#{blue.id}")
+    {:ok, view, html} = live(conn, ~p"/deployments/#{blue.id}")
     assert html =~ "overflow-x-hidden"
-    assert has_element?(view, "#rollback-native-deployment", "Roll back to this result")
+    assert has_element?(view, "#rollback-native-deployment", "Roll back to this release")
 
     view
     |> element("#rollback-native-deployment")
@@ -483,10 +510,10 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert rollback.rollback_of_id == blue.id
     assert rollback.expected_image_id == "sha256:image"
     assert rollback.expected_slot == "blue"
-    assert_redirect(view, ~p"/native-deployments/#{rollback.id}")
+    assert_redirect(view, ~p"/deployments/#{rollback.id}")
 
     {:ok, rollback_view, rollback_html} =
-      live(conn, ~p"/native-deployments/#{rollback.id}")
+      live(conn, ~p"/deployments/#{rollback.id}")
 
     assert has_element?(rollback_view, "#native-rollback-identity", blue.id)
     assert has_element?(rollback_view, "#native-rollback-identity", "sha256:image")
@@ -498,7 +525,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       {:error, :path_info_timeout}
     end)
 
-    {:ok, view, _html} = live(conn, ~p"/deployment-inputs")
+    {:ok, view, _html} = live(conn, ~p"/releases")
 
     view
     |> form("#local-store-inspect-form", %{
@@ -507,7 +534,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> render_submit()
 
     assert has_element?(view, "#local-store-error", "timed out after 30 seconds")
-    assert has_element?(view, "#inputs-page", "Deployment inputs")
+    assert has_element?(view, "#releases-page", "Releases")
     assert has_element?(view, "#local-store-inspect-form")
   end
 
@@ -526,7 +553,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     unauthenticated_conn = Phoenix.ConnTest.build_conn()
 
     assert {:error, {:redirect, %{to: "/login"}}} =
-             live(unauthenticated_conn, ~p"/deployment-inputs/#{input.id}")
+             live(unauthenticated_conn, ~p"/releases/#{input.id}")
   end
 
   test "queues a worker-owned service status refresh", %{conn: conn} do

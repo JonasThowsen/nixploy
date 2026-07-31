@@ -10,7 +10,7 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
 
     {:ok,
      socket
-     |> assign(:page_title, "Native deployment")
+     |> assign(:page_title, "Deployment")
      |> assign(:native_deployment_id, id)
      |> load()}
   end
@@ -23,8 +23,8 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
       {:ok, rollback, _job} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Rollback queued from exact verified operation")
-         |> push_navigate(to: ~p"/native-deployments/#{rollback.id}")}
+         |> put_flash(:info, "Rollback started")
+         |> push_navigate(to: ~p"/deployments/#{rollback.id}")}
 
       {:error, {:rollback_already_active, _id}} ->
         {:noreply, put_flash(socket, :error, "This exact verified result is already active")}
@@ -75,6 +75,25 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   def state_class(:failed), do: "badge-error"
   def state_class(:cancelled), do: "badge-warning"
   def state_class(_state), do: "badge-info"
+
+  def stage_label(:queued), do: "Waiting for worker"
+  def stage_label(:preparing), do: "Verifying release"
+  def stage_label(:building), do: "Building image"
+  def stage_label(:loading), do: "Loading image"
+  def stage_label(:installing_credentials), do: "Applying credentials"
+  def stage_label(:preparing_slot), do: "Preparing inactive slot"
+  def stage_label(:pre_starting), do: "Running preparation"
+  def stage_label(:starting), do: "Starting candidate"
+  def stage_label(:health_checking), do: "Checking health"
+  def stage_label(:switching), do: "Switching traffic"
+  def stage_label(:verifying), do: "Verifying production"
+  def stage_label(:succeeded), do: "Deployment complete"
+  def stage_label(:failed), do: "Deployment failed"
+  def stage_label(:cancelled), do: "Deployment cancelled"
+
+  def stage_label(stage),
+    do: stage |> to_string() |> String.replace("_", " ") |> String.capitalize()
+
   def format_time(nil), do: "—"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")
 end

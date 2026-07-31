@@ -50,14 +50,20 @@ The primary navigation is intentionally small:
 
 | Route | Operator job |
 | --- | --- |
-| `/` | Understand current runtime state and find the shortest path to action |
-| `/workloads` | Inspect container identity, state, health, and bounded diagnostics |
-| `/deployment-inputs` | Stage and review immutable Nix inputs |
-| `/native-deployments` | Follow operation progress, investigate failures, and roll back |
+| `/` | Understand application health and find the shortest path to action |
+| `/applications` | Inspect health, CPU, RAM, I/O, release identity, and bounded logs |
+| `/releases` | Choose a verified release and start a deployment |
+| `/deployments` | Follow progress, investigate failures, and roll back |
 
-Inputs and native deployments have stable detail URLs. New entities that need to
-be linked, refreshed, or revisited should also receive stable URLs rather than
-being available only through transient modal state.
+Releases and deployments have stable detail URLs. Application selection is also
+linkable through its runtime identity. New entities that need to be refreshed or
+revisited should receive stable URLs rather than being available only through
+transient modal state.
+
+The primary surface uses application language. Nix store paths, hashes, image
+identities, configuration digests, and container internals belong in collapsed
+technical evidence. Until CI registers releases automatically, the host-local
+source form remains only under the explicitly advanced release-import boundary.
 
 `/compatibility` preserves the legacy workflow while it remains necessary, but
 it is not part of primary navigation and must not shape new product design.
@@ -151,6 +157,8 @@ Reusable `np-*` primitives are defined in `assets/css/app.css`:
 - `np-stat*` presents compact decision-relevant status;
 - `np-action-*` presents clear next steps;
 - `np-data-cell` and `np-field-label` present operational facts;
+- `np-metric`, `np-status-dot`, and `np-log-view` present live application state;
+- `np-technical-details` keeps exact evidence available without leading with it;
 - `np-empty` provides a consistent empty state.
 
 Extend these primitives when a pattern repeats. Keep one-off layout decisions in

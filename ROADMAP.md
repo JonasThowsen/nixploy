@@ -324,9 +324,18 @@ mobile and desktop.
 UI improvements should accompany Milestone 1 slices. This milestone completes
 the information architecture after the native semantics are proven.
 
-## Slice 2.1 — Stable workload and deployment pages
+## Slice 2.1 — Stable application and deployment pages
 
-- Add stable routes for workload and deployment details instead of continually
+**Tracer status:** implemented ahead of the production-adoption slice. Primary
+navigation now uses Overview, Applications, Releases, and Deployments. The
+application workspace reads real rootless Podman state and presents automatic
+health, point-in-time CPU/RAM/process/network/disk metrics, bounded logs, active
+slot, revision, and technical evidence through one mobile-safe view. Releases
+lead with deployable application intent; host-local source registration is
+collapsed under an explicitly advanced bridge. Historical low-level URLs remain
+as compatibility aliases for retained bookmarks.
+
+- Add stable routes for application and deployment details instead of continually
   expanding one dashboard.
 - Keep current state, health, active slot, revision, and primary action visible
   on small screens.
@@ -351,6 +360,11 @@ the information architecture after the native semantics are proven.
 - Show rollback as a new audited operation, not a history rewrite.
 
 ## Slice 2.4 — Investigation workspace
+
+**Tracer status:** the first point-in-time application workspace is implemented.
+Historical metric sampling, charts, alerts, log follow/search, retained
+observations, and diagnostic bundles remain deferred at their real collection
+boundaries until production use establishes useful windows and retention.
 
 - Combine bounded logs, health attempts, container state, image identity,
   ingress state, deployment events, and timestamps around one workload.

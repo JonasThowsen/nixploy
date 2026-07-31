@@ -42,10 +42,18 @@ defmodule NixployWeb.Router do
     live_session :authenticated,
       on_mount: [{NixployWeb.OperatorAuth, :ensure_authenticated}] do
       live "/", DeploymentLive.Index, :overview
-      live "/workloads", DeploymentLive.Index, :workloads
-      live "/deployment-inputs", DeploymentLive.Index, :inputs
+      live "/applications", DeploymentLive.Index, :applications
+      live "/releases", DeploymentLive.Index, :releases
+      live "/releases/:id", DeploymentLive.Show, :show
+      live "/deployments", DeploymentLive.Index, :deployments
+      live "/deployments/:id", DeploymentLive.NativeShow, :show
+
+      # TODO(tracer): Remove these compatibility URLs after external links and
+      # retained operation bookmarks have migrated to the high-level routes.
+      live "/workloads", DeploymentLive.Index, :applications
+      live "/deployment-inputs", DeploymentLive.Index, :releases
       live "/deployment-inputs/:id", DeploymentLive.Show, :show
-      live "/native-deployments", DeploymentLive.Index, :operations
+      live "/native-deployments", DeploymentLive.Index, :deployments
       live "/native-deployments/:id", DeploymentLive.NativeShow, :show
       live "/compatibility", DeploymentLive.Index, :compatibility
     end

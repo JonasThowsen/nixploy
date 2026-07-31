@@ -9,7 +9,7 @@ defmodule NixployWeb.DeploymentLive.Show do
 
     {:ok,
      socket
-     |> assign(:page_title, "Deployment input")
+     |> assign(:page_title, "Release")
      |> assign(:deployment_input_id, id)
      |> load()}
   end
@@ -22,8 +22,8 @@ defmodule NixployWeb.DeploymentLive.Show do
       {:ok, deployment, _job} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Native deployment queued")
-         |> push_navigate(to: ~p"/native-deployments/#{deployment.id}")}
+         |> put_flash(:info, "Deployment started")
+         |> push_navigate(to: ~p"/deployments/#{deployment.id}")}
 
       {:error, :native_secrets_not_supported} ->
         {:noreply, put_flash(socket, :error, "Native secret handoff is deliberately deferred")}

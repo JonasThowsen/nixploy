@@ -20,6 +20,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:local_inventory_error, nil)
       |> assign(:local_inventory_status, :loading)
       |> assign(:selected_workload, nil)
+      |> assign(:requested_workload_id, nil)
       |> assign(:workload_details, nil)
       |> assign(:workload_details_error, nil)
       |> assign(:workload_details_status, :idle)
@@ -36,6 +37,17 @@ defmodule NixployWeb.DeploymentLive.Index do
     if connected?(socket), do: send(self(), :load_local_inventory)
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    requested_id = normalize_selection(params["application"])
+    socket = assign(socket, :requested_workload_id, requested_id)
+
+    case inventory_workload(socket.assigns.local_inventory, requested_id) do
+      nil -> {:noreply, socket}
+      workload -> {:noreply, select_workload(socket, workload)}
+    end
   end
 
   @impl true
@@ -219,14 +231,14 @@ defmodule NixployWeb.DeploymentLive.Index do
           {:ok, input} ->
             {:noreply,
              socket
-             |> put_flash(:info, "Immutable deployment input staged")
-             |> push_navigate(to: ~p"/deployment-inputs/#{input.id}")}
+             |> put_flash(:info, "Release registered")
+             |> push_navigate(to: ~p"/releases/#{input.id}")}
 
           {:error, %DeploymentInput{} = input} ->
             {:noreply,
              socket
              |> put_flash(:error, input.failure["message"])
-             |> push_navigate(to: ~p"/deployment-inputs/#{input.id}")}
+             |> push_navigate(to: ~p"/releases/#{input.id}")}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply,
@@ -268,18 +280,7 @@ defmodule NixployWeb.DeploymentLive.Index do
         {:noreply, put_flash(socket, :error, "That workload is no longer in the inventory")}
 
       workload ->
-        send(self(), {:load_workload_details, workload.id})
-
-        {:noreply,
-         assign(socket,
-           selected_workload: workload,
-           workload_details: nil,
-           workload_details_error: nil,
-           workload_details_status: :loading,
-           local_health_observation: nil,
-           local_health_error: nil,
-           local_health_status: :idle
-         )}
+        {:noreply, select_workload(socket, workload)}
     end
   end
 
@@ -290,11 +291,14 @@ defmodule NixployWeb.DeploymentLive.Index do
 
       workload ->
         send(self(), {:load_workload_details, workload.id})
+        if workload.managed?, do: send(self(), {:probe_local_health, workload.id})
 
         {:noreply,
          assign(socket,
            workload_details_error: nil,
-           workload_details_status: :loading
+           workload_details_status: :loading,
+           local_health_error: nil,
+           local_health_status: if(workload.managed?, do: :loading, else: :idle)
          )}
     end
   end
@@ -392,12 +396,20 @@ defmodule NixployWeb.DeploymentLive.Index do
     # observable directly from the LiveView.
     case local_inventory_probe().() do
       {:ok, inventory} ->
-        {:noreply,
-         assign(socket,
-           local_inventory: inventory,
-           local_inventory_status: :available,
-           local_inventory_error: nil
-         )}
+        socket =
+          assign(socket,
+            local_inventory: inventory,
+            local_inventory_status: :available,
+            local_inventory_error: nil
+          )
+
+        socket =
+          case inventory_workload(inventory, socket.assigns.requested_workload_id) do
+            nil -> socket
+            workload -> select_workload(socket, workload)
+          end
+
+        {:noreply, socket}
 
       {:error, reason} ->
         {:noreply,
@@ -480,7 +492,23 @@ defmodule NixployWeb.DeploymentLive.Index do
     Application.get_env(:nixploy, :local_health_probe, &LocalHost.observe_health/1)
   end
 
+  defp select_workload(socket, workload) do
+    send(self(), {:load_workload_details, workload.id})
+    if workload.managed?, do: send(self(), {:probe_local_health, workload.id})
+
+    assign(socket,
+      selected_workload: workload,
+      workload_details: nil,
+      workload_details_error: nil,
+      workload_details_status: :loading,
+      local_health_observation: nil,
+      local_health_error: nil,
+      local_health_status: if(workload.managed?, do: :loading, else: :idle)
+    )
+  end
+
   defp inventory_workload(nil, _workload_id), do: nil
+  defp inventory_workload(_inventory, nil), do: nil
 
   defp inventory_workload(inventory, workload_id) do
     Enum.find(inventory.workloads, &(&1.id == workload_id))
@@ -517,6 +545,17 @@ defmodule NixployWeb.DeploymentLive.Index do
       do: "Podman logs exited with status #{status}: #{String.trim(output)}"
 
   def workload_logs_error(reason), do: inspect(reason)
+
+  def workload_metrics_error(:podman_stats_too_large),
+    do: "Podman returned more than the bounded 64 KiB metrics limit"
+
+  def workload_metrics_error({:podman_stats_failed, :timeout}),
+    do: "Resource metrics timed out after 15 seconds"
+
+  def workload_metrics_error({:podman_stats_failed, status}) when is_integer(status),
+    do: "Resource metrics are temporarily unavailable (Podman exited #{status})"
+
+  def workload_metrics_error(_reason), do: "Resource metrics are temporarily unavailable"
 
   defp local_health_error(:unmanaged_workload),
     do: "Health probes are restricted to workloads positively identified by nixploy labels"
@@ -659,15 +698,15 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def nav_path(:overview), do: "/"
-  def nav_path(:workloads), do: "/workloads"
-  def nav_path(:inputs), do: "/deployment-inputs"
-  def nav_path(:operations), do: "/native-deployments"
+  def nav_path(:applications), do: "/applications"
+  def nav_path(:releases), do: "/releases"
+  def nav_path(:deployments), do: "/deployments"
   def nav_path(:compatibility), do: nil
 
   defp page_title(:overview), do: "Overview"
-  defp page_title(:workloads), do: "Workloads"
-  defp page_title(:inputs), do: "Immutable inputs"
-  defp page_title(:operations), do: "Native operations"
+  defp page_title(:applications), do: "Applications"
+  defp page_title(:releases), do: "Releases"
+  defp page_title(:deployments), do: "Deployments"
   defp page_title(:compatibility), do: "Compatibility operations"
 
   defp service_label(service), do: "#{service.name} on #{service.target.name}"
@@ -681,6 +720,32 @@ defmodule NixployWeb.DeploymentLive.Index do
     do: service |> Applications.change_service() |> to_form(as: :service)
 
   def terminal?(deployment), do: Deployment.terminal?(deployment)
+
+  def latest_native_deployment(native_deployments, input_id),
+    do: Enum.find(native_deployments, &(&1.deployment_input_id == input_id))
+
+  def running_workload_count(nil), do: 0
+
+  def running_workload_count(inventory) do
+    Enum.count(inventory.workloads, &(&1.managed? and &1.state in ["running", "Running"]))
+  end
+
+  def failed_deployment_count(deployments),
+    do: Enum.count(deployments, &(&1.state == :failed))
+
+  def active_deployment_count(deployments),
+    do: Enum.count(deployments, &(not Nixploy.Deployments.NativeDeployment.terminal?(&1)))
+
+  def application_deployments(_deployments, nil), do: []
+
+  def application_deployments(deployments, inventory) do
+    projects =
+      inventory.workloads
+      |> Enum.filter(& &1.managed?)
+      |> MapSet.new(& &1.project)
+
+    Enum.filter(deployments, &MapSet.member?(projects, &1.project))
+  end
 
   def input_state_class(:staged), do: "badge-success"
   def input_state_class(:failed), do: "badge-error"

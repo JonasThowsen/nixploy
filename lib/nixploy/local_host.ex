@@ -97,6 +97,13 @@ defmodule Nixploy.LocalHost do
       :logs,
       :log_line_count,
       :logs_error,
+      :cpu_percent,
+      :memory_usage,
+      :memory_percent,
+      :network_io,
+      :block_io,
+      :pids,
+      :metrics_error,
       :observed_at,
       published_ports: [],
       logs_truncated?: false,
@@ -122,6 +129,13 @@ defmodule Nixploy.LocalHost do
             logs: String.t() | nil,
             log_line_count: non_neg_integer() | nil,
             logs_error: term() | nil,
+            cpu_percent: String.t() | nil,
+            memory_usage: String.t() | nil,
+            memory_percent: String.t() | nil,
+            network_io: String.t() | nil,
+            block_io: String.t() | nil,
+            pids: String.t() | nil,
+            metrics_error: term() | nil,
             observed_at: DateTime.t(),
             published_ports: [String.t()],
             logs_truncated?: boolean(),
@@ -179,7 +193,12 @@ defmodule Nixploy.LocalHost do
     with :ok <- validate_container_id(container_id),
          {:ok, output} <- inspect_container(executable, container_id, execute),
          {:ok, details} <- decode_details(output) do
-      {:ok, fetch_logs(details, executable, container_id, execute)}
+      details =
+        details
+        |> fetch_metrics(executable, container_id, execute)
+        |> fetch_logs(executable, container_id, execute)
+
+      {:ok, details}
     end
   end
 
@@ -297,6 +316,54 @@ defmodule Nixploy.LocalHost do
 
       {:error, reason} ->
         {:error, {:podman_inspect_failed, reason}}
+    end
+  end
+
+  defp fetch_metrics(details, executable, container_id, execute) do
+    # TODO(tracer): Persist sampled metrics in a supervised observer before adding
+    # charts, retention, or alerts. This first slice deliberately exposes one
+    # bounded point-in-time Podman sample when an operator opens an application.
+    command = %Command{
+      executable: executable,
+      args: ["stats", "--no-stream", "--format", "json", "--", container_id],
+      timeout: @command_timeout,
+      max_output_bytes: 65_536
+    }
+
+    case execute.(command, []) do
+      {:ok, %{exit_status: 0, output_truncated?: false, output_tail: output}} ->
+        case decode_metrics(output) do
+          {:ok, metrics} -> struct!(details, metrics)
+          {:error, reason} -> %{details | metrics_error: reason}
+        end
+
+      {:ok, %{exit_status: 0, output_truncated?: true}} ->
+        %{details | metrics_error: :podman_stats_too_large}
+
+      {:ok, result} ->
+        %{details | metrics_error: {:podman_stats_failed, result.exit_status}}
+
+      {:error, reason} ->
+        %{details | metrics_error: {:podman_stats_failed, reason}}
+    end
+  end
+
+  @doc false
+  def decode_metrics(output) do
+    with {:ok, decoded} <- Jason.decode(output),
+         metric when is_map(metric) <- List.first(List.wrap(decoded)) do
+      {:ok,
+       %{
+         cpu_percent: value(metric, "cpu_percent") || value(metric, "CPU"),
+         memory_usage: value(metric, "mem_usage") || value(metric, "MemUsage"),
+         memory_percent: value(metric, "mem_percent") || value(metric, "MemPerc"),
+         network_io: value(metric, "net_io") || value(metric, "NetIO"),
+         block_io: value(metric, "block_io") || value(metric, "BlockIO"),
+         pids: value(metric, "pids") || value(metric, "PIDS")
+       }}
+    else
+      {:error, error} -> {:error, {:invalid_podman_stats_json, Exception.message(error)}}
+      _missing_metric -> {:error, :podman_stats_unavailable}
     end
   end
 

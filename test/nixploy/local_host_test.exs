@@ -110,6 +110,23 @@ defmodule Nixploy.LocalHostTest do
         ["container", "inspect" | _rest] ->
           {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
 
+        ["stats" | _rest] ->
+          {:ok,
+           %Result{
+             exit_status: 0,
+             output_tail:
+               Jason.encode!([
+                 %{
+                   "cpu_percent" => "0.74%",
+                   "mem_usage" => "507.3MB / 4.001GB",
+                   "mem_percent" => "12.68%",
+                   "net_io" => "1.2MB / 800kB",
+                   "block_io" => "11.46MB / 0B",
+                   "pids" => "25"
+                 }
+               ])
+           }}
+
         ["logs" | _rest] ->
           {:ok,
            %Result{
@@ -124,6 +141,12 @@ defmodule Nixploy.LocalHostTest do
     assert details.logs == "complete line\nlast line"
     assert details.log_line_count == 2
     assert details.logs_truncated?
+    assert details.cpu_percent == "0.74%"
+    assert details.memory_usage == "507.3MB / 4.001GB"
+    assert details.memory_percent == "12.68%"
+    assert details.network_io == "1.2MB / 800kB"
+    assert details.block_io == "11.46MB / 0B"
+    assert details.pids == "25"
 
     assert_receive {:command, inspect_command}
 
@@ -138,6 +161,20 @@ defmodule Nixploy.LocalHostTest do
 
     assert inspect_command.timeout == :timer.seconds(15)
     assert inspect_command.max_output_bytes == 1_048_576
+
+    assert_receive {:command, metrics_command}
+
+    assert metrics_command.args == [
+             "stats",
+             "--no-stream",
+             "--format",
+             "json",
+             "--",
+             "abcdef1234567890"
+           ]
+
+    assert metrics_command.timeout == :timer.seconds(15)
+    assert metrics_command.max_output_bytes == 65_536
 
     assert_receive {:command, logs_command}
     assert logs_command.args == ["logs", "--tail", "200", "--", "abcdef1234567890"]
@@ -156,6 +193,9 @@ defmodule Nixploy.LocalHostTest do
         ["container", "inspect" | _rest] ->
           {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
 
+        ["stats" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: "[]"}}
+
         ["logs" | _rest] ->
           {:error, :timeout}
       end
@@ -164,6 +204,25 @@ defmodule Nixploy.LocalHostTest do
     assert {:ok, details} = LocalHost.workload_details("abcdef123456", execute: execute)
     assert details.logs_error == {:podman_logs_failed, :timeout}
     assert is_nil(details.logs)
+  end
+
+  test "keeps metrics failures non-fatal" do
+    execute = fn command, _opts ->
+      case command.args do
+        ["container", "inspect" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: inspect_output()}}
+
+        ["stats" | _rest] ->
+          {:ok, %Result{exit_status: 125, output_tail: "stats unavailable"}}
+
+        ["logs" | _rest] ->
+          {:ok, %Result{exit_status: 0, output_tail: "started"}}
+      end
+    end
+
+    assert {:ok, details} = LocalHost.workload_details("abcdef123456", execute: execute)
+    assert details.metrics_error == {:podman_stats_failed, 125}
+    assert details.logs == "started"
   end
 
   test "probes fixed local health candidates from allowlisted runtime metadata" do

@@ -51,22 +51,22 @@ defmodule NixployWeb.Layouts do
           <.utility_nav_link path="/" active_path={@current_path} icon="hero-squares-2x2">
             Overview
           </.utility_nav_link>
-          <.utility_nav_link path="/workloads" active_path={@current_path} icon="hero-cube">
-            Workloads
+          <.utility_nav_link path="/applications" active_path={@current_path} icon="hero-cube">
+            Applications
           </.utility_nav_link>
           <.utility_nav_link
-            path="/deployment-inputs"
+            path="/releases"
             active_path={@current_path}
-            icon="hero-archive-box-arrow-down"
+            icon="hero-rocket-launch"
           >
-            Inputs
+            Releases
           </.utility_nav_link>
           <.utility_nav_link
-            path="/native-deployments"
+            path="/deployments"
             active_path={@current_path}
-            icon="hero-command-line"
+            icon="hero-clock"
           >
-            Operations
+            Deployments
           </.utility_nav_link>
         </nav>
 
@@ -141,25 +141,25 @@ defmodule NixployWeb.Layouts do
               Overview
             </.mobile_nav_link>
             <.mobile_nav_link
-              path="/workloads"
+              path="/applications"
               active_path={@current_path}
               icon="hero-cube"
             >
-              Workloads
+              Applications
             </.mobile_nav_link>
             <.mobile_nav_link
-              path="/deployment-inputs"
+              path="/releases"
               active_path={@current_path}
-              icon="hero-archive-box-arrow-down"
+              icon="hero-rocket-launch"
             >
-              Inputs
+              Releases
             </.mobile_nav_link>
             <.mobile_nav_link
-              path="/native-deployments"
+              path="/deployments"
               active_path={@current_path}
-              icon="hero-command-line"
+              icon="hero-clock"
             >
-              Operations
+              Deployments
             </.mobile_nav_link>
           </nav>
 
@@ -254,9 +254,9 @@ defmodule NixployWeb.Layouts do
   end
 
   defp current_path_label("/"), do: "Overview"
-  defp current_path_label("/workloads"), do: "Workloads"
-  defp current_path_label("/deployment-inputs"), do: "Inputs"
-  defp current_path_label("/native-deployments"), do: "Operations"
+  defp current_path_label("/applications"), do: "Applications"
+  defp current_path_label("/releases"), do: "Releases"
+  defp current_path_label("/deployments"), do: "Deployments"
   defp current_path_label(_path), do: "nixploy"
 
   defp open_mobile_nav do
