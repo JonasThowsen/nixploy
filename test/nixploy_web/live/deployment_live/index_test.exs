@@ -176,7 +176,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   end
 
   test "discovers the local Podman host without manual registration", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+    {:ok, view, html} = live(conn, ~p"/")
 
     assert has_element?(view, "#local-host-inventory", "nixploy-vps")
     assert has_element?(view, "#operations-overview", "Current runtime state")
@@ -185,6 +185,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#mobile-nav-open[aria-expanded='false']")
     assert has_element?(view, "#mobile-nav[aria-hidden='true']", "Operations")
     assert has_element?(view, "#mobile-nav-close")
+    refute html =~ "&quot;to&quot;:&quot;body&quot;"
     refute has_element?(view, "#local-workload-123456abcdef")
     refute has_element?(view, "#local-store-inspect-form")
     refute has_element?(view, "#native-operations-page")

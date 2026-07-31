@@ -266,7 +266,6 @@ defmodule NixployWeb.Layouts do
     )
     |> JS.set_attribute({"aria-hidden", "false"}, to: "#mobile-nav")
     |> JS.set_attribute({"aria-expanded", "true"}, to: "#mobile-nav-open")
-    |> JS.add_class("overflow-hidden", to: "body")
   end
 
   defp close_mobile_nav do
@@ -276,7 +275,6 @@ defmodule NixployWeb.Layouts do
     )
     |> JS.set_attribute({"aria-hidden", "true"}, to: "#mobile-nav")
     |> JS.set_attribute({"aria-expanded", "false"}, to: "#mobile-nav-open")
-    |> JS.remove_class("overflow-hidden", to: "body")
   end
 
   @doc """
