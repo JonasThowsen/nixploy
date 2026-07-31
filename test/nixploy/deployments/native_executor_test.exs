@@ -56,6 +56,7 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
              command.executable == "nix" and
                command.args == [
                  "build",
+                 "--quiet",
                  "--json",
                  "--no-link",
                  "#{@store_path}#fixtureImage"

@@ -293,7 +293,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
   defp build(store_path, image_output, execute, cancelled?) do
     command = %Command{
       executable: nix(),
-      args: ["build", "--json", "--no-link", "#{store_path}##{image_output}"],
+      # Execution combines stdout and stderr, so --quiet is required to keep
+      # successful machine-readable Nix JSON free from progress diagnostics.
+      args: ["build", "--quiet", "--json", "--no-link", "#{store_path}##{image_output}"],
       timeout: @build_timeout,
       max_output_bytes: @json_limit
     }
