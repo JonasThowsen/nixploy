@@ -90,12 +90,15 @@ fields.
    project/target labels and inspect its Caddy proxy.
 4. **Build/load** — build the flake image output and load it into local Podman as
    `nixploy`; record the resulting image ID.
-5. **Prepare inactive slot** — refuse unmanaged collisions, replace only the
-   inactive managed container, and start it with flake-derived argv, environment,
-   network, and port rendering.
-6. **Verify candidate** — inspect its image/state/labels and retry the exact
-   loopback health URL with fixed bounds.
-7. **Switch ingress** — patch only the adopted Caddy proxy upstream, then verify
+5. **Prepare inactive slot** — refuse unmanaged collisions and replace only the
+   inactive managed container.
+6. **Run pre-start actions** — execute persisted flake-declared fixed argv in
+   bounded temporary containers with the target network, environment, and port
+   rendering. Failure stops before candidate startup.
+7. **Start and verify candidate** — start with flake-derived runtime intent,
+   inspect its image/state/labels, and retry the exact loopback health URL with
+   fixed bounds.
+8. **Switch ingress** — patch only the adopted Caddy proxy upstream, then verify
    Caddy and public health independently before success.
 
 Every external process uses `Nixploy.Execution.Command` with fixed argument
@@ -108,9 +111,9 @@ interpolation.
   without teaching the Git adapter about them.
 - `TODO(tracer)` in `Nixploy.Deployments.Worker`: select a native executor only
   for persisted local-store inputs while retaining `LegacyExecutor` rollback.
-- Secret and pre-start support: reject non-empty declarations in the first
-  fixture; add a credential-reference handoff before adopting Jomat or
-  Salgsoversikt.
+- Secret support: reject every secret declaration until a worker-only
+  credential-reference handoff and secret-aware redaction are proven; do not
+  adopt Jomat or Salgsoversikt before then.
 - New-project resource identity: first adopt one existing managed prefix;
   require a flake-derived stable identity before creating a project from
   nothing.
@@ -197,10 +200,30 @@ Production evidence:
   the terminal audit retained the actor, and a repeated rollback returned
   `rollback_already_active` without creating another operation.
 
+## Completed no-secret pre-start increment
+
+The first Slice 1.4 increment normalizes and persists only bounded, non-empty
+fixed argv from `run.preStart`. After image load and inactive-slot preparation,
+the executor runs each action in an attached `podman run --rm` container with a
+15-minute timeout, 64 KiB output bound, flake-derived network/environment, and
+no shell interpolation. A single `pre_starting` event records only action count;
+the focused deployment UI shows the count at confirmation and the existing
+operation timeline shows progress and failure.
+
+Production input `a4c55e02-8051-4631-a1d2-90c1b52b5d93` and operation
+`3ae5e212-5921-4309-9154-bff8c3cd99dd` ran one action before candidate startup,
+health, ingress mutation, and independent verification. Injected-failure input
+`07497c81-0a9b-4182-9e44-6e7c2de5d681` and operation
+`957cee5c-b81b-4d36-be46-215b4aea9486` failed with exit status 23 in the
+pre-start stage. It emitted no starting or switching event, created no green
+candidate, and left Caddy on the healthy blue upstream. The fixture route,
+containers, and images were removed after verification while durable operation
+and actor audit evidence were retained.
+
 ## Next smallest implementation slice
 
-Add one worker-only credential-reference handoff and one fixed-argv pre-start
-action for a no-production-impact fixture. Prove decrypted values never enter
-PostgreSQL, LiveView, retained diagnostics, or the web process, and prove a
-pre-start failure preserves the routed slot. Adoption of Jomat or Salgsoversikt
-remains deferred until that boundary is exercised safely.
+Add one worker-only credential-reference handoff for a credential-backed fixture.
+Prove decrypted values never enter PostgreSQL, LiveView, retained diagnostics,
+or the web process; install only positively identified Podman secrets; and cover
+redaction on both successful and failing pre-start commands. Adoption of Jomat
+or Salgsoversikt remains deferred until that boundary is exercised safely.

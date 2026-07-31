@@ -129,8 +129,10 @@ The following behavior is already proven:
 - Jomat and Salgsoversikt running in the `nixploy` Podman store while root owns
   no application containers.
 
-The legacy C# adapter remains the mutation path. Native local deployment and
-rollback are the next core capability.
+The compatibility adapter remains available as a recovery path. Native local
+deployment, failure preservation, exact rollback, and no-secret flake-declared
+pre-start execution are proven. Worker-only credential handoff remains the next
+boundary before native production adoption.
 
 ## Delivery method and quality gates
 
@@ -250,6 +252,25 @@ roll a successful deployment back to its previous verified image/configuration.
   explanation.
 
 ## Slice 1.4 — Project credentials and pre-start actions
+
+**Implementation status:** in progress. The first no-secret increment now
+persists bounded fixed argv from the immutable flake, runs each action in a
+bounded temporary container before candidate startup, and records one concise
+`pre_starting` stage with action count. It adds no standalone command page or
+editable command UI.
+
+Production input `a4c55e02-8051-4631-a1d2-90c1b52b5d93` and operation
+`3ae5e212-5921-4309-9154-bff8c3cd99dd` ran one declared action before starting,
+health-checking, and routing the fixture. Failure input
+`07497c81-0a9b-4182-9e44-6e7c2de5d681` and operation
+`957cee5c-b81b-4d36-be46-215b4aea9486` persisted `pre_start_failed`, emitted no
+starting or switching stage, left the healthy blue upstream selected, and
+created no green candidate. The fixture route, containers, and images were
+removed after verification; operation and audit evidence remain.
+
+Credential references, worker-only decryption, Podman secret installation, and
+secret-aware redaction remain deliberately incomplete, so targets declaring
+secrets still fail closed.
 
 **Observable behavior**
 
@@ -610,9 +631,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Start **Slice 1.4 — Project credentials and pre-start actions** with one narrow
-worker-only credential-reference handoff. Keep decrypted values out of
-PostgreSQL, events, command diagnostics, and the web process; execute only
-flake-declared fixed argv before candidate start; and prove a failure preserves
-the routed slot. Production application adoption remains reserved for Slice
-1.5.
+Complete **Slice 1.4 — Project credentials and pre-start actions** with one
+narrow worker-only credential-reference handoff. Keep decrypted values out of
+PostgreSQL, events, command diagnostics, LiveView, and the web process; install
+only positively identified Podman secrets required by the immutable input; and
+exercise secret-aware redaction before a credential-backed fixture can pass.
+Production application adoption remains reserved for Slice 1.5.

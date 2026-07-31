@@ -1,5 +1,5 @@
 {
-  description = "No-secret nixploy native pre-start tracer fixture";
+  description = "No-secret nixploy native pre-start-failure tracer fixture";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
@@ -12,21 +12,21 @@
       fixtureServer = pkgs.writeShellScriptBin "fixture-server" ''
         set -eu
         ${pkgs.busybox}/bin/mkdir -p /tmp/nixploy-fixture-www
-        printf 'healthy-slice-1-4\n' > /tmp/nixploy-fixture-www/health
+        printf 'candidate-must-not-start\n' > /tmp/nixploy-fixture-www/health
         exec ${pkgs.busybox}/bin/httpd -f -p "$PORT" -h /tmp/nixploy-fixture-www
       '';
 
-      fixturePreStart = pkgs.writeShellScriptBin "fixture-pre-start" ''
+      failingPreStart = pkgs.writeShellScriptBin "fixture-pre-start" ''
         set -eu
-        test "''${1:-}" = "--prepare"
-        printf 'fixture pre-start completed\n'
+        printf 'injected pre-start failure\n' >&2
+        exit 23
       '';
 
       fixtureRoot = pkgs.buildEnv {
-        name = "nixploy-native-fixture-root";
+        name = "nixploy-native-pre-start-failure-root";
         paths = [
           fixtureServer
-          fixturePreStart
+          failingPreStart
         ];
         pathsToLink = [ "/bin" ];
       };
@@ -34,7 +34,7 @@
     {
       fixtureImage = pkgs.dockerTools.buildLayeredImage {
         name = "nixploy-native-fixture";
-        tag = "slice-1-4";
+        tag = "slice-1-4-pre-start-failure";
         contents = [ fixtureRoot ];
         config.Cmd = [ "/bin/fixture-server" ];
       };
@@ -52,14 +52,9 @@
             command = null;
             environment = {
               PORT = "{port}";
-              FIXTURE_REVISION = "slice-1-4";
+              FIXTURE_REVISION = "slice-1-4-pre-start-failure";
             };
-            preStart = [
-              [
-                "/bin/fixture-pre-start"
-                "--prepare"
-              ]
-            ];
+            preStart = [ [ "/bin/fixture-pre-start" ] ];
             network = "host";
             ports = [ ];
           };
