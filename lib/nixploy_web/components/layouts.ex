@@ -34,83 +34,176 @@ defmodule NixployWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <div class="min-h-screen bg-base-200/35">
+    <div class="min-h-screen bg-base-200/35 lg:pl-64">
       <a
         href="#main-content"
-        class="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-field focus:bg-base-100 focus:px-4 focus:py-3 focus:shadow-lg"
+        class="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[70] focus:rounded-field focus:bg-base-100 focus:px-4 focus:py-3 focus:shadow-lg"
       >
         Skip to content
       </a>
 
-      <header class="sticky top-0 z-40 border-b border-base-300 bg-base-100/95 backdrop-blur-xl">
-        <div class="mx-auto flex max-w-[96rem] items-center gap-3 px-3 py-2 sm:px-5">
-          <.link navigate={~p"/"} class="flex shrink-0 items-center gap-2.5 font-semibold">
-            <span class="grid size-8 place-items-center rounded-field bg-base-content font-mono text-xs font-black text-base-100">
-              N/
-            </span>
-            <span class="hidden tracking-tight sm:inline">nixploy</span>
-          </.link>
+      <aside class="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-base-300 bg-base-100 lg:flex">
+        <div class="flex h-16 items-center gap-3 border-b border-base-300 px-5">
+          <.brand />
+        </div>
 
-          <nav
-            aria-label="Primary navigation"
-            class="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        <nav class="flex-1 space-y-1 p-3" aria-label="Primary navigation">
+          <.utility_nav_link path="/" active_path={@current_path} icon="hero-squares-2x2">
+            Overview
+          </.utility_nav_link>
+          <.utility_nav_link path="/workloads" active_path={@current_path} icon="hero-cube">
+            Workloads
+          </.utility_nav_link>
+          <.utility_nav_link
+            path="/deployment-inputs"
+            active_path={@current_path}
+            icon="hero-archive-box-arrow-down"
           >
-            <div class="flex min-w-max items-center gap-1">
-              <.utility_nav_link path="/" active_path={@current_path} icon="hero-squares-2x2">
-                Overview
-              </.utility_nav_link>
-              <.utility_nav_link
-                path="/workloads"
-                active_path={@current_path}
-                icon="hero-cube"
-              >
-                Workloads
-              </.utility_nav_link>
-              <.utility_nav_link
-                path="/deployment-inputs"
-                active_path={@current_path}
-                icon="hero-archive-box-arrow-down"
-              >
-                Inputs
-              </.utility_nav_link>
-              <.utility_nav_link
-                path="/native-deployments"
-                active_path={@current_path}
-                icon="hero-command-line"
-              >
-                Operations
-              </.utility_nav_link>
-            </div>
-          </nav>
+            Inputs
+          </.utility_nav_link>
+          <.utility_nav_link
+            path="/native-deployments"
+            active_path={@current_path}
+            icon="hero-command-line"
+          >
+            Operations
+          </.utility_nav_link>
+        </nav>
 
-          <div class="flex shrink-0 items-center gap-2">
-            <span
-              :if={@current_operator}
-              class="hidden max-w-44 truncate font-mono text-[0.68rem] text-base-content/50 xl:block"
-            >
-              {@current_operator.email}
-            </span>
+        <div class="space-y-3 border-t border-base-300 p-4">
+          <p :if={@current_operator} class="truncate font-mono text-[0.68rem] text-base-content/50">
+            {@current_operator.email}
+          </p>
+          <div class="flex items-center justify-between gap-2">
+            <.theme_toggle />
             <.link
               :if={@current_operator && NixployWeb.OperatorAuth.password_auth?()}
               href={~p"/logout"}
               method="delete"
-              class="btn btn-ghost btn-sm hidden sm:inline-flex"
+              class="btn btn-ghost btn-sm"
             >
               Sign out
             </.link>
-            <.theme_toggle />
           </div>
+        </div>
+      </aside>
+
+      <header class="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-base-300 bg-base-100/95 px-4 backdrop-blur-xl lg:hidden">
+        <.brand />
+        <div class="flex items-center gap-3">
+          <span class="text-sm font-medium text-base-content/55">
+            {current_path_label(@current_path)}
+          </span>
+          <button
+            id="mobile-nav-open"
+            type="button"
+            phx-click={open_mobile_nav()}
+            aria-label="Open navigation"
+            aria-controls="mobile-nav"
+            aria-expanded="false"
+            class="grid size-11 place-items-center rounded-field border border-base-300 bg-base-100 text-base-content transition active:scale-95"
+          >
+            <.icon name="hero-bars-3" class="size-6" />
+          </button>
         </div>
       </header>
 
-      <main id="main-content" tabindex="-1" class="px-3 py-5 sm:px-5 sm:py-7">
-        <div class="mx-auto max-w-[96rem] min-w-0">
+      <div
+        id="mobile-nav"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navigation"
+        aria-hidden="true"
+        phx-window-keydown={close_mobile_nav()}
+        phx-key="escape"
+        class="fixed inset-0 z-[60] hidden min-h-dvh overflow-y-auto bg-base-100 lg:hidden"
+      >
+        <div class="flex min-h-dvh flex-col p-4">
+          <div class="flex h-12 items-center justify-between">
+            <.brand />
+            <button
+              id="mobile-nav-close"
+              type="button"
+              phx-click={close_mobile_nav()}
+              aria-label="Close navigation"
+              class="grid size-11 place-items-center rounded-field border border-base-300"
+            >
+              <.icon name="hero-x-mark" class="size-6" />
+            </button>
+          </div>
+
+          <nav class="my-auto space-y-2 py-10" aria-label="Mobile navigation">
+            <.mobile_nav_link
+              path="/"
+              active_path={@current_path}
+              icon="hero-squares-2x2"
+            >
+              Overview
+            </.mobile_nav_link>
+            <.mobile_nav_link
+              path="/workloads"
+              active_path={@current_path}
+              icon="hero-cube"
+            >
+              Workloads
+            </.mobile_nav_link>
+            <.mobile_nav_link
+              path="/deployment-inputs"
+              active_path={@current_path}
+              icon="hero-archive-box-arrow-down"
+            >
+              Inputs
+            </.mobile_nav_link>
+            <.mobile_nav_link
+              path="/native-deployments"
+              active_path={@current_path}
+              icon="hero-command-line"
+            >
+              Operations
+            </.mobile_nav_link>
+          </nav>
+
+          <div class="flex items-end justify-between gap-3 border-t border-base-300 pt-4">
+            <div class="min-w-0">
+              <p class="np-kicker">Signed in</p>
+              <p :if={@current_operator} class="mt-1 truncate font-mono text-xs">
+                {@current_operator.email}
+              </p>
+            </div>
+            <div class="flex shrink-0 items-center gap-2">
+              <.link
+                :if={@current_operator && NixployWeb.OperatorAuth.password_auth?()}
+                href={~p"/logout"}
+                method="delete"
+                class="btn btn-ghost btn-sm"
+              >
+                Sign out
+              </.link>
+              <.theme_toggle />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <main id="main-content" tabindex="-1" class="px-3 py-5 sm:px-5 sm:py-7 lg:px-8">
+        <div class="mx-auto max-w-[80rem] min-w-0">
           {render_slot(@inner_block)}
         </div>
       </main>
 
       <.flash_group flash={@flash} />
     </div>
+    """
+  end
+
+  defp brand(assigns) do
+    ~H"""
+    <.link navigate={~p"/"} class="flex shrink-0 items-center gap-2.5 font-semibold">
+      <span class="grid size-9 place-items-center rounded-field bg-base-content font-mono text-xs font-black text-base-100">
+        N/
+      </span>
+      <span class="tracking-tight">nixploy</span>
+    </.link>
     """
   end
 
@@ -125,15 +218,65 @@ defmodule NixployWeb.Layouts do
       navigate={@path}
       aria-current={if @active_path == @path, do: "page"}
       class={[
-        "flex min-h-10 items-center gap-2 rounded-field px-3 text-sm font-medium transition",
+        "flex min-h-11 w-full items-center gap-3 rounded-field px-3 text-sm font-medium transition",
         @active_path == @path && "bg-base-content text-base-100 shadow-sm",
         @active_path != @path && "text-base-content/60 hover:bg-base-200 hover:text-base-content"
       ]}
     >
-      <.icon name={@icon} class="size-4" />
+      <.icon name={@icon} class="size-5 shrink-0" />
       {render_slot(@inner_block)}
     </.link>
     """
+  end
+
+  attr :path, :string, required: true
+  attr :active_path, :string, default: nil
+  attr :icon, :string, required: true
+  slot :inner_block, required: true
+
+  defp mobile_nav_link(assigns) do
+    ~H"""
+    <.link
+      navigate={@path}
+      phx-click={close_mobile_nav()}
+      aria-current={if @active_path == @path, do: "page"}
+      class={[
+        "flex min-h-16 items-center gap-4 rounded-box px-4 text-xl font-semibold transition",
+        @active_path == @path && "bg-base-content text-base-100",
+        @active_path != @path && "text-base-content hover:bg-base-200"
+      ]}
+    >
+      <.icon name={@icon} class="size-6 shrink-0" />
+      <span>{render_slot(@inner_block)}</span>
+      <.icon name="hero-chevron-right" class="ml-auto size-5 opacity-40" />
+    </.link>
+    """
+  end
+
+  defp current_path_label("/"), do: "Overview"
+  defp current_path_label("/workloads"), do: "Workloads"
+  defp current_path_label("/deployment-inputs"), do: "Inputs"
+  defp current_path_label("/native-deployments"), do: "Operations"
+  defp current_path_label(_path), do: "nixploy"
+
+  defp open_mobile_nav do
+    JS.show(
+      to: "#mobile-nav",
+      transition: {"transition ease-out duration-200", "opacity-0", "opacity-100"}
+    )
+    |> JS.set_attribute({"aria-hidden", "false"}, to: "#mobile-nav")
+    |> JS.set_attribute({"aria-expanded", "true"}, to: "#mobile-nav-open")
+    |> JS.add_class("overflow-hidden", to: "body")
+  end
+
+  defp close_mobile_nav do
+    JS.hide(
+      to: "#mobile-nav",
+      transition: {"transition ease-in duration-150", "opacity-100", "opacity-0"}
+    )
+    |> JS.set_attribute({"aria-hidden", "true"}, to: "#mobile-nav")
+    |> JS.set_attribute({"aria-expanded", "false"}, to: "#mobile-nav-open")
+    |> JS.remove_class("overflow-hidden", to: "body")
   end
 
   @doc """
