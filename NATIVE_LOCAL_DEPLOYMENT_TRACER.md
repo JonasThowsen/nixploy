@@ -151,10 +151,56 @@ The source closure was copied manually with unprivileged `nix copy` to
 boundary; no root application operation or production application input was
 used.
 
+## Completed failure-preservation and rollback increment
+
+Slice 1.3 first repaired an operational regression outside the native path. Host
+journal and Podman create-command evidence showed that a concurrent legacy
+client had connected to the root Podman API, deployed Salgsoversikt blue on
+port 4004, and switched its identified proxy. The existing `nixploy`-owned green
+on port 4005 was positively identified and health-checked, its exact proxy was
+restored as `nixploy`, public readiness was verified, and only then was the stale
+root container removed as recovery cleanup. Root's Podman container inventory
+is empty again.
+
+The native executor now verifies the currently routed slot and exact health path
+before replacing its peer. Caddy mutation errors trigger bounded state readback;
+if a mutation may have applied, the old upstream is restored and read back with
+cancellation disabled for that compensation boundary. Persisted failure evidence
+distinguishes a preserved previous upstream from an uncertain preservation
+failure. Unit-level command injection covers build, Podman start, candidate
+health, Caddy mutation, and post-switch readback failure without stopping the
+old slot.
+
+Rollback is a new operation, not a state rewrite. It persists `rollback_of_id`,
+the prior immutable input relationship, expected image ID, and expected slot;
+its queue and terminal outcomes carry the original actor and append-only audit
+evidence. Execution re-verifies the old store path, NAR hash, configuration
+digest, rebuilt image ID, and observed inactive slot before using the normal
+start, exact-health, switch, compensation, readback, and previous-slot-stop
+sequence. Repeated requests fail clearly when that exact verified identity is
+already the latest successful result.
+
+Production evidence:
+
+- deployment `69527dc7-7af1-4345-88db-3b173d4f0300` moved from the old v1 green
+  to a distinct v2 blue input/image/configuration;
+- injected-health operation `ebf0ba1f-2a64-4266-83de-288f07016987` started an
+  unhealthy green candidate, persisted `health_failed`, emitted no switching
+  stage, and left Caddy on healthy v2 blue at `127.0.0.1:18080`;
+- rollback `28eb22a2-bc8b-4f9f-9d36-57ba4c24996e` referenced successful v1
+  operation `d851af15-a71d-4046-a4e7-d1e83156b32e`, rebuilt input
+  `eb552f49-a3a7-4f0f-95e5-ccb7ad3a4472`, required image
+  `f4da3696cedcfb12111ac179978e728a8736ab5cf110c65ea7ff123b9b379f2e`
+  in green, switched to `127.0.0.1:18081`, read back healthy v1, and stopped
+  blue;
+- authenticated LiveView rendered the rollback relationship and exact identity,
+  the terminal audit retained the actor, and a repeated rollback returned
+  `rollback_already_active` without creating another operation.
+
 ## Next smallest implementation slice
 
-Inject native build, start, health, and Caddy-switch failures while asserting
-the old upstream remains selected, then add rollback as a new audited operation
-referencing an exact prior store path, NAR hash, image identity, configuration
-digest, and slot. Project secrets/pre-start actions and adoption of existing
-production applications remain explicitly deferred.
+Add one worker-only credential-reference handoff and one fixed-argv pre-start
+action for a no-production-impact fixture. Prove decrypted values never enter
+PostgreSQL, LiveView, retained diagnostics, or the web process, and prove a
+pre-start failure preserves the routed slot. Adoption of Jomat or Salgsoversikt
+remains deferred until that boundary is exercised safely.

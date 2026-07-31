@@ -217,6 +217,17 @@ upstream switch.
 
 ## Slice 1.3 — Failure preservation and rollback
 
+**Implementation status:** completed and exercised against the packaged
+production control plane. The executor now verifies the currently routed slot
+before mutation, reconciles an uncertain Caddy mutation, and restores/read-backs
+the previous upstream after post-switch verification failure. Build, start,
+health, and Caddy failures are covered at the bounded command boundary. A real
+unhealthy candidate failed before switching while the healthy blue fixture
+remained routed. A subsequent rollback rebuilt the exact prior input and image,
+started its persisted green slot, switched only after health, independently
+verified the result, and stopped blue. Repeating the same rollback failed with a
+clear already-active result.
+
 **Observable behavior**
 
 A failed candidate leaves the current healthy slot routed, and an operator can
@@ -596,9 +607,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Start **Slice 1.3 — Failure preservation and rollback** from the persisted
-native operation evidence. Inject build, start, health, and Caddy-switch
-failures, prove the previously routed healthy slot remains selected, then create
-rollback as a new audited operation over an exact prior input/image/digest/slot.
-Keep project secrets/pre-start actions and production application adoption
-reserved for their named slices.
+Start **Slice 1.4 — Project credentials and pre-start actions** with one narrow
+worker-only credential-reference handoff. Keep decrypted values out of
+PostgreSQL, events, command diagnostics, and the web process; execute only
+flake-declared fixed argv before candidate start; and prove a failure preserves
+the routed slot. Production application adoption remains reserved for Slice
+1.5.
