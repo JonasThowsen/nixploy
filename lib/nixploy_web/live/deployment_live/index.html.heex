@@ -477,6 +477,199 @@
       </div>
     </section>
 
+    <section id="immutable-input-staging" class="space-y-5 border-t border-base-300 pt-8">
+      <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.7fr)] lg:items-end">
+        <div class="space-y-2">
+          <p class="font-mono text-xs font-bold uppercase tracking-[0.24em] text-primary">
+            Native path · slice 1.1
+          </p>
+          <h2 class="text-3xl font-bold tracking-[-0.035em] sm:text-4xl">
+            Stage an immutable source
+          </h2>
+          <p class="max-w-2xl text-sm leading-relaxed text-base-content/60 sm:text-base">
+            Verify one existing local Nix store flake, derive its schema v0.2 targets, and preserve the exact input as operation evidence. No runtime mutation occurs.
+          </p>
+        </div>
+        <div class="rounded-box border border-primary/25 bg-primary/5 p-4 text-sm">
+          <p class="font-semibold text-primary">Read-only boundary</p>
+          <p class="mt-1 text-base-content/60">
+            Nix path verification and evaluation only. Podman and Caddy are not invoked.
+          </p>
+        </div>
+      </div>
+
+      <%!-- TODO(tracer): Replace local path entry with authenticated operator-side
+      Nix closure transport before sources originating on another machine are accepted. --%>
+      <.form
+        for={@local_store_form}
+        id="local-store-inspect-form"
+        phx-submit="inspect_local_store"
+        class="grid min-w-0 gap-3 rounded-box border border-base-300 bg-base-100 p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_auto] md:items-end"
+      >
+        <.input
+          field={@local_store_form[:store_path]}
+          label="Immutable Nix store source"
+          placeholder="/nix/store/…-source"
+          autocomplete="off"
+          required
+        />
+        <.button class="mb-2 min-h-11 gap-2 md:min-w-40">
+          <.icon name="hero-magnifying-glass" class="size-4" /> Inspect source
+        </.button>
+      </.form>
+
+      <div :if={@local_store_error} id="local-store-error" class="alert alert-error items-start">
+        <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+        <div class="min-w-0">
+          <p class="font-semibold">Immutable source could not be staged</p>
+          <p class="break-words text-sm">{@local_store_error}</p>
+        </div>
+      </div>
+
+      <div
+        :if={source = @local_store_candidate}
+        id="local-store-candidate"
+        class="overflow-hidden rounded-box border border-success/35 bg-base-100 shadow-sm"
+      >
+        <header class="flex flex-col gap-3 border-b border-base-300 bg-success/5 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-xl font-bold">{source.project}</h3>
+              <span class="badge badge-success badge-outline badge-sm">Nix verified</span>
+            </div>
+            <p class="mt-1 break-all font-mono text-xs text-base-content/50">
+              {source.store_path}
+            </p>
+          </div>
+          <span class="shrink-0 font-mono text-xs text-base-content/55">
+            {map_size(source.targets)} target{if map_size(source.targets) == 1, do: "", else: "s"}
+          </span>
+        </header>
+
+        <div class="grid min-w-0 gap-6 p-5 lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+          <div class="min-w-0 space-y-4">
+            <div>
+              <p class="text-xs uppercase text-base-content/50">NAR hash</p>
+              <p class="mt-1 break-all font-mono text-xs leading-relaxed">{source.nar_hash}</p>
+            </div>
+
+            <.form
+              for={@local_store_stage_form}
+              id="local-store-stage-form"
+              phx-change="select_local_store_target"
+              phx-submit="stage_local_store"
+              class="space-y-3"
+            >
+              <.input
+                field={@local_store_stage_form[:selected_target]}
+                type="select"
+                label="Target derived from flake"
+                prompt="Select target"
+                options={local_store_target_options(source)}
+                required
+              />
+              <.button class="min-h-11 w-full" disabled={is_nil(@local_store_selected_target)}>
+                Stage verified input
+              </.button>
+            </.form>
+          </div>
+
+          <% target = selected_local_store_target(source, @local_store_selected_target) %>
+          <div
+            :if={target}
+            id="local-store-target-preview"
+            class="grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2"
+          >
+            <div class="min-w-0 bg-base-200/70 p-4 sm:col-span-2">
+              <p class="text-xs uppercase text-base-content/50">Image output</p>
+              <p class="mt-1 break-all font-mono text-sm">{target["image_output"]}</p>
+            </div>
+            <div class="min-w-0 bg-base-200/70 p-4">
+              <p class="text-xs uppercase text-base-content/50">Blue slot</p>
+              <p class="mt-1 font-mono text-lg font-bold tabular-nums">
+                {target["slots"]["blue"]}
+              </p>
+            </div>
+            <div class="min-w-0 bg-base-200/70 p-4">
+              <p class="text-xs uppercase text-base-content/50">Green slot</p>
+              <p class="mt-1 font-mono text-lg font-bold tabular-nums">
+                {target["slots"]["green"]}
+              </p>
+            </div>
+            <div class="min-w-0 bg-base-200/70 p-4 sm:col-span-2">
+              <p class="text-xs uppercase text-base-content/50">Domain</p>
+              <p class="mt-1 break-all font-mono text-sm">{target["domain"]}</p>
+            </div>
+            <div class="min-w-0 bg-base-200/70 p-4 sm:col-span-2">
+              <p class="text-xs uppercase text-base-content/50">Health path</p>
+              <p class="mt-1 break-all font-mono text-sm">{target["health_path"]}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="deployment-input-history" class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-bold">Immutable input history</h2>
+        <p class="text-sm text-base-content/60">
+          Verified source identity, derived intent, actor, and staging failures.
+        </p>
+      </div>
+
+      <div :if={@deployment_inputs == []} id="empty-deployment-inputs" class="alert">
+        <.icon name="hero-information-circle" class="size-5" />
+        <span>No immutable deployment inputs have been staged.</span>
+      </div>
+
+      <div class="grid gap-3">
+        <article
+          :for={input <- @deployment_inputs}
+          id={"deployment-input-#{input.id}"}
+          class="min-w-0 overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm"
+        >
+          <div class="grid min-w-0 gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="break-words text-lg font-bold">
+                  {input.derived_snapshot["project"] || input.selected_target || "Failed input"}
+                </h3>
+                <span class={["badge badge-sm", input_state_class(input.state)]}>
+                  {input.state}
+                </span>
+                <span :if={input.selected_target} class="badge badge-ghost badge-sm">
+                  {input.selected_target}
+                </span>
+              </div>
+              <p class="mt-2 break-all font-mono text-xs text-base-content/55">
+                {input.store_path}
+              </p>
+              <p
+                :if={input.nar_hash}
+                class="mt-1 break-all font-mono text-xs text-base-content/45"
+              >
+                {input.nar_hash}
+              </p>
+              <p :if={input.failure} class="mt-2 break-words text-sm text-error">
+                {input.failure["message"]}
+              </p>
+              <p class="mt-2 text-xs text-base-content/50">
+                {if input.requested_by_operator,
+                  do: input.requested_by_operator.email,
+                  else: "unknown actor"} · {format_time(input.inserted_at)}
+              </p>
+            </div>
+            <.link
+              navigate={~p"/deployment-inputs/#{input.id}"}
+              class="btn btn-outline btn-sm min-h-11 w-full md:w-auto"
+            >
+              View evidence
+            </.link>
+          </div>
+        </article>
+      </div>
+    </section>
+
     <%!-- TODO(tracer): Delete the legacy registration UI after one native local
     deployment derives project configuration directly from a flake. Keep it non-rendered
     until retained deployment records no longer depend on this reversible compatibility path. --%>

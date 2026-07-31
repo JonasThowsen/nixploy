@@ -157,6 +157,12 @@ preserving a known rollback path.
 
 ## Slice 1.1 — Immutable local input and derived configuration
 
+**Implementation status:** completed on the control-plane rewrite branch. The
+slice now crosses authenticated LiveView, bounded local Nix verification and
+evaluation, PostgreSQL operation/audit persistence, immutable-input history,
+and a stable mobile-safe detail route. It intentionally enqueues no worker job
+and performs no Podman or Caddy mutation.
+
 **Observable behavior**
 
 An operator stages an existing Nix store source and sees its verified store path,
@@ -582,9 +588,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Start **Slice 1.1 — Immutable local input and derived configuration**.
-
-Do not implement Podman or Caddy mutation in that slice. Prove the real
-operator-to-release-task/API-to-bounded-Nix-to-PostgreSQL-to-mobile-UI path for
-one immutable store source, record what the tracer reveals, and then use that
-persisted input unchanged in Slice 1.2.
+Start **Slice 1.2 — No-secret native blue/green fixture** from the persisted
+Slice 1.1 input. Add only the native executor path needed to build/load the
+fixture image, identify and replace the inactive managed slot, verify the exact
+persisted health path, and switch the identified Caddy upstream after health.
+Keep closure transport, secrets, pre-start actions, rollback breadth, and
+production application adoption deferred to their named slices.

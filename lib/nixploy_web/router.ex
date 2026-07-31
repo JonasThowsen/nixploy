@@ -42,6 +42,7 @@ defmodule NixployWeb.Router do
     live_session :authenticated,
       on_mount: [{NixployWeb.OperatorAuth, :ensure_authenticated}] do
       live "/", DeploymentLive.Index, :index
+      live "/deployment-inputs/:id", DeploymentLive.Show, :show
     end
   end
 

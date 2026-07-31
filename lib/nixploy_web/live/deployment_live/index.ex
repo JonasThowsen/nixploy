@@ -4,7 +4,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.{Applications, Audit}
   alias Nixploy.Applications.{Repository, Service}
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.Deployment
+  alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
   alias Nixploy.{LocalHost, Notifications, Operations}
@@ -26,6 +26,10 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:local_health_observation, nil)
       |> assign(:local_health_error, nil)
       |> assign(:local_health_status, :idle)
+      |> assign(:local_store_candidate, nil)
+      |> assign(:local_store_selected_target, nil)
+      |> assign(:local_store_status, :idle)
+      |> assign(:local_store_error, nil)
       |> load_dashboard()
       |> assign_forms()
 
@@ -152,6 +156,93 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> to_form(as: :deployment)
 
     {:noreply, assign(socket, :deployment_form, form)}
+  end
+
+  def handle_event("inspect_local_store", %{"local_store" => params}, socket) do
+    store_path = params["store_path"]
+
+    case Deployments.inspect_local_store(store_path) do
+      {:ok, source} ->
+        target_names = source.targets |> Map.keys() |> Enum.sort()
+        selected_target = if length(target_names) == 1, do: List.first(target_names)
+
+        {:noreply,
+         assign(socket,
+           local_store_candidate: source,
+           local_store_selected_target: selected_target,
+           local_store_stage_form: local_store_stage_form(selected_target),
+           local_store_form: local_store_form(source.store_path),
+           local_store_status: :verified,
+           local_store_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           local_store_candidate: nil,
+           local_store_selected_target: nil,
+           local_store_stage_form: local_store_stage_form(),
+           local_store_status: :failed,
+           local_store_error: LocalStoreInput.error_message(reason)
+         )}
+    end
+  end
+
+  def handle_event("select_local_store_target", %{"local_store_stage" => params}, socket) do
+    selected_target = normalize_selection(params["selected_target"])
+
+    {:noreply,
+     assign(socket,
+       local_store_selected_target: selected_target,
+       local_store_stage_form: local_store_stage_form(selected_target),
+       local_store_error: nil
+     )}
+  end
+
+  def handle_event("stage_local_store", %{"local_store_stage" => params}, socket) do
+    case socket.assigns.local_store_candidate do
+      nil ->
+        {:noreply,
+         assign(socket,
+           local_store_status: :failed,
+           local_store_error: "Inspect an immutable store source before staging it."
+         )}
+
+      source ->
+        attrs = %{
+          store_path: source.store_path,
+          expected_nar_hash: source.nar_hash,
+          selected_target: params["selected_target"]
+        }
+
+        case Deployments.stage_local_store(attrs, operator: socket.assigns.current_operator) do
+          {:ok, input} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Immutable deployment input staged")
+             |> push_navigate(to: ~p"/deployment-inputs/#{input.id}")}
+
+          {:error, %DeploymentInput{} = input} ->
+            {:noreply,
+             socket
+             |> put_flash(:error, input.failure["message"])
+             |> push_navigate(to: ~p"/deployment-inputs/#{input.id}")}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:noreply,
+             assign(socket,
+               local_store_status: :failed,
+               local_store_error: changeset_error(changeset)
+             )}
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               local_store_status: :failed,
+               local_store_error: LocalStoreInput.error_message(reason)
+             )}
+        end
+    end
   end
 
   def handle_event("refresh_local_inventory", _params, socket) do
@@ -462,6 +553,8 @@ defmodule NixployWeb.DeploymentLive.Index do
     |> assign(:target_form, target_form())
     |> assign(:service_form, service_form())
     |> assign(:deployment_form, deployment_form(socket.assigns.services))
+    |> assign(:local_store_form, local_store_form())
+    |> assign(:local_store_stage_form, local_store_stage_form())
   end
 
   defp load_dashboard(socket) do
@@ -469,6 +562,7 @@ defmodule NixployWeb.DeploymentLive.Index do
     targets = Fleet.list_targets()
     services = Applications.list_services()
     deployments = Deployments.list_deployments()
+    deployment_inputs = Deployments.list_deployment_inputs()
     audit_events = Audit.list_recent_events(50)
 
     observations_by_service =
@@ -489,6 +583,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       targets: targets,
       services: services,
       deployments: deployments,
+      deployment_inputs: deployment_inputs,
       observations_by_service: observations_by_service,
       log_snapshots_by_service: log_snapshots_by_service,
       events_by_deployment: events_by_deployment,
@@ -529,6 +624,38 @@ defmodule NixployWeb.DeploymentLive.Index do
     |> to_form(as: :deployment)
   end
 
+  defp local_store_form(store_path \\ "") do
+    to_form(%{"store_path" => store_path}, as: :local_store)
+  end
+
+  defp local_store_stage_form(selected_target \\ nil) do
+    to_form(%{"selected_target" => selected_target || ""}, as: :local_store_stage)
+  end
+
+  defp normalize_selection(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      selected -> selected
+    end
+  end
+
+  defp normalize_selection(_value), do: nil
+
+  def selected_local_store_target(nil, _selected_target), do: nil
+
+  def selected_local_store_target(source, selected_target) do
+    source.targets[selected_target]
+  end
+
+  def local_store_target_options(nil), do: []
+
+  def local_store_target_options(source) do
+    source.targets
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.map(&{&1, &1})
+  end
+
   defp service_label(service), do: "#{service.name} on #{service.target.name}"
 
   def edit_repository_form(repository),
@@ -540,6 +667,10 @@ defmodule NixployWeb.DeploymentLive.Index do
     do: service |> Applications.change_service() |> to_form(as: :service)
 
   def terminal?(deployment), do: Deployment.terminal?(deployment)
+
+  def input_state_class(:staged), do: "badge-success"
+  def input_state_class(:failed), do: "badge-error"
+  def input_state_class(_state), do: "badge-warning"
 
   def state_class(:succeeded), do: "badge-success"
   def state_class(:failed), do: "badge-error"

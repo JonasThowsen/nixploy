@@ -1,0 +1,179 @@
+<Layouts.app flash={@flash} current_operator={@current_operator}>
+  <% input = @deployment_input %>
+  <% snapshot = input.derived_snapshot || %{} %>
+  <% target = snapshot["target"] || %{} %>
+  <% slots = target["slots"] || %{} %>
+
+  <main id="deployment-input-detail" class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden">
+    <header class="space-y-5 border-b border-base-300 pb-6">
+      <.link navigate={~p"/"} class="btn btn-ghost btn-sm -ml-3 gap-2">
+        <.icon name="hero-arrow-left" class="size-4" /> Operations
+      </.link>
+
+      <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div class="min-w-0 space-y-2">
+          <p class="font-mono text-xs font-bold uppercase tracking-[0.24em] text-primary">
+            Immutable input
+          </p>
+          <h1 class="text-3xl font-bold tracking-[-0.035em] sm:text-5xl">
+            {snapshot["project"] || "Staging failed"}
+          </h1>
+          <p class="break-all font-mono text-xs text-base-content/50">{input.id}</p>
+        </div>
+        <span class={["badge badge-lg shrink-0", input_state_class(input.state)]}>
+          {input.state}
+        </span>
+      </div>
+    </header>
+
+    <section
+      :if={input.failure}
+      id="deployment-input-failure"
+      class="alert alert-error items-start"
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Staging did not complete</p>
+        <p class="break-words text-sm">{input.failure["message"]}</p>
+        <p class="mt-1 break-all font-mono text-xs opacity-70">{input.failure["code"]}</p>
+      </div>
+    </section>
+
+    <section class="overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm">
+      <div class="border-b border-base-300 bg-base-200/45 px-5 py-4">
+        <h2 class="text-lg font-bold">Verified source identity</h2>
+        <p class="text-sm text-base-content/55">
+          The exact local store object used for derivation.
+        </p>
+      </div>
+      <dl class="grid min-w-0 gap-px bg-base-300 sm:grid-cols-2">
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-base-content/45">
+            Store path
+          </dt>
+          <dd
+            id="deployment-input-store-path"
+            class="mt-2 break-all font-mono text-sm leading-relaxed"
+          >
+            {input.store_path}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2">
+          <dt class="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-base-content/45">
+            NAR hash
+          </dt>
+          <dd
+            id="deployment-input-nar-hash"
+            class="mt-2 break-all font-mono text-sm leading-relaxed"
+          >
+            {input.nar_hash || "Not verified"}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Input kind</dt>
+          <dd class="mt-1 font-medium">{input.input_kind}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Schema</dt>
+          <dd class="mt-1 font-mono">{snapshot["schema"] || "—"}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section
+      :if={input.state == :staged}
+      class="overflow-hidden rounded-box border border-base-300 bg-base-100 shadow-sm"
+    >
+      <div class="border-b border-base-300 bg-base-200/45 px-5 py-4">
+        <h2 class="text-lg font-bold">Flake-derived deployment intent</h2>
+        <p class="text-sm text-base-content/55">Read-only normalized schema v0.2 values.</p>
+      </div>
+      <dl class="grid min-w-0 gap-px bg-base-300 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Project</dt>
+          <dd id="deployment-input-project" class="mt-1 break-words text-lg font-bold">
+            {snapshot["project"]}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Selected target</dt>
+          <dd id="deployment-input-target" class="mt-1 break-all font-mono">
+            {input.selected_target}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2 lg:col-span-1">
+          <dt class="text-xs uppercase text-base-content/50">Image output</dt>
+          <dd id="deployment-input-image" class="mt-1 break-all font-mono">
+            {target["image_output"]}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Blue slot</dt>
+          <dd class="mt-1 font-mono text-lg font-bold tabular-nums">{slots["blue"]}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5">
+          <dt class="text-xs uppercase text-base-content/50">Green slot</dt>
+          <dd class="mt-1 font-mono text-lg font-bold tabular-nums">{slots["green"]}</dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2 lg:col-span-1">
+          <dt class="text-xs uppercase text-base-content/50">Health path</dt>
+          <dd id="deployment-input-health" class="mt-1 break-all font-mono">
+            {target["health_path"]}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2 lg:col-span-3">
+          <dt class="text-xs uppercase text-base-content/50">Domain</dt>
+          <dd id="deployment-input-domain" class="mt-1 break-all font-mono">
+            {target["domain"]}
+          </dd>
+        </div>
+        <div class="min-w-0 bg-base-100 p-5 sm:col-span-2 lg:col-span-3">
+          <dt class="text-xs uppercase text-base-content/50">Canonical configuration digest</dt>
+          <dd
+            id="deployment-input-digest"
+            class="mt-1 break-all font-mono text-sm leading-relaxed"
+          >
+            {input.configuration_digest}
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="rounded-box border border-base-300 bg-base-100 p-5 shadow-sm">
+      <h2 class="text-lg font-bold">Operation evidence</h2>
+      <dl class="mt-4 grid min-w-0 gap-4 text-sm sm:grid-cols-2">
+        <div class="min-w-0">
+          <dt class="text-xs uppercase text-base-content/50">Actor</dt>
+          <dd id="deployment-input-actor" class="mt-1 break-all">
+            {input.requested_by_operator.email}
+          </dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-xs uppercase text-base-content/50">State</dt>
+          <dd class="mt-1">{input.state}</dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-xs uppercase text-base-content/50">Started</dt>
+          <dd class="mt-1 font-mono text-xs">{format_time(input.started_at)}</dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-xs uppercase text-base-content/50">Finished</dt>
+          <dd class="mt-1 font-mono text-xs">{format_time(input.finished_at)}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <div
+      id="staging-no-mutation"
+      class="flex gap-3 rounded-box border border-primary/25 bg-primary/5 p-5 text-sm"
+    >
+      <.icon name="hero-shield-check" class="size-5 shrink-0 text-primary" />
+      <div>
+        <p class="font-semibold">Verification only</p>
+        <p class="mt-1 text-base-content/60">
+          This operation did not enqueue a deployment or mutate Podman, Caddy, containers, or application processes.
+        </p>
+      </div>
+    </div>
+  </main>
+</Layouts.app>

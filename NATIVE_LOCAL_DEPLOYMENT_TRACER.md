@@ -119,10 +119,21 @@ interpolation.
 - GitHub installation, metadata, webhooks, and revision selection remain out of
   scope.
 
+## Completed staging increment
+
+Slice 1.1 now persists and validates one local-store input plus its derived flake
+target and canonical configuration digest, then renders those immutable values
+in operation history and a stable mobile-safe detail route. The real Nix store
+and evaluator boundary is covered by a no-secret fixture. Staging records actor,
+state, failure, timestamps, and audit evidence without creating legacy
+repository, target, or service rows, enqueueing a worker, or invoking either
+deployment adapter.
+
 ## Next smallest implementation slice
 
-Persist and validate one local-store input plus its derived flake target and
-configuration digest, then render those immutable values in deployment history
-without invoking either deployment adapter. This proves the staging and durable
-record boundary needed by the native executor while making no production
-mutation.
+Use the persisted Slice 1.1 input unchanged for one no-secret native blue/green
+fixture: build/load its declared image as `nixploy`, replace only the identified
+inactive managed slot, verify the exact persisted health path, and switch the
+identified Caddy upstream only after health succeeds. Operator-side closure
+transport, project secrets/pre-start actions, rollback, and production
+application adoption remain explicitly deferred.

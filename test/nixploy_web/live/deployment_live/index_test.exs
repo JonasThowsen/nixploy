@@ -5,7 +5,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   import Phoenix.LiveViewTest
 
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.SimulatedWorker
+  alias Nixploy.Deployments.{LocalStoreInput, SimulatedWorker}
   alias Nixploy.LocalHost
   alias Nixploy.Fixtures
   alias Nixploy.Operations.{LogWorker, StatusWorker}
@@ -14,6 +14,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
     previous_health_probe = Application.get_env(:nixploy, :local_health_probe)
+    previous_store_probe = Application.get_env(:nixploy, :local_store_input_probe)
 
     inventory = %LocalHost.Inventory{
       hostname: "nixploy-vps",
@@ -83,10 +84,30 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       {:ok, health_observation}
     end)
 
+    store_source = %LocalStoreInput.Source{
+      store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+      nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      project: "mobile-fixture",
+      targets: %{
+        "production" => %{
+          "name" => "production",
+          "image_output" => "packages.x86_64-linux.container-image-with-a-long-name",
+          "domain" => "fixture.example.test",
+          "health_path" => "/ready",
+          "slots" => %{"blue" => 8080, "green" => 8081}
+        }
+      }
+    }
+
+    Application.put_env(:nixploy, :local_store_input_probe, fn _path, _opts ->
+      {:ok, store_source}
+    end)
+
     on_exit(fn ->
       restore_env(:local_inventory_probe, previous_probe)
       restore_env(:local_workload_probe, previous_workload_probe)
       restore_env(:local_health_probe, previous_health_probe)
+      restore_env(:local_store_input_probe, previous_store_probe)
     end)
 
     operator = Fixtures.operator_fixture()
@@ -203,6 +224,93 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> render_click()
 
     assert has_element?(view, "#local-inventory-error", "Podman socket unavailable")
+  end
+
+  test "inspects and stages an immutable source through the authenticated UI", %{
+    conn: conn,
+    operator: operator
+  } do
+    jobs_before = Nixploy.Repo.aggregate(Oban.Job, :count)
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> form("#local-store-inspect-form", %{
+      "local_store" => %{
+        "store_path" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source"
+      }
+    })
+    |> render_submit()
+
+    assert has_element?(view, "#local-store-candidate", "mobile-fixture")
+    assert has_element?(view, "#local-store-candidate", "sha256-AAAA")
+    assert has_element?(view, "#local-store-target-preview", "container-image-with-a-long-name")
+    assert has_element?(view, "#local-store-target-preview", "fixture.example.test")
+    assert has_element?(view, "#local-store-target-preview", "/ready")
+    refute has_element?(view, "#immutable-input-staging input[name*='domain']")
+    refute has_element?(view, "#immutable-input-staging input[name*='health']")
+    refute has_element?(view, "#immutable-input-staging input[name*='port']")
+
+    view
+    |> form("#local-store-stage-form", %{
+      "local_store_stage" => %{"selected_target" => "production"}
+    })
+    |> render_submit()
+
+    [input] = Deployments.list_deployment_inputs()
+    assert_redirect(view, ~p"/deployment-inputs/#{input.id}")
+    assert input.requested_by_operator_id == operator.id
+    assert input.state == :staged
+    assert Nixploy.Repo.aggregate(Oban.Job, :count) == jobs_before
+
+    {:ok, detail, html} = live(conn, ~p"/deployment-inputs/#{input.id}")
+    assert has_element?(detail, "#deployment-input-store-path", "/nix/store/")
+    assert has_element?(detail, "#deployment-input-nar-hash", "sha256-AAAA")
+    assert has_element?(detail, "#deployment-input-project", "mobile-fixture")
+    assert has_element?(detail, "#deployment-input-target", "production")
+    assert has_element?(detail, "#deployment-input-image", "container-image-with-a-long-name")
+    assert has_element?(detail, "#deployment-input-domain", "fixture.example.test")
+    assert has_element?(detail, "#deployment-input-health", "/ready")
+    assert has_element?(detail, "#deployment-input-actor", operator.email)
+    assert has_element?(detail, "#staging-no-mutation", "did not enqueue a deployment")
+    assert html =~ "overflow-x-hidden"
+    assert html =~ "break-all"
+    assert html =~ "min-w-0"
+  end
+
+  test "renders immutable source failures without crashing LiveView", %{conn: conn} do
+    Application.put_env(:nixploy, :local_store_input_probe, fn _path, _opts ->
+      {:error, :path_info_timeout}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> form("#local-store-inspect-form", %{
+      "local_store" => %{"store_path" => "/nix/store/missing-source"}
+    })
+    |> render_submit()
+
+    assert has_element?(view, "#local-store-error", "timed out after 30 seconds")
+    assert has_element?(view, "#local-host-inventory", "nixploy-vps")
+    assert has_element?(view, "#local-store-inspect-form")
+  end
+
+  test "requires authentication for immutable input detail URLs", %{} do
+    operator = Fixtures.operator_fixture()
+
+    assert {:ok, input} =
+             Deployments.stage_local_store(
+               %{
+                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+                 selected_target: "production"
+               },
+               operator: operator
+             )
+
+    unauthenticated_conn = Phoenix.ConnTest.build_conn()
+
+    assert {:error, {:redirect, %{to: "/login"}}} =
+             live(unauthenticated_conn, ~p"/deployment-inputs/#{input.id}")
   end
 
   test "queues a worker-owned service status refresh", %{conn: conn} do
