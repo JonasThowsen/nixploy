@@ -22,7 +22,7 @@ defmodule NixployWeb.TailscaleOperatorAuthTest do
       |> put_req_header("tailscale-user-login", " Operator@Example.com ")
       |> get(~p"/")
 
-    assert html_response(conn, 200) =~ "What is running on this host?"
+    assert html_response(conn, 200) =~ "Current runtime state"
     assert html_response(conn, 200) =~ operator.email
     assert get_session(conn, :operator_id) == operator.id
 
@@ -37,7 +37,7 @@ defmodule NixployWeb.TailscaleOperatorAuthTest do
     conn = put_req_header(conn, "tailscale-user-login", operator.email)
 
     assert {:ok, _view, html} = live(conn, ~p"/")
-    assert html =~ "What is running on this host?"
+    assert html =~ "Current runtime state"
     assert html =~ operator.email
     refute html =~ "Sign out"
   end

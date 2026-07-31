@@ -1,4 +1,8 @@
-<Layouts.app flash={@flash} current_operator={@current_operator}>
+<Layouts.app
+  flash={@flash}
+  current_operator={@current_operator}
+  current_path="/native-deployments"
+>
   <% deployment = @deployment %>
   <% input = deployment.deployment_input %>
   <% target = input.derived_snapshot["target"] || %{} %>

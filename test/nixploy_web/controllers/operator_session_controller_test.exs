@@ -48,7 +48,7 @@ defmodule NixployWeb.OperatorSessionControllerTest do
     assert get_session(conn, :operator_id) == operator.id
 
     conn = conn |> recycle() |> get(~p"/")
-    assert html_response(conn, 200) =~ "What is running on this host?"
+    assert html_response(conn, 200) =~ "Current runtime state"
     assert html_response(conn, 200) =~ operator.email
   end
 

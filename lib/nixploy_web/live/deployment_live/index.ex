@@ -7,7 +7,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
-  alias Nixploy.{LocalHost, Notifications, Operations}
+  alias Nixploy.{LocalHost, NativeDeployments, Notifications, Operations}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -15,7 +15,7 @@ defmodule NixployWeb.DeploymentLive.Index do
 
     socket =
       socket
-      |> assign(:page_title, "Local host")
+      |> assign(:page_title, page_title(socket.assigns.live_action))
       |> assign(:local_inventory, nil)
       |> assign(:local_inventory_error, nil)
       |> assign(:local_inventory_status, :loading)
@@ -563,6 +563,7 @@ defmodule NixployWeb.DeploymentLive.Index do
     services = Applications.list_services()
     deployments = Deployments.list_deployments()
     deployment_inputs = Deployments.list_deployment_inputs()
+    native_deployments = NativeDeployments.list_deployments()
     audit_events = Audit.list_recent_events(50)
 
     observations_by_service =
@@ -584,6 +585,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       services: services,
       deployments: deployments,
       deployment_inputs: deployment_inputs,
+      native_deployments: native_deployments,
       observations_by_service: observations_by_service,
       log_snapshots_by_service: log_snapshots_by_service,
       events_by_deployment: events_by_deployment,
@@ -655,6 +657,18 @@ defmodule NixployWeb.DeploymentLive.Index do
     |> Enum.sort()
     |> Enum.map(&{&1, &1})
   end
+
+  def nav_path(:overview), do: "/"
+  def nav_path(:workloads), do: "/workloads"
+  def nav_path(:inputs), do: "/deployment-inputs"
+  def nav_path(:operations), do: "/native-deployments"
+  def nav_path(:compatibility), do: nil
+
+  defp page_title(:overview), do: "Overview"
+  defp page_title(:workloads), do: "Workloads"
+  defp page_title(:inputs), do: "Immutable inputs"
+  defp page_title(:operations), do: "Native operations"
+  defp page_title(:compatibility), do: "Compatibility operations"
 
   defp service_label(service), do: "#{service.name} on #{service.target.name}"
 
