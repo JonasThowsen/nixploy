@@ -6,7 +6,9 @@ defmodule Nixploy.Deployments.ProjectCredentials do
   alias Nixploy.RuntimeRole
 
   @decrypt_timeout :timer.minutes(1)
+  @identity_timeout :timer.seconds(30)
   @max_decrypted_bytes 262_144
+  @max_identity_bytes 4_096
   @max_secrets 128
   @max_secret_value_bytes 16_384
   @secret_name ~r/^[A-Za-z_][A-Za-z0-9_]*$/
@@ -24,7 +26,8 @@ defmodule Nixploy.Deployments.ProjectCredentials do
 
     with true <- worker?.() || {:error, :credential_worker_required},
          {:ok, identity_file} <- identity_file(opts),
-         {:ok, secrets} <- decrypt_all(references, identity_file, execute, execution_opts) do
+         {:ok, age_identity} <- derive_age_identity(identity_file, execute, execution_opts),
+         {:ok, secrets} <- decrypt_all(references, age_identity, execute, execution_opts) do
       {:ok, secrets |> Map.values() |> Enum.sort_by(& &1.name)}
     end
   end
@@ -70,12 +73,33 @@ defmodule Nixploy.Deployments.ProjectCredentials do
 
   def parse_dotenv(_content), do: {:error, :credential_file_too_large}
 
-  defp decrypt_all(references, identity_file, execute, execution_opts) do
+  defp derive_age_identity(identity_file, execute, execution_opts) do
+    command = %Command{
+      executable: ssh_to_age(),
+      args: ["-private-key", "-i", identity_file],
+      timeout: @identity_timeout,
+      max_output_bytes: @max_identity_bytes
+    }
+
+    case execute.(command, execution_opts) do
+      {:ok, %{exit_status: 0, output_truncated?: false, output_tail: output}} ->
+        identity = String.trim(output)
+
+        if String.starts_with?(identity, "AGE-SECRET-KEY-"),
+          do: {:ok, identity},
+          else: {:error, :credential_identity_invalid}
+
+      _failure ->
+        {:error, :credential_identity_invalid}
+    end
+  end
+
+  defp decrypt_all(references, age_identity, execute, execution_opts) do
     references
     |> Enum.sort_by(fn {label, _reference} -> label end)
     |> Enum.reduce_while({:ok, %{}}, fn {label, reference}, {:ok, secrets} ->
       with {:ok, decrypted} <-
-             decrypt(label, reference, identity_file, execute, execution_opts),
+             decrypt(label, reference, age_identity, execute, execution_opts),
            {:ok, file_secrets} <- parse_dotenv(decrypted),
            {:ok, merged} <- merge_unique(secrets, file_secrets) do
         {:cont, {:ok, merged}}
@@ -85,7 +109,7 @@ defmodule Nixploy.Deployments.ProjectCredentials do
     end)
   end
 
-  defp decrypt(label, reference, identity_file, execute, execution_opts) do
+  defp decrypt(label, reference, age_identity, execute, execution_opts) do
     command = %Command{
       executable: sops(),
       args: [
@@ -97,8 +121,9 @@ defmodule Nixploy.Deployments.ProjectCredentials do
         "--",
         reference
       ],
-      env: %{"SOPS_AGE_SSH_PRIVATE_KEY_FILE" => identity_file},
+      env: %{"SOPS_AGE_KEY" => age_identity},
       timeout: @decrypt_timeout,
+      redact: [age_identity],
       max_output_bytes: @max_decrypted_bytes
     }
 
@@ -230,4 +255,5 @@ defmodule Nixploy.Deployments.ProjectCredentials do
   end
 
   defp sops, do: Application.get_env(:nixploy, :sops_executable, "sops")
+  defp ssh_to_age, do: Application.get_env(:nixploy, :ssh_to_age_executable, "ssh-to-age")
 end

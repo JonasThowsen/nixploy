@@ -128,6 +128,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
   def error_message(:credential_identity_unavailable),
     do: "the worker SOPS identity credential is unavailable"
 
+  def error_message(:credential_identity_invalid),
+    do: "the worker SSH identity could not be converted to an age identity"
+
   def error_message({:credential_decryption_failed, label}),
     do: "worker decryption failed for credential reference #{label}"
 
@@ -546,7 +549,11 @@ defmodule Nixploy.Deployments.NativeExecutor do
   end
 
   defp normalize_credential_error(reason)
-       when reason in [:credential_worker_required, :credential_identity_unavailable],
+       when reason in [
+              :credential_worker_required,
+              :credential_identity_unavailable,
+              :credential_identity_invalid
+            ],
        do: reason
 
   defp normalize_credential_error({:credential_decryption_failed, _label} = reason), do: reason

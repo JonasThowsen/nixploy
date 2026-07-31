@@ -116,6 +116,7 @@
                     pkgs.curl
                     pkgs.podman
                     pkgs.sops
+                    pkgs.ssh-to-age
                   ]
                 }
             '';
@@ -191,6 +192,7 @@
               pkgs.dotnet-sdk_10
               pkgs.roslyn-ls
               pkgs.sops
+              pkgs.ssh-to-age
               pkgs.just
               pkgs.podman
               pkgs.jq

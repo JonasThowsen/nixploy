@@ -34,12 +34,13 @@ defmodule Nixploy.Deployments.ProjectCredentialsTest do
     execute = fn command, opts ->
       send(parent, {:command, command, opts})
 
-      {:ok,
-       %Result{
-         exit_status: 0,
-         output_tail: "TOKEN=worker-only-value\n",
-         output_truncated?: false
-       }}
+      output =
+        case command.executable do
+          "ssh-to-age" -> "AGE-SECRET-KEY-1FIXTUREIDENTITY\n"
+          "sops" -> "TOKEN=worker-only-value\n"
+        end
+
+      {:ok, %Result{exit_status: 0, output_tail: output, output_truncated?: false}}
     end
 
     assert {:ok, [%{name: "TOKEN", value: "worker-only-value"}]} =
@@ -50,6 +51,12 @@ defmodule Nixploy.Deployments.ProjectCredentialsTest do
                path_exists?: fn _path -> true end,
                worker?: fn -> true end
              )
+
+    assert_receive {:command, identity_command, []}
+    assert identity_command.executable == "ssh-to-age"
+    assert identity_command.args == ["-private-key", "-i", "/run/credentials/worker/ssh-key"]
+    assert identity_command.timeout == 30_000
+    assert identity_command.max_output_bytes == 4_096
 
     assert_receive {:command, command, []}
     assert command.executable == "sops"
@@ -64,10 +71,8 @@ defmodule Nixploy.Deployments.ProjectCredentialsTest do
              "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secret.env"
            ]
 
-    assert command.env == %{
-             "SOPS_AGE_SSH_PRIVATE_KEY_FILE" => "/run/credentials/worker/ssh-key"
-           }
-
+    assert command.env == %{"SOPS_AGE_KEY" => "AGE-SECRET-KEY-1FIXTUREIDENTITY"}
+    assert command.redact == ["AGE-SECRET-KEY-1FIXTUREIDENTITY"]
     assert command.timeout == 60_000
     assert command.max_output_bytes == 262_144
     refute inspect(command) =~ "worker-only-value"
@@ -91,13 +96,22 @@ defmodule Nixploy.Deployments.ProjectCredentialsTest do
                identity_file: "/run/credentials/worker/ssh-key",
                path_exists?: fn _path -> true end,
                worker?: fn -> true end,
-               execute: fn _command, _opts ->
-                 {:ok,
-                  %Result{
-                    exit_status: 1,
-                    output_tail: "sensitive provider diagnostic",
-                    output_truncated?: false
-                  }}
+               execute: fn command, _opts ->
+                 if command.executable == "ssh-to-age" do
+                   {:ok,
+                    %Result{
+                      exit_status: 0,
+                      output_tail: "AGE-SECRET-KEY-1FIXTUREIDENTITY\n",
+                      output_truncated?: false
+                    }}
+                 else
+                   {:ok,
+                    %Result{
+                      exit_status: 1,
+                      output_tail: "sensitive provider diagnostic",
+                      output_truncated?: false
+                    }}
+                 end
                end
              )
   end
