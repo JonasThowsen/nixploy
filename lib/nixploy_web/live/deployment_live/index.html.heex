@@ -739,7 +739,12 @@
       </div>
     </header>
 
-    <% releases = application_releases(@deployment_inputs, @local_inventory) %>
+    <% releases =
+      application_releases(
+        @deployment_inputs,
+        @local_inventory,
+        @native_deployments
+      ) %>
     <section id="release-history" class="np-panel overflow-hidden">
       <div class="np-panel-header">
         <div>

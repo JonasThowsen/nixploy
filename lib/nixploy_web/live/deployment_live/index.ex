@@ -802,13 +802,19 @@ defmodule NixployWeb.DeploymentLive.Index do
     Enum.filter(deployments, &MapSet.member?(projects, &1.project))
   end
 
-  def application_releases(_inputs, nil), do: []
+  def application_releases(_inputs, nil, _deployments), do: []
 
-  def application_releases(inputs, inventory) do
+  def application_releases(inputs, inventory, deployments) do
     projects = managed_projects(inventory)
 
+    latest_states =
+      Enum.reduce(deployments, %{}, fn deployment, states ->
+        Map.put_new(states, deployment.deployment_input_id, deployment.state)
+      end)
+
     Enum.filter(inputs, fn input ->
-      MapSet.member?(projects, input.derived_snapshot["project"])
+      MapSet.member?(projects, input.derived_snapshot["project"]) and
+        latest_states[input.id] != :failed
     end)
   end
 
