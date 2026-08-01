@@ -294,13 +294,27 @@ object ID, flake configuration, and audit actor. Success stages or idempotently
 returns one immutable release and explicitly creates no deployment job.
 
 Jomat includes a publisher that keeps the bearer credential out of argv and
-files while streaming `nix-store --export` directly to the endpoint. Its GitHub
-workflow uses the official Nix and Tailscale actions, but is gated on a repository
-variable until a tag-scoped tailnet OAuth client is provisioned and tested.
+files while streaming `nix-store --dump` directly to the endpoint. Production
+release `7692b8d8-9ba9-4120-b373-1402e581cc3d` retained Jomat commit
+`c262b76c3999366aed5d9d9c3e5b4df960435324`, NAR hash
+`sha256-5a0PJuTh5/o8OvG9mRriP30eKlESo2fZ9mTkZaO8kbA=`, configuration digest
+`5c0837430a28f91e811c95c140f9bd3b52a9a0b7faa9dcd234d8c77db1db016d`, and the
+configured audit actor. It created no native deployment or Oban job. Repeating
+the full delivery returned the same release ID. The bearer value was absent from
+PostgreSQL, operation HTML, and web/worker journals.
+
+The first production stream used `nix-store --export`; Nix correctly rejected it
+for an untrusted importer because the legacy export did not retain the modern
+signature/content-address metadata needed by the daemon. The final NAR boundary
+lets Nix recompute identity instead of broadening `trusted-users` or disabling
+signature checks. Its private workspace was empty after both requests.
+
+The GitHub workflow uses the official Nix and Tailscale actions, but is gated on
+a repository variable until a tag-scoped tailnet OAuth client is provisioned and
+tested. The registration token is already a GitHub secret.
 
 ## Next smallest implementation slice
 
-Exercise the endpoint against production with Jomat's real source export, then
-enable and prove one GitHub-originated push delivery. Keep manual registration
-under Advanced until that external CI identity path has produced retained audit
-evidence.
+Provision the GitHub tailnet OAuth identity and ACL grant, enable the gated push
+workflow, and retain one GitHub-originated registration. Keep manual
+registration under Advanced until that external identity path is proven.

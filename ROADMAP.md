@@ -373,16 +373,30 @@ as compatibility aliases for retained bookmarks.
 
 ## Slice 2.2 — Deployment action and progress experience
 
-**Release-registration tracer status:** implemented, awaiting production CI
-exercise. An authenticated `POST /api/releases` accepts one bounded Nix archive,
+**Release-registration tracer status:** production transport proven; external
+GitHub identity activation remains. An authenticated `POST /api/releases` accepts one bounded Nix archive,
 restores it in a private workspace and recomputes its content-addressed identity
 through fixed Nix argv, verifies the exact store path/NAR hash/flake project and
 target, and persists repository/revision/actor
 evidence without enqueueing a deployment. Delivery is idempotent for an already
 staged immutable source. The bearer credential is a web-only systemd credential;
-Jomat's publisher keeps it out of argv and files. The workflow remains gated
-until a tag-scoped Tailscale OAuth client is provisioned, and the Advanced manual
-bridge remains visible until the GitHub run is proven.
+Jomat's publisher keeps it out of argv and files. Production registration
+`7692b8d8-9ba9-4120-b373-1402e581cc3d` retained commit
+`c262b76c3999366aed5d9d9c3e5b4df960435324`, the exact NAR/config identities,
+and actor with zero deployment jobs; repeated delivery returned the same ID.
+The workflow remains gated until a tag-scoped Tailscale OAuth client is
+provisioned, and the Advanced manual bridge remains visible until the GitHub run
+is proven.
+
+The production tracer rejected the first `nix-store --export` attempt because
+that legacy stream did not preserve modern path signatures/content-address
+metadata for an untrusted importer. The final boundary sends a raw NAR, restores
+it only under a private bounded workspace, and asks Nix to recompute the store
+identity before staging. A first activation also exposed that an
+`InaccessiblePaths` entry cannot name a sibling credential directory inside a
+service-specific systemd credential namespace; removing that redundant entry
+restored both roles while their isolated credential mounts continued to prove
+web/worker separation.
 
 - Select only immutable staged inputs.
 - Show derived flake configuration read-only before confirmation.
@@ -689,9 +703,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Deploy and exercise authenticated Jomat release registration in production.
-Verify one bounded exported source appears under `/releases` with its exact Git
-revision, NAR/config identity, and actor while creating no Oban deployment job.
-Then provision Jomat's tag-scoped Tailscale GitHub OAuth secrets, enable its
-gated push workflow, prove one GitHub-originated delivery, and only then remove
-the Advanced manual bridge.
+Provision Jomat's tag-scoped Tailscale GitHub OAuth secrets, enable its gated
+push workflow, and prove one GitHub-originated delivery returns the same durable
+release semantics as the production transport tracer. Only then remove the
+Advanced manual bridge. The registration token is already provisioned as a
+GitHub secret; OAuth client ID/secret and tailnet ACL scope remain the explicit
+external identity boundary.
