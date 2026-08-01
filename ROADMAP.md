@@ -130,9 +130,10 @@ The following behavior is already proven:
   no application containers.
 
 The compatibility adapter remains available as a recovery path. Native local
-deployment, failure preservation, exact rollback, and no-secret flake-declared
-pre-start execution are proven. Worker-only credential handoff remains the next
-boundary before native production adoption.
+deployment, failure preservation, exact rollback, flake-declared pre-start
+execution, worker-only credential handoff, and production adoption are proven.
+Jomat now uses the native path for normal deployment while the adapter remains
+available for recovery.
 
 ## Delivery method and quality gates
 
@@ -179,7 +180,7 @@ No deployment mutation occurs yet.
 
 - A bounded `nix path-info --json -- <path>` verifies an existing source under
   `/nix/store` and returns its NAR hash.
-- A bounded `nix eval --json --no-write-lock-file <path>#nixploy` derives schema
+- A bounded `nix eval --quiet --json --no-write-lock-file <path>#nixploy` derives schema
   `v0.2` configuration from that exact immutable path.
 - The database stores input identity, selected target, normalized derived
   snapshot, and digest as immutable operation data.
@@ -295,6 +296,31 @@ process.
 
 ## Slice 1.5 — Native production adoption
 
+**Implementation status:** completed with Jomat while Salgsoversikt and
+Sirkusagio remained available. Release A input
+`bcf213d2-8e6c-49de-a1bd-df7944eb3698` and deployment
+`089db0df-20a3-4996-b2e4-d4351d30acbf` adopted the exact existing managed prefix
+and moved traffic from legacy blue to native green. Distinct release B input
+`ff6e9a0f-da2b-465e-9a79-0fdd472fa331` and deployment
+`5fa58855-d4ca-4ba6-9319-167a7e6fc7bc` moved traffic to blue with a different
+configuration digest and image ID.
+
+Failure input `558346af-ee46-44c3-94a0-a0075c7225f9` and operation
+`a3878105-1185-48f1-ad43-91a8a9ff5e4d` deliberately failed its first pre-start
+action. It created no candidate or switching stage and preserved healthy blue.
+Rollback `aec2cb77-e8f4-438d-8b59-de51392ea0d8` then rebuilt and restored exact
+release A in green, including its persisted input, image, slot, and actor. Final
+deployment `9d4c47f4-a70e-42ad-9c63-debaba848eb1` returned production to release B
+in blue. Public Jomat health stayed 200 throughout every sampled transition;
+the other applications also remained healthy, and root Podman stayed empty.
+
+Jomat's SOPS files now retain both the operator recipient and the production
+worker recipient. Nine sensitive values were checked in memory and were absent
+from PostgreSQL, operation pages, control-plane journals, and bounded application
+logs. Forty-two positively identified orphan operation secrets were removed;
+active and stopped rollback containers retain only their required operation
+secrets, and stable compatibility secrets remain for recovery.
+
 **Observable behavior**
 
 One existing production application is deployed and rolled back through the
@@ -310,9 +336,10 @@ native path while the other remains available.
 - The legacy adapter is retained until this production exercise and recovery
   path are documented.
 
-**Milestone exit:** a real application has completed native deploy and rollback;
-the old healthy slot survives injected failure; the compatibility adapter is no
-longer required for that application's normal path.
+**Milestone exit:** achieved. Jomat has completed native deployment, injected
+failure preservation, exact rollback, and a final native deployment to the
+current release. The compatibility adapter is no longer required for Jomat's
+normal path.
 
 ---
 
@@ -641,7 +668,6 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 - operator-side transport for immutable Nix store sources;
 - stable resource identity for a new project with no existing managed workload;
-- worker credential handoff for SOPS/project secrets;
 - persisted log/artifact storage and retention;
 - exact web/worker split and lease granularity under real load;
 - MCP authentication for non-browser clients while retaining the Tailscale
@@ -652,8 +678,8 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Start **Slice 1.5 — Native production adoption** with one existing application
-while the others remain available. Reuse its unchanged flake-owned credential
-references and pre-start declarations, adopt only its positively identified
-managed prefix, deploy and roll back through the native path, and retain the
-compatibility adapter until public health and recovery evidence are documented.
+Implement automatic authenticated release registration as the next Slice 2.2
+increment. A committed Jomat release should appear under `/releases` without an
+operator copying a host-local store path. Preserve the exact source/NAR/config
+evidence and explicit deployment confirmation, then remove the advanced manual
+bridge only after the CI handoff is proven in production.

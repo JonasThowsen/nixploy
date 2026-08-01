@@ -72,7 +72,7 @@ Retries use only that path and hash.
 The worker will evaluate and build with fixed arguments equivalent to:
 
 ```text
-nix eval --json --no-write-lock-file <store-path>#nixploy
+nix eval --quiet --json --no-write-lock-file <store-path>#nixploy
 nix build --json --no-link <store-path>#<image-output>
 ```
 
@@ -248,10 +248,42 @@ dump, LiveView HTML, event/audit metadata, and production journals contained no
 plaintext fixture value. All fixture runtime resources and operation-scoped
 secrets were removed after verification.
 
+## Completed native production adoption
+
+Jomat is the first existing application adopted by the native path. Its existing
+legacy blue container and exact Caddy route identified the single managed
+`nixploy-jomat-4df9ec6871-production` prefix. The flake retained its three SOPS
+credential references, two pre-start actions, host network, ports, domain, and
+health path. The encrypted files now include the production worker recipient in
+addition to the operator recipient; no values moved into nixploy configuration
+or PostgreSQL.
+
+Release A input `bcf213d2-8e6c-49de-a1bd-df7944eb3698` and deployment
+`089db0df-20a3-4996-b2e4-d4351d30acbf` moved traffic from legacy blue to native
+green. Release B input `ff6e9a0f-da2b-465e-9a79-0fdd472fa331` and deployment
+`5fa58855-d4ca-4ba6-9319-167a7e6fc7bc` produced a distinct image/configuration
+identity and moved traffic to blue. Injected pre-start failure
+`a3878105-1185-48f1-ad43-91a8a9ff5e4d` emitted neither candidate startup nor
+switching and preserved blue. Exact rollback
+`aec2cb77-e8f4-438d-8b59-de51392ea0d8` restored release A in its persisted green
+slot. Final deployment `9d4c47f4-a70e-42ad-9c63-debaba848eb1` returned Jomat
+to release B in blue.
+
+Jomat, Salgsoversikt, Sirkusagio, and the control plane returned 200 throughout
+sampled transitions. Root Podman remained empty. Nine sensitive Jomat values
+were compared in memory against PostgreSQL, operation HTML, control-plane
+journals, and bounded application logs without printing or retaining them; none
+were present. Forty-two positively identified orphan operation secrets were
+removed, while active/rollback and compatibility recovery secrets were retained.
+The compatibility adapter remains installed but is no longer Jomat's normal
+deployment path.
+
+The first staging attempt also exposed Nix fetch diagnostics corrupting merged
+JSON output. Native immutable evaluation now uses `nix eval --quiet --json`, with
+a retained failed staging record and regression coverage.
+
 ## Next smallest implementation slice
 
-Start Slice 1.5 by adopting one existing application's unchanged flake-owned
-credential references and pre-start declarations. Deploy and roll it back
-through the native path while the other applications remain available, and keep
-the compatibility adapter until public-health and recovery evidence are
-recorded.
+Register committed application releases automatically through an authenticated
+CI handoff. Keep the exact immutable source and confirmation boundary, but stop
+requiring operators to find and paste host-local store paths before deploying.
