@@ -3,7 +3,7 @@ defmodule NixployWeb.ReleaseRegistrationController do
 
   alias Nixploy.ReleaseRegistration
 
-  @content_type "application/x-nix-export"
+  @content_type "application/x-nix-nar"
   @max_export_bytes 32 * 1_024 * 1_024
   @read_length 1_024 * 1_024
   @read_timeout :timer.seconds(30)

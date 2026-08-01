@@ -237,9 +237,10 @@ endpoint with Oban in enqueue-only mode.
 
 Committed releases can be delivered independently of deployment confirmation
 through the bounded CI endpoint `POST /api/releases`. It accepts
-`application/x-nix-export`, authenticates a web-only bearer credential, imports
-at most 32 MiB through fixed `nix-store --import` argv, and verifies the exact
-store path, NAR hash, allowlisted repository/project/target, and full Git object
+`application/x-nix-nar`, authenticates a web-only bearer credential, restores at
+most 32 MiB through fixed `nix-store --restore` argv in a private workspace,
+recomputes its content-addressed identity with fixed `nix store add` argv, and
+verifies the exact store path, NAR hash, allowlisted repository/project/target, and full Git object
 ID before staging. Registration persists actor and provenance but never creates
 a deployment job; the operator still reviews and confirms under `/releases`.
 

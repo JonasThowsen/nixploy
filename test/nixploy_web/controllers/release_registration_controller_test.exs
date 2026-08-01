@@ -18,6 +18,7 @@ defmodule NixployWeb.ReleaseRegistrationControllerTest do
     previous_config = Application.get_env(:nixploy, :release_registration)
     previous_execute = Application.get_env(:nixploy, :release_registration_execute)
     previous_probe = Application.get_env(:nixploy, :local_store_input_probe)
+    previous_workspace = Application.get_env(:nixploy, :release_registration_workspace_root)
 
     Application.put_env(:nixploy, :release_registration,
       token: @token,
@@ -25,6 +26,12 @@ defmodule NixployWeb.ReleaseRegistrationControllerTest do
       project: "jomat",
       target: "production",
       repository: "JonasThowsen/jomat"
+    )
+
+    Application.put_env(
+      :nixploy,
+      :release_registration_workspace_root,
+      Path.join(System.tmp_dir!(), "nixploy-release-registration-test")
     )
 
     Application.put_env(:nixploy, :release_registration_execute, fn command, _opts ->
@@ -66,6 +73,7 @@ defmodule NixployWeb.ReleaseRegistrationControllerTest do
       restore_env(:release_registration, previous_config)
       restore_env(:release_registration_execute, previous_execute)
       restore_env(:local_store_input_probe, previous_probe)
+      restore_env(:release_registration_workspace_root, previous_workspace)
     end)
 
     :ok
@@ -94,7 +102,27 @@ defmodule NixployWeb.ReleaseRegistrationControllerTest do
     assert URI.parse(release_url).path == "/releases/#{id}"
 
     assert_received {:executed,
-                     %{executable: "nix-store", args: ["--import"], stdin: "nix-export"}}
+                     %{
+                       executable: "nix-store",
+                       args: ["--restore", restored_source],
+                       stdin: "nix-export"
+                     }}
+
+    assert String.ends_with?(restored_source, "/source")
+
+    assert_received {:executed,
+                     %{
+                       executable: "nix",
+                       args: [
+                         "store",
+                         "add",
+                         "--name",
+                         "ci-release-source",
+                         "--",
+                         ^restored_source
+                       ],
+                       stdin: nil
+                     }}
 
     input = Deployments.get_deployment_input!(id)
     assert input.registration_channel == :ci
@@ -173,7 +201,7 @@ defmodule NixployWeb.ReleaseRegistrationControllerTest do
   defp registration_headers(conn, token \\ @token) do
     conn
     |> put_req_header("authorization", "Bearer " <> token)
-    |> put_req_header("content-type", "application/x-nix-export")
+    |> put_req_header("content-type", "application/x-nix-nar")
     |> put_req_header("x-nixploy-store-path", @store_path)
     |> put_req_header("x-nixploy-nar-hash", @nar_hash)
     |> put_req_header("x-nixploy-project", "jomat")

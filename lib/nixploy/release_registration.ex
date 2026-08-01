@@ -11,6 +11,7 @@ defmodule Nixploy.ReleaseRegistration do
   @max_token_bytes 4_096
   @import_timeout :timer.minutes(5)
   @max_output_bytes 65_536
+  @store_path ~r|^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$|
   @revision ~r/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
   @repository ~r/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
   @nar_hash ~r/^sha256-[A-Za-z0-9+\/_=.~-]+$/
@@ -46,7 +47,7 @@ defmodule Nixploy.ReleaseRegistration do
 
     with {:ok, metadata} <- validate_metadata(attrs, config),
          :ok <- validate_export(export),
-         {:ok, imported_path} <- import_export(export, execute),
+         {:ok, imported_path} <- restore_and_add(export, metadata.store_path, execute),
          :ok <- verify_imported_path(metadata.store_path, imported_path),
          {:ok, input, disposition} <- stage_or_reuse(metadata, operator, opts) do
       :ok = record(operator, :ci_release_registered, input.id, :succeeded, metadata, request_id)
@@ -65,19 +66,23 @@ defmodule Nixploy.ReleaseRegistration do
   end
 
   def error_message(:unauthorized), do: "release registration credentials were rejected"
-  def error_message(:invalid_content_type), do: "use application/x-nix-export"
-  def error_message(:export_required), do: "the Nix export body is empty"
-  def error_message(:export_too_large), do: "the Nix export exceeds the 32 MiB limit"
+  def error_message(:invalid_content_type), do: "use application/x-nix-nar"
+  def error_message(:export_required), do: "the Nix archive body is empty"
+  def error_message(:export_too_large), do: "the Nix archive exceeds the 32 MiB limit"
   def error_message(:invalid_store_path), do: "x-nixploy-store-path is invalid"
   def error_message(:invalid_nar_hash), do: "x-nixploy-nar-hash is invalid"
   def error_message(:invalid_project), do: "x-nixploy-project is not authorized"
   def error_message(:invalid_target), do: "x-nixploy-target is not authorized"
   def error_message(:invalid_repository), do: "x-nixploy-repository is not authorized"
   def error_message(:invalid_revision), do: "x-nixploy-revision must be a full Git object ID"
-  def error_message(:import_timeout), do: "Nix import timed out after 5 minutes"
-  def error_message(:import_output_too_large), do: "Nix import diagnostics exceeded 64 KiB"
-  def error_message({:import_failed, status}), do: "Nix import exited with status #{status}"
-  def error_message({:import_command_failed, _reason}), do: "Nix import could not be executed"
+  def error_message(:import_timeout), do: "Nix source restoration timed out after 5 minutes"
+  def error_message(:import_output_too_large), do: "Nix source diagnostics exceeded 64 KiB"
+
+  def error_message({:import_failed, status}),
+    do: "Nix source restoration exited with status #{status}"
+
+  def error_message({:import_command_failed, _reason}),
+    do: "Nix source restoration could not be executed"
 
   def error_message(:imported_path_mismatch),
     do: "the Nix export did not contain the declared path"
@@ -131,6 +136,7 @@ defmodule Nixploy.ReleaseRegistration do
 
     with {:ok, store_path} <-
            LocalStoreInput.validate_store_path(metadata.store_path, fn _path -> true end),
+         true <- Regex.match?(@store_path, store_path),
          true <- valid_nar_hash?(metadata.nar_hash),
          true <- metadata.project == Keyword.fetch!(config, :project),
          true <- metadata.target == Keyword.fetch!(config, :target),
@@ -171,11 +177,56 @@ defmodule Nixploy.ReleaseRegistration do
   defp validate_export(export) when byte_size(export) <= @max_export_bytes, do: :ok
   defp validate_export(_export), do: {:error, :export_too_large}
 
-  defp import_export(export, execute) do
+  defp restore_and_add(export, store_path, execute) do
+    workspace_root =
+      Application.get_env(
+        :nixploy,
+        :release_registration_workspace_root,
+        "/var/lib/nixploy/release-registration"
+      )
+
+    workspace =
+      Path.join(workspace_root, Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false))
+
+    source = Path.join(workspace, "source")
+    name = store_path |> Path.basename() |> String.split("-", parts: 2) |> List.last()
+
+    with :ok <- File.mkdir_p(workspace) do
+      try do
+        with :ok <- restore_nar(export, source, execute),
+             {:ok, imported_path} <- add_source(source, name, execute) do
+          {:ok, imported_path}
+        end
+      after
+        File.rm_rf(workspace)
+      end
+    else
+      {:error, reason} -> {:error, {:import_command_failed, reason}}
+    end
+  end
+
+  defp restore_nar(export, source, execute) do
     command = %Command{
       executable: "nix-store",
-      args: ["--import"],
+      args: ["--restore", source],
       stdin: export,
+      timeout: @import_timeout,
+      max_output_bytes: @max_output_bytes
+    }
+
+    case execute.(command, []) do
+      {:ok, %{exit_status: 0, output_truncated?: false}} -> :ok
+      {:ok, %{exit_status: 0, output_truncated?: true}} -> {:error, :import_output_too_large}
+      {:ok, %{exit_status: status}} -> {:error, {:import_failed, status}}
+      {:error, :timeout} -> {:error, :import_timeout}
+      {:error, reason} -> {:error, {:import_command_failed, reason}}
+    end
+  end
+
+  defp add_source(source, name, execute) do
+    command = %Command{
+      executable: "nix",
+      args: ["store", "add", "--name", name, "--", source],
       timeout: @import_timeout,
       max_output_bytes: @max_output_bytes
     }

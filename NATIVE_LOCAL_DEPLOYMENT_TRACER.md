@@ -284,10 +284,11 @@ a retained failed staging record and regression coverage.
 
 ## Implemented CI release-registration boundary
 
-`POST /api/releases` now accepts one authenticated, bounded Nix export. The web
+`POST /api/releases` now accepts one authenticated, bounded Nix archive. The web
 process receives its bearer token through a dedicated systemd credential and
-never receives the worker's SOPS identity. Fixed `nix-store --import` argv reads
-the source from bounded stdin; registration then independently verifies the
+never receives the worker's SOPS identity. Fixed `nix-store --restore` argv reads
+the source into a private workspace and fixed `nix store add` argv recomputes its
+content-addressed identity; registration then independently verifies the
 exact store path, NAR hash, allowlisted repository/project/target, full Git
 object ID, flake configuration, and audit actor. Success stages or idempotently
 returns one immutable release and explicitly creates no deployment job.

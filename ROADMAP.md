@@ -374,9 +374,10 @@ as compatibility aliases for retained bookmarks.
 ## Slice 2.2 — Deployment action and progress experience
 
 **Release-registration tracer status:** implemented, awaiting production CI
-exercise. An authenticated `POST /api/releases` accepts one bounded Nix export,
-imports it through fixed `nix-store --import` argv, verifies the exact store
-path/NAR hash/flake project and target, and persists repository/revision/actor
+exercise. An authenticated `POST /api/releases` accepts one bounded Nix archive,
+restores it in a private workspace and recomputes its content-addressed identity
+through fixed Nix argv, verifies the exact store path/NAR hash/flake project and
+target, and persists repository/revision/actor
 evidence without enqueueing a deployment. Delivery is idempotent for an already
 staged immutable source. The bearer credential is a web-only systemd credential;
 Jomat's publisher keeps it out of argv and files. The workflow remains gated
