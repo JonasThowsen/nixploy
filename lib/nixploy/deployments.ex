@@ -51,6 +51,18 @@ defmodule Nixploy.Deployments do
     |> Repo.preload(:requested_by_operator)
   end
 
+  def get_staged_release(store_path, selected_target)
+      when is_binary(store_path) and is_binary(selected_target) do
+    DeploymentInput
+    |> where(
+      [input],
+      input.store_path == ^store_path and input.selected_target == ^selected_target and
+        input.state == :staged
+    )
+    |> preload(:requested_by_operator)
+    |> Repo.one()
+  end
+
   def inspect_local_store(store_path, opts \\ []) do
     local_store_probe(store_path, opts)
   end
@@ -60,8 +72,18 @@ defmodule Nixploy.Deployments do
     store_path = attr(attrs, :store_path)
     selected_target = attr(attrs, :selected_target)
     expected_nar_hash = attr(attrs, :expected_nar_hash)
+    registration_channel = attr(attrs, :registration_channel) || :operator
+    source_repository = attr(attrs, :source_repository)
+    source_revision = attr(attrs, :source_revision)
 
-    case create_deployment_input(store_path, selected_target, operator) do
+    case create_deployment_input(
+           store_path,
+           selected_target,
+           operator,
+           registration_channel,
+           source_repository,
+           source_revision
+         ) do
       {:ok, input} ->
         complete_local_store_staging(
           input,
@@ -313,7 +335,14 @@ defmodule Nixploy.Deployments do
     Deployment.create_changeset(deployment, attrs)
   end
 
-  defp create_deployment_input(store_path, selected_target, operator) do
+  defp create_deployment_input(
+         store_path,
+         selected_target,
+         operator,
+         registration_channel,
+         source_repository,
+         source_revision
+       ) do
     started_at = DateTime.utc_now()
 
     Multi.new()
@@ -321,6 +350,9 @@ defmodule Nixploy.Deployments do
       :deployment_input,
       DeploymentInput.create_changeset(%DeploymentInput{}, %{
         input_kind: :local_store,
+        registration_channel: registration_channel,
+        source_repository: source_repository,
+        source_revision: source_revision,
         store_path: store_path,
         selected_target: selected_target,
         requested_by_operator_id: operator_id(operator),
@@ -332,6 +364,9 @@ defmodule Nixploy.Deployments do
         outcome: :requested,
         metadata: %{
           "input_kind" => "local_store",
+          "registration_channel" => to_string(input.registration_channel),
+          "source_repository" => input.source_repository,
+          "source_revision" => input.source_revision,
           "store_path" => input.store_path,
           "selected_target" => input.selected_target
         }
@@ -347,6 +382,7 @@ defmodule Nixploy.Deployments do
   defp complete_local_store_staging(input, expected_nar_hash, operator, opts) do
     with {:ok, source} <- local_store_probe(input.store_path, opts),
          :ok <- verify_nar_hash(expected_nar_hash, source.nar_hash),
+         :ok <- verify_expected_project(Keyword.get(opts, :expected_project), source.project),
          {:ok, _target, snapshot} <-
            LocalStoreInput.select_target(source, input.selected_target) do
       persist_staged_input(input, source.nar_hash, snapshot, operator)
@@ -383,6 +419,9 @@ defmodule Nixploy.Deployments do
           staged_input.id,
           metadata: %{
             "input_kind" => "local_store",
+            "registration_channel" => to_string(staged_input.registration_channel),
+            "source_repository" => staged_input.source_repository,
+            "source_revision" => staged_input.source_revision,
             "store_path" => staged_input.store_path,
             "nar_hash" => staged_input.nar_hash,
             "selected_target" => staged_input.selected_target,
@@ -396,8 +435,6 @@ defmodule Nixploy.Deployments do
       {:ok, %{deployment_input: staged_input}} ->
         # Staging deliberately enqueues no job: the authenticated input detail
         # is the confirmation boundary for deploy or rollback operations.
-        # TODO(tracer): Productize unprivileged operator-side Nix closure
-        # transport before accepting store paths from another machine.
         {:ok, Repo.preload(staged_input, :requested_by_operator)}
 
       {:error, _operation, reason, _changes} ->
@@ -445,6 +482,12 @@ defmodule Nixploy.Deployments do
         {:error, transition_reason}
     end
   end
+
+  defp verify_expected_project(nil, _actual), do: :ok
+  defp verify_expected_project(project, project), do: :ok
+
+  defp verify_expected_project(expected, actual),
+    do: {:error, {:project_mismatch, expected, actual}}
 
   defp verify_nar_hash(nil, _actual), do: :ok
   defp verify_nar_hash("", _actual), do: :ok

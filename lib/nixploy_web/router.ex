@@ -21,11 +21,21 @@ defmodule NixployWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :release_registration do
+    plug :authenticate_release_registration
+  end
+
   scope "/", NixployWeb do
     pipe_through :api
 
     get "/health", HealthController, :live
     get "/ready", HealthController, :ready
+  end
+
+  scope "/api", NixployWeb do
+    pipe_through :release_registration
+
+    post "/releases", ReleaseRegistrationController, :create
   end
 
   scope "/", NixployWeb do
@@ -58,6 +68,10 @@ defmodule NixployWeb.Router do
       live "/native-deployments/:id", DeploymentLive.NativeShow, :show
       live "/compatibility", DeploymentLive.Index, :compatibility
     end
+  end
+
+  defp authenticate_release_registration(conn, opts) do
+    NixployWeb.ReleaseRegistrationAuth.call(conn, opts)
   end
 
   # Other scopes may use custom stacks.

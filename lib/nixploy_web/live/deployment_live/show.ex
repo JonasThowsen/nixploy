@@ -64,6 +64,9 @@ defmodule NixployWeb.DeploymentLive.Show do
   def input_state_class(:failed), do: "badge-error"
   def input_state_class(_state), do: "badge-warning"
 
+  def short_revision(nil), do: "—"
+  def short_revision(revision), do: String.slice(revision, 0, 12)
+
   def format_time(nil), do: "—"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")
 end

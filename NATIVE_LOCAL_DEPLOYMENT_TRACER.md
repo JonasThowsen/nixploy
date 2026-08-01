@@ -282,8 +282,24 @@ The first staging attempt also exposed Nix fetch diagnostics corrupting merged
 JSON output. Native immutable evaluation now uses `nix eval --quiet --json`, with
 a retained failed staging record and regression coverage.
 
+## Implemented CI release-registration boundary
+
+`POST /api/releases` now accepts one authenticated, bounded Nix export. The web
+process receives its bearer token through a dedicated systemd credential and
+never receives the worker's SOPS identity. Fixed `nix-store --import` argv reads
+the source from bounded stdin; registration then independently verifies the
+exact store path, NAR hash, allowlisted repository/project/target, full Git
+object ID, flake configuration, and audit actor. Success stages or idempotently
+returns one immutable release and explicitly creates no deployment job.
+
+Jomat includes a publisher that keeps the bearer credential out of argv and
+files while streaming `nix-store --export` directly to the endpoint. Its GitHub
+workflow uses the official Nix and Tailscale actions, but is gated on a repository
+variable until a tag-scoped tailnet OAuth client is provisioned and tested.
+
 ## Next smallest implementation slice
 
-Register committed application releases automatically through an authenticated
-CI handoff. Keep the exact immutable source and confirmation boundary, but stop
-requiring operators to find and paste host-local store paths before deploying.
+Exercise the endpoint against production with Jomat's real source export, then
+enable and prove one GitHub-originated push delivery. Keep manual registration
+under Advanced until that external CI identity path has produced retained audit
+evidence.

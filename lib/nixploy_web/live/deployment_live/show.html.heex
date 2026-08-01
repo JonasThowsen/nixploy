@@ -19,6 +19,12 @@
             <span class={["badge badge-sm", input_state_class(input.state)]}>
               {if input.state == :staged, do: "ready", else: input.state}
             </span>
+            <span
+              :if={input.registration_channel == :ci}
+              class="badge badge-info badge-outline badge-sm"
+            >
+              CI registered
+            </span>
           </div>
           <h1 class="mt-2 break-words text-3xl font-semibold tracking-[-0.035em] sm:text-5xl">
             {snapshot["project"] || "Release validation failed"}
@@ -175,6 +181,12 @@
         Immutable identifiers retained for audit and exact rollback.
       </p>
       <dl class="mt-4 grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2">
+        <div :if={input.source_revision} class="np-data-cell sm:col-span-2">
+          <dt>Source revision</dt>
+          <dd id="deployment-input-source-revision" class="break-all font-mono text-xs">
+            {input.source_repository}@{input.source_revision}
+          </dd>
+        </div>
         <div class="np-data-cell sm:col-span-2">
           <dt>Release source</dt>
           <dd id="deployment-input-store-path" class="break-all font-mono text-xs">

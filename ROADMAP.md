@@ -373,6 +373,16 @@ as compatibility aliases for retained bookmarks.
 
 ## Slice 2.2 — Deployment action and progress experience
 
+**Release-registration tracer status:** implemented, awaiting production CI
+exercise. An authenticated `POST /api/releases` accepts one bounded Nix export,
+imports it through fixed `nix-store --import` argv, verifies the exact store
+path/NAR hash/flake project and target, and persists repository/revision/actor
+evidence without enqueueing a deployment. Delivery is idempotent for an already
+staged immutable source. The bearer credential is a web-only systemd credential;
+Jomat's publisher keeps it out of argv and files. The workflow remains gated
+until a tag-scoped Tailscale OAuth client is provisioned, and the Advanced manual
+bridge remains visible until the GitHub run is proven.
+
 - Select only immutable staged inputs.
 - Show derived flake configuration read-only before confirmation.
 - Stream stage progress and bounded output.
@@ -678,8 +688,9 @@ The following remain decisions to prove, not abstractions to pre-build:
 
 ## Immediate next step
 
-Implement automatic authenticated release registration as the next Slice 2.2
-increment. A committed Jomat release should appear under `/releases` without an
-operator copying a host-local store path. Preserve the exact source/NAR/config
-evidence and explicit deployment confirmation, then remove the advanced manual
-bridge only after the CI handoff is proven in production.
+Deploy and exercise authenticated Jomat release registration in production.
+Verify one bounded exported source appears under `/releases` with its exact Git
+revision, NAR/config identity, and actor while creating no Oban deployment job.
+Then provision Jomat's tag-scoped Tailscale GitHub OAuth secrets, enable its
+gated push workflow, prove one GitHub-originated delivery, and only then remove
+the Advanced manual bridge.

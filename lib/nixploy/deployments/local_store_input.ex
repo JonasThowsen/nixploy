@@ -193,6 +193,9 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   def error_message({:nar_hash_changed, _expected, _actual}),
     do: "The NAR hash changed since this source was inspected; inspect it again."
 
+  def error_message({:project_mismatch, expected, _actual}),
+    do: "The immutable source does not declare the authorized project #{safe_inspect(expected)}."
+
   def error_message(:config_schema_missing), do: "The flake nixploy output has no __schema."
 
   def error_message({:unsupported_config_schema, schema}),

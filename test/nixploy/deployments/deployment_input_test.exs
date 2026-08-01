@@ -100,6 +100,31 @@ defmodule Nixploy.Deployments.DeploymentInputTest do
     assert metadata["failure_code"] == "nar_hash_changed"
   end
 
+  test "persists failure when immutable flake project differs from the authorized project" do
+    operator = Fixtures.operator_fixture()
+
+    assert {:error, %DeploymentInput{} = failed} =
+             Deployments.stage_local_store(
+               %{
+                 store_path: @store_path,
+                 selected_target: "production",
+                 expected_nar_hash: @nar_hash,
+                 registration_channel: :ci,
+                 source_repository: "JonasThowsen/jomat",
+                 source_revision: String.duplicate("a", 40)
+               },
+               operator: operator,
+               expected_project: "jomat",
+               execute: &execute/2,
+               path_exists?: fn _path -> true end
+             )
+
+    assert failed.state == :failed
+    assert failed.registration_channel == :ci
+    assert failed.failure["code"] == "project_mismatch"
+    assert failed.failure["message"] =~ "authorized project"
+  end
+
   test "requires an audit actor and does not create an operation without one" do
     assert {:error, changeset} =
              Deployments.stage_local_store(%{

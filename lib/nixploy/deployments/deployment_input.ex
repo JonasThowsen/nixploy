@@ -11,6 +11,9 @@ defmodule Nixploy.Deployments.DeploymentInput do
 
   schema "deployment_inputs" do
     field :input_kind, Ecto.Enum, values: [:local_store]
+    field :registration_channel, Ecto.Enum, values: [:operator, :ci], default: :operator
+    field :source_repository, :string
+    field :source_revision, :string
     field :store_path, :string
     field :nar_hash, :string
     field :selected_target, :string
@@ -31,6 +34,9 @@ defmodule Nixploy.Deployments.DeploymentInput do
     input
     |> cast(attrs, [
       :input_kind,
+      :registration_channel,
+      :source_repository,
+      :source_revision,
       :store_path,
       :selected_target,
       :requested_by_operator_id,
@@ -38,9 +44,18 @@ defmodule Nixploy.Deployments.DeploymentInput do
     ])
     |> update_change(:store_path, &trim/1)
     |> update_change(:selected_target, &trim_optional/1)
-    |> validate_required([:input_kind, :store_path, :requested_by_operator_id, :started_at])
+    |> validate_required([
+      :input_kind,
+      :registration_channel,
+      :store_path,
+      :requested_by_operator_id,
+      :started_at
+    ])
     |> validate_length(:store_path, max: 4_096)
     |> validate_length(:selected_target, max: 255)
+    |> validate_format(:source_repository, ~r/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+    |> validate_format(:source_revision, ~r/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+    |> validate_ci_provenance()
     |> assoc_constraint(:requested_by_operator)
   end
 
@@ -72,6 +87,9 @@ defmodule Nixploy.Deployments.DeploymentInput do
         do: [],
         else: [derived_snapshot: "must contain normalized flake-derived configuration"]
     end)
+    |> unique_constraint([:store_path, :selected_target],
+      name: :deployment_inputs_unique_staged_release
+    )
   end
 
   def staged_changeset(input, _attrs), do: invalid_terminal_changeset(input)
@@ -85,6 +103,14 @@ defmodule Nixploy.Deployments.DeploymentInput do
   end
 
   def failed_changeset(input, _attrs), do: invalid_terminal_changeset(input)
+
+  defp validate_ci_provenance(changeset) do
+    if get_field(changeset, :registration_channel) == :ci do
+      validate_required(changeset, [:source_repository, :source_revision])
+    else
+      changeset
+    end
+  end
 
   defp invalid_terminal_changeset(input) do
     input

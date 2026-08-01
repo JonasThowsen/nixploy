@@ -32,6 +32,17 @@ auth_mode =
 
 config :nixploy, auth_mode: auth_mode
 
+release_registration_token_file = System.get_env("NIXPLOY_RELEASE_REGISTRATION_TOKEN_FILE")
+
+if web? and is_binary(release_registration_token_file) do
+  config :nixploy, :release_registration,
+    token_file: release_registration_token_file,
+    operator_email: System.fetch_env!("NIXPLOY_OPERATOR_EMAIL"),
+    project: System.fetch_env!("NIXPLOY_RELEASE_REGISTRATION_PROJECT"),
+    target: System.get_env("NIXPLOY_RELEASE_REGISTRATION_TARGET", "production"),
+    repository: System.fetch_env!("NIXPLOY_RELEASE_REGISTRATION_REPOSITORY")
+end
+
 if executable = System.get_env("NIXPLOY_LEGACY_EXECUTABLE") do
   config :nixploy, :legacy_nixploy_executable, executable
 end

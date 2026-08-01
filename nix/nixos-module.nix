@@ -83,6 +83,34 @@ in
       '';
     };
 
+    releaseRegistrationTokenFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Root-readable file containing the bearer token for bounded CI release
+        registration. systemd exposes it only to the web service through
+        LoadCredential.
+      '';
+    };
+
+    releaseRegistrationProject = lib.mkOption {
+      type = lib.types.str;
+      default = "jomat";
+      description = "Single project authorized by the CI release registration tracer.";
+    };
+
+    releaseRegistrationTarget = lib.mkOption {
+      type = lib.types.str;
+      default = "production";
+      description = "Single target authorized by the CI release registration tracer.";
+    };
+
+    releaseRegistrationRepository = lib.mkOption {
+      type = lib.types.str;
+      default = "JonasThowsen/jomat";
+      description = "Single source repository authorized by the CI release registration tracer.";
+    };
+
     authMode = lib.mkOption {
       type = lib.types.enum [
         "tailscale"
@@ -183,14 +211,26 @@ in
         after = [ "network-online.target" ];
         wants = [ "network-online.target" ];
 
-        environment = commonEnvironment // {
-          PORT = toString cfg.port;
-        };
+        environment =
+          commonEnvironment
+          // {
+            PORT = toString cfg.port;
+          }
+          // lib.optionalAttrs (cfg.releaseRegistrationTokenFile != null) {
+            NIXPLOY_RELEASE_REGISTRATION_TOKEN_FILE =
+              "/run/credentials/nixploy-control-plane.service/release-registration-token";
+            NIXPLOY_RELEASE_REGISTRATION_PROJECT = cfg.releaseRegistrationProject;
+            NIXPLOY_RELEASE_REGISTRATION_TARGET = cfg.releaseRegistrationTarget;
+            NIXPLOY_RELEASE_REGISTRATION_REPOSITORY = cfg.releaseRegistrationRepository;
+          };
 
         serviceConfig = commonServiceConfig // {
           ExecStart = startControlPlane (if cfg.splitRoles then "web" else cfg.role);
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
-          InaccessiblePaths = lib.optional cfg.splitRoles "/run/credentials";
+          LoadCredential = lib.optional (cfg.releaseRegistrationTokenFile != null)
+            "release-registration-token:${cfg.releaseRegistrationTokenFile}";
+          InaccessiblePaths = lib.optional cfg.splitRoles
+            "/run/credentials/nixploy-control-plane-worker.service";
         };
       };
     }
