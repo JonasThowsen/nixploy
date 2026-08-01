@@ -229,8 +229,6 @@ in
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
           LoadCredential = lib.optional (cfg.releaseRegistrationTokenFile != null)
             "release-registration-token:${cfg.releaseRegistrationTokenFile}";
-          InaccessiblePaths = lib.optional cfg.splitRoles
-            "/run/credentials/nixploy-control-plane-worker.service";
         };
       };
     }
