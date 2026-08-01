@@ -7,7 +7,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
-  alias Nixploy.{LocalHost, NativeDeployments, Notifications, Operations}
+  alias Nixploy.{LocalHost, MachineHealth, NativeDeployments, Notifications, Operations}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -19,6 +19,9 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:local_inventory, nil)
       |> assign(:local_inventory_error, nil)
       |> assign(:local_inventory_status, :loading)
+      |> assign(:machine_health, nil)
+      |> assign(:machine_health_error, nil)
+      |> assign(:machine_health_status, :idle)
       |> assign(:selected_workload, nil)
       |> assign(:requested_workload_id, nil)
       |> assign(:workload_details, nil)
@@ -34,7 +37,10 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> load_dashboard()
       |> assign_forms()
 
-    if connected?(socket), do: send(self(), :load_local_inventory)
+    if connected?(socket) do
+      send(self(), :load_local_inventory)
+      if socket.assigns.live_action == :machine, do: send(self(), :load_machine_health)
+    end
 
     {:ok, socket}
   end
@@ -257,6 +263,16 @@ defmodule NixployWeb.DeploymentLive.Index do
     end
   end
 
+  def handle_event("refresh_machine_health", _params, socket) do
+    send(self(), :load_machine_health)
+
+    {:noreply,
+     assign(socket,
+       machine_health_status: :loading,
+       machine_health_error: nil
+     )}
+  end
+
   def handle_event("refresh_local_inventory", _params, socket) do
     send(self(), :load_local_inventory)
 
@@ -390,6 +406,28 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   @impl true
+  def handle_info(:load_machine_health, socket) do
+    # TODO(tracer): Move machine sampling to a supervised periodic observer before
+    # adding history, charts, alerts, or multiple hosts. This page intentionally
+    # shows one bounded sample requested by an authenticated operator.
+    case machine_health_probe().() do
+      {:ok, snapshot} ->
+        {:noreply,
+         assign(socket,
+           machine_health: snapshot,
+           machine_health_status: :available,
+           machine_health_error: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           machine_health_status: :failed,
+           machine_health_error: machine_health_error(reason)
+         )}
+    end
+  end
+
   def handle_info(:load_local_inventory, socket) do
     # TODO(tracer): Move local observation to a supervised worker before adding
     # polling or multi-host inventory; this first slice keeps one bounded probe
@@ -480,6 +518,10 @@ defmodule NixployWeb.DeploymentLive.Index do
     {:noreply, load_dashboard(socket)}
   end
 
+  defp machine_health_probe do
+    Application.get_env(:nixploy, :machine_health_probe, &MachineHealth.snapshot/0)
+  end
+
   defp local_inventory_probe do
     Application.get_env(:nixploy, :local_inventory_probe, &LocalHost.inventory/0)
   end
@@ -513,6 +555,17 @@ defmodule NixployWeb.DeploymentLive.Index do
   defp inventory_workload(inventory, workload_id) do
     Enum.find(inventory.workloads, &(&1.id == workload_id))
   end
+
+  defp machine_health_error({:disk_usage_failed, :timeout}),
+    do: "Disk observation timed out after 10 seconds"
+
+  defp machine_health_error({:disk_usage_failed, _reason}),
+    do: "Disk usage is temporarily unavailable"
+
+  defp machine_health_error({:machine_health_read_failed, _path, _reason}),
+    do: "Host kernel metrics are temporarily unavailable"
+
+  defp machine_health_error(_reason), do: "Machine health is temporarily unavailable"
 
   defp local_inventory_error({:executable_not_found, executable}),
     do: "#{executable} is not available to the nixploy service"
@@ -698,12 +751,14 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def nav_path(:overview), do: "/"
+  def nav_path(:machine), do: "/machine"
   def nav_path(:applications), do: "/applications"
   def nav_path(:releases), do: "/releases"
   def nav_path(:deployments), do: "/deployments"
   def nav_path(:compatibility), do: nil
 
   defp page_title(:overview), do: "Overview"
+  defp page_title(:machine), do: "Machine health"
   defp page_title(:applications), do: "Applications"
   defp page_title(:releases), do: "Releases"
   defp page_title(:deployments), do: "Deployments"
@@ -783,6 +838,51 @@ defmodule NixployWeb.DeploymentLive.Index do
   def health_class(status) when status in 200..299, do: "badge-success"
   def health_class(nil), do: "badge-ghost"
   def health_class(_status), do: "badge-error"
+
+  def machine_status(nil), do: :unknown
+
+  def machine_status(snapshot) do
+    cond do
+      snapshot.disk_percent >= 95 or snapshot.memory_percent >= 95 -> :critical
+      snapshot.disk_percent >= 85 or snapshot.memory_percent >= 85 -> :warning
+      snapshot.cpu_percent >= 90 -> :warning
+      snapshot.load_1 > snapshot.cpu_count * 1.5 -> :warning
+      true -> :healthy
+    end
+  end
+
+  def machine_status_class(:healthy), do: "badge-success"
+  def machine_status_class(:warning), do: "badge-warning"
+  def machine_status_class(:critical), do: "badge-error"
+  def machine_status_class(_status), do: "badge-ghost"
+
+  def format_percent(nil), do: "—"
+  def format_percent(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1) <> "%"
+
+  def format_bytes(nil), do: "—"
+
+  def format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    units = [{1_099_511_627_776, "TB"}, {1_073_741_824, "GB"}, {1_048_576, "MB"}, {1024, "KB"}]
+
+    case Enum.find(units, fn {size, _unit} -> bytes >= size end) do
+      {size, unit} -> :erlang.float_to_binary(bytes / size, decimals: 1) <> " " <> unit
+      nil -> "#{bytes} B"
+    end
+  end
+
+  def format_duration(nil), do: "—"
+
+  def format_duration(seconds) when is_integer(seconds) and seconds >= 0 do
+    days = div(seconds, 86_400)
+    hours = seconds |> rem(86_400) |> div(3_600)
+    minutes = seconds |> rem(3_600) |> div(60)
+
+    cond do
+      days > 0 -> "#{days}d #{hours}h"
+      hours > 0 -> "#{hours}h #{minutes}m"
+      true -> "#{minutes}m"
+    end
+  end
 
   def short_commit(nil), do: "-"
   def short_commit(commit), do: String.slice(commit, 0, 12)

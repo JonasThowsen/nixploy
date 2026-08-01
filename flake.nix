@@ -111,6 +111,7 @@
                     pkgs.git
                     pkgs.nix
                     pkgs.bash
+                    pkgs.coreutils
                     pkgs.util-linux
                     pkgs.openssh
                     pkgs.curl
@@ -183,6 +184,7 @@
             packages = [
               (beamPackages pkgs).elixir_1_20
               pkgs.bash
+              pkgs.coreutils
               pkgs.util-linux
               pkgs.postgresql_17
               pkgs.tailwindcss_4

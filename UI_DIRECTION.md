@@ -51,6 +51,7 @@ The primary navigation is intentionally small:
 | Route | Operator job |
 | --- | --- |
 | `/` | Understand application health and find the shortest path to action |
+| `/machine` | Inspect host CPU, RAM, storage, load, uptime, and runtime capacity |
 | `/applications` | Inspect health, CPU, RAM, I/O, release identity, and bounded logs |
 | `/releases` | Choose a verified release and start a deployment |
 | `/deployments` | Follow progress, investigate failures, and roll back |

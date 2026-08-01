@@ -51,6 +51,9 @@ defmodule NixployWeb.Layouts do
           <.utility_nav_link path="/" active_path={@current_path} icon="hero-squares-2x2">
             Overview
           </.utility_nav_link>
+          <.utility_nav_link path="/machine" active_path={@current_path} icon="hero-server-stack">
+            Machine
+          </.utility_nav_link>
           <.utility_nav_link path="/applications" active_path={@current_path} icon="hero-cube">
             Applications
           </.utility_nav_link>
@@ -139,6 +142,13 @@ defmodule NixployWeb.Layouts do
               icon="hero-squares-2x2"
             >
               Overview
+            </.mobile_nav_link>
+            <.mobile_nav_link
+              path="/machine"
+              active_path={@current_path}
+              icon="hero-server-stack"
+            >
+              Machine
             </.mobile_nav_link>
             <.mobile_nav_link
               path="/applications"
@@ -254,6 +264,7 @@ defmodule NixployWeb.Layouts do
   end
 
   defp current_path_label("/"), do: "Overview"
+  defp current_path_label("/machine"), do: "Machine"
   defp current_path_label("/applications"), do: "Applications"
   defp current_path_label("/releases"), do: "Releases"
   defp current_path_label("/deployments"), do: "Deployments"

@@ -152,6 +152,13 @@
           </div>
         </div>
         <nav class="divide-y divide-base-300" aria-label="Operator actions">
+          <.link navigate={~p"/machine"} class="np-action-row">
+            <span class="np-action-icon"><.icon name="hero-server-stack" class="size-4" /></span>
+            <span>
+              <strong>Machine health</strong><small>CPU, memory, disk, load, and uptime</small>
+            </span>
+            <.icon name="hero-chevron-right" class="ml-auto size-4" />
+          </.link>
           <.link navigate={~p"/releases"} class="np-action-row">
             <span class="np-action-icon"><.icon name="hero-rocket-launch" class="size-4" /></span>
             <span>
@@ -175,6 +182,219 @@
           </.link>
         </nav>
       </aside>
+    </div>
+  </section>
+
+  <section :if={@live_action == :machine} id="machine-health-page" class="np-page-stack">
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Host</p>
+        <h1 class="np-page-title">Machine health</h1>
+        <p class="np-page-description">
+          CPU, memory, storage, load, and runtime capacity for this server.
+        </p>
+      </div>
+      <.button
+        id="refresh-machine-health"
+        phx-click="refresh_machine_health"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
+        disabled={@machine_health_status == :loading}
+      >
+        <.icon
+          name="hero-arrow-path"
+          class={[@machine_health_status == :loading && "animate-spin", "size-4"]}
+        /> Refresh
+      </.button>
+    </header>
+
+    <div
+      :if={@machine_health_status in [:idle, :loading]}
+      id="machine-health-loading"
+      class="np-panel flex min-h-40 items-center justify-center p-6 text-sm text-base-content/55"
+    >
+      <span class="loading loading-spinner loading-sm mr-3"></span> Sampling machine health…
+    </div>
+
+    <div :if={@machine_health_error} id="machine-health-error" class="alert alert-error">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>{@machine_health_error}</span>
+    </div>
+
+    <div :if={health = @machine_health} class="space-y-5">
+      <section class="np-panel overflow-hidden">
+        <div class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <div class="flex items-center gap-3">
+            <span class={[
+              "grid size-11 shrink-0 place-items-center rounded-full",
+              machine_status(health) == :healthy && "bg-success/15 text-success",
+              machine_status(health) == :warning && "bg-warning/15 text-warning",
+              machine_status(health) == :critical && "bg-error/15 text-error"
+            ]}>
+              <.icon
+                name={
+                  if machine_status(health) == :healthy,
+                    do: "hero-check",
+                    else: "hero-exclamation-triangle"
+                }
+                class="size-5"
+              />
+            </span>
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-lg font-semibold">{health.hostname}</h2>
+                <span class={["badge badge-sm", machine_status_class(machine_status(health))]}>
+                  {machine_status(health)}
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-base-content/50">
+                Up {format_duration(health.uptime_seconds)} · sampled {format_time(
+                  health.observed_at
+                )}
+              </p>
+            </div>
+          </div>
+          <p class="text-sm text-base-content/55">
+            {health.cpu_count} CPU cores · {health.total_processes} processes
+          </p>
+        </div>
+      </section>
+
+      <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Machine vitals">
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">CPU usage</p>
+            <.icon name="hero-cpu-chip" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-cpu" class="np-metric-number">{format_percent(health.cpu_percent)}</p>
+          <p class="np-metric-meta">sampled across {health.cpu_count} cores</p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Memory</p>
+            <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-memory" class="np-metric-number">
+            {format_percent(health.memory_percent)}
+          </p>
+          <p class="np-metric-meta">
+            {format_bytes(health.memory_used_bytes)} of {format_bytes(health.memory_total_bytes)}
+          </p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Storage</p>
+            <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-disk" class="np-metric-number">{format_percent(health.disk_percent)}</p>
+          <p class="np-metric-meta">{format_bytes(health.disk_available_bytes)} available</p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Load</p>
+            <.icon name="hero-chart-bar" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-load" class="np-metric-number">{health.load_1}</p>
+          <p class="np-metric-meta">
+            1 min · {health.load_5} at 5 min · {health.load_15} at 15 min
+          </p>
+        </article>
+      </section>
+
+      <div class="grid min-w-0 gap-5 lg:grid-cols-2">
+        <section class="np-panel overflow-hidden">
+          <div class="np-panel-header">
+            <div>
+              <h2 class="np-panel-title">Capacity</h2>
+              <p class="np-panel-description">Current memory and root storage headroom.</p>
+            </div>
+          </div>
+          <div class="space-y-5 p-4 sm:p-5">
+            <div>
+              <div class="flex items-center justify-between gap-3 text-sm">
+                <span class="font-medium">Memory</span>
+                <span class="font-mono text-xs text-base-content/50">
+                  {format_percent(health.memory_percent)}
+                </span>
+              </div>
+              <progress
+                class="progress progress-success mt-2 h-2 w-full"
+                value={health.memory_percent}
+                max="100"
+              >
+              </progress>
+              <p class="mt-2 text-xs text-base-content/45">
+                {format_bytes(health.memory_total_bytes - health.memory_used_bytes)} available · swap {format_bytes(
+                  health.swap_used_bytes
+                )} used
+              </p>
+            </div>
+            <div>
+              <div class="flex items-center justify-between gap-3 text-sm">
+                <span class="font-medium">Root storage</span>
+                <span class="font-mono text-xs text-base-content/50">
+                  {format_percent(health.disk_percent)}
+                </span>
+              </div>
+              <progress
+                class="progress progress-info mt-2 h-2 w-full"
+                value={health.disk_percent}
+                max="100"
+              >
+              </progress>
+              <p class="mt-2 text-xs text-base-content/45">
+                {format_bytes(health.disk_used_bytes)} used of {format_bytes(
+                  health.disk_total_bytes
+                )}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="np-panel overflow-hidden">
+          <div class="np-panel-header">
+            <div>
+              <h2 class="np-panel-title">Local runtime</h2>
+              <p class="np-panel-description">Application capacity visible to nixploy.</p>
+            </div>
+          </div>
+          <dl class="grid gap-px bg-base-300 sm:grid-cols-2">
+            <div class="np-data-cell">
+              <dt>Podman</dt>
+              <dd class="flex items-center gap-2">
+                <span class={[
+                  "np-status-dot",
+                  @local_inventory_status == :available && "np-status-dot-success",
+                  @local_inventory_status == :loading && "np-status-dot-info",
+                  @local_inventory_status == :failed && "np-status-dot-error"
+                ]}>
+                </span>
+                {@local_inventory_status}
+              </dd>
+            </div>
+            <div class="np-data-cell">
+              <dt>Applications</dt>
+              <dd>
+                {running_workload_count(@local_inventory)} running of {managed_workload_count(
+                  @local_inventory
+                )}
+              </dd>
+            </div>
+            <div class="np-data-cell">
+              <dt>Processes</dt>
+              <dd>{health.running_processes} running · {health.total_processes} total</dd>
+            </div>
+            <div class="np-data-cell">
+              <dt>Uptime</dt>
+              <dd>{format_duration(health.uptime_seconds)}</dd>
+            </div>
+          </dl>
+          <div class="border-t border-base-300 p-4">
+            <.link navigate={~p"/applications"} class="btn btn-outline btn-sm min-h-10 w-full">
+              View applications
+            </.link>
+          </div>
+        </section>
+      </div>
     </div>
   </section>
 

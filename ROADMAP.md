@@ -330,7 +330,9 @@ the information architecture after the native semantics are proven.
 navigation now uses Overview, Applications, Releases, and Deployments. The
 application workspace reads real rootless Podman state and presents automatic
 health, point-in-time CPU/RAM/process/network/disk metrics, bounded logs, active
-slot, revision, and technical evidence through one mobile-safe view. Releases
+slot, revision, and technical evidence through one mobile-safe view. A separate
+Machine page samples host CPU, memory, root storage, load, uptime, process count,
+and local runtime capacity without exposing host mutation controls. Releases
 lead with deployable application intent; host-local source registration is
 collapsed under an explicitly advanced bridge. Historical low-level URLs remain
 as compatibility aliases for retained bookmarks.

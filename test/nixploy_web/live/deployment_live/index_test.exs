@@ -6,8 +6,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   alias Nixploy.Deployments
   alias Nixploy.Deployments.{LocalStoreInput, NativeWorker, SimulatedWorker}
-  alias Nixploy.LocalHost
-  alias Nixploy.Fixtures
+  alias Nixploy.{Fixtures, LocalHost, MachineHealth}
   alias Nixploy.Operations.{LogWorker, StatusWorker}
 
   defmodule NativeExecutorStub do
@@ -71,6 +70,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     previous_probe = Application.get_env(:nixploy, :local_inventory_probe)
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
     previous_health_probe = Application.get_env(:nixploy, :local_health_probe)
+    previous_machine_health_probe = Application.get_env(:nixploy, :machine_health_probe)
     previous_store_probe = Application.get_env(:nixploy, :local_store_input_probe)
     previous_native_executor = Application.get_env(:nixploy, :native_deployment_executor)
 
@@ -141,8 +141,31 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       observed_at: ~U[2026-07-27 12:06:00Z]
     }
 
+    machine_health = %MachineHealth.Snapshot{
+      hostname: "nixploy-vps",
+      observed_at: ~U[2026-07-27 12:07:00Z],
+      cpu_percent: 18.4,
+      cpu_count: 4,
+      load_1: 0.42,
+      load_5: 0.31,
+      load_15: 0.25,
+      running_processes: 2,
+      total_processes: 321,
+      memory_total_bytes: 8_589_934_592,
+      memory_used_bytes: 3_221_225_472,
+      memory_percent: 37.5,
+      swap_total_bytes: 1_073_741_824,
+      swap_used_bytes: 134_217_728,
+      disk_total_bytes: 107_374_182_400,
+      disk_used_bytes: 42_949_672_960,
+      disk_available_bytes: 64_424_509_440,
+      disk_percent: 40.0,
+      uptime_seconds: 183_900
+    }
+
     Application.put_env(:nixploy, :local_inventory_probe, fn -> {:ok, inventory} end)
     Application.put_env(:nixploy, :local_workload_probe, fn _id -> {:ok, details} end)
+    Application.put_env(:nixploy, :machine_health_probe, fn -> {:ok, machine_health} end)
 
     Application.put_env(:nixploy, :local_health_probe, fn _id ->
       {:ok, health_observation}
@@ -173,6 +196,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       restore_env(:local_inventory_probe, previous_probe)
       restore_env(:local_workload_probe, previous_workload_probe)
       restore_env(:local_health_probe, previous_health_probe)
+      restore_env(:machine_health_probe, previous_machine_health_probe)
       restore_env(:local_store_input_probe, previous_store_probe)
       restore_env(:native_deployment_executor, previous_native_executor)
     end)
@@ -195,6 +219,33 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     refute has_element?(view, "#local-workload-123456abcdef")
     refute has_element?(view, "#local-store-inspect-form")
     refute has_element?(view, "#deployments-page")
+  end
+
+  test "shows overall machine health and refreshes a bounded sample", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/machine")
+
+    assert has_element?(view, "#machine-health-page", "Machine health")
+    assert has_element?(view, "#machine-health-page", "nixploy-vps")
+    assert has_element?(view, "#machine-cpu", "18.4%")
+    assert has_element?(view, "#machine-memory", "37.5%")
+    assert has_element?(view, "#machine-disk", "40.0%")
+    assert has_element?(view, "#machine-load", "0.42")
+    assert has_element?(view, "#machine-health-page", "2d 3h")
+    assert has_element?(view, "a[aria-current='page'][href='/machine']", "Machine")
+
+    view |> element("#refresh-machine-health") |> render_click()
+    assert has_element?(view, "#machine-health-page", "sampled 2026-07-27 12:07:00 UTC")
+  end
+
+  test "renders machine observation failures without losing navigation", %{conn: conn} do
+    Application.put_env(:nixploy, :machine_health_probe, fn ->
+      {:error, {:disk_usage_failed, :timeout}}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/machine")
+
+    assert has_element?(view, "#machine-health-error", "timed out after 10 seconds")
+    assert has_element?(view, "nav[aria-label='Primary navigation']", "Applications")
   end
 
   test "opens local workload details and bounded logs without registration", %{conn: conn} do
