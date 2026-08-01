@@ -241,7 +241,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   defp evaluate(store_path, execute, opts) do
     command = %Command{
       executable: nix_executable(),
-      args: ["eval", "--json", "--no-write-lock-file", "#{store_path}#nixploy"],
+      args: ["eval", "--quiet", "--json", "--no-write-lock-file", "#{store_path}#nixploy"],
       timeout: @eval_timeout,
       max_output_bytes: @max_json_bytes
     }

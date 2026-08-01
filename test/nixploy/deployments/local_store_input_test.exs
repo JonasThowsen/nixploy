@@ -186,6 +186,7 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
 
     assert eval.args == [
              "eval",
+             "--quiet",
              "--json",
              "--no-write-lock-file",
              "#{@store_path}#nixploy"
