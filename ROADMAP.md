@@ -156,6 +156,44 @@ legacy C# tests when that adapter changes.
 
 ---
 
+# V1 completion — current delivery order
+
+The production facts recorded in the historical milestones below remain valid.
+They are evidence, not the current implementation order. V1 now completes the
+native local control plane without depending on GitHub delivery, OAuth, Ash,
+agents, MCP, or a generic plugin system.
+
+Work proceeds as eight independently verified tracer slices:
+
+1. **Roadmap and operation reconciliation** — keep production evidence factual
+   and reconcile every durable side effect before continuing.
+2. **Direct-main release tracer** — one NixOS-allowlisted application crosses
+   authenticated request, worker-only exact `refs/heads/main` resolution,
+   immutable Nix materialization/evaluation, stable release review,
+   commit-named confirmation, and the existing native deployment path.
+3. **Immutable identity hardening** — concurrent preparation, main advancement,
+   release retention, complete image identity, observed current state, and exact
+   retry converge without resolving Git twice.
+4. **MoonBit deployment policy** — reproducibly package one bounded WASIp1
+   component, record shadow evidence, then enforce it fail-closed immediately
+   before build.
+5. **Operator investigation** — complete progress, failure, cancellation,
+   rollback, bounded evidence, and accessible mobile/desktop application views.
+6. **Flake-declared task tracer** — execute one named fixed-argv task through the
+   worker with confirmation, cancellation, audit, and bounded output.
+7. **Recovery and isolation** — reconcile interrupted native effects, prove
+   backup/clean restore and packaged migration recovery, persist worker liveness,
+   and prove web/worker capability separation.
+8. **Release closure** — run all tests/builds and real browser checks, pin and
+   deploy the pushed package, verify production, and record only observed
+   evidence.
+
+The release-registration API and compatibility adapter remain available as
+recovery/integration surfaces. They are not the primary V1 workflow. A slice is
+complete only after its focused and full gates pass; production claims are added
+only after direct observation. Inline `TODO(tracer)` comments are permitted only
+at a safe implemented boundary and name the replacing slice.
+
 # Milestone 1 — Native local deployment and rollback
 
 **Goal:** replace the legacy adapter one complete local workflow at a time while
@@ -657,11 +695,12 @@ all claims are backed by persisted events plus independent observations.
 
 ---
 
-# Milestone 6 — Optional integrations after the local control plane
+# Milestone 6 — Optional integrations after V1
 
-GitHub remains deliberately deferred until local deployment, rollback,
-operations, mobile UI, self-host recovery, and the core Ash action model are
-stable.
+GitHub, Ash, agents, and MCP remain deliberately post-V1. They may be considered
+only after direct-main deployment, rollback, named operations, mobile UI,
+self-host recovery, policy containment, and split-role isolation have complete
+production evidence.
 
 Potential later slices may include:
 
@@ -687,25 +726,19 @@ dependent on GitHub availability.
 - autonomous destructive operations without actor-bound confirmation;
 - a big-bang Ash rewrite before the operational model is proven.
 
-## Decision gates to resolve through tracers
+## Post-V1 decision gates
 
-The following remain decisions to prove, not abstractions to pre-build:
+The following remain decisions to prove after V1, not abstractions to pre-build:
 
-- operator-side transport for immutable Nix store sources;
-- stable resource identity for a new project with no existing managed workload;
-- persisted log/artifact storage and retention;
-- exact web/worker split and lease granularity under real load;
+- whether GitHub metadata adds value without becoming a delivery dependency;
+- persisted log/artifact retention beyond V1's bounded operational evidence;
 - MCP authentication for non-browser clients while retaining the Tailscale
   network boundary;
-- how existing Ecto tables migrate incrementally to Ash resources;
-- which operations require prepare/execute confirmation versus ordinary audited
-  execution.
+- whether the proven Ecto model benefits from incremental Ash resources; and
+- whether additional policies justify a typed WIT boundary or plugin lifecycle.
 
 ## Immediate next step
 
-Provision Jomat's tag-scoped Tailscale GitHub OAuth secrets, enable its gated
-push workflow, and prove one GitHub-originated delivery returns the same durable
-release semantics as the production transport tracer. Only then remove the
-Advanced manual bridge. The registration token is already provisioned as a
-GitHub secret; OAuth client ID/secret and tailnet ACL scope remain the explicit
-external identity boundary.
+Complete Slice 1 above, then prove the Slice 2 direct-main tracer for one known
+NixOS-allowlisted application. Do not provision GitHub OAuth or remove the
+compatibility bridge as part of V1.
