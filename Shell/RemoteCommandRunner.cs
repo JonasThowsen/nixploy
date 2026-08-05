@@ -20,10 +20,20 @@ public sealed class RemoteCommandRunner(ICommandRunner commandRunner) : IRemoteC
             target.Port.ToString()
         };
 
-        if (!string.IsNullOrWhiteSpace(target.IdentityFile))
+        var identityFile = System.Environment.GetEnvironmentVariable("NIXPLOY_SSH_IDENTITY_FILE") ??
+            target.IdentityFile;
+        var knownHostsFile = System.Environment.GetEnvironmentVariable("NIXPLOY_SSH_KNOWN_HOSTS_FILE");
+
+        if (!string.IsNullOrWhiteSpace(knownHostsFile))
+        {
+            arguments.Add("-o");
+            arguments.Add($"UserKnownHostsFile={knownHostsFile}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(identityFile))
         {
             arguments.Add("-i");
-            arguments.Add(ExpandHome(target.IdentityFile));
+            arguments.Add(ExpandHome(identityFile));
         }
 
         arguments.Add("--");

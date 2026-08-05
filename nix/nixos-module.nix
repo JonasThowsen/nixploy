@@ -19,22 +19,57 @@ let
       exec ${cfg.package}/bin/nixploy start
     '';
 
-  commonServiceConfig = {
+  roleUser = role: if cfg.splitRoles then (if role == "web" then cfg.webUser else cfg.workerUser) else cfg.user;
+  roleGroup = role: if cfg.splitRoles then (if role == "web" then cfg.webGroup else cfg.workerGroup) else cfg.group;
+  roleState = role: if cfg.splitRoles then "nixploy-${role}" else "nixploy";
+
+  commonServiceConfig = role: {
     Type = "exec";
-    User = cfg.user;
-    Group = cfg.group;
+    User = roleUser role;
+    Group = roleGroup role;
     EnvironmentFile = cfg.environmentFile;
     Restart = "on-failure";
     RestartSec = 5;
-    StateDirectory = "nixploy";
-    WorkingDirectory = "/var/lib/nixploy";
+    StateDirectory = roleState role;
+    WorkingDirectory = "/var/lib/${roleState role}";
     UMask = "0077";
     NoNewPrivileges = true;
     PrivateTmp = true;
+    PrivateMounts = true;
     ProtectSystem = "strict";
-    # Rootless Podman needs the runtime user's home and /run/user state.
-    ProtectHome = false;
-    ReadWritePaths = [ "/var/lib/nixploy" ];
+    ProtectHome = true;
+    ReadWritePaths = [ "/var/lib/${roleState role}" ];
+    RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+    LockPersonality = true;
+    RestrictSUIDSGID = true;
+  };
+
+  backupScript = pkgs.writeShellApplication {
+    name = "nixploy-backup";
+    runtimeInputs = [ pkgs.coreutils pkgs.findutils pkgs.postgresql_18 ];
+    text = ''
+      set -euo pipefail
+      umask 0077
+      : "''${DATABASE_URL:?DATABASE_URL is required}"
+      backup_dir=/var/lib/nixploy-backups
+      timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+      partial="$backup_dir/nixploy-$timestamp.dump.partial"
+      final="$backup_dir/nixploy-$timestamp.dump"
+      manifest="$backup_dir/nixploy-$timestamp.manifest"
+      checksum="$backup_dir/nixploy-$timestamp.sha256"
+      cleanup() { rm -f "$partial"; }
+      trap cleanup EXIT
+      pg_dump --format=custom --no-owner --no-privileges --dbname="$DATABASE_URL" --file="$partial"
+      test -s "$partial"
+      pg_restore --list "$partial" > "$manifest.partial"
+      test -s "$manifest.partial"
+      mv "$partial" "$final"
+      mv "$manifest.partial" "$manifest"
+      sha256sum "$final" > "$checksum.partial"
+      mv "$checksum.partial" "$checksum"
+      find "$backup_dir" -type f -mtime +${toString cfg.backup.retentionDays} -delete
+      trap - EXIT
+    '';
   };
 
   credentialName = key: "git-${key}";
@@ -55,6 +90,7 @@ let
 
   commonEnvironment = {
     NIXPLOY_AUTH_MODE = cfg.authMode;
+    NIXPLOY_RUNTIME_MODE = cfg.runtimeMode;
     NIXPLOY_MANAGED_APPLICATIONS_JSON = builtins.toJSON publicApplications;
     RELEASE_DISTRIBUTION = "none";
   };
@@ -77,6 +113,12 @@ in
       ];
       default = "all";
       description = "Runtime role used when splitRoles is disabled.";
+    };
+
+    runtimeMode = lib.mkOption {
+      type = lib.types.enum [ "remote_control_plane" "local_recovery" ];
+      default = "remote_control_plane";
+      description = "Production application effects use named remote targets; local recovery must be explicit.";
     };
 
     splitRoles = lib.mkOption {
@@ -120,6 +162,24 @@ in
           };
         }
       );
+    };
+
+    workerSopsAgeKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Worker-only age identity file consumed by the packaged remote CLI.";
+    };
+
+    workerSshIdentityFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Worker-only SSH identity for strict remote Podman and Caddy access.";
+    };
+
+    workerSshKnownHostsFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Worker-only fixed known_hosts file; host-key relaxation is never enabled.";
     };
 
     workerSopsAgeSshKeyFile = lib.mkOption {
@@ -174,6 +234,28 @@ in
       '';
     };
 
+    webUser = lib.mkOption {
+      type = lib.types.str;
+      default = "nixploy-web";
+      description = "Credential-free web process identity when splitRoles is enabled.";
+    };
+
+    webGroup = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.webUser;
+    };
+
+    workerUser = lib.mkOption {
+      type = lib.types.str;
+      default = "nixploy-worker";
+      description = "Deployment worker identity when splitRoles is enabled.";
+    };
+
+    workerGroup = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.workerUser;
+    };
+
     user = lib.mkOption {
       type = lib.types.str;
       default = "nixploy";
@@ -194,8 +276,25 @@ in
 
     localPodman = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = "Enable Podman and expose this user's local workloads to the control plane.";
+    };
+
+    backup = lib.mkOption {
+      default = { };
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "verified PostgreSQL custom-format backups";
+          schedule = lib.mkOption {
+            type = lib.types.str;
+            default = "daily";
+          };
+          retentionDays = lib.mkOption {
+            type = lib.types.ints.between 1 3650;
+            default = 30;
+          };
+        };
+      };
     };
 
     environmentFile = lib.mkOption {
@@ -223,34 +322,88 @@ in
     virtualisation.podman.enable = lib.mkIf cfg.localPodman true;
     users.manageLingering = lib.mkIf (cfg.localPodman && cfg.manageUser) true;
 
-    users.users = lib.mkIf cfg.manageUser {
-      "${cfg.user}" = {
-        isNormalUser = true;
-        group = cfg.group;
-        home = "/var/lib/nixploy";
-        createHome = true;
-        linger = cfg.localPodman;
-      };
-    };
+    users.users = lib.mkIf cfg.manageUser (
+      if cfg.splitRoles then
+        {
+          "${cfg.webUser}" = {
+            isSystemUser = true;
+            group = cfg.webGroup;
+            home = "/var/lib/nixploy-web";
+          };
+          "${cfg.workerUser}" = {
+            isSystemUser = true;
+            group = cfg.workerGroup;
+            home = "/var/lib/nixploy-worker";
+          };
+        }
+      else
+        {
+          "${cfg.user}" = {
+            isNormalUser = true;
+            group = cfg.group;
+            home = "/var/lib/nixploy";
+            createHome = true;
+            linger = cfg.localPodman;
+          };
+        }
+    );
 
-    users.groups = lib.mkIf cfg.manageUser { "${cfg.group}" = { }; };
+    users.groups = lib.mkIf cfg.manageUser (
+      if cfg.splitRoles then
+        {
+          "${cfg.webGroup}" = { };
+          "${cfg.workerGroup}" = { };
+        }
+      else
+        { "${cfg.group}" = { }; }
+    );
 
     assertions = [
       {
-        assertion = !cfg.manageUser || cfg.user != "root";
+        assertion =
+          !cfg.manageUser
+          || (if cfg.splitRoles then cfg.webUser != "root" && cfg.workerUser != "root" else cfg.user != "root");
         message = "services.nixploy-control-plane.manageUser cannot create root";
       }
       {
-        assertion = cfg.manageUser || builtins.hasAttr cfg.user config.users.users;
-        message = "services.nixploy-control-plane.manageUser = false requires users.users.${cfg.user}";
+        assertion = !cfg.splitRoles || cfg.webUser != cfg.workerUser;
+        message = "splitRoles requires distinct webUser and workerUser identities";
+      }
+      {
+        assertion =
+          cfg.manageUser
+          || (if cfg.splitRoles then
+            builtins.hasAttr cfg.webUser config.users.users && builtins.hasAttr cfg.workerUser config.users.users
+          else
+            builtins.hasAttr cfg.user config.users.users);
+        message = "manageUser = false requires every configured runtime identity to exist";
       }
       {
         assertion = !cfg.splitRoles || cfg.role == "all";
         message = "services.nixploy-control-plane.role must remain all when splitRoles is enabled";
       }
       {
-        assertion = !cfg.splitRoles || cfg.workerSopsAgeSshKeyFile != null;
-        message = "splitRoles requires workerSopsAgeSshKeyFile for worker-only credential access";
+        assertion = !cfg.splitRoles || cfg.workerSopsAgeKeyFile != null;
+        message = "splitRoles requires workerSopsAgeKeyFile for worker-only SOPS access";
+      }
+      {
+        assertion = !cfg.splitRoles || cfg.workerSshIdentityFile != null;
+        message = "splitRoles requires workerSshIdentityFile for durable remote access";
+      }
+      {
+        assertion = !cfg.splitRoles || cfg.workerSshKnownHostsFile != null;
+        message = "splitRoles requires workerSshKnownHostsFile for strict host verification";
+      }
+      {
+        assertion = !cfg.splitRoles || !cfg.localPodman;
+        message = "split remote-control-plane roles cannot depend on local Podman";
+      }
+      {
+        assertion =
+          !cfg.splitRoles
+          || lib.all (application: lib.hasPrefix "/var/lib/nixploy-worker/" application.repository)
+            (lib.attrValues cfg.applications);
+        message = "splitRoles requires managed repositories under worker-owned /var/lib/nixploy-worker";
       }
     ];
 
@@ -274,7 +427,7 @@ in
             NIXPLOY_RELEASE_REGISTRATION_REPOSITORY = cfg.releaseRegistrationRepository;
           };
 
-        serviceConfig = commonServiceConfig // {
+        serviceConfig = commonServiceConfig "web" // {
           ExecStart = startControlPlane (if cfg.splitRoles then "web" else cfg.role);
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
           LoadCredential = lib.optional (cfg.releaseRegistrationTokenFile != null)
@@ -295,15 +448,59 @@ in
 
         environment = commonEnvironment // {
           NIXPLOY_MANAGED_APPLICATION_CREDENTIALS_JSON = builtins.toJSON workerCredentialPaths;
+          SOPS_AGE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-key";
+          NIXPLOY_SSH_IDENTITY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-identity";
+          NIXPLOY_SSH_KNOWN_HOSTS_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-known-hosts";
         };
 
-        serviceConfig = commonServiceConfig // {
+        serviceConfig = commonServiceConfig "worker" // {
           ExecStart = startControlPlane "worker";
           LoadCredential =
-            [ "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}" ]
+            [
+              "nixploy-sops-age-key:${cfg.workerSopsAgeKeyFile}"
+              "nixploy-ssh-identity:${cfg.workerSshIdentityFile}"
+              "nixploy-ssh-known-hosts:${cfg.workerSshKnownHostsFile}"
+            ]
+            ++ lib.optional (cfg.workerSopsAgeSshKeyFile != null)
+              "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
             ++ lib.mapAttrsToList (
               key: application: "${credentialName key}:${application.credentialFile}"
             ) (lib.filterAttrs (_key: application: application.credentialFile != null) cfg.applications);
+        };
+      };
+    }
+    // lib.optionalAttrs cfg.backup.enable {
+      nixploy-backup = {
+        description = "Verified nixploy PostgreSQL backup";
+        after = [ "postgresql.service" ];
+        environment = { HOME = "/var/lib/nixploy-backups"; };
+        serviceConfig = {
+          Type = "oneshot";
+          User = if cfg.splitRoles then cfg.workerUser else cfg.user;
+          Group = if cfg.splitRoles then cfg.workerGroup else cfg.group;
+          EnvironmentFile = cfg.environmentFile;
+          StateDirectory = "nixploy-backups";
+          WorkingDirectory = "/var/lib/nixploy-backups";
+          UMask = "0077";
+          PrivateTmp = true;
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          ReadWritePaths = [ "/var/lib/nixploy-backups" ];
+          ExecStart = lib.getExe backupScript;
+        };
+      };
+    };
+
+    systemd.timers = lib.optionalAttrs cfg.backup.enable {
+      nixploy-backup = {
+        description = "Schedule verified nixploy PostgreSQL backups";
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = cfg.backup.schedule;
+          Persistent = true;
+          RandomizedDelaySec = "15m";
+          Unit = "nixploy-backup.service";
         };
       };
     };

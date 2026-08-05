@@ -217,7 +217,11 @@
                 services.nixploy-control-plane = {
                   enable = true;
                   splitRoles = true;
+                  workerSopsAgeKeyFile = "/run/keys/nixploy.age";
                   workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
+                  workerSshIdentityFile = "/run/keys/nixploy-ssh";
+                  workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+                  backup.enable = true;
                   environmentFile = "/run/keys/nixploy.env";
                 };
               }

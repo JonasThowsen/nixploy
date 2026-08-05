@@ -96,23 +96,23 @@ public sealed class PodmanServiceTests
         Assert.Equal(["system", "connection", "list", "--format", "json"], runner.Calls[1].Arguments);
         Assert.Equal("info", runner.Calls[2].Arguments[^1]);
         Assert.Equal(
-            ["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@203.0.113.10"],
+            [
+                "system", "connection", "add", "nixploy-my-app-prod", "--port", "2222",
+                "--identity", "/tmp/id_ed25519", "deploy@203.0.113.10"
+            ],
             runner.Calls[3].Arguments
         );
         Assert.Equal("info", runner.Calls[4].Arguments[^1]);
     }
 
     [Fact]
-    public async Task EnsureConnectionAsync_RecreatesExistingConnectionWithStoredIdentity()
+    public async Task EnsureConnectionAsync_UsesMatchingStoredWorkerIdentity()
     {
         var runner = new RecordingCommandRunner(
             new CommandRunResult(0, "", ""),
             new CommandRunResult(0, """
-            [{"Name":"nixploy-my-app-prod","Identity":"/tmp/id_ed25519"}]
+            [{"Name":"nixploy-my-app-prod","Identity":"/tmp/id_ed25519","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
             """, ""),
-            new CommandRunResult(0, "", ""),
-            new CommandRunResult(1, "", "missing"),
-            new CommandRunResult(0, "", ""),
             new CommandRunResult(0, "", "")
         );
         var service = new PodmanService(runner);
@@ -127,8 +127,8 @@ public sealed class PodmanServiceTests
         var success = await service.EnsureConnectionAsync("nixploy-my-app-prod", "prod", target);
 
         Assert.True(success);
-        Assert.Equal(["system", "connection", "rm", "nixploy-my-app-prod"], runner.Calls[2].Arguments);
-        Assert.Equal(["system", "connection", "add", "nixploy-my-app-prod", "--port", "2222", "deploy@203.0.113.10"], runner.Calls[4].Arguments);
+        Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal("info", runner.Calls[2].Arguments[^1]);
     }
 
     [Fact]

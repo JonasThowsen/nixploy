@@ -13,6 +13,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
     public async Task<bool> EnsureConnectionAsync(string resourcePrefix, string targetName, NixployTarget target)
     {
         var connectionName = GetConnectionName(resourcePrefix);
+        var expectedIdentity = WorkerIdentityFile(target);
 
         if (!await VerifySshTargetAsync(target))
         {
@@ -27,10 +28,13 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         {
             string? recreationReason = null;
 
-            if (!string.IsNullOrWhiteSpace(storedConnection.Identity))
+            if (!string.Equals(
+                    NormalizePath(storedConnection.Identity),
+                    NormalizePath(expectedIdentity),
+                    StringComparison.Ordinal
+                ))
             {
-                recreationReason =
-                    $"it stores identity '{storedConnection.Identity}', but SSH/ssh-agent should handle authentication.";
+                recreationReason = "its worker credential identity does not match the configured host-owned credential.";
             }
             else if (!ConnectionMatchesTarget(storedConnection.Uri, target))
             {
@@ -77,13 +81,10 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             target.Port.ToString()
         };
 
-        if (!string.IsNullOrWhiteSpace(target.IdentityFile))
+        if (!string.IsNullOrWhiteSpace(expectedIdentity))
         {
-            Console.WriteLine(
-                "Target has identityFile configured. Podman connections will use SSH/ssh-agent instead of storing " +
-                "the identity file, so passphrase-protected keys keep working for commands that use stdin."
-            );
-            Console.WriteLine($"Make sure the key is available to ssh-agent: ssh-add {ExpandHome(target.IdentityFile)}");
+            arguments.Add("--identity");
+            arguments.Add(expectedIdentity);
         }
 
         arguments.Add($"{target.User}@{target.Ip}");
@@ -128,10 +129,19 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             "-p", target.Port.ToString()
         };
 
-        if (!string.IsNullOrWhiteSpace(target.IdentityFile))
+        var identityFile = WorkerIdentityFile(target);
+        var knownHostsFile = Environment.GetEnvironmentVariable("NIXPLOY_SSH_KNOWN_HOSTS_FILE");
+
+        if (!string.IsNullOrWhiteSpace(knownHostsFile))
+        {
+            arguments.Add("-o");
+            arguments.Add($"UserKnownHostsFile={knownHostsFile}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(identityFile))
         {
             arguments.Add("-i");
-            arguments.Add(ExpandHome(target.IdentityFile));
+            arguments.Add(identityFile);
         }
 
         arguments.Add("--");
@@ -706,6 +716,19 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         arguments.Add("--network");
         arguments.Add(network);
     }
+
+    private static string? WorkerIdentityFile(NixployTarget target)
+    {
+        var configured = Environment.GetEnvironmentVariable("NIXPLOY_SSH_IDENTITY_FILE");
+        return !string.IsNullOrWhiteSpace(configured)
+            ? configured
+            : string.IsNullOrWhiteSpace(target.IdentityFile)
+                ? null
+                : ExpandHome(target.IdentityFile);
+    }
+
+    private static string? NormalizePath(string? path) =>
+        string.IsNullOrWhiteSpace(path) ? null : ExpandHome(path);
 
     private static string ExpandHome(string path)
     {
