@@ -350,6 +350,64 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         return false;
     }
 
+    public async Task<TaskExecutionResult> RunTaskAsync(
+        string connectionName,
+        string resourcePrefix,
+        string imageReference,
+        string imageId,
+        NixployTarget target,
+        NixployTaskConfig task,
+        IReadOnlyList<SecretMount> secrets,
+        IReadOnlyList<Secret> secretValues,
+        DeploymentMetadata metadata
+    )
+    {
+        var image = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "inspect", "--type", "image", imageReference],
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (image.ExitCode != 0 || !ImageIdentityMatches(image.StdOutput, imageId))
+        {
+            return new TaskExecutionResult(false, "Image identity readback failed.", false, image.ExitCode);
+        }
+
+        var suffix = metadata.OperationId.Replace("-", "", StringComparison.Ordinal)[..12];
+        var prefix = resourcePrefix[..Math.Min(resourcePrefix.Length, 90)];
+        var arguments = BuildRunArguments(connectionName, secrets);
+        arguments.Add("--rm");
+        arguments.Add("--name");
+        arguments.Add($"{prefix}-task-{suffix}");
+        AddNetwork(arguments, target.Run.Network);
+        AddEnvironment(arguments, target.Run.Environment, null);
+        AddLabels(arguments, metadata);
+        arguments.Add("--label");
+        arguments.Add("io.nixploy.operation=task");
+        arguments.Add(imageReference);
+        arguments.AddRange(task.Command);
+
+        var result = await commandRunner.RunAsync(
+            "podman",
+            arguments,
+            new CommandRunOptions
+            {
+                StreamOutput = false,
+                Timeout = TimeSpan.FromSeconds(task.TimeoutSeconds),
+                MaxStandardOutputBytes = 65_536,
+                MaxStandardErrorBytes = 65_536
+            }
+        );
+
+        var output = RedactTaskOutput(result.StdOutput + result.StdError, secretValues);
+        return new TaskExecutionResult(
+            result.ExitCode == 0,
+            output,
+            result.StdOutputTruncated || result.StdErrorTruncated,
+            result.ExitCode
+        );
+    }
+
     public async Task<VerifiedContainer?> VerifyContainerAsync(
         string connectionName,
         string containerName,
@@ -552,6 +610,34 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         }
 
         return arguments;
+    }
+
+    private static bool ImageIdentityMatches(string json, string expectedId)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Array &&
+                document.RootElement.GetArrayLength() == 1 &&
+                string.Equals(
+                    document.RootElement[0].GetProperty("Id").GetString(),
+                    expectedId,
+                    StringComparison.Ordinal
+                );
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static string RedactTaskOutput(string output, IReadOnlyList<Secret> secrets)
+    {
+        return secrets.Aggregate(output, (redacted, secret) =>
+            string.IsNullOrEmpty(secret.Value)
+                ? redacted
+                : redacted.Replace(secret.Value, "[REDACTED]", StringComparison.Ordinal)
+        );
     }
 
     private static bool LabelEquals(JsonElement labels, string name, string expected)

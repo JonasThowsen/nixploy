@@ -126,6 +126,18 @@ public sealed class DeploymentCompensationTests
             DeploymentMetadata metadata
         ) => Task.FromResult(true);
 
+        public Task<TaskExecutionResult> RunTaskAsync(
+            string connectionName,
+            string resourcePrefix,
+            string imageReference,
+            string imageId,
+            NixployTarget target,
+            NixployTaskConfig task,
+            IReadOnlyList<SecretMount> secrets,
+            IReadOnlyList<Secret> secretValues,
+            DeploymentMetadata metadata
+        ) => Task.FromResult(new TaskExecutionResult(true, "", false, 0));
+
         public Task<VerifiedContainer?> VerifyContainerAsync(
             string connectionName,
             string containerName,

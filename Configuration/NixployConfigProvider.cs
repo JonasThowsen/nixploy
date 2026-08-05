@@ -4,7 +4,7 @@ namespace Nixploy.Cli;
 
 public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixployConfigProvider
 {
-    private const string SupportedSchema = "v0.2";
+    private static readonly HashSet<string> SupportedSchemas = ["v0.2", "v0.3"];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -49,10 +49,10 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
             var config = JsonSerializer.Deserialize<NixployConfig>(result.StdOutput, JsonOptions)
                 ?? throw new InvalidOperationException("The immutable nixploy source evaluated to empty JSON.");
 
-            if (config.Schema != SupportedSchema)
+            if (!SupportedSchemas.Contains(config.Schema))
             {
                 throw new InvalidOperationException(
-                    $"Unsupported nixploy schema '{config.Schema}'. Expected '{SupportedSchema}'. " +
+                    $"Unsupported nixploy schema '{config.Schema}'. Expected v0.2 or v0.3. " +
                     "Make sure your flake uses nixploy.lib.makeConfig from a compatible nixploy input."
                 );
             }

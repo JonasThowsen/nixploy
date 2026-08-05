@@ -41,6 +41,9 @@ public sealed record NixployTarget
     [JsonPropertyName("web")]
     public NixployWebConfig? Web { get; init; }
 
+    [JsonPropertyName("tasks")]
+    public Dictionary<string, NixployTaskConfig> Tasks { get; init; } = [];
+
     [JsonPropertyName("secrets")]
     public Dictionary<string, string> Secrets { get; init; } = [];
 
@@ -64,6 +67,21 @@ public sealed record NixployRunConfig
 
     [JsonPropertyName("ports")]
     public IReadOnlyList<string> Ports { get; init; } = [];
+}
+
+public sealed record NixployTaskConfig
+{
+    [JsonPropertyName("description")]
+    public string Description { get; init; } = "";
+
+    [JsonPropertyName("command")]
+    public IReadOnlyList<string> Command { get; init; } = [];
+
+    [JsonPropertyName("timeoutSeconds")]
+    public int TimeoutSeconds { get; init; } = 300;
+
+    [JsonPropertyName("confirmation")]
+    public string Confirmation { get; init; } = "required";
 }
 
 public sealed record NixployWebConfig

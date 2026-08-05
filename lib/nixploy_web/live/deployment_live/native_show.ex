@@ -2,7 +2,7 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   use NixployWeb, :live_view
 
   alias Nixploy.Deployments.NativeDeployment
-  alias Nixploy.{NativeDeployments, Notifications}
+  alias Nixploy.{NativeDeployments, Notifications, Tasks}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -39,6 +39,32 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   end
 
   @impl true
+  def handle_event(
+        "run_task",
+        %{"task_name" => task_name, "confirmed_name" => confirmed_name},
+        socket
+      ) do
+    case Tasks.enqueue(
+           socket.assigns.deployment.id,
+           task_name,
+           confirmed_name,
+           socket.assigns.current_operator
+         ) do
+      {:ok, _operation, _job} ->
+        {:noreply, socket |> put_flash(:info, "Operational task queued") |> load()}
+
+      {:error, :task_confirmation_mismatch} ->
+        {:noreply, put_flash(socket, :error, "Type the exact task name to confirm")}
+
+      {:error, :task_not_declared} ->
+        {:noreply, put_flash(socket, :error, "That task is not declared by this release")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not queue operational task")}
+    end
+  end
+
+  @impl true
   def handle_event("cancel_native_deployment", _params, socket) do
     case NativeDeployments.request_cancellation(socket.assigns.deployment.id,
            operator: socket.assigns.current_operator
@@ -66,7 +92,8 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
     assign(socket,
       deployment: deployment,
       events: NativeDeployments.list_events(deployment.id),
-      rollback_status: NativeDeployments.rollback_status(deployment)
+      rollback_status: NativeDeployments.rollback_status(deployment),
+      task_operations: Tasks.list_for_deployment(deployment.id)
     )
   end
 

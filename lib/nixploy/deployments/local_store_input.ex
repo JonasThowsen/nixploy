@@ -6,12 +6,13 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defmodule Source do
     @moduledoc false
-    defstruct [:store_path, :nar_hash, :project, targets: %{}]
+    defstruct [:store_path, :nar_hash, :project, :schema, targets: %{}]
 
     @type t :: %__MODULE__{
             store_path: String.t(),
             nar_hash: String.t(),
             project: String.t(),
+            schema: String.t() | nil,
             targets: %{String.t() => map()}
           }
   end
@@ -19,12 +20,14 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   @path_info_timeout :timer.seconds(30)
   @eval_timeout :timer.minutes(5)
   @max_json_bytes 1_048_576
-  @schema "v0.2"
+  @schemas ["v0.2", "v0.3"]
+  @current_schema "v0.3"
   @max_path_bytes 4_096
   @max_value_bytes 4_096
   @max_pre_start_actions 32
   @max_argv_items 128
   @max_credential_files 16
+  @max_tasks 32
   @nar_hash ~r/^[A-Za-z0-9][A-Za-z0-9+\/_=.~:-]*$/
 
   @spec probe(String.t(), keyword()) :: {:ok, Source.t()} | {:error, term()}
@@ -41,6 +44,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          store_path: store_path,
          nar_hash: nar_hash,
          project: project,
+         schema: config["__schema"],
          targets: targets
        }}
     end
@@ -91,11 +95,11 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   def parse_config(output) when is_binary(output), do: decode_json(output, :nixploy_config)
 
   @doc false
-  def normalize_config(%{"__schema" => @schema, "project" => project, "targets" => targets})
-      when is_map(targets) do
+  def normalize_config(%{"__schema" => schema, "project" => project, "targets" => targets})
+      when schema in @schemas and is_map(targets) do
     with {:ok, project} <- required_string(project, :project),
          false <- map_size(targets) == 0,
-         {:ok, normalized_targets} <- normalize_targets(targets) do
+         {:ok, normalized_targets} <- normalize_targets(targets, schema) do
       {:ok, project, normalized_targets}
     else
       true -> {:error, :flake_targets_missing}
@@ -103,7 +107,8 @@ defmodule Nixploy.Deployments.LocalStoreInput do
     end
   end
 
-  def normalize_config(%{"__schema" => @schema}), do: {:error, :flake_project_or_targets_missing}
+  def normalize_config(%{"__schema" => schema}) when schema in @schemas,
+    do: {:error, :flake_project_or_targets_missing}
 
   def normalize_config(%{"__schema" => schema}),
     do: {:error, {:unsupported_config_schema, schema}}
@@ -112,7 +117,7 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   def normalize_config(_config), do: {:error, :nixploy_config_not_an_object}
 
   @doc false
-  def select_target(%Source{project: project, targets: targets}, target_name) do
+  def select_target(%Source{project: project, schema: schema, targets: targets}, target_name) do
     target_name = normalize_target_name(target_name)
 
     case {target_name, Map.keys(targets) |> Enum.sort()} do
@@ -120,13 +125,13 @@ defmodule Nixploy.Deployments.LocalStoreInput do
         {:error, :flake_targets_missing}
 
       {nil, [only_target]} ->
-        selected(project, targets, only_target)
+        selected(project, targets, only_target, schema)
 
       {nil, target_names} ->
         {:error, {:ambiguous_flake_targets, target_names}}
 
       {name, _target_names} ->
-        selected(project, targets, name)
+        selected(project, targets, name, schema)
     end
   end
 
@@ -317,13 +322,13 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defp extract_nar_hash(_info), do: {:error, :nar_hash_missing}
 
-  defp normalize_targets(targets) do
+  defp normalize_targets(targets, schema) do
     targets
     |> Enum.sort_by(fn {name, _target} -> to_string(name) end)
     |> Enum.reduce_while({:ok, %{}}, fn
       {name, target}, {:ok, normalized} when is_binary(name) and is_map(target) ->
         with {:ok, name} <- required_string(name, :target_name),
-             {:ok, snapshot} <- normalize_target(name, target) do
+             {:ok, snapshot} <- normalize_target(name, target, schema) do
           {:cont, {:ok, Map.put(normalized, name, snapshot)}}
         else
           {:error, reason} -> {:halt, {:error, reason}}
@@ -334,11 +339,12 @@ defmodule Nixploy.Deployments.LocalStoreInput do
     end)
   end
 
-  defp normalize_target(name, target) do
+  defp normalize_target(name, target, schema) do
     web = target["web"]
     slots = is_map(web) && web["slots"]
     run = target["run"] || %{}
     secrets = target["secrets"] || %{}
+    tasks = target["tasks"] || %{}
 
     with {:ok, image} <- target_string(target, "image", name),
          true <- is_map(web),
@@ -350,19 +356,25 @@ defmodule Nixploy.Deployments.LocalStoreInput do
          {:ok, green} <- target_port(slots, "green", name),
          true <- blue != green,
          {:ok, normalized_run} <- normalize_run(run, name),
-         {:ok, credential_references} <- normalize_credentials(secrets, name) do
+         {:ok, credential_references} <- normalize_credentials(secrets, name),
+         {:ok, normalized_tasks} <- normalize_tasks_for_schema(tasks, name, schema) do
+      snapshot = %{
+        "name" => name,
+        "image_output" => image,
+        "domain" => domain,
+        "health_path" => health_path,
+        "slots" => %{"blue" => blue, "green" => green},
+        "run" => normalized_run,
+        "credential_references" => credential_references,
+        "pre_start_declared" => normalized_run["pre_start"] != [],
+        "secrets_declared" => map_size(credential_references) > 0
+      }
+
       {:ok,
-       %{
-         "name" => name,
-         "image_output" => image,
-         "domain" => domain,
-         "health_path" => health_path,
-         "slots" => %{"blue" => blue, "green" => green},
-         "run" => normalized_run,
-         "credential_references" => credential_references,
-         "pre_start_declared" => normalized_run["pre_start"] != [],
-         "secrets_declared" => map_size(credential_references) > 0
-       }}
+       if(schema == @current_schema,
+         do: Map.put(snapshot, "tasks", normalized_tasks),
+         else: snapshot
+       )}
     else
       false -> {:error, {:invalid_target, name, "web or runtime configuration"}}
       {:error, _reason} = error -> error
@@ -388,6 +400,42 @@ defmodule Nixploy.Deployments.LocalStoreInput do
 
   defp normalize_run(_run, target_name),
     do: {:error, {:invalid_target, target_name, "run"}}
+
+  defp normalize_tasks_for_schema(_tasks, _target_name, "v0.2"), do: {:ok, %{}}
+
+  defp normalize_tasks_for_schema(tasks, target_name, "v0.3"),
+    do: normalize_tasks(tasks, target_name)
+
+  defp normalize_tasks(tasks, target_name) when is_map(tasks) and map_size(tasks) <= @max_tasks do
+    tasks
+    |> Enum.sort_by(fn {name, _task} -> to_string(name) end)
+    |> Enum.reduce_while({:ok, %{}}, fn
+      {name, task}, {:ok, normalized}
+      when is_binary(name) and is_map(task) ->
+        with true <- Regex.match?(~r/^[a-z][a-z0-9_-]{0,63}$/, name),
+             {:ok, description} <- required_string(task["description"], :task_description),
+             {:ok, command} <- argv(task["command"], target_name, "tasks.#{name}.command"),
+             timeout when is_integer(timeout) and timeout in 1..3600 <- task["timeoutSeconds"],
+             confirmation when confirmation in ["required", "dangerous"] <- task["confirmation"] do
+          normalized_task = %{
+            "description" => description,
+            "command" => command,
+            "timeout_seconds" => timeout,
+            "confirmation" => confirmation
+          }
+
+          {:cont, {:ok, Map.put(normalized, name, normalized_task)}}
+        else
+          _invalid -> {:halt, {:error, {:invalid_target, target_name, "tasks.#{name}"}}}
+        end
+
+      _invalid, _acc ->
+        {:halt, {:error, {:invalid_target, target_name, "tasks"}}}
+    end)
+  end
+
+  defp normalize_tasks(_tasks, target_name),
+    do: {:error, {:invalid_target, target_name, "tasks"}}
 
   defp normalize_credentials(credentials, target_name)
        when is_map(credentials) and map_size(credentials) <= @max_credential_files do
@@ -518,11 +566,11 @@ defmodule Nixploy.Deployments.LocalStoreInput do
   defp invalid_string_code(:target_name), do: :invalid_target_name
   defp invalid_string_code(field), do: field
 
-  defp selected(project, targets, name) do
+  defp selected(project, targets, name, schema) do
     case Map.fetch(targets, name) do
       {:ok, target} ->
         snapshot = %{
-          "schema" => @schema,
+          "schema" => schema || "v0.2",
           "project" => project,
           "target" => target
         }

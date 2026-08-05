@@ -16,9 +16,11 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
     input = deployment.deployment_input
     resource_key = ResourceIdentity.derive!(deployment.project, deployment.target)
 
+    operation = Keyword.get(opts, :operation, :deploy)
+
     payload = %{
       "configuration_digest" => input.configuration_digest,
-      "operation" => "deploy",
+      "operation" => Atom.to_string(operation),
       "operation_id" => deployment.id,
       "resource_key" => resource_key,
       "runtime_mode" => Atom.to_string(runtime_mode(opts)),
@@ -36,7 +38,11 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
     mode = Keyword.get(opts, :mode, policy_mode())
 
     flags = [
-      if(payload["operation"] == "deploy", do: 1, else: 0),
+      case operation do
+        :deploy -> 1
+        :task -> 2
+        _operation -> 0
+      end,
       if(payload["runtime_mode"] == "remote_control_plane", do: 1, else: 0),
       if(payload["source_kind"] == "git_main", do: 1, else: 0),
       if(resource_key_valid?(resource_key), do: 1, else: 0),

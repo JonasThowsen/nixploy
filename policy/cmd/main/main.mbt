@@ -9,7 +9,7 @@ pub fn decide(
   resource_key_valid : Int,
   immutable_identity_valid : Int,
 ) -> Int {
-  if operation == 1 &&
+  if (operation == 1 || operation == 2) &&
     runtime_mode == 1 &&
     source_kind == 1 &&
     resource_key_valid == 1 &&

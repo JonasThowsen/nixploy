@@ -226,6 +226,59 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task RunTaskAsync_UsesFixedDeclaredArgvNamedConnectionAndRedactsOutput()
+    {
+        var imageId = "sha256:" + new string('a', 64);
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, $"[{{\"Id\":\"{imageId}\"}}]", ""),
+            new CommandRunResult(0, "completed token-value\n", "")
+        );
+        var service = new PodmanService(runner);
+        var metadata = new DeploymentMetadata(
+            "my-app",
+            "project-id",
+            "prod",
+            "fixture/repository",
+            new string('b', 40),
+            "2026-08-05T00:00:00Z",
+            "digest",
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "nixploy-my-app-prod"
+        );
+        var target = new NixployTarget
+        {
+            Run = new NixployRunConfig { Network = "host" }
+        };
+        var task = new NixployTaskConfig
+        {
+            Command = ["/app/bin/task", "refresh-search"],
+            TimeoutSeconds = 120
+        };
+
+        var result = await service.RunTaskAsync(
+            "connection",
+            "nixploy-my-app-prod",
+            "localhost/app:latest",
+            imageId,
+            target,
+            task,
+            [],
+            [new Secret("TOKEN", "token-value")],
+            metadata
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal("completed [REDACTED]\n", result.Output);
+        var call = runner.Calls[1];
+        Assert.Equal("podman", call.FileName);
+        Assert.Equal("--connection", call.Arguments[0]);
+        Assert.Equal("connection", call.Arguments[1]);
+        Assert.Equal(["/app/bin/task", "refresh-search"], call.Arguments.TakeLast(2));
+        Assert.Equal(TimeSpan.FromSeconds(120), call.Options?.Timeout);
+        Assert.Equal(65_536, call.Options?.MaxStandardOutputBytes);
+    }
+
+    [Fact]
     public async Task VerifyContainerAsync_RequiresExactRunningManagedIdentity()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(0, """

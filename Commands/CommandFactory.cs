@@ -284,6 +284,161 @@ public static class CommandFactory
             return simpleDeployed ? 0 : 1;
         });
 
+        var taskTargetOption = new Option<string>("--target") { Description = "Target name" };
+        var taskNameOption = new Option<string>("--task") { Description = "Flake-declared task name" };
+        var taskSourceOption = new Option<string>("--source") { Description = "Immutable Nix source" };
+        var taskRevisionOption = new Option<string>("--git-revision") { Description = "Full Git revision" };
+        var taskRepositoryOption = new Option<string>("--repository-identity") { Description = "Repository identity" };
+        var taskDigestOption = new Option<string>("--configuration-digest") { Description = "Configuration digest" };
+        var taskOperationOption = new Option<string>("--operation-id") { Description = "Task operation UUID" };
+        var taskResourceOption = new Option<string>("--resource-key") { Description = "Canonical resource key" };
+        var taskImageOption = new Option<string>("--image-reference") { Description = "Verified deployed image reference" };
+        var taskImageIdOption = new Option<string>("--image-id") { Description = "Verified immutable image ID" };
+        var taskEventsOption = new Option<string>("--events") { Description = "Machine event protocol" };
+
+        var taskCommand = new Command("task", "Run one named flake-declared operational task")
+        {
+            Options =
+            {
+                taskTargetOption,
+                taskNameOption,
+                taskSourceOption,
+                taskRevisionOption,
+                taskRepositoryOption,
+                taskDigestOption,
+                taskOperationOption,
+                taskResourceOption,
+                taskImageOption,
+                taskImageIdOption,
+                taskEventsOption
+            }
+        };
+
+        taskCommand.SetAction(async parseResult =>
+        {
+            var targetName = parseResult.GetValue(taskTargetOption);
+            var taskName = parseResult.GetValue(taskNameOption);
+            var imageReference = parseResult.GetValue(taskImageOption);
+            var imageId = parseResult.GetValue(taskImageIdOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(taskSourceOption),
+                parseResult.GetValue(taskRevisionOption),
+                parseResult.GetValue(taskRepositoryOption),
+                parseResult.GetValue(taskDigestOption),
+                parseResult.GetValue(taskOperationOption),
+                parseResult.GetValue(taskResourceOption)
+            );
+
+            if (!immutable.Success || string.IsNullOrWhiteSpace(targetName) ||
+                taskName is null || !Regex.IsMatch(taskName, "^[a-z][a-z0-9_-]{0,63}$") ||
+                string.IsNullOrWhiteSpace(imageReference) ||
+                imageId is null || !Regex.IsMatch(imageId, "^sha256:[a-f0-9]{64}$"))
+            {
+                Console.Error.WriteLine(immutable.Error ?? "Task invocation identity is invalid.");
+                return 1;
+            }
+
+            using var reporter = DeploymentReporter.Create(
+                parseResult.GetValue(taskEventsOption),
+                immutable.OperationId!
+            );
+
+            NixployConfig config;
+            try
+            {
+                config = await configProvider.GetConfigAsync(immutable.Source!);
+            }
+            catch (InvalidOperationException exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+
+            if (!config.Targets.TryGetValue(targetName, out var target) ||
+                !target.Tasks.TryGetValue(taskName, out var task))
+            {
+                Console.Error.WriteLine("The named task is not declared by the immutable flake target.");
+                return 1;
+            }
+
+            var metadata = CreateDeploymentMetadata(
+                config.Project,
+                targetName,
+                immutable.RepositoryIdentity!,
+                immutable.GitRevision!
+            ) with
+            {
+                ConfigurationDigest = immutable.ConfigurationDigest!,
+                OperationId = immutable.OperationId!,
+                ResourceKey = immutable.ResourceKey!
+            };
+
+            var expectedResource = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
+            if (!string.Equals(expectedResource, immutable.ResourceKey, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine("Canonical resource key does not match the immutable task input.");
+                return 1;
+            }
+
+            var connection = podmanService.GetConnectionName(expectedResource);
+            if (!await podmanService.EnsureConnectionAsync(expectedResource, targetName, target))
+            {
+                return 1;
+            }
+
+            IReadOnlyList<Secret> secretValues;
+            try
+            {
+                secretValues = await sopsService.LoadSecretsAsync(target);
+            }
+            catch (InvalidOperationException exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+
+            var mounts = await podmanService.InstallSecretsAsync(connection, expectedResource, secretValues);
+            if (mounts is null)
+            {
+                return 1;
+            }
+
+            reporter.Stage("starting", $"Running declared task '{taskName}' with fixed arguments");
+            var result = await podmanService.RunTaskAsync(
+                connection,
+                expectedResource,
+                imageReference,
+                imageId,
+                target,
+                task,
+                mounts,
+                secretValues,
+                metadata
+            );
+
+            if (!string.IsNullOrEmpty(result.Output))
+            {
+                Console.Error.Write(result.Output);
+            }
+
+            if (!result.Success || result.OutputTruncated)
+            {
+                Console.Error.WriteLine($"Task failed with exit code {result.ExitCode} or exceeded its output bound.");
+                return 1;
+            }
+
+            reporter.Succeed(
+                $"Declared task '{taskName}' completed",
+                new Dictionary<string, object?>
+                {
+                    ["resource_key"] = expectedResource,
+                    ["image_reference"] = imageReference,
+                    ["image_id"] = imageId
+                }
+            );
+            return 0;
+        });
+
         var pruneCommand = new Command("prune", "Remove nixploy resources for a project target")
         {
             Options = { targetOption }
@@ -358,6 +513,7 @@ public static class CommandFactory
             Subcommands =
             {
                 deployCommand,
+                taskCommand,
                 pruneCommand
             }
         };

@@ -159,6 +159,34 @@ with lib;
       );
     };
 
+    tasks = mkOption {
+      default = { };
+      description = "Named operational tasks with fixed flake-owned argument vectors.";
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            description = mkOption {
+              type = types.str;
+              default = "Run operational task";
+            };
+            command = mkOption {
+              type = types.addCheck (types.listOf types.str) (command: command != [ ]);
+              example = [ "/app/bin/console" "vacuum" ];
+              description = "Exact argv executed in a temporary container; operators cannot append arguments.";
+            };
+            timeoutSeconds = mkOption {
+              type = types.ints.between 1 3600;
+              default = 300;
+            };
+            confirmation = mkOption {
+              type = types.enum [ "required" "dangerous" ];
+              default = "required";
+            };
+          };
+        }
+      );
+    };
+
     secrets = mkOption {
       default = { };
       example = literalExpression ''

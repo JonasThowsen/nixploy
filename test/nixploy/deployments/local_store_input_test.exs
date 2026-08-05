@@ -104,6 +104,36 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
              |> LocalStoreInput.normalize_config()
   end
 
+  test "schema v0.3 adds only bounded named fixed-argv tasks" do
+    task = %{
+      "description" => "Refresh search index",
+      "command" => ["/app/bin/task", "refresh-search"],
+      "timeoutSeconds" => 120,
+      "confirmation" => "required"
+    }
+
+    config =
+      config()
+      |> Map.put("__schema", "v0.3")
+      |> put_in(["targets", "production", "tasks"], %{"refresh-search" => task})
+
+    assert {:ok, "fixture", targets} = LocalStoreInput.normalize_config(config)
+
+    assert targets["production"]["tasks"] == %{
+             "refresh-search" => %{
+               "description" => "Refresh search index",
+               "command" => ["/app/bin/task", "refresh-search"],
+               "timeout_seconds" => 120,
+               "confirmation" => "required"
+             }
+           }
+
+    invalid = put_in(config, ["targets", "production", "tasks", "refresh-search", "command"], [])
+
+    assert {:error, {:invalid_target, "production", "tasks.refresh-search"}} =
+             LocalStoreInput.normalize_config(invalid)
+  end
+
   test "selects one derived target and rejects missing or ambiguous selection" do
     source = source(config())
 

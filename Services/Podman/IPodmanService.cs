@@ -34,6 +34,18 @@ public interface IPodmanService
         DeploymentMetadata metadata
     );
 
+    Task<TaskExecutionResult> RunTaskAsync(
+        string connectionName,
+        string resourcePrefix,
+        string imageReference,
+        string imageId,
+        NixployTarget target,
+        NixployTaskConfig task,
+        IReadOnlyList<SecretMount> secrets,
+        IReadOnlyList<Secret> secretValues,
+        DeploymentMetadata metadata
+    );
+
     Task<VerifiedContainer?> VerifyContainerAsync(
         string connectionName,
         string containerName,

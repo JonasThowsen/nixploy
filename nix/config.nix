@@ -1,7 +1,7 @@
 { lib, targetModule }:
 
 let
-  schema = "v0.2";
+  schema = "v0.3";
 
   configModule =
     { ... }:
