@@ -15,7 +15,9 @@ public sealed class SopsService(
         }
 
         var ageIdentityPath = RequirePrivateAgeKeyFile(
-            ageKeyFile?.Invoke() ?? Environment.GetEnvironmentVariable("SOPS_AGE_KEY_FILE")
+            ageKeyFile?.Invoke() ??
+            Environment.GetEnvironmentVariable("SOPS_AGE_KEY_FILE") ??
+            Environment.GetEnvironmentVariable("SOPS_AGE_SSH_PRIVATE_KEY_FILE")
         );
         var secrets = new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
@@ -60,7 +62,7 @@ public sealed class SopsService(
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
         {
             throw new InvalidOperationException(
-                "SOPS_AGE_KEY_FILE must name an absolute worker-owned age identity file."
+                "A SOPS age or age-compatible SSH identity must name an absolute worker-owned file."
             );
         }
 

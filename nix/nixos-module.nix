@@ -383,8 +383,9 @@ in
         message = "services.nixploy-control-plane.role must remain all when splitRoles is enabled";
       }
       {
-        assertion = !cfg.splitRoles || cfg.workerSopsAgeKeyFile != null;
-        message = "splitRoles requires workerSopsAgeKeyFile for worker-only SOPS access";
+        assertion =
+          !cfg.splitRoles || cfg.workerSopsAgeKeyFile != null || cfg.workerSopsAgeSshKeyFile != null;
+        message = "splitRoles requires a worker-only SOPS age or age-compatible SSH identity";
       }
       {
         assertion = !cfg.splitRoles || cfg.workerSshIdentityFile != null;
@@ -446,21 +447,30 @@ in
         wants = [ "network-online.target" ];
         requires = [ "nixploy-control-plane.service" ];
 
-        environment = commonEnvironment // {
-          NIXPLOY_MANAGED_APPLICATION_CREDENTIALS_JSON = builtins.toJSON workerCredentialPaths;
-          SOPS_AGE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-key";
-          NIXPLOY_SSH_IDENTITY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-identity";
-          NIXPLOY_SSH_KNOWN_HOSTS_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-known-hosts";
-        };
+        environment =
+          commonEnvironment
+          // {
+            NIXPLOY_MANAGED_APPLICATION_CREDENTIALS_JSON = builtins.toJSON workerCredentialPaths;
+            NIXPLOY_SSH_IDENTITY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-identity";
+            NIXPLOY_SSH_KNOWN_HOSTS_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-ssh-known-hosts";
+          }
+          // lib.optionalAttrs (cfg.workerSopsAgeKeyFile != null) {
+            SOPS_AGE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-key";
+          }
+          // lib.optionalAttrs (cfg.workerSopsAgeSshKeyFile != null) {
+            SOPS_AGE_SSH_PRIVATE_KEY_FILE =
+              "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
+          };
 
         serviceConfig = commonServiceConfig "worker" // {
           ExecStart = startControlPlane "worker";
           LoadCredential =
             [
-              "nixploy-sops-age-key:${cfg.workerSopsAgeKeyFile}"
               "nixploy-ssh-identity:${cfg.workerSshIdentityFile}"
               "nixploy-ssh-known-hosts:${cfg.workerSshKnownHostsFile}"
             ]
+            ++ lib.optional (cfg.workerSopsAgeKeyFile != null)
+              "nixploy-sops-age-key:${cfg.workerSopsAgeKeyFile}"
             ++ lib.optional (cfg.workerSopsAgeSshKeyFile != null)
               "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
             ++ lib.mapAttrsToList (
