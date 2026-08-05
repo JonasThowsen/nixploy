@@ -4,7 +4,7 @@ defmodule Nixploy.NativeDeployments do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
-  alias Nixploy.Deployments.{DeploymentInput, NativeDeployment, NativeEvent}
+  alias Nixploy.Deployments.{DeploymentInput, NativeDeployment, NativeEvent, ResourceIdentity}
   alias Nixploy.{Audit, Notifications, Repo}
 
   @history_limit 50
@@ -87,7 +87,8 @@ defmodule Nixploy.NativeDeployments do
           deployment_input_id: input.id,
           requested_by_operator_id: operator_id(operator),
           project: project,
-          target: target
+          target: target,
+          resource_prefix: ResourceIdentity.derive!(project, target)
         })
       end)
       |> Multi.insert(:event, fn %{deployment: deployment} ->
@@ -107,7 +108,8 @@ defmodule Nixploy.NativeDeployments do
             "nar_hash" => input.nar_hash,
             "configuration_digest" => input.configuration_digest,
             "project" => deployment.project,
-            "target" => deployment.target
+            "target" => deployment.target,
+            "resource_key" => deployment.resource_prefix
           }
         )
       end)
@@ -151,7 +153,8 @@ defmodule Nixploy.NativeDeployments do
           operation_kind: :rollback,
           rollback_of_id: target.id,
           expected_image_id: target.image_id,
-          expected_slot: target.selected_slot
+          expected_slot: target.selected_slot,
+          resource_prefix: ResourceIdentity.derive!(target.project, target.target)
         })
       end)
       |> Multi.insert(:event, fn %{deployment: deployment, target: target} ->

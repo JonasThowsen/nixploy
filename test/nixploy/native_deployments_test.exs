@@ -125,6 +125,10 @@ defmodule Nixploy.NativeDeploymentsTest do
 
     assert deployment.project == "native-fixture"
     assert deployment.target == "production"
+
+    assert deployment.resource_prefix ==
+             Nixploy.Deployments.ResourceIdentity.derive!("native-fixture", "production")
+
     assert deployment.deployment_input_id == input.id
     assert deployment.requested_by_operator_id == operator.id
     assert job.worker == inspect(NativeWorker)
@@ -143,6 +147,7 @@ defmodule Nixploy.NativeDeploymentsTest do
     assert audit.metadata["store_path"] == input.store_path
     assert audit.metadata["nar_hash"] == input.nar_hash
     assert audit.metadata["configuration_digest"] == input.configuration_digest
+    assert audit.metadata["resource_key"] == deployment.resource_prefix
   end
 
   test "executes durable native stages to independently verified success" do

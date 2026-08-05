@@ -70,13 +70,21 @@ defmodule Nixploy.Deployments.NativeDeployment do
       :project,
       :target,
       :operation_kind,
+      :resource_prefix,
       :rollback_of_id,
       :expected_image_id,
       :expected_slot
     ])
-    |> validate_required([:deployment_input_id, :requested_by_operator_id, :project, :target])
+    |> validate_required([
+      :deployment_input_id,
+      :requested_by_operator_id,
+      :project,
+      :target,
+      :resource_prefix
+    ])
     |> validate_length(:project, max: 4_096)
     |> validate_length(:target, max: 255)
+    |> validate_format(:resource_prefix, ~r/^nixploy-[a-z0-9][a-z0-9_-]{0,126}$/)
     |> validate_inclusion(:expected_slot, ["blue", "green"])
     |> assoc_constraint(:deployment_input)
     |> assoc_constraint(:requested_by_operator)

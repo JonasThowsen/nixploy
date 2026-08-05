@@ -125,8 +125,10 @@
     <section :if={input.state == :staged} class="np-panel overflow-hidden">
       <div class="np-panel-header">
         <div>
-          <h2 class="np-panel-title">Safe deployment plan</h2>
-          <p class="np-panel-description">What will happen after confirmation.</p>
+          <h2 class="np-panel-title">Safe remote deployment plan</h2>
+          <p class="np-panel-description">
+            Exact commit {short_revision(input.source_revision)} through named connection <span class="font-mono">{Nixploy.Deployments.ResourceIdentity.derive!(snapshot["project"], input.selected_target)}</span>.
+          </p>
         </div>
       </div>
       <ol class="grid gap-px bg-base-300 sm:grid-cols-2 lg:grid-cols-4">
@@ -266,6 +268,18 @@
             {if latest_attempt && latest_attempt.image_id,
               do: latest_attempt.image_id,
               else: "Not built yet"}
+          </dd>
+        </div>
+        <div
+          :if={is_binary(snapshot["project"]) and is_binary(input.selected_target)}
+          class="np-data-cell sm:col-span-2"
+        >
+          <dt>Canonical remote resource key</dt>
+          <dd id="deployment-input-resource-key" class="break-all font-mono text-xs">
+            {Nixploy.Deployments.ResourceIdentity.derive!(
+              snapshot["project"],
+              input.selected_target
+            )}
           </dd>
         </div>
         <div class="np-data-cell sm:col-span-2">

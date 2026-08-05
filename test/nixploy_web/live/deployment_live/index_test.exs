@@ -455,6 +455,13 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(detail, "#deployment-input-image", "container-image-with-a-long-name")
     assert has_element?(detail, "#deployment-input-domain", "fixture.example.test")
     assert has_element?(detail, "#deployment-input-health", "/ready")
+
+    assert has_element?(
+             detail,
+             "#deployment-input-resource-key",
+             Nixploy.Deployments.ResourceIdentity.derive!("mobile-fixture", "production")
+           )
+
     assert has_element?(detail, "#deployment-input-actor", operator.email)
     assert has_element?(detail, "#staging-no-mutation", "did not start a deployment")
     assert html =~ "overflow-x-hidden"
