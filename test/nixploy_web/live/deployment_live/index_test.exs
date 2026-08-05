@@ -227,7 +227,13 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     {:ok, view, _html} = live(conn, ~p"/machine")
 
     assert has_element?(view, "#machine-health-page", "Machine health")
-    assert has_element?(view, "#machine-health-page", "Application runtime belongs to positively identified remote targets")
+
+    assert has_element?(
+             view,
+             "#machine-health-page",
+             "Application runtime belongs to positively identified remote targets"
+           )
+
     assert has_element?(view, "#machine-health-page", "local Podman is recovery-only")
     assert has_element?(view, "#runtime-mode", "local recovery")
     assert has_element?(view, "#machine-health-page", "nixploy-vps")
@@ -367,7 +373,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       "jomat" => %{
         "project" => "jomat",
         "target" => "production",
-        "repository" => "https://github.com/JonasThowsen/jomat.git",
+        "repository" => "/srv/nixploy/repositories/jomat",
         "repository_identity" => "JonasThowsen/jomat",
         "subdirectory" => "."
       }

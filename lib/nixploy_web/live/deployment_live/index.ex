@@ -7,7 +7,15 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
-  alias Nixploy.{LocalHost, MachineHealth, NativeDeployments, Notifications, Operations, RuntimeMode}
+
+  alias Nixploy.{
+    LocalHost,
+    MachineHealth,
+    NativeDeployments,
+    Notifications,
+    Operations,
+    RuntimeMode
+  }
 
   @impl true
   def mount(_params, _session, socket) do

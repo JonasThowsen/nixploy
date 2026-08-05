@@ -59,7 +59,7 @@ defmodule Nixploy.ReleasePreparationsTest do
       "fixture" => %{
         "project" => "fixture",
         "target" => "production",
-        "repository" => "https://example.test/fixture.git",
+        "repository" => "/srv/nixploy/repositories/fixture",
         "repository_identity" => "fixture/repository",
         "subdirectory" => "."
       }
@@ -92,7 +92,7 @@ defmodule Nixploy.ReleasePreparationsTest do
                args: %{"deployment_input_id" => queued.id}
              })
 
-    assert_received {:resolved, "https://example.test/fixture.git", "refs/heads/main"}
+    assert_received {:resolved, "/srv/nixploy/repositories/fixture", "refs/heads/main"}
     assert_received {:materialized, revision, "production"}
     assert revision == String.duplicate("d", 40)
 

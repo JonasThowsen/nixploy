@@ -49,7 +49,7 @@ defmodule Nixploy.ManagedApplications do
     unless Regex.match?(@identity, identity), do: raise("invalid repository identity for #{key}")
     validate_value!(project, "project", key, 255)
     validate_value!(target, "target", key, 255)
-    validate_value!(repository, "repository", key, 4_096)
+    validate_repository_path!(repository, key)
     validate_subdirectory!(subdirectory, key)
 
     %Application{
@@ -80,6 +80,14 @@ defmodule Nixploy.ManagedApplications do
   defp validate_value!(value, field, key, max) do
     if byte_size(value) > max or String.contains?(value, <<0>>),
       do: raise("invalid managed application #{field} for #{key}")
+  end
+
+  defp validate_repository_path!(value, key) do
+    valid? =
+      is_binary(value) and value != "" and byte_size(value) <= 4_096 and
+        Path.type(value) == :absolute and not String.contains?(value, <<0>>)
+
+    unless valid?, do: raise("invalid managed application repository path for #{key}")
   end
 
   defp validate_subdirectory!(value, key) do

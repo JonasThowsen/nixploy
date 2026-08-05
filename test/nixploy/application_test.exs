@@ -3,8 +3,11 @@ defmodule Nixploy.ApplicationTest do
 
   alias Nixploy.Application
 
-  test "web role starts the endpoint but no deployment queues" do
-    assert NixployWeb.Endpoint in child_ids(Application.children(:web))
+  test "web role starts the endpoint without worker preparation access" do
+    ids = child_ids(Application.children(:web))
+
+    assert NixployWeb.Endpoint in ids
+    refute Nixploy.Deployments.PreparationWorkspaceReconciler in ids
   end
 
   test "worker role omits all HTTP children" do
@@ -15,6 +18,7 @@ defmodule Nixploy.ApplicationTest do
     refute Postgrex.Notifications in ids
     refute Nixploy.Notifications in ids
     refute DNSCluster in ids
+    assert Nixploy.Deployments.PreparationWorkspaceReconciler in ids
   end
 
   test "all role starts web and shared infrastructure" do
@@ -26,6 +30,7 @@ defmodule Nixploy.ApplicationTest do
     assert Postgrex.Notifications in ids
     assert Nixploy.Notifications in ids
     assert NixployWeb.Endpoint in ids
+    assert Nixploy.Deployments.PreparationWorkspaceReconciler in ids
   end
 
   defp child_ids(children) do

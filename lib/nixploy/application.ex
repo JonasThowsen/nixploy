@@ -16,11 +16,18 @@ defmodule Nixploy.Application do
   @doc false
   @spec children(RuntimeRole.t()) :: [Supervisor.child_spec() | module() | {module(), term()}]
   def children(role) do
-    [
-      Nixploy.Repo,
-      {Oban, Application.fetch_env!(:nixploy, Oban)},
-      {Phoenix.PubSub, name: Nixploy.PubSub}
-    ] ++ web_children(role)
+    [Nixploy.Repo] ++
+      worker_preflight_children(role) ++
+      [
+        {Oban, Application.fetch_env!(:nixploy, Oban)},
+        {Phoenix.PubSub, name: Nixploy.PubSub}
+      ] ++ web_children(role)
+  end
+
+  defp worker_preflight_children(role) do
+    if RuntimeRole.worker?(role),
+      do: [Nixploy.Deployments.PreparationWorkspaceReconciler],
+      else: []
   end
 
   defp web_children(role) do

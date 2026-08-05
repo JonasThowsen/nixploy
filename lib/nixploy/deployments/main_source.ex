@@ -16,18 +16,36 @@ defmodule Nixploy.Deployments.MainSource do
   def resolve_main(%ManagedApplication{} = application, opts \\ []) do
     execute = Keyword.get(opts, :execute, &Execution.run/2)
 
-    command = %Command{
-      executable: git_executable(),
-      args: ["ls-remote", "--exit-code", "--refs", application.repository, @source_ref],
-      env: git_env(application),
-      timeout: @git_timeout,
-      max_output_bytes: @metadata_bytes,
-      redact: credential_redactions(application)
-    }
+    command =
+      git(
+        application,
+        ["rev-parse", "--verify", "--end-of-options", "#{@source_ref}^{commit}"]
+      )
 
     with {:ok, output} <- run(command, execute, opts, :git_resolve),
-         {:ok, oid} <- parse_resolution(output) do
+         {:ok, oid} <- parse_local_resolution(output) do
       {:ok, oid}
+    end
+  end
+
+  @doc "Removes only UUID-named abandoned preparation workspaces before workers start."
+  def cleanup_abandoned(root \\ workspace_root()) do
+    case File.ls(root) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&(Ecto.UUID.cast(&1) != :error))
+        |> Enum.reduce_while(:ok, fn entry, :ok ->
+          case File.rm_rf(Path.join(root, entry)) do
+            {:ok, _removed} -> {:cont, :ok}
+            {:error, path, reason} -> {:halt, {:error, {:workspace_cleanup_failed, path, reason}}}
+          end
+        end)
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:workspace_cleanup_failed, root, reason}}
     end
   end
 
@@ -57,16 +75,18 @@ defmodule Nixploy.Deployments.MainSource do
       |> Enum.map(&String.split(&1, ~r/\s+/, parts: 2))
 
     case rows do
-      [[oid, @source_ref]] ->
-        if byte_size(oid) == 40 and Regex.match?(@oid, oid),
-          do: {:ok, oid},
-          else: {:error, :main_resolution_malformed}
+      [[oid, @source_ref]] -> valid_oid(oid)
+      [] -> {:error, :main_not_found}
+      _ -> {:error, :main_resolution_ambiguous}
+    end
+  end
 
-      [] ->
-        {:error, :main_not_found}
-
-      _ ->
-        {:error, :main_resolution_ambiguous}
+  @doc false
+  def parse_local_resolution(output) when is_binary(output) do
+    case String.split(output, "\n", trim: true) do
+      [oid] -> valid_oid(oid)
+      [] -> {:error, :main_not_found}
+      _multiple -> {:error, :main_resolution_ambiguous}
     end
   end
 
@@ -91,6 +111,12 @@ defmodule Nixploy.Deployments.MainSource do
 
   def error_message(:submodules_not_supported),
     do: "V1 rejects repositories containing submodules or gitlinks."
+
+  def error_message(:lfs_not_supported),
+    do: "V1 rejects Git LFS content until exact local LFS object materialization is supported."
+
+  def error_message(:subdirectory_unsafe),
+    do: "The configured flake subdirectory is not a committed directory inside the snapshot."
 
   def error_message(:flake_missing),
     do: "The configured source directory has no committed flake.nix."
@@ -121,69 +147,50 @@ defmodule Nixploy.Deployments.MainSource do
   def error_message(reason), do: LocalStoreInput.error_message(reason)
 
   defp checkout_and_materialize(input, application, source, execute, opts) do
-    env = git_env(application)
-
-    with :ok <- command_ok(git(["init", "--quiet", source], env), execute, opts, :git_init),
-         :ok <-
+    with :ok <-
            command_ok(
-             git(["-C", source, "remote", "add", "origin", application.repository], env),
+             git_clone(application, source),
              execute,
              opts,
-             :git_remote
+             :git_snapshot
            ),
          :ok <-
            command_ok(
-             git(
-               [
-                 "-C",
-                 source,
-                 "fetch",
-                 "--quiet",
-                 "--no-tags",
-                 "--depth=1",
-                 "origin",
-                 input.source_revision
-               ],
-               env
-             ),
+             git_in(source, ["cat-file", "-e", "#{input.source_revision}^{commit}"]),
              execute,
              opts,
-             :git_fetch
+             :git_object
            ),
          :ok <-
            command_ok(
-             git(
-               [
-                 "-C",
-                 source,
-                 "checkout",
-                 "--quiet",
-                 "--detach",
-                 "--force",
-                 input.source_revision
-               ],
-               env
-             ),
+             git_in(source, [
+               "checkout",
+               "--quiet",
+               "--detach",
+               "--force",
+               input.source_revision
+             ]),
              execute,
              opts,
              :git_checkout
            ),
          {:ok, head} <-
-           command_output(git(["-C", source, "rev-parse", "HEAD"], env), execute, opts, :git_head),
+           command_output(git_in(source, ["rev-parse", "HEAD"]), execute, opts, :git_head),
          :ok <- exact_head(head, input.source_revision),
          {:ok, status} <-
            command_output(
-             git(["-C", source, "status", "--porcelain=v1", "--untracked-files=all"], env),
+             git_in(source, ["status", "--porcelain=v1", "--untracked-files=all"]),
              execute,
              opts,
              :git_status
            ),
          :ok <- clean(status),
-         :ok <- reject_submodules(source, env, execute, opts),
+         :ok <- reject_submodules(source, execute, opts),
+         :ok <- reject_lfs(source, execute, opts),
          {:ok, subject, timestamp} <-
-           commit_metadata(source, input.source_revision, env, execute, opts),
-         :ok <- strip_git_metadata(source),
+           commit_metadata(source, input.source_revision, execute, opts),
          {:ok, flake_root, lock_hash} <- verify_flake_root(source, application.subdirectory),
+         :ok <- strip_git_metadata(source),
          {:ok, store_path} <- store_add(flake_root, input, execute, opts),
          :ok <- unchanged_lock(flake_root, lock_hash),
          {:ok, probed} <- LocalStoreInput.probe(store_path, Keyword.put(opts, :execute, execute)),
@@ -202,24 +209,66 @@ defmodule Nixploy.Deployments.MainSource do
     end
   end
 
-  defp git(args, env) do
+  defp git(application, args) do
     %Command{
       executable: git_executable(),
-      args: args,
-      env: env,
+      args: [
+        "-c",
+        "safe.directory=#{application.repository}",
+        "-C",
+        application.repository
+        | args
+      ],
+      env: git_env(),
       timeout: @git_timeout,
       max_output_bytes: @command_bytes,
       redact: []
     }
   end
 
-  defp reject_submodules(source, env, execute, opts) do
+  defp git_clone(application, destination) do
+    %Command{
+      executable: git_executable(),
+      args: [
+        "-c",
+        "safe.directory=#{application.repository}",
+        "clone",
+        "--quiet",
+        "--no-local",
+        "--no-checkout",
+        "--no-tags",
+        "--single-branch",
+        "--branch",
+        "main",
+        "--",
+        application.repository,
+        destination
+      ],
+      env: git_env(),
+      timeout: @git_timeout,
+      max_output_bytes: @command_bytes,
+      redact: []
+    }
+  end
+
+  defp git_in(source, args) do
+    %Command{
+      executable: git_executable(),
+      args: ["-c", "safe.directory=#{source}", "-C", source | args],
+      env: git_env(),
+      timeout: @git_timeout,
+      max_output_bytes: @command_bytes,
+      redact: []
+    }
+  end
+
+  defp reject_submodules(source, execute, opts) do
     cond do
       File.exists?(Path.join(source, ".gitmodules")) ->
         {:error, :submodules_not_supported}
 
       true ->
-        command = git(["-C", source, "ls-files", "--stage"], env)
+        command = git_in(source, ["ls-files", "--stage"])
 
         with {:ok, output} <- command_output(command, execute, opts, :git_index) do
           if output |> String.split("\n") |> Enum.any?(&String.starts_with?(&1, "160000 ")),
@@ -229,8 +278,35 @@ defmodule Nixploy.Deployments.MainSource do
     end
   end
 
-  defp commit_metadata(source, oid, env, execute, opts) do
-    command = git(["-C", source, "show", "-s", "--format=%s%x00%cI", oid], env)
+  defp reject_lfs(source, execute, opts) do
+    command =
+      git_in(source, [
+        "grep",
+        "-l",
+        "-I",
+        "-e",
+        "^version https://git-lfs.github.com/spec/v1$",
+        "--",
+        "."
+      ])
+
+    case execute.(command, Keyword.take(opts, [:cancelled?])) do
+      {:ok, %{exit_status: 1, output_truncated?: false}} ->
+        :ok
+
+      {:ok, %{exit_status: 0}} ->
+        {:error, :lfs_not_supported}
+
+      {:ok, %{exit_status: status, output_tail: output}} ->
+        {:error, {:command_failed, :git_lfs_scan, status, output}}
+
+      {:error, reason} ->
+        {:error, {:command_error, :git_lfs_scan, reason}}
+    end
+  end
+
+  defp commit_metadata(source, oid, execute, opts) do
+    command = git_in(source, ["show", "-s", "--format=%s%x00%cI", oid])
 
     with {:ok, output} <- command_output(command, execute, opts, :git_metadata),
          [subject, timestamp] <- String.trim_trailing(output) |> String.split(<<0>>, parts: 2),
@@ -250,9 +326,7 @@ defmodule Nixploy.Deployments.MainSource do
   end
 
   defp verify_flake_root(source, subdirectory) do
-    root = Path.expand(subdirectory, source)
-
-    if String.starts_with?(root, source <> "/") or root == source do
+    with {:ok, root} <- safe_subdirectory(source, subdirectory) do
       flake = Path.join(root, "flake.nix")
       lock = Path.join(root, "flake.lock")
 
@@ -261,8 +335,30 @@ defmodule Nixploy.Deployments.MainSource do
         not File.regular?(lock) -> {:error, :flake_lock_missing}
         true -> {:ok, root, file_hash(lock)}
       end
-    else
-      {:error, :flake_missing}
+    end
+  end
+
+  defp safe_subdirectory(source, "."), do: {:ok, source}
+
+  defp safe_subdirectory(source, subdirectory) do
+    subdirectory
+    |> Path.split()
+    |> Enum.reduce_while(source, fn component, parent ->
+      path = Path.join(parent, component)
+
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory}} -> {:cont, path}
+        _other -> {:halt, {:error, :subdirectory_unsafe}}
+      end
+    end)
+    |> case do
+      {:error, _reason} = error ->
+        error
+
+      root ->
+        if String.starts_with?(root, source <> "/"),
+          do: {:ok, root},
+          else: {:error, :subdirectory_unsafe}
     end
   end
 
@@ -341,27 +437,20 @@ defmodule Nixploy.Deployments.MainSource do
 
   defp file_hash(path), do: path |> File.read!() |> then(&:crypto.hash(:sha256, &1))
 
-  defp git_env(application) do
+  defp git_env do
     %{
       "GIT_TERMINAL_PROMPT" => "0",
       "GIT_CONFIG_NOSYSTEM" => "1",
-      "GIT_CONFIG_GLOBAL" => "/dev/null"
+      "GIT_CONFIG_GLOBAL" => "/dev/null",
+      "GIT_CONFIG_COUNT" => "0"
     }
-    |> maybe_ssh(application.credential_path)
   end
 
-  defp maybe_ssh(env, nil), do: env
-
-  defp maybe_ssh(env, path),
-    do:
-      Map.put(
-        env,
-        "GIT_SSH_COMMAND",
-        "ssh -i #{path} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-      )
-
-  defp credential_redactions(%{credential_path: nil}), do: []
-  defp credential_redactions(%{credential_path: path}), do: [path]
+  defp valid_oid(oid) do
+    if byte_size(oid) == 40 and Regex.match?(@oid, oid),
+      do: {:ok, oid},
+      else: {:error, :main_resolution_malformed}
+  end
 
   defp failure_code(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp failure_code({:command_failed, boundary, _status, _output}), do: "#{boundary}_failed"
