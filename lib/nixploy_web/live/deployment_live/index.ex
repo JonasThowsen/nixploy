@@ -1,18 +1,13 @@
 defmodule NixployWeb.DeploymentLive.Index do
   use NixployWeb, :live_view
 
-  alias Nixploy.{Applications, Audit, ManagedApplications}
-  alias Nixploy.Applications.{Repository, Service}
-  alias Nixploy.Deployments
-  alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
-  alias Nixploy.Fleet
-  alias Nixploy.Fleet.Target
+  alias Nixploy.{Deployments, ManagedApplications}
 
   alias Nixploy.{
+    ControlPlaneHealth,
     MachineHealth,
     NativeDeployments,
     Notifications,
-    Operations,
     Runtime,
     RuntimeMode,
     WorkerHeartbeat
@@ -40,12 +35,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> assign(:local_health_observation, nil)
       |> assign(:local_health_error, nil)
       |> assign(:local_health_status, :idle)
-      |> assign(:local_store_candidate, nil)
-      |> assign(:local_store_selected_target, nil)
-      |> assign(:local_store_status, :idle)
-      |> assign(:local_store_error, nil)
       |> load_dashboard()
-      |> assign_forms()
 
     if connected?(socket) do
       send(self(), :load_local_inventory)
@@ -67,125 +57,6 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   @impl true
-  def handle_event("save_repository", %{"repository" => params}, socket) do
-    case Applications.create_repository(params, operator: socket.assigns.current_operator) do
-      {:ok, _repository} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Repository added")
-         |> assign(:repository_form, repository_form())
-         |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply,
-         assign(socket, :repository_form, changeset |> Map.put(:action, :insert) |> to_form())}
-    end
-  end
-
-  def handle_event("save_target", %{"target" => params}, socket) do
-    case Fleet.create_target(params, operator: socket.assigns.current_operator) do
-      {:ok, _target} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Target added")
-         |> assign(:target_form, target_form())
-         |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply,
-         assign(socket, :target_form, changeset |> Map.put(:action, :insert) |> to_form())}
-    end
-  end
-
-  def handle_event("save_service", %{"service" => params}, socket) do
-    case Applications.create_service(params, operator: socket.assigns.current_operator) do
-      {:ok, _service} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Service attached")
-         |> assign(:service_form, service_form())
-         |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply,
-         assign(socket, :service_form, changeset |> Map.put(:action, :insert) |> to_form())}
-    end
-  end
-
-  def handle_event("update_repository", %{"_id" => id, "repository" => params}, socket) do
-    repository = Applications.get_repository!(id)
-
-    case Applications.update_repository(repository, params,
-           operator: socket.assigns.current_operator
-         ) do
-      {:ok, _repository} ->
-        {:noreply, socket |> put_flash(:info, "Repository updated") |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply, put_flash(socket, :error, changeset_error(changeset))}
-    end
-  end
-
-  def handle_event("update_target", %{"_id" => id, "target" => params}, socket) do
-    target = Fleet.get_target!(id)
-
-    case Fleet.update_target(target, params, operator: socket.assigns.current_operator) do
-      {:ok, _target} ->
-        {:noreply, socket |> put_flash(:info, "Target updated") |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply, put_flash(socket, :error, changeset_error(changeset))}
-    end
-  end
-
-  def handle_event("update_service", %{"_id" => id, "service" => params}, socket) do
-    service = Applications.get_service!(id)
-
-    case Applications.update_service(service, params, operator: socket.assigns.current_operator) do
-      {:ok, _service} ->
-        {:noreply, socket |> put_flash(:info, "Service updated") |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply, put_flash(socket, :error, changeset_error(changeset))}
-    end
-  end
-
-  def handle_event("enqueue_deployment", %{"deployment" => params}, socket) do
-    case Deployments.enqueue_deployment(params, operator: socket.assigns.current_operator) do
-      {:ok, _deployment, _event, _job} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Deployment queued")
-         |> assign(:deployment_form, deployment_form(socket.assigns.services))
-         |> load_dashboard()}
-
-      {:error, changeset} ->
-        {:noreply,
-         assign(socket, :deployment_form, changeset |> Map.put(:action, :insert) |> to_form())}
-    end
-  end
-
-  def handle_event("select_deployment_service", payload, socket) do
-    params = payload["deployment"]
-
-    requested_ref =
-      if payload["_target"] == ["deployment", "service_id"] do
-        case Enum.find(socket.assigns.services, &(&1.id == params["service_id"])) do
-          nil -> params["requested_ref"]
-          service -> service.repository.default_ref
-        end
-      else
-        params["requested_ref"]
-      end
-
-    form =
-      %Deployment{}
-      |> Deployments.change_deployment(Map.put(params, "requested_ref", requested_ref))
-      |> to_form(as: :deployment)
-
-    {:noreply, assign(socket, :deployment_form, form)}
-  end
-
   def handle_event("prepare_main", %{"application" => application_key}, socket) do
     case Deployments.prepare_main(application_key, operator: socket.assigns.current_operator) do
       {:ok, input, _job} ->
@@ -199,93 +70,6 @@ defmodule NixployWeb.DeploymentLive.Index do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not prepare main: #{inspect(reason)}")}
-    end
-  end
-
-  def handle_event("inspect_local_store", %{"local_store" => params}, socket) do
-    store_path = params["store_path"]
-
-    case Deployments.inspect_local_store(store_path) do
-      {:ok, source} ->
-        target_names = source.targets |> Map.keys() |> Enum.sort()
-        selected_target = if length(target_names) == 1, do: List.first(target_names)
-
-        {:noreply,
-         assign(socket,
-           local_store_candidate: source,
-           local_store_selected_target: selected_target,
-           local_store_stage_form: local_store_stage_form(selected_target),
-           local_store_form: local_store_form(source.store_path),
-           local_store_status: :verified,
-           local_store_error: nil
-         )}
-
-      {:error, reason} ->
-        {:noreply,
-         assign(socket,
-           local_store_candidate: nil,
-           local_store_selected_target: nil,
-           local_store_stage_form: local_store_stage_form(),
-           local_store_status: :failed,
-           local_store_error: LocalStoreInput.error_message(reason)
-         )}
-    end
-  end
-
-  def handle_event("select_local_store_target", %{"local_store_stage" => params}, socket) do
-    selected_target = normalize_selection(params["selected_target"])
-
-    {:noreply,
-     assign(socket,
-       local_store_selected_target: selected_target,
-       local_store_stage_form: local_store_stage_form(selected_target),
-       local_store_error: nil
-     )}
-  end
-
-  def handle_event("stage_local_store", %{"local_store_stage" => params}, socket) do
-    case socket.assigns.local_store_candidate do
-      nil ->
-        {:noreply,
-         assign(socket,
-           local_store_status: :failed,
-           local_store_error: "Inspect an immutable store source before staging it."
-         )}
-
-      source ->
-        attrs = %{
-          store_path: source.store_path,
-          expected_nar_hash: source.nar_hash,
-          selected_target: params["selected_target"]
-        }
-
-        case Deployments.stage_local_store(attrs, operator: socket.assigns.current_operator) do
-          {:ok, input} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Release registered")
-             |> push_navigate(to: ~p"/releases/#{input.id}")}
-
-          {:error, %DeploymentInput{} = input} ->
-            {:noreply,
-             socket
-             |> put_flash(:error, input.failure["message"])
-             |> push_navigate(to: ~p"/releases/#{input.id}")}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply,
-             assign(socket,
-               local_store_status: :failed,
-               local_store_error: changeset_error(changeset)
-             )}
-
-          {:error, reason} ->
-            {:noreply,
-             assign(socket,
-               local_store_status: :failed,
-               local_store_error: LocalStoreInput.error_message(reason)
-             )}
-        end
     end
   end
 
@@ -323,7 +107,10 @@ defmodule NixployWeb.DeploymentLive.Index do
         {:noreply, put_flash(socket, :error, "That workload is no longer in the inventory")}
 
       workload ->
-        {:noreply, select_workload(socket, workload)}
+        {:noreply,
+         socket
+         |> select_workload(workload)
+         |> push_patch(to: ~p"/applications?application=#{workload.id}")}
     end
   end
 
@@ -334,21 +121,24 @@ defmodule NixployWeb.DeploymentLive.Index do
 
       workload ->
         send(self(), {:load_workload_details, workload.id})
-        if workload.managed?, do: send(self(), {:probe_local_health, workload.id})
+
+        if workload.managed? and workload.state != "unavailable",
+          do: send(self(), {:probe_local_health, workload.id})
 
         {:noreply,
          assign(socket,
            workload_details_error: nil,
            workload_details_status: :loading,
            local_health_error: nil,
-           local_health_status: if(workload.managed?, do: :loading, else: :idle)
+           local_health_status:
+             if(workload.managed? and workload.state != "unavailable", do: :loading, else: :idle)
          )}
     end
   end
 
   def handle_event("probe_local_health", _params, socket) do
     case socket.assigns.selected_workload do
-      %{id: workload_id, managed?: true} ->
+      %{id: workload_id, managed?: true, state: state} when state != "unavailable" ->
         send(self(), {:probe_local_health, workload_id})
 
         {:noreply,
@@ -392,63 +182,6 @@ defmodule NixployWeb.DeploymentLive.Index do
 
       nil ->
         {:noreply, put_flash(socket, :error, "Choose a managed application first")}
-    end
-  end
-
-  def handle_event("fetch_service_logs", %{"id" => service_id}, socket) do
-    case Operations.request_log_snapshot(service_id, operator: socket.assigns.current_operator) do
-      {:ok, _snapshot, _job} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Log snapshot queued")
-         |> load_dashboard()}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Could not queue log snapshot")}
-    end
-  end
-
-  def handle_event("refresh_service_status", %{"id" => service_id}, socket) do
-    case Operations.request_status_refresh(service_id, operator: socket.assigns.current_operator) do
-      {:ok, _observation, _job} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Status refresh queued")
-         |> load_dashboard()}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Could not queue status refresh")}
-    end
-  end
-
-  def handle_event("retry_deployment", %{"id" => deployment_id}, socket) do
-    case Deployments.retry_deployment(deployment_id, operator: socket.assigns.current_operator) do
-      {:ok, _deployment, _event, _job} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Exact revision queued as a new deployment")
-         |> load_dashboard()}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Could not redeploy that revision")}
-    end
-  end
-
-  def handle_event("cancel_deployment", %{"id" => deployment_id}, socket) do
-    case Deployments.request_cancellation(deployment_id,
-           operator: socket.assigns.current_operator
-         ) do
-      {:ok, _deployment, _event} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Cancellation requested")
-         |> load_dashboard()}
-
-      {:error, {:terminal, state}} ->
-        {:noreply, put_flash(socket, :error, "Deployment is already #{state}")}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Could not request cancellation")}
     end
   end
 
@@ -563,14 +296,6 @@ defmodule NixployWeb.DeploymentLive.Index do
     {:noreply, load_dashboard(socket)}
   end
 
-  def handle_info({:service_status_changed, _service_id}, socket) do
-    {:noreply, load_dashboard(socket)}
-  end
-
-  def handle_info({:service_logs_changed, _service_id}, socket) do
-    {:noreply, load_dashboard(socket)}
-  end
-
   defp machine_health_probe do
     Application.get_env(:nixploy, :machine_health_probe, &MachineHealth.snapshot/0)
   end
@@ -593,7 +318,8 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp select_workload(socket, workload) do
     send(self(), {:load_workload_details, workload.id})
-    if workload.managed?, do: send(self(), {:probe_local_health, workload.id})
+    health_available? = workload.managed? and workload.state != "unavailable"
+    if health_available?, do: send(self(), {:probe_local_health, workload.id})
 
     assign(socket,
       selected_workload: workload,
@@ -602,7 +328,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       workload_details_status: :loading,
       local_health_observation: nil,
       local_health_error: nil,
-      local_health_status: if(workload.managed?, do: :loading, else: :idle)
+      local_health_status: if(health_available?, do: :loading, else: :idle)
     )
   end
 
@@ -698,102 +424,14 @@ defmodule NixployWeb.DeploymentLive.Index do
   def workload_state_class(state) when state in ["paused", "Paused"], do: "badge-warning"
   def workload_state_class(_state), do: "badge-ghost"
 
-  def repository_link?(repository) when is_binary(repository) do
-    case URI.new(repository) do
-      {:ok, %URI{scheme: scheme}} when scheme in ["http", "https"] -> true
-      _other -> false
-    end
-  end
-
-  def repository_link?(_repository), do: false
-
-  defp assign_forms(socket) do
-    socket
-    |> assign(:repository_form, repository_form())
-    |> assign(:target_form, target_form())
-    |> assign(:service_form, service_form())
-    |> assign(:deployment_form, deployment_form(socket.assigns.services))
-    |> assign(:local_store_form, local_store_form())
-    |> assign(:local_store_stage_form, local_store_stage_form())
-  end
-
   defp load_dashboard(socket) do
-    repositories = Applications.list_repositories()
-    targets = Fleet.list_targets()
-    services = Applications.list_services()
-    deployments = Deployments.list_deployments()
-    deployment_inputs = Deployments.list_deployment_inputs()
-    native_deployments = NativeDeployments.list_deployments()
-    audit_events = Audit.list_recent_events(50)
-
-    observations_by_service =
-      Operations.list_service_observations()
-      |> Map.new(&{&1.service_id, &1})
-
-    log_snapshots_by_service =
-      Operations.list_service_log_snapshots()
-      |> Map.new(&{&1.service_id, &1})
-
-    events_by_deployment =
-      Map.new(deployments, fn deployment ->
-        {deployment.id, Deployments.list_events(deployment.id)}
-      end)
-
     assign(socket,
       managed_applications: ManagedApplications.list(),
-      repositories: repositories,
-      targets: targets,
-      services: services,
-      deployments: deployments,
-      deployment_inputs: deployment_inputs,
-      native_deployments: native_deployments,
-      observations_by_service: observations_by_service,
-      log_snapshots_by_service: log_snapshots_by_service,
-      events_by_deployment: events_by_deployment,
-      audit_events: audit_events,
+      deployment_inputs: Deployments.list_deployment_inputs(),
+      native_deployments: NativeDeployments.list_deployments(),
       worker_heartbeat: WorkerHeartbeat.latest(),
-      repository_options: Enum.map(repositories, &{&1.name, &1.id}),
-      target_options: Enum.map(targets, &{&1.name, &1.id}),
-      service_options: Enum.map(services, &{service_label(&1), &1.id})
+      control_plane_health: ControlPlaneHealth.snapshot()
     )
-  end
-
-  defp repository_form do
-    %Repository{}
-    |> Applications.change_repository()
-    |> to_form(as: :repository)
-  end
-
-  defp target_form do
-    %Target{}
-    |> Fleet.change_target()
-    |> to_form(as: :target)
-  end
-
-  defp service_form do
-    %Service{}
-    |> Applications.change_service()
-    |> to_form(as: :service)
-  end
-
-  defp deployment_form(services) do
-    default_ref =
-      case services do
-        [service | _rest] -> service.repository.default_ref
-        [] -> "main"
-      end
-
-    %Deployment{requested_ref: default_ref}
-    |> Deployments.change_deployment()
-    |> to_form(as: :deployment)
-  end
-
-  defp local_store_form(store_path \\ "") do
-    to_form(%{"store_path" => store_path}, as: :local_store)
-  end
-
-  defp local_store_stage_form(selected_target \\ nil) do
-    to_form(%{"selected_target" => selected_target || ""}, as: :local_store_stage)
   end
 
   defp normalize_selection(value) when is_binary(value) do
@@ -805,46 +443,17 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp normalize_selection(_value), do: nil
 
-  def selected_local_store_target(nil, _selected_target), do: nil
-
-  def selected_local_store_target(source, selected_target) do
-    source.targets[selected_target]
-  end
-
-  def local_store_target_options(nil), do: []
-
-  def local_store_target_options(source) do
-    source.targets
-    |> Map.keys()
-    |> Enum.sort()
-    |> Enum.map(&{&1, &1})
-  end
-
   def nav_path(:overview), do: "/"
   def nav_path(:machine), do: "/machine"
   def nav_path(:applications), do: "/applications"
   def nav_path(:releases), do: "/releases"
   def nav_path(:deployments), do: "/deployments"
-  def nav_path(:compatibility), do: nil
 
   defp page_title(:overview), do: "Overview"
   defp page_title(:machine), do: "Machine health"
   defp page_title(:applications), do: "Applications"
   defp page_title(:releases), do: "Releases"
   defp page_title(:deployments), do: "Deployments"
-  defp page_title(:compatibility), do: "Compatibility operations"
-
-  defp service_label(service), do: "#{service.name} on #{service.target.name}"
-
-  def edit_repository_form(repository),
-    do: repository |> Applications.change_repository() |> to_form(as: :repository)
-
-  def edit_target_form(target), do: target |> Fleet.change_target() |> to_form(as: :target)
-
-  def edit_service_form(service),
-    do: service |> Applications.change_service() |> to_form(as: :service)
-
-  def terminal?(deployment), do: Deployment.terminal?(deployment)
 
   def latest_native_deployment(native_deployments, input_id),
     do: Enum.find(native_deployments, &(&1.deployment_input_id == input_id))
@@ -974,16 +583,4 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   def format_time(nil), do: "-"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")
-
-  defp changeset_error(%Ecto.Changeset{} = changeset) do
-    details =
-      Ecto.Changeset.traverse_errors(changeset, fn {message, _opts} -> message end)
-      |> Enum.map_join(", ", fn {field, messages} ->
-        "#{field} #{Enum.join(messages, " and ")}"
-      end)
-
-    "Could not update configuration: #{details}"
-  end
-
-  defp changeset_error(reason), do: "Could not update configuration: #{inspect(reason)}"
 end

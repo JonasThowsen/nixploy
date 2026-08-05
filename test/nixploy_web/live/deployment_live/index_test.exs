@@ -5,9 +5,8 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   import Phoenix.LiveViewTest
 
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.{LocalStoreInput, NativeWorker, SimulatedWorker}
-  alias Nixploy.{Fixtures, LocalHost, MachineHealth}
-  alias Nixploy.Operations.{LogWorker, StatusWorker}
+  alias Nixploy.Deployments.{LocalStoreInput, NativeWorker}
+  alias Nixploy.{Fixtures, LocalHost, MachineHealth, Runtime}
 
   defmodule NativeExecutorStub do
     def deploy(_deployment, opts) do
@@ -235,6 +234,10 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
            )
 
     assert has_element?(view, "#machine-health-page", "local Podman is recovery-only")
+    assert has_element?(view, "#machine-health-page", "Web readiness")
+    assert has_element?(view, "#machine-health-page", "PostgreSQL")
+    assert has_element?(view, "#machine-health-page", "Oban queues")
+    assert has_element?(view, "#machine-health-page", "Package")
     assert has_element?(view, "#runtime-mode", "local recovery")
     assert has_element?(view, "#worker-heartbeat", "Deployment worker")
     assert has_element?(view, "#machine-health-page", "nixploy-vps")
@@ -267,6 +270,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> element("#inspect-workload-abcdef123456")
     |> render_click()
 
+    assert_patch(view, "/applications?application=abcdef123456")
     assert has_element?(view, "#local-workload-details", "Current vitals")
     assert has_element?(view, "#local-workload-details", "0.74%")
     assert has_element?(view, "#local-workload-details", "507.3MB / 4.001GB")
@@ -275,6 +279,45 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#local-workload-details", "127.0.0.1:8081 → 4000/tcp")
     assert has_element?(view, "#local-workload-logs", "Application started")
     assert has_element?(view, "#local-workload-details", "2 lines")
+  end
+
+  test "renders unavailable remote observations honestly and disables effectful probes", %{
+    conn: conn
+  } do
+    unavailable = %Runtime.Workload{
+      id: "fixture",
+      name: "fixture",
+      project: "fixture",
+      target: "production",
+      state: "unavailable",
+      status: "observation unavailable",
+      connection_state: "not observed",
+      stale?: true
+    }
+
+    Application.put_env(:nixploy, :local_inventory_probe, fn ->
+      {:ok,
+       %Runtime.Inventory{hostname: "remote", runtime_user: "worker", workloads: [unavailable]}}
+    end)
+
+    Application.put_env(:nixploy, :local_workload_probe, fn _id ->
+      {:ok,
+       %Runtime.Details{
+         id: "fixture",
+         state: "unavailable",
+         status: "observation unavailable",
+         observed_at: nil,
+         metrics_error: :remote_detail_not_observed,
+         log_status: :idle
+       }}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/applications?application=fixture")
+
+    assert has_element?(view, "#local-workload-details", "stale / unavailable")
+    assert has_element?(view, "#local-workload-details", "No worker observation")
+    assert has_element?(view, "#probe-local-health[disabled]")
+    assert has_element?(view, "#fetch-runtime-logs[disabled]")
   end
 
   test "links directly to a selected high-level application view", %{conn: conn} do
@@ -401,73 +444,19 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     refute has_element?(detail, "#deploy-native-input")
   end
 
-  test "keeps release plumbing behind an advanced high-level boundary", %{conn: conn} do
+  test "exposes only allowlisted release actions and retires arbitrary-path compatibility UI", %{
+    conn: conn
+  } do
     {:ok, view, html} = live(conn, ~p"/releases")
 
     assert has_element?(view, "#releases-page", "Available releases")
-    assert has_element?(view, "#advanced-release-import", "Advanced: register a release manually")
-    assert has_element?(view, "#local-store-inspect-form")
-    refute html =~ "Nix store"
-    refute html =~ "derivation"
-    refute html =~ "NAR hash"
-  end
+    refute has_element?(view, "#advanced-release-import")
+    refute has_element?(view, "#local-store-inspect-form")
+    refute html =~ "name=\"repository\""
+    refute html =~ "name=\"ref\""
+    refute html =~ "name=\"store_path\""
 
-  test "inspects and stages an immutable source through the authenticated UI", %{
-    conn: conn,
-    operator: operator
-  } do
-    jobs_before = Nixploy.Repo.aggregate(Oban.Job, :count)
-    {:ok, view, _html} = live(conn, ~p"/releases")
-
-    view
-    |> form("#local-store-inspect-form", %{
-      "local_store" => %{
-        "store_path" => "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source"
-      }
-    })
-    |> render_submit()
-
-    assert has_element?(view, "#local-store-candidate", "mobile-fixture")
-    assert has_element?(view, "#local-store-candidate", "verified")
-    assert has_element?(view, "#local-store-target-preview", "container-image-with-a-long-name")
-    assert has_element?(view, "#local-store-target-preview", "fixture.example.test")
-    assert has_element?(view, "#local-store-target-preview", "/ready")
-    refute has_element?(view, "#immutable-input-staging input[name*='domain']")
-    refute has_element?(view, "#immutable-input-staging input[name*='health']")
-    refute has_element?(view, "#immutable-input-staging input[name*='port']")
-
-    view
-    |> form("#local-store-stage-form", %{
-      "local_store_stage" => %{"selected_target" => "production"}
-    })
-    |> render_submit()
-
-    [input] = Deployments.list_deployment_inputs()
-    assert_redirect(view, ~p"/releases/#{input.id}")
-    assert input.requested_by_operator_id == operator.id
-    assert input.state == :staged
-    assert Nixploy.Repo.aggregate(Oban.Job, :count) == jobs_before
-
-    {:ok, detail, html} = live(conn, ~p"/releases/#{input.id}")
-    assert has_element?(detail, "#deployment-input-store-path", "/nix/store/")
-    assert has_element?(detail, "#deployment-input-nar-hash", "sha256-AAAA")
-    assert has_element?(detail, "#deployment-input-project", "mobile-fixture")
-    assert has_element?(detail, "#deployment-input-target", "production")
-    assert has_element?(detail, "#deployment-input-image", "container-image-with-a-long-name")
-    assert has_element?(detail, "#deployment-input-domain", "fixture.example.test")
-    assert has_element?(detail, "#deployment-input-health", "/ready")
-
-    assert has_element?(
-             detail,
-             "#deployment-input-resource-key",
-             Nixploy.Deployments.ResourceIdentity.derive!("mobile-fixture", "production")
-           )
-
-    assert has_element?(detail, "#deployment-input-actor", operator.email)
-    assert has_element?(detail, "#staging-no-mutation", "did not start a deployment")
-    assert html =~ "overflow-x-hidden"
-    assert html =~ "break-all"
-    assert html =~ "min-w-0"
+    assert get(conn, "/compatibility").status == 404
   end
 
   test "keeps flake-declared pre-start intent concise on the deployment action", %{
@@ -629,24 +618,6 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert rollback_html =~ "break-all"
   end
 
-  test "renders immutable source failures without crashing LiveView", %{conn: conn} do
-    Application.put_env(:nixploy, :local_store_input_probe, fn _path, _opts ->
-      {:error, :path_info_timeout}
-    end)
-
-    {:ok, view, _html} = live(conn, ~p"/releases")
-
-    view
-    |> form("#local-store-inspect-form", %{
-      "local_store" => %{"store_path" => "/nix/store/missing-source"}
-    })
-    |> render_submit()
-
-    assert has_element?(view, "#local-store-error", "timed out after 30 seconds")
-    assert has_element?(view, "#releases-page", "Releases")
-    assert has_element?(view, "#local-store-inspect-form")
-  end
-
   test "requires authentication for immutable input detail URLs", %{} do
     operator = Fixtures.operator_fixture()
 
@@ -663,112 +634,6 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
     assert {:error, {:redirect, %{to: "/login"}}} =
              live(unauthenticated_conn, ~p"/releases/#{input.id}")
-  end
-
-  test "queues a worker-owned service status refresh", %{conn: conn} do
-    service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    assert has_element?(view, "#service-status-#{service.id}", "not observed")
-
-    view
-    |> element("#refresh-status-#{service.id}")
-    |> render_click()
-
-    assert_enqueued(worker: StatusWorker, args: %{service_id: service.id})
-    assert has_element?(view, "#service-status-#{service.id}", "pending")
-  end
-
-  test "queues a worker-owned active-container log snapshot", %{conn: conn} do
-    service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    assert has_element?(view, "#service-status-#{service.id}", "No log snapshot")
-
-    view
-    |> element("#fetch-logs-#{service.id}")
-    |> render_click()
-
-    assert_enqueued(worker: LogWorker, args: %{service_id: service.id})
-    assert has_element?(view, "#service-status-#{service.id}", "pending")
-  end
-
-  test "renders a persisted active-container log snapshot", %{conn: conn} do
-    service = Fixtures.service_fixture(%{domain: "app.example.com"})
-    {:ok, requested, _job} = Nixploy.Operations.request_log_snapshot(service.id)
-
-    {:ok, _snapshot} =
-      Nixploy.Operations.complete_log_snapshot(service.id, requested.request_id, %{
-        target_identity: "nixploy-app-123-production",
-        slot: "green",
-        container_name: "nixploy-app-123-production-green",
-        content: "Application started",
-        line_count: 1,
-        truncated: false
-      })
-
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    assert has_element?(view, "#service-logs-#{service.id}", "Application started")
-    assert has_element?(view, "#service-status-#{service.id}", "green")
-    assert has_element?(view, "#service-status-#{service.id}", "1 lines")
-  end
-
-  test "queues and streams a simulated deployment to completion", %{conn: conn} do
-    service = Fixtures.service_fixture()
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    view
-    |> form("#deployment-form", %{
-      "deployment" => %{"service_id" => service.id, "requested_ref" => "main"}
-    })
-    |> render_submit()
-
-    [deployment] = Deployments.list_deployments()
-    assert_enqueued(worker: SimulatedWorker, args: %{deployment_id: deployment.id})
-    assert has_element?(view, "#deployment-#{deployment.id}", "queued")
-
-    assert :ok = perform_job(SimulatedWorker, %{deployment_id: deployment.id})
-
-    assert has_element?(view, "#deployment-#{deployment.id}", "succeeded")
-    assert render(view) =~ "Deployment succeeded"
-  end
-
-  test "shows the resolved revision and deployment failure", %{conn: conn} do
-    deployment = Fixtures.deployment_fixture()
-    commit = String.duplicate("a", 40)
-
-    {:ok, _, _} = Deployments.transition(deployment.id, :preparing, "Preparing")
-
-    {:ok, _, _} =
-      Deployments.transition(deployment.id, :building, "Resolved revision", %{
-        resolved_commit: commit
-      })
-
-    {:ok, _, _} =
-      Deployments.transition(deployment.id, :failed, "Deployment failed", %{
-        failure: %{message: "Podman connection failed"}
-      })
-
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    assert has_element?(view, "#deployment-#{deployment.id}", "aaaaaaaaaaaa")
-    assert has_element?(view, "#deployment-#{deployment.id}", "Podman connection failed")
-  end
-
-  test "requests cancellation from the dashboard", %{conn: conn} do
-    deployment = Fixtures.deployment_fixture()
-    {:ok, view, _html} = live(conn, ~p"/compatibility")
-
-    view
-    |> element("#cancel-#{deployment.id}")
-    |> render_click()
-
-    assert Deployments.cancellation_requested?(deployment.id)
-    assert render(view) =~ "cancelling"
-
-    assert :ok = perform_job(SimulatedWorker, %{deployment_id: deployment.id})
-    assert has_element?(view, "#deployment-#{deployment.id}", "cancelled")
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:nixploy, key)

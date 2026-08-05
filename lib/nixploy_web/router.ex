@@ -66,7 +66,6 @@ defmodule NixployWeb.Router do
       live "/deployment-inputs/:id", DeploymentLive.Show, :show
       live "/native-deployments", DeploymentLive.Index, :deployments
       live "/native-deployments/:id", DeploymentLive.NativeShow, :show
-      live "/compatibility", DeploymentLive.Index, :compatibility
     end
   end
 
