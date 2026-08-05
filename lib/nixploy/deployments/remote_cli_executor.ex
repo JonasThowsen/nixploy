@@ -1,7 +1,15 @@
 defmodule Nixploy.Deployments.RemoteCliExecutor do
   @moduledoc "Invokes the packaged remote-target CLI for one exact immutable release."
 
-  alias Nixploy.Deployments.{DeploymentPolicy, EventProtocol, NativeDeployment, ResourceIdentity}
+  alias Nixploy.Deployments.{
+    DeploymentPolicy,
+    EventProtocol,
+    LocalStoreInput,
+    NativeDeployment,
+    RemotePlan,
+    ResourceIdentity
+  }
+
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
@@ -14,38 +22,40 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
     workspace_root = Keyword.get(opts, :workspace_root, workspace_root())
     workspace = Path.join(workspace_root, deployment.id)
 
-    with {:ok, policy} <- evaluate_policy(deployment, opts),
-         :ok <- record_policy_stage(policy, opts),
-         :ok <- private_workspace(workspace) do
+    with :ok <- private_workspace(workspace) do
       try do
-        command = command(deployment, workspace, opts)
-        state_key = {__MODULE__, make_ref()}
-        Process.put(state_key, %{protocol: EventProtocol.initial(), error: nil, outcome: nil})
+        with {:ok, fresh_plan} <- read_plan(deployment, workspace, opts),
+             {:ok, policy} <- evaluate_policy(deployment, fresh_plan, opts),
+             :ok <- record_policy_stage(policy, fresh_plan, opts) do
+          command = command(deployment, workspace, opts)
+          state_key = {__MODULE__, make_ref()}
+          Process.put(state_key, %{protocol: EventProtocol.initial(), error: nil, outcome: nil})
 
-        on_line = fn line -> consume_line(line, deployment, opts, state_key) end
-        execution_opts = Keyword.take(opts, [:cancelled?]) |> Keyword.put(:on_line, on_line)
-        execution_result = execute.(command, execution_opts)
-        protocol_result = protocol_result(Process.get(state_key))
-        Process.delete(state_key)
+          on_line = fn line -> consume_line(line, deployment, opts, state_key) end
+          execution_opts = Keyword.take(opts, [:cancelled?]) |> Keyword.put(:on_line, on_line)
+          execution_result = execute.(command, execution_opts)
+          protocol_result = protocol_result(Process.get(state_key))
+          Process.delete(state_key)
 
-        case {execution_result, protocol_result} do
-          {{:ok, %{output_truncated?: true}}, _protocol} ->
-            {:error, :remote_cli_output_too_large}
+          case {execution_result, protocol_result} do
+            {{:ok, %{output_truncated?: true}}, _protocol} ->
+              {:error, :remote_cli_output_too_large}
 
-          {{:error, reason}, _protocol} ->
-            {:error, reason}
+            {{:error, reason}, _protocol} ->
+              {:error, reason}
 
-          {{:ok, %{exit_status: 0}}, :succeeded} ->
-            :ok
+            {{:ok, %{exit_status: 0}}, :succeeded} ->
+              :ok
 
-          {{:ok, %{exit_status: status}}, {:failed, code}} ->
-            {:error, {:remote_cli_reported_failure, status, code}}
+            {{:ok, %{exit_status: status}}, {:failed, code}} ->
+              {:error, {:remote_cli_reported_failure, status, code}}
 
-          {{:ok, %{exit_status: status}}, {:error, reason}} ->
-            {:error, {:remote_cli_protocol_error, status, reason}}
+            {{:ok, %{exit_status: status}}, {:error, reason}} ->
+              {:error, {:remote_cli_protocol_error, status, reason}}
 
-          {{:ok, %{exit_status: status}}, :succeeded} ->
-            {:error, {:remote_cli_exit_mismatch, status}}
+            {{:ok, %{exit_status: status}}, :succeeded} ->
+              {:error, {:remote_cli_exit_mismatch, status}}
+          end
         end
       after
         File.rm_rf(workspace)
@@ -101,14 +111,33 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
     }
   end
 
-  defp evaluate_policy(deployment, opts) do
-    case Keyword.get(opts, :policy, DeploymentPolicy) do
-      module when is_atom(module) -> module.evaluate(deployment)
+  defp read_plan(deployment, workspace, opts) do
+    plan_opts = [
+      execute: Keyword.get(opts, :execute, &Execution.run/2),
+      executable: Keyword.get_lazy(opts, :executable, &executable!/0),
+      workspace: workspace,
+      env: %{
+        "HOME" => workspace,
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => "/dev/null"
+      }
+    ]
+
+    case Keyword.get(opts, :plan, RemotePlan) do
+      module when is_atom(module) -> module.read(deployment, plan_opts)
       callback when is_function(callback, 1) -> callback.(deployment)
     end
   end
 
-  defp record_policy_stage(policy, opts) do
+  defp evaluate_policy(deployment, fresh_plan, opts) do
+    case Keyword.get(opts, :policy, DeploymentPolicy) do
+      module when is_atom(module) -> module.evaluate(deployment)
+      callback when is_function(callback, 2) -> callback.(deployment, fresh_plan)
+      callback when is_function(callback, 1) -> callback.(deployment)
+    end
+  end
+
+  defp record_policy_stage(policy, fresh_plan, opts) do
     message =
       if policy.allow?,
         do: "Pinned deployment policy allowed the immutable remote plan",
@@ -123,7 +152,8 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
             policy_mode: policy.mode,
             policy_code: policy.code,
             policy_payload_digest: policy.payload_digest,
-            policy_component_digest: policy.component_digest
+            policy_component_digest: policy.component_digest,
+            fresh_plan_digest: LocalStoreInput.digest(fresh_plan)
           }
         }
       },

@@ -189,6 +189,13 @@ public static class CommandFactory
                 return 1;
             }
 
+            var freshPlan = await ReadTargetPlanAsync(resourcePrefix, target, caddyService);
+            if (freshPlan is null)
+            {
+                Console.Error.WriteLine("Fresh target plan could not be read immediately before remote mutation.");
+                return 1;
+            }
+
             IReadOnlyList<Secret> secrets;
             reporter.Stage("installing_credentials", "Resolving worker-only credential references");
 
@@ -238,6 +245,7 @@ public static class CommandFactory
                     resourcePrefix,
                     targetName,
                     target,
+                    freshPlan,
                     podmanConnection,
                     loadedImage.Reference,
                     loadedImage.Id,
@@ -515,6 +523,7 @@ public static class CommandFactory
             return 0;
         });
 
+        var planCommand = CreatePlanCommand(configProvider, podmanService, caddyService);
         var statusCommand = CreateStatusCommand(commandRunner, configProvider, podmanService, caddyService);
 
         var root = new RootCommand("Nixploy")
@@ -523,12 +532,143 @@ public static class CommandFactory
             {
                 deployCommand,
                 taskCommand,
+                planCommand,
                 statusCommand,
                 pruneCommand
             }
         };
 
         return root;
+    }
+
+    private static Command CreatePlanCommand(
+        INixployConfigProvider configProvider,
+        IPodmanService podmanService,
+        ICaddyService caddyService
+    )
+    {
+        var targetOption = new Option<string>("--target");
+        var sourceOption = new Option<string>("--source");
+        var revisionOption = new Option<string>("--git-revision");
+        var repositoryOption = new Option<string>("--repository-identity");
+        var digestOption = new Option<string>("--configuration-digest");
+        var operationOption = new Option<string>("--operation-id");
+        var resourceOption = new Option<string>("--resource-key");
+
+        var command = new Command("plan", "Read the fresh immutable deployment plan without target mutation")
+        {
+            Options =
+            {
+                targetOption,
+                sourceOption,
+                revisionOption,
+                repositoryOption,
+                digestOption,
+                operationOption,
+                resourceOption
+            }
+        };
+
+        command.SetAction(async parseResult =>
+        {
+            var targetName = parseResult.GetValue(targetOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(sourceOption),
+                parseResult.GetValue(revisionOption),
+                parseResult.GetValue(repositoryOption),
+                parseResult.GetValue(digestOption),
+                parseResult.GetValue(operationOption),
+                parseResult.GetValue(resourceOption)
+            );
+
+            var protocol = Console.Out;
+            Console.SetOut(Console.Error);
+
+            try
+            {
+                if (!immutable.Success || string.IsNullOrWhiteSpace(targetName))
+                {
+                    Console.Error.WriteLine(immutable.Error ?? "Plan identity is invalid.");
+                    return 1;
+                }
+
+                var config = await configProvider.GetConfigAsync(immutable.Source!);
+                if (!config.Targets.TryGetValue(targetName, out var target))
+                {
+                    return 1;
+                }
+
+                var expectedResource = ResourcePrefix(config.Project, targetName);
+                if (!string.Equals(expectedResource, immutable.ResourceKey, StringComparison.Ordinal) ||
+                    !await podmanService.EnsureConnectionAsync(expectedResource, targetName, target))
+                {
+                    return 1;
+                }
+
+                var state = await ReadTargetPlanAsync(expectedResource, target, caddyService);
+                if (state is null)
+                {
+                    return 1;
+                }
+
+                protocol.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["schema"] = "nixploy.plan/v1",
+                    ["operation_id"] = immutable.OperationId,
+                    ["resource_key"] = expectedResource,
+                    ["project"] = config.Project,
+                    ["target"] = targetName,
+                    ["connection"] = podmanService.GetConnectionName(expectedResource),
+                    ["target_identity"] = new Dictionary<string, object?>
+                    {
+                        ["host"] = target.Ip,
+                        ["user"] = target.User,
+                        ["port"] = target.Port
+                    },
+                    ["image_output"] = target.Image,
+                    ["active_slot"] = state.ActiveSlot,
+                    ["active_port"] = state.ActivePort,
+                    ["candidate_slot"] = state.CandidateSlot,
+                    ["candidate_port"] = state.CandidatePort,
+                    ["current_container"] = state.ActiveSlot is null
+                        ? null
+                        : $"{expectedResource}-{state.ActiveSlot}",
+                    ["caddy_route_id"] = target.Web is null ? null : $"nixploy-route-{expectedResource}",
+                    ["caddy_proxy_id"] = target.Web is null ? null : $"nixploy-proxy-{expectedResource}",
+                    ["domain"] = target.Web?.Domain,
+                    ["health_endpoint"] = target.Web is null || state.CandidatePort is null
+                        ? null
+                        : $"http://127.0.0.1:{state.CandidatePort}{target.Web.HealthPath}",
+                    ["pre_start_count"] = target.Run.PreStart.Count,
+                    ["credential_count"] = target.Secrets.Count,
+                    ["task_names"] = target.Tasks.Keys.Order().ToArray(),
+                    ["intended_effects"] = new[]
+                    {
+                        "build_image",
+                        "install_credentials",
+                        "load_remote_image",
+                        "run_fixed_pre_start",
+                        "start_inactive_slot",
+                        "check_target_local_health",
+                        "switch_exact_caddy_route",
+                        "independent_readback"
+                    }
+                }));
+                protocol.Flush();
+                return 0;
+            }
+            catch (InvalidOperationException exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+            finally
+            {
+                Console.SetOut(protocol);
+            }
+        });
+
+        return command;
     }
 
     private static Command CreateStatusCommand(
@@ -674,10 +814,46 @@ public static class CommandFactory
         return command;
     }
 
+    private static async Task<TargetPlanState?> ReadTargetPlanAsync(
+        string resourcePrefix,
+        NixployTarget target,
+        ICaddyService caddyService
+    )
+    {
+        if (target.Web is null)
+        {
+            return new TargetPlanState(null, null, null, null);
+        }
+
+        var ingress = await caddyService.GetActivePortAsync(resourcePrefix, target);
+        if (!ingress.Success)
+        {
+            return null;
+        }
+
+        return ingress.Port switch
+        {
+            null => new TargetPlanState(null, null, "blue", target.Web.Slots.Blue),
+            var port when port == target.Web.Slots.Blue =>
+                new TargetPlanState("blue", port, "green", target.Web.Slots.Green),
+            var port when port == target.Web.Slots.Green =>
+                new TargetPlanState("green", port, "blue", target.Web.Slots.Blue),
+            _ => null
+        };
+    }
+
+    private sealed record TargetPlanState(
+        string? ActiveSlot,
+        int? ActivePort,
+        string? CandidateSlot,
+        int? CandidatePort
+    );
+
     private static async Task<bool> DeployWebTargetAsync(
         string resourcePrefix,
         string targetName,
         NixployTarget target,
+        TargetPlanState freshPlan,
         string podmanConnection,
         string imageReference,
         string imageId,
@@ -688,16 +864,9 @@ public static class CommandFactory
         DeploymentReporter reporter
     )
     {
-        var activePortResult = await caddyService.GetActivePortAsync(resourcePrefix, target);
-
-        if (!activePortResult.Success)
-        {
-            Console.Error.WriteLine("Cannot safely select an inactive slot because Caddy state is unavailable.");
-            return false;
-        }
-
-        var activePort = activePortResult.Port;
-        var (slotName, slotPort) = SelectSlot(target.Web!, activePort);
+        var activePort = freshPlan.ActivePort;
+        var slotName = freshPlan.CandidateSlot!;
+        var slotPort = freshPlan.CandidatePort!.Value;
         var newContainerName = $"{resourcePrefix}-{slotName}";
         var oldContainerName = activePort is null
             ? null

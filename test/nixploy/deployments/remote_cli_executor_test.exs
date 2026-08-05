@@ -26,6 +26,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               plan: allow_plan(),
                policy: allow_policy()
              )
 
@@ -104,10 +105,14 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
                stage: stage,
+               plan: allow_plan(),
                policy: allow_policy()
              )
 
-    assert_receive {:stage, :preparing, %{metadata: %{policy_code: "allowed"}}}
+    assert_receive {:stage, :preparing,
+                    %{metadata: %{policy_code: "allowed", fresh_plan_digest: digest}}}
+
+    assert byte_size(digest) == 64
     assert_receive {:stage, :verifying, %{}}
     assert_receive {:stage, :succeeded, %{}}
   end
@@ -128,6 +133,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               plan: allow_plan(),
                policy: allow_policy()
              )
   end
@@ -147,8 +153,20 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               plan: allow_plan(),
                policy: allow_policy()
              )
+  end
+
+  defp allow_plan do
+    fn _deployment ->
+      {:ok,
+       %{
+         "schema" => "nixploy.plan/v1",
+         "operation_id" => deployment().id,
+         "resource_key" => "nixploy-fixture-bab0990cab-production"
+       }}
+    end
   end
 
   defp allow_policy do
