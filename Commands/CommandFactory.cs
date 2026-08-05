@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Nixploy.Cli;
 
@@ -19,14 +20,62 @@ public static class CommandFactory
             Description = "Target server"
         };
 
+        var sourceOption = new Option<string>("--source")
+        {
+            Description = "Exact immutable Nix source store path"
+        };
+        var gitRevisionOption = new Option<string>("--git-revision")
+        {
+            Description = "Persisted full Git commit"
+        };
+        var repositoryIdentityOption = new Option<string>("--repository-identity")
+        {
+            Description = "Operator-safe repository identity"
+        };
+        var configurationDigestOption = new Option<string>("--configuration-digest")
+        {
+            Description = "Persisted normalized configuration SHA-256 digest"
+        };
+        var operationIdOption = new Option<string>("--operation-id")
+        {
+            Description = "Durable deployment operation UUID"
+        };
+        var resourceKeyOption = new Option<string>("--resource-key")
+        {
+            Description = "Canonical host-computed managed resource key"
+        };
+
         var deployCommand = new Command("deploy", "Build, load, and run an OCI image on a target server")
         {
-            Options = { targetOption }
+            Options =
+            {
+                targetOption,
+                sourceOption,
+                gitRevisionOption,
+                repositoryIdentityOption,
+                configurationDigestOption,
+                operationIdOption,
+                resourceKeyOption
+            }
         };
 
         deployCommand.SetAction(async parseResult =>
         {
             var targetName = parseResult.GetValue(targetOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(sourceOption),
+                parseResult.GetValue(gitRevisionOption),
+                parseResult.GetValue(repositoryIdentityOption),
+                parseResult.GetValue(configurationDigestOption),
+                parseResult.GetValue(operationIdOption),
+                parseResult.GetValue(resourceKeyOption)
+            );
+
+            if (!immutable.Success)
+            {
+                Console.Error.WriteLine(immutable.Error);
+                return 1;
+            }
 
             if (string.IsNullOrWhiteSpace(targetName))
             {
@@ -38,7 +87,7 @@ public static class CommandFactory
 
             try
             {
-                config = await configProvider.GetConfigAsync();
+                config = await configProvider.GetConfigAsync(immutable.Source!);
             }
             catch (InvalidOperationException exception)
             {
@@ -73,7 +122,12 @@ public static class CommandFactory
 
             try
             {
-                metadata = await CreateDeploymentMetadataAsync(config.Project, targetName, commandRunner);
+                metadata = CreateDeploymentMetadata(
+                    config.Project,
+                    targetName,
+                    immutable.RepositoryIdentity!,
+                    immutable.GitRevision!
+                );
             }
             catch (InvalidOperationException exception)
             {
@@ -81,7 +135,7 @@ public static class CommandFactory
                 return 1;
             }
 
-            var resourcePrefix = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
+            var resourcePrefix = immutable.ResourceKey!;
             var podmanConnection = podmanService.GetConnectionName(resourcePrefix);
             const string imageOutputPath = "result-nixploy-image";
 
@@ -93,11 +147,18 @@ public static class CommandFactory
                 return 1;
             }
 
-            Console.WriteLine($"Building image '.#{target.Image}'...");
+            Console.WriteLine($"Building image '{immutable.Source}#{target.Image}'...");
 
             CommandRunResult buildResult = await commandRunner.RunAsync(
                 "nix",
-                ["build", $".#{target.Image}", "-o", imageOutputPath]
+                [
+                    "build",
+                    "--no-update-lock-file",
+                    "--no-write-lock-file",
+                    $"{immutable.Source}#{target.Image}",
+                    "-o",
+                    imageOutputPath
+                ]
             );
 
             if (buildResult.ExitCode != 0)
@@ -188,7 +249,7 @@ public static class CommandFactory
 
             try
             {
-                config = await configProvider.GetConfigAsync();
+                config = await configProvider.GetConfigAsync(".");
             }
             catch (InvalidOperationException exception)
             {
@@ -381,6 +442,28 @@ public static class CommandFactory
         return true;
     }
 
+    private static DeploymentMetadata CreateDeploymentMetadata(
+        string project,
+        string targetName,
+        string repositoryIdentity,
+        string gitRevision
+    )
+    {
+        if (string.IsNullOrWhiteSpace(project))
+        {
+            throw new InvalidOperationException("nixploy project is required. Set `project = \"your-app\";` in nixploy.lib.makeConfig.");
+        }
+
+        return new DeploymentMetadata(
+            project,
+            ShortHash(repositoryIdentity),
+            targetName,
+            repositoryIdentity,
+            gitRevision,
+            DateTimeOffset.UtcNow.ToString("O")
+        );
+    }
+
     private static async Task<DeploymentMetadata> CreateDeploymentMetadataAsync(
         string project,
         string targetName,
@@ -432,6 +515,73 @@ public static class CommandFactory
                 ? char.ToLowerInvariant(character)
                 : '-'
         )).Trim('-');
+    }
+
+    private sealed record ImmutableInvocation(
+        bool Success,
+        string? Error,
+        string? Source,
+        string? GitRevision,
+        string? RepositoryIdentity,
+        string? ConfigurationDigest,
+        string? OperationId,
+        string? ResourceKey
+    )
+    {
+        private static readonly Regex GitOid = new("^[0-9a-f]{40}$", RegexOptions.CultureInvariant);
+        private static readonly Regex Digest = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+        private static readonly Regex Resource = new("^nixploy-[a-z0-9][a-z0-9_-]{0,126}$", RegexOptions.CultureInvariant);
+        private static readonly Regex Repository = new("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant);
+
+        public static ImmutableInvocation Parse(
+            string? source,
+            string? gitRevision,
+            string? repositoryIdentity,
+            string? configurationDigest,
+            string? operationId,
+            string? resourceKey
+        )
+        {
+            string? error = null;
+
+            if (string.IsNullOrWhiteSpace(source) ||
+                !source.StartsWith("/nix/store/", StringComparison.Ordinal) ||
+                source.Contains('\n') || source.Contains('\0'))
+            {
+                error = "--source must be one absolute /nix/store path.";
+            }
+            else if (gitRevision is null || !GitOid.IsMatch(gitRevision))
+            {
+                error = "--git-revision must be one full lowercase Git commit.";
+            }
+            else if (repositoryIdentity is null || !Repository.IsMatch(repositoryIdentity))
+            {
+                error = "--repository-identity must be owner/repository.";
+            }
+            else if (configurationDigest is null || !Digest.IsMatch(configurationDigest))
+            {
+                error = "--configuration-digest must be a lowercase SHA-256 digest.";
+            }
+            else if (!Guid.TryParse(operationId, out _))
+            {
+                error = "--operation-id must be a UUID.";
+            }
+            else if (resourceKey is null || !Resource.IsMatch(resourceKey))
+            {
+                error = "--resource-key is invalid.";
+            }
+
+            return new ImmutableInvocation(
+                error is null,
+                error,
+                source,
+                gitRevision,
+                repositoryIdentity,
+                configurationDigest,
+                operationId,
+                resourceKey
+            );
+        }
     }
 
     private static (string Name, int Port) SelectSlot(NixployWebConfig web, int? activePort)

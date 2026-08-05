@@ -1,7 +1,13 @@
 defmodule Nixploy.Deployments.NativeExecutor do
   @moduledoc "Executes one verified local-store input against local Podman and Caddy."
 
-  alias Nixploy.Deployments.{LocalStoreInput, NativeDeployment, ProjectCredentials}
+  alias Nixploy.Deployments.{
+    LocalStoreInput,
+    NativeDeployment,
+    ProjectCredentials,
+    ResourceIdentity
+  }
+
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
@@ -318,10 +324,7 @@ defmodule Nixploy.Deployments.NativeExecutor do
     end
   end
 
-  defp derived_prefix(project, target) do
-    identity = :crypto.hash(:sha256, project <> <<0>> <> target) |> Base.encode16(case: :lower)
-    "nixploy-#{sanitize(project)}-#{String.slice(identity, 0, 10)}-#{sanitize(target)}"
-  end
+  defp derived_prefix(project, target), do: ResourceIdentity.derive!(project, target)
 
   defp validate_collisions(prefix, project, target, containers) do
     names = [prefix, "#{prefix}-blue", "#{prefix}-green"]
@@ -1073,14 +1076,6 @@ defmodule Nixploy.Deployments.NativeExecutor do
       String.ends_with?(name, "-green") -> String.trim_trailing(name, "-green")
       true -> nil
     end
-  end
-
-  defp sanitize(value) do
-    value
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9_-]+/, "-")
-    |> String.trim("-")
-    |> String.slice(0, 48)
   end
 
   defp add_secret_mounts(args, mounts) do

@@ -2,5 +2,5 @@ namespace Nixploy.Cli;
 
 public interface INixployConfigProvider
 {
-    Task<NixployConfig> GetConfigAsync();
+    Task<NixployConfig> GetConfigAsync(string source);
 }

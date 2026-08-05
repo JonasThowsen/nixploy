@@ -11,33 +11,43 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
         PropertyNameCaseInsensitive = true
     };
 
-    private Task<NixployConfig>? configTask;
+    private readonly Dictionary<string, Task<NixployConfig>> configTasks = new(StringComparer.Ordinal);
 
-    public Task<NixployConfig> GetConfigAsync()
+    public Task<NixployConfig> GetConfigAsync(string source)
     {
-        configTask ??= LoadConfigAsync();
-        return configTask;
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            throw new InvalidOperationException("An immutable source path is required.");
+        }
+
+        if (!configTasks.TryGetValue(source, out var task))
+        {
+            task = LoadConfigAsync(source);
+            configTasks[source] = task;
+        }
+
+        return task;
     }
 
-    private async Task<NixployConfig> LoadConfigAsync()
+    private async Task<NixployConfig> LoadConfigAsync(string source)
     {
         CommandRunResult result = await commandRunner.RunAsync(
             "nix",
-            ["eval", ".#nixploy", "--json"],
+            ["eval", "--json", "--no-write-lock-file", $"{source}#nixploy"],
             new CommandRunOptions { StreamOutput = false }
         );
 
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"Failed to evaluate .#nixploy.\n{result.StdError}"
+                $"Failed to evaluate immutable source '{source}#nixploy'.\n{result.StdError}"
             );
         }
 
         try
         {
             var config = JsonSerializer.Deserialize<NixployConfig>(result.StdOutput, JsonOptions)
-                ?? throw new InvalidOperationException(".#nixploy evaluated to empty JSON.");
+                ?? throw new InvalidOperationException("The immutable nixploy source evaluated to empty JSON.");
 
             if (config.Schema != SupportedSchema)
             {
@@ -52,7 +62,7 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
         catch (JsonException exception)
         {
             throw new InvalidOperationException(
-                "Failed to parse .#nixploy JSON.",
+                "Failed to parse immutable nixploy source JSON.",
                 exception
             );
         }

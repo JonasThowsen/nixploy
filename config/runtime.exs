@@ -89,6 +89,10 @@ if executable = System.get_env("NIXPLOY_LEGACY_EXECUTABLE") do
   config :nixploy, :legacy_nixploy_executable, executable
 end
 
+if executable = System.get_env("NIXPLOY_REMOTE_CLI_EXECUTABLE") do
+  config :nixploy, :remote_cli_executable, executable
+end
+
 unless config_env() == :test do
   # Keep the MVP queue deliberately narrow in addition to PostgreSQL target
   # leases; increasing concurrency is safe only after production load testing.

@@ -105,6 +105,7 @@
             postInstall = ''
               wrapProgram $out/bin/nixploy \
                 --set-default NIXPLOY_LEGACY_EXECUTABLE ${nixploy}/bin/nixploy \
+                --set-default NIXPLOY_REMOTE_CLI_EXECUTABLE ${nixploy}/bin/nixploy \
                 --prefix PATH : ${
                   lib.makeBinPath [
                     nixploy
