@@ -17,11 +17,14 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
     resource_key = ResourceIdentity.derive!(deployment.project, deployment.target)
 
     operation = Keyword.get(opts, :operation, :deploy)
+    fresh_plan = Keyword.get(opts, :plan)
+    plan_digest = if is_map(fresh_plan), do: fresh_plan |> canonical_json() |> sha256()
 
     payload = %{
       "configuration_digest" => input.configuration_digest,
       "operation" => Atom.to_string(operation),
       "operation_id" => deployment.id,
+      "plan_digest" => plan_digest,
       "resource_key" => resource_key,
       "runtime_mode" => Atom.to_string(runtime_mode(opts)),
       "source_kind" => Atom.to_string(input.input_kind),
@@ -46,7 +49,8 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
       if(payload["runtime_mode"] == "remote_control_plane", do: 1, else: 0),
       if(payload["source_kind"] == "git_main", do: 1, else: 0),
       if(resource_key_valid?(resource_key), do: 1, else: 0),
-      if(immutable_identity_valid?(payload), do: 1, else: 0)
+      if(immutable_identity_valid?(payload), do: 1, else: 0),
+      if(plan_valid?(operation, fresh_plan, deployment, resource_key), do: 1, else: 0)
     ]
 
     command = %Command{
@@ -68,24 +72,38 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
       max_output_bytes: @max_output
     }
 
+    started_at = System.monotonic_time()
+
     with :ok <- validate_mode(mode),
          :ok <- validate_packaged_path(component, "policy component"),
          :ok <- validate_packaged_path(wasmtime, "Wasmtime executable"),
-         {:ok, result} <- execute.(command, []),
+         {:ok, component_digest} <- component_digest(component, opts),
+         {:ok, result} <- run_policy(execute, command),
          :ok <- bounded_success(result),
-         {:ok, allow?} <- parse_decision(result.output_tail),
-         {:ok, component_digest} <- component_digest(component, opts) do
+         {:ok, allow?} <- parse_decision(result.output_tail) do
       decision = %{
         allow?: allow?,
         mode: mode,
+        contract_version: "nixploy.policy/v1",
         payload_digest: payload_digest,
+        plan_digest: plan_digest,
         component_digest: component_digest,
+        duration_ms:
+          System.convert_time_unit(System.monotonic_time() - started_at, :native, :millisecond),
+        findings: if(allow?, do: [], else: ["v1_boundary_denied"]),
         code: if(allow?, do: "allowed", else: "v1_boundary_denied")
       }
 
       if allow? or mode == :shadow,
         do: {:ok, decision},
         else: {:error, {:policy_denied, decision}}
+    end
+  end
+
+  defp run_policy(execute, command) do
+    case execute.(command, []) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, {:policy_runtime_failed, reason}}
     end
   end
 
@@ -121,6 +139,16 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
       is_binary(payload["configuration_digest"]) and
       Regex.match?(@digest, payload["configuration_digest"])
   end
+
+  defp plan_valid?(:task, nil, _deployment, _resource_key), do: true
+
+  defp plan_valid?(:deploy, plan, deployment, resource_key) when is_map(plan) do
+    plan["schema"] == "nixploy.plan/v1" and plan["operation_id"] == deployment.id and
+      plan["resource_key"] == resource_key and plan["project"] == deployment.project and
+      plan["target"] == deployment.target and is_list(plan["intended_effects"])
+  end
+
+  defp plan_valid?(_operation, _plan, _deployment, _resource_key), do: false
 
   defp resource_key_valid?(key), do: Regex.match?(~r/^nixploy-[a-z0-9][a-z0-9_-]{0,126}$/, key)
 

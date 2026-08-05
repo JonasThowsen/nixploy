@@ -256,6 +256,40 @@
             <span class="text-xs text-base-content/45">
               Step {index + 1} · {stage_label(event.stage)}
             </span>
+            <dl
+              :if={event.metadata["policy_code"] || event.metadata["policy_component_digest"]}
+              class="mt-2 grid gap-2 rounded-field bg-base-200 p-3 text-xs sm:grid-cols-2"
+            >
+              <div>
+                <dt class="np-field-label">Policy decision</dt>
+                <dd class="font-mono">
+                  {event.metadata["policy_code"] || "runtime failure"} · {event.metadata[
+                    "policy_mode"
+                  ]}
+                </dd>
+              </div>
+              <div>
+                <dt class="np-field-label">Contract / duration</dt>
+                <dd class="font-mono">
+                  {event.metadata["policy_contract_version"] || "nixploy.policy/v1"} · {event.metadata[
+                    "policy_duration_ms"
+                  ] || "—"}ms
+                </dd>
+              </div>
+              <div class="sm:col-span-2">
+                <dt class="np-field-label">Component digest</dt>
+                <dd class="break-all font-mono">
+                  {event.metadata["policy_component_digest"] || "unavailable"}
+                </dd>
+              </div>
+              <div class="sm:col-span-2">
+                <dt class="np-field-label">Plan digest</dt>
+                <dd class="break-all font-mono">
+                  {event.metadata["policy_plan_digest"] || event.metadata["fresh_plan_digest"] ||
+                    "unavailable"}
+                </dd>
+              </div>
+            </dl>
           </div>
         </li>
       </ol>

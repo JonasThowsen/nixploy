@@ -131,7 +131,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
 
   defp evaluate_policy(deployment, fresh_plan, opts) do
     case Keyword.get(opts, :policy, DeploymentPolicy) do
-      module when is_atom(module) -> module.evaluate(deployment)
+      module when is_atom(module) -> module.evaluate(deployment, plan: fresh_plan)
       callback when is_function(callback, 2) -> callback.(deployment, fresh_plan)
       callback when is_function(callback, 1) -> callback.(deployment)
     end
@@ -149,9 +149,13 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
         message: message,
         attrs: %{
           metadata: %{
+            policy_contract_version: policy[:contract_version],
             policy_mode: policy.mode,
             policy_code: policy.code,
+            policy_findings: policy[:findings] || [],
+            policy_duration_ms: policy[:duration_ms],
             policy_payload_digest: policy.payload_digest,
+            policy_plan_digest: policy[:plan_digest],
             policy_component_digest: policy.component_digest,
             fresh_plan_digest: LocalStoreInput.digest(fresh_plan)
           }

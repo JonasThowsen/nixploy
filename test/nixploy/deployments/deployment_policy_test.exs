@@ -19,7 +19,8 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
                wasmtime: "/nix/store/wasmtime/bin/wasmtime",
                read: fn _path -> {:ok, "wasm-component"} end,
                runtime_mode: :remote_control_plane,
-               mode: :enforce
+               mode: :enforce,
+               plan: plan()
              )
 
     assert decision.allow?
@@ -46,6 +47,7 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
              "1",
              "1",
              "1",
+             "1",
              "1"
            ]
 
@@ -63,7 +65,8 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
       component: "/nix/store/policy/deployment-policy.wasm",
       wasmtime: "/nix/store/wasmtime/bin/wasmtime",
       read: fn _path -> {:ok, "wasm-component"} end,
-      runtime_mode: :local_recovery
+      runtime_mode: :local_recovery,
+      plan: plan()
     ]
 
     assert {:ok, %{allow?: false, mode: :shadow, code: "v1_boundary_denied"}} =
@@ -79,7 +82,8 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
       wasmtime: "/nix/store/wasmtime/bin/wasmtime",
       read: fn _path -> {:ok, "wasm-component"} end,
       runtime_mode: :remote_control_plane,
-      mode: :enforce
+      mode: :enforce,
+      plan: plan()
     ]
 
     assert {:error, {:policy_runtime_failed, 134}} =
@@ -107,6 +111,49 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
                |> Keyword.put(:execute, result(0, "1", false))
                |> Keyword.put(:read, fn _path -> {:error, :enoent} end)
              )
+
+    assert {:error, {:policy_runtime_failed, :timeout}} =
+             DeploymentPolicy.evaluate(
+               deployment(),
+               Keyword.put(base, :execute, fn _command, _opts -> {:error, :timeout} end)
+             )
+
+    assert {:error, {:policy_runtime_failed, {:executable_not_found, _path}}} =
+             DeploymentPolicy.evaluate(
+               deployment(),
+               Keyword.put(base, :execute, fn command, _opts ->
+                 {:error, {:executable_not_found, command.executable}}
+               end)
+             )
+  end
+
+  test "fresh immutable plan is part of the deterministic policy contract" do
+    parent = self()
+
+    execute = fn command, _opts ->
+      send(parent, command.args)
+      {:ok, %Result{exit_status: 0, output_tail: "0\n", output_truncated?: false}}
+    end
+
+    bad_plan = put_in(plan(), ["resource_key"], "nixploy-wrong")
+
+    assert {:error, {:policy_denied, decision}} =
+             DeploymentPolicy.evaluate(deployment(),
+               execute: execute,
+               component: "/nix/store/policy/deployment-policy.wasm",
+               wasmtime: "/nix/store/wasmtime/bin/wasmtime",
+               read: fn _path -> {:ok, "wasm-component"} end,
+               runtime_mode: :remote_control_plane,
+               mode: :enforce,
+               plan: bad_plan
+             )
+
+    assert decision.contract_version == "nixploy.policy/v1"
+    assert byte_size(decision.plan_digest) == 64
+    assert decision.findings == ["v1_boundary_denied"]
+    assert is_integer(decision.duration_ms)
+    assert_receive args
+    assert List.last(args) == "0"
   end
 
   defp result(status, output, truncated?) do
@@ -118,6 +165,17 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
          output_truncated?: truncated?
        }}
     end
+  end
+
+  defp plan do
+    %{
+      "schema" => "nixploy.plan/v1",
+      "operation_id" => deployment().id,
+      "resource_key" => "nixploy-fixture-bab0990cab-production",
+      "project" => "fixture",
+      "target" => "production",
+      "intended_effects" => ["build_image", "load_remote_image"]
+    }
   end
 
   defp deployment do

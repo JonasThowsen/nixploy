@@ -8,12 +8,14 @@ pub fn decide(
   source_kind : Int,
   resource_key_valid : Int,
   immutable_identity_valid : Int,
+  fresh_plan_valid : Int,
 ) -> Int {
   if (operation == 1 || operation == 2) &&
     runtime_mode == 1 &&
     source_kind == 1 &&
     resource_key_valid == 1 &&
-    immutable_identity_valid == 1 {
+    immutable_identity_valid == 1 &&
+    fresh_plan_valid == 1 {
     1
   } else {
     0

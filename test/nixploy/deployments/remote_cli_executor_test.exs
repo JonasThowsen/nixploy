@@ -117,6 +117,36 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
     assert_receive {:stage, :succeeded, %{}}
   end
 
+  test "does not invoke the deploy command after enforced policy denial" do
+    execute = fn _command, _opts -> flunk("deploy command must not begin after denial") end
+
+    policy = fn _deployment, _fresh_plan ->
+      {:error,
+       {:policy_denied,
+        %{
+          allow?: false,
+          mode: :enforce,
+          code: "v1_boundary_denied",
+          payload_digest: String.duplicate("a", 64),
+          component_digest: String.duplicate("b", 64)
+        }}}
+    end
+
+    root =
+      Path.join(System.tmp_dir!(), "nixploy-remote-cli-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:error, {:policy_denied, %{allow?: false}}} =
+             RemoteCliExecutor.deploy(deployment(),
+               execute: execute,
+               executable: "/nix/store/cli/bin/nixploy",
+               workspace_root: root,
+               plan: allow_plan(),
+               policy: policy
+             )
+  end
+
   test "fails closed on malformed or incomplete protocol" do
     execute = fn _command, opts ->
       opts[:on_line].(event(2, "stage", "preparing", nil, nil))
