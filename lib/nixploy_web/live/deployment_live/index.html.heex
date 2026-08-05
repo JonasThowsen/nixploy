@@ -739,6 +739,73 @@
       </div>
     </header>
 
+    <section id="managed-applications" class="grid gap-4 lg:grid-cols-2">
+      <article
+        :for={application <- @managed_applications}
+        id={"managed-application-#{application.key}"}
+        class="np-panel overflow-hidden"
+      >
+        <% latest = latest_application_input(@deployment_inputs, application.key) %>
+        <div class="p-4 sm:p-5">
+          <div class="flex min-w-0 items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="truncate text-lg font-semibold">{application.project}</h2>
+                <span class="badge badge-ghost badge-sm">{application.target}</span>
+              </div>
+              <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                {application.repository_identity} · refs/heads/main
+              </p>
+            </div>
+            <span class={[
+              "badge badge-sm shrink-0",
+              latest && input_state_class(latest.state),
+              is_nil(latest) && "badge-ghost"
+            ]}>
+              {if latest, do: latest.state, else: "no release"}
+            </span>
+          </div>
+          <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+            <div>
+              <dt class="np-field-label">Latest known commit</dt>
+              <dd class="mt-1 font-mono">
+                {if latest, do: short_commit(latest.source_revision), else: "—"}
+              </dd>
+            </div>
+            <div>
+              <dt class="np-field-label">Last main resolution</dt>
+              <dd class="mt-1">
+                {if latest, do: format_time(latest.resolved_at), else: "Never"}
+              </dd>
+            </div>
+          </dl>
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <.button
+              id={"prepare-main-#{application.key}"}
+              phx-click="prepare_main"
+              phx-value-application={application.key}
+              class="btn-primary min-h-11 flex-1"
+              phx-disable-with="Preparing…"
+            >
+              Deploy new release
+            </.button>
+            <.link
+              :if={latest}
+              navigate={~p"/releases/#{latest.id}"}
+              class="btn btn-outline min-h-11 flex-1"
+            >
+              View latest release
+            </.link>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <div :if={@managed_applications == []} class="alert alert-warning">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>No trusted applications are configured for direct-main preparation.</span>
+    </div>
+
     <% releases =
       application_releases(
         @deployment_inputs,
@@ -762,7 +829,7 @@
           No application releases are available yet.
         </strong>
         <span class="mt-1 block">
-          Releases will appear here after the build pipeline registers them.
+          Choose Deploy new release above to resolve a configured application's main branch.
         </span>
       </div>
       <div class="divide-y divide-base-300">

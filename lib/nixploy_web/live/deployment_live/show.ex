@@ -51,6 +51,7 @@ defmodule NixployWeb.DeploymentLive.Show do
 
     assign(socket,
       deployment_input: input,
+      preparation_events: Deployments.list_input_events(input.id),
       native_deployments: NativeDeployments.list_for_input(input.id)
     )
   end
@@ -64,8 +65,16 @@ defmodule NixployWeb.DeploymentLive.Show do
   def input_state_class(:failed), do: "badge-error"
   def input_state_class(_state), do: "badge-warning"
 
-  def short_revision(nil), do: "—"
+  def short_revision(nil), do: "pending"
   def short_revision(revision), do: String.slice(revision, 0, 12)
+
+  def latest_attempt([]), do: nil
+  def latest_attempt([attempt | _]), do: attempt
+
+  def deploy_button_label(%{input_kind: :git_main, source_revision: revision}),
+    do: "Deploy commit #{short_revision(revision)}"
+
+  def deploy_button_label(input), do: "Deploy to #{input.selected_target}"
 
   def format_time(nil), do: "—"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")

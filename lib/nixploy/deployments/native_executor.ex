@@ -396,7 +396,15 @@ defmodule Nixploy.Deployments.NativeExecutor do
       executable: nix(),
       # Execution combines stdout and stderr, so --quiet is required to keep
       # successful machine-readable Nix JSON free from progress diagnostics.
-      args: ["build", "--quiet", "--json", "--no-link", "#{store_path}##{image_output}"],
+      args: [
+        "build",
+        "--quiet",
+        "--json",
+        "--no-link",
+        "--no-update-lock-file",
+        "--no-write-lock-file",
+        "#{store_path}##{image_output}"
+      ],
       timeout: @build_timeout,
       max_output_bytes: @json_limit
     }

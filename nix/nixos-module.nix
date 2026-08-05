@@ -37,8 +37,25 @@ let
     ReadWritePaths = [ "/var/lib/nixploy" ];
   };
 
+  credentialName = key: "git-${key}";
+
+  publicApplications = lib.mapAttrs (
+    _key: application: {
+      inherit (application) project target repository repositoryIdentity subdirectory;
+    }
+  ) cfg.applications;
+
+  workerCredentialPaths = lib.mapAttrs (
+    key: application:
+    if application.credentialFile == null then
+      null
+    else
+      "/run/credentials/nixploy-control-plane-worker.service/${credentialName key}"
+  ) cfg.applications;
+
   commonEnvironment = {
     NIXPLOY_AUTH_MODE = cfg.authMode;
+    NIXPLOY_MANAGED_APPLICATIONS_JSON = builtins.toJSON publicApplications;
     RELEASE_DISTRIBUTION = "none";
   };
 in
@@ -70,6 +87,39 @@ in
         Podman owner identity, but only the worker receives deployment
         credentials.
       '';
+    };
+
+    applications = lib.mkOption {
+      default = { };
+      description = ''
+        Bounded NixOS-owned application source mappings. The source ref is
+        always refs/heads/main; deployment intent remains in each project flake.
+      '';
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            project = lib.mkOption { type = lib.types.str; };
+            target = lib.mkOption { type = lib.types.str; };
+            repository = lib.mkOption {
+              type = lib.types.str;
+              description = "Worker Git clone location; never accepted from the UI.";
+            };
+            repositoryIdentity = lib.mkOption {
+              type = lib.types.strMatching "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$";
+              description = "Operator-safe owner/repository identity persisted with releases.";
+            };
+            subdirectory = lib.mkOption {
+              type = lib.types.str;
+              default = ".";
+            };
+            credentialFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              description = "Optional worker-only Git credential file.";
+            };
+          };
+        }
+      );
     };
 
     workerSopsAgeSshKeyFile = lib.mkOption {
@@ -243,13 +293,17 @@ in
         wants = [ "network-online.target" ];
         requires = [ "nixploy-control-plane.service" ];
 
-        environment = commonEnvironment;
+        environment = commonEnvironment // {
+          NIXPLOY_MANAGED_APPLICATION_CREDENTIALS_JSON = builtins.toJSON workerCredentialPaths;
+        };
 
         serviceConfig = commonServiceConfig // {
           ExecStart = startControlPlane "worker";
-          LoadCredential = [
-            "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
-          ];
+          LoadCredential =
+            [ "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}" ]
+            ++ lib.mapAttrsToList (
+              key: application: "${credentialName key}:${application.credentialFile}"
+            ) (lib.filterAttrs (_key: application: application.credentialFile != null) cfg.applications);
         };
       };
     };

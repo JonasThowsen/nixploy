@@ -5,6 +5,7 @@
   <% slots = target["slots"] || %{} %>
   <% pre_start = get_in(target, ["run", "pre_start"]) || [] %>
   <% credential_references = target["credential_references"] || %{} %>
+  <% latest_attempt = latest_attempt(@native_deployments) %>
 
   <main id="deployment-input-detail" class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden">
     <header class="space-y-5 border-b border-base-300 pb-6">
@@ -15,7 +16,9 @@
       <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <p class="np-kicker">Release candidate</p>
+            <p class="np-kicker">
+              {if input.state == :staging, do: "Preparing main", else: "Immutable release"}
+            </p>
             <span class={["badge badge-sm", input_state_class(input.state)]}>
               {if input.state == :staged, do: "ready", else: input.state}
             </span>
@@ -27,7 +30,7 @@
             </span>
           </div>
           <h1 class="mt-2 break-words text-3xl font-semibold tracking-[-0.035em] sm:text-5xl">
-            {snapshot["project"] || "Release validation failed"}
+            {snapshot["project"] || input.application_key || "Release validation failed"}
           </h1>
           <p class="mt-2 text-sm text-base-content/55">
             {input.selected_target || "Unknown environment"} · registered {format_time(
@@ -43,23 +46,47 @@
           data-confirm={
             cond do
               map_size(credential_references) > 0 and pre_start != [] ->
-                "Deploy this release to #{input.selected_target}? #{map_size(credential_references)} credential file(s) and #{length(pre_start)} preparation action(s) will be applied before it receives traffic."
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{map_size(credential_references)} credential file(s) and #{length(pre_start)} preparation action(s) will be applied before it receives traffic."
 
               map_size(credential_references) > 0 ->
-                "Deploy this release to #{input.selected_target}? #{map_size(credential_references)} credential file(s) will be resolved by the worker."
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{map_size(credential_references)} credential file(s) will be resolved by the worker."
 
               pre_start != [] ->
-                "Deploy this release to #{input.selected_target}? #{length(pre_start)} preparation action(s) will run before it receives traffic."
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{length(pre_start)} preparation action(s) will run before it receives traffic."
 
               true ->
-                "Deploy this release to #{input.selected_target}? The current version stays live until health checks pass."
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? The current version stays live until health checks pass."
             end
           }
         >
-          Deploy to {input.selected_target}
+          {deploy_button_label(input)}
         </.button>
       </div>
     </header>
+
+    <section
+      :if={input.state == :staging}
+      id="main-preparation-progress"
+      class="np-panel overflow-hidden"
+    >
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Preparing immutable release</h2>
+          <p class="np-panel-description">
+            The worker resolves main once, then evaluates only that exact source.
+          </p>
+        </div>
+        <span class="loading loading-spinner loading-sm"></span>
+      </div>
+      <ol class="divide-y divide-base-300">
+        <li :for={event <- @preparation_events} class="px-4 py-3 sm:px-5">
+          <p class="text-sm font-medium">{event.message}</p>
+          <p class="mt-1 font-mono text-xs text-base-content/45">
+            {event.stage} · {format_time(event.inserted_at)}
+          </p>
+        </li>
+      </ol>
+    </section>
 
     <section
       :if={input.failure}
@@ -181,20 +208,32 @@
         Immutable identifiers retained for audit and exact rollback.
       </p>
       <dl class="mt-4 grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2">
+        <div :if={input.source_repository} class="np-data-cell">
+          <dt>Repository</dt>
+          <dd class="break-all font-mono text-xs">{input.source_repository}</dd>
+        </div>
+        <div :if={input.source_ref} class="np-data-cell">
+          <dt>Source ref</dt>
+          <dd class="break-all font-mono text-xs">{input.source_ref}</dd>
+        </div>
         <div :if={input.source_revision} class="np-data-cell sm:col-span-2">
-          <dt>Source revision</dt>
+          <dt>Git commit</dt>
           <dd id="deployment-input-source-revision" class="break-all font-mono text-xs">
-            {input.source_repository}@{input.source_revision}
+            {input.source_revision}
           </dd>
+          <p :if={input.commit_subject} class="mt-2 text-sm">{input.commit_subject}</p>
+          <p :if={input.commit_timestamp} class="mt-1 text-xs text-base-content/45">
+            Committed {format_time(input.commit_timestamp)}
+          </p>
         </div>
         <div class="np-data-cell sm:col-span-2">
-          <dt>Release source</dt>
+          <dt>Source store path</dt>
           <dd id="deployment-input-store-path" class="break-all font-mono text-xs">
             {input.store_path}
           </dd>
         </div>
         <div class="np-data-cell sm:col-span-2">
-          <dt>Source hash</dt>
+          <dt>Source NAR hash</dt>
           <dd id="deployment-input-nar-hash" class="break-all font-mono text-xs">
             {input.nar_hash || "Not verified"}
           </dd>
@@ -208,9 +247,25 @@
           <dd id="deployment-input-health" class="font-mono">{target["health_path"]}</dd>
         </div>
         <div class="np-data-cell sm:col-span-2">
-          <dt>Build output</dt>
+          <dt>Image output</dt>
           <dd id="deployment-input-image" class="break-all font-mono text-xs">
             {target["image_output"]}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Image store path</dt>
+          <dd id="deployment-input-image-store-path" class="break-all font-mono text-xs">
+            {if latest_attempt && latest_attempt.image_store_path,
+              do: latest_attempt.image_store_path,
+              else: "Not built yet"}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>OCI image ID</dt>
+          <dd id="deployment-input-oci-image-id" class="break-all font-mono text-xs">
+            {if latest_attempt && latest_attempt.image_id,
+              do: latest_attempt.image_id,
+              else: "Not built yet"}
           </dd>
         </div>
         <div class="np-data-cell sm:col-span-2">

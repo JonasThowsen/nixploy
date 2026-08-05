@@ -1,7 +1,7 @@
 defmodule NixployWeb.DeploymentLive.Index do
   use NixployWeb, :live_view
 
-  alias Nixploy.{Applications, Audit}
+  alias Nixploy.{Applications, Audit, ManagedApplications}
   alias Nixploy.Applications.{Repository, Service}
   alias Nixploy.Deployments
   alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
@@ -174,6 +174,22 @@ defmodule NixployWeb.DeploymentLive.Index do
       |> to_form(as: :deployment)
 
     {:noreply, assign(socket, :deployment_form, form)}
+  end
+
+  def handle_event("prepare_main", %{"application" => application_key}, socket) do
+    case Deployments.prepare_main(application_key, operator: socket.assigns.current_operator) do
+      {:ok, input, _job} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Main preparation queued")
+         |> push_navigate(to: ~p"/releases/#{input.id}")}
+
+      {:error, :managed_application_not_found} ->
+        {:noreply, put_flash(socket, :error, "That managed application is unavailable")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not prepare main: #{inspect(reason)}")}
+    end
   end
 
   def handle_event("inspect_local_store", %{"local_store" => params}, socket) do
@@ -672,6 +688,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       end)
 
     assign(socket,
+      managed_applications: ManagedApplications.list(),
       repositories: repositories,
       targets: targets,
       services: services,
@@ -805,7 +822,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   def application_releases(_inputs, nil, _deployments), do: []
 
   def application_releases(inputs, inventory, deployments) do
-    projects = managed_projects(inventory)
+    projects = if inventory, do: managed_projects(inventory), else: MapSet.new()
 
     latest_states =
       Enum.reduce(deployments, %{}, fn deployment, states ->
@@ -813,9 +830,18 @@ defmodule NixployWeb.DeploymentLive.Index do
       end)
 
     Enum.filter(inputs, fn input ->
-      MapSet.member?(projects, input.derived_snapshot["project"]) and
+      (input.input_kind == :git_main or
+         MapSet.member?(projects, input.derived_snapshot["project"])) and
         latest_states[input.id] != :failed
     end)
+  end
+
+  def application_inputs(inputs, application_key) do
+    Enum.filter(inputs, &(&1.application_key == application_key))
+  end
+
+  def latest_application_input(inputs, application_key) do
+    Enum.find(inputs, &(&1.application_key == application_key))
   end
 
   defp managed_projects(inventory) do

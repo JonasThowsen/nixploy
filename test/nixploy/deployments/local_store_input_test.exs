@@ -188,6 +188,7 @@ defmodule Nixploy.Deployments.LocalStoreInputTest do
              "eval",
              "--quiet",
              "--json",
+             "--no-update-lock-file",
              "--no-write-lock-file",
              "#{@store_path}#nixploy"
            ]

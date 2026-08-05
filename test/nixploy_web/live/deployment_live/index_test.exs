@@ -73,6 +73,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     previous_machine_health_probe = Application.get_env(:nixploy, :machine_health_probe)
     previous_store_probe = Application.get_env(:nixploy, :local_store_input_probe)
     previous_native_executor = Application.get_env(:nixploy, :native_deployment_executor)
+    previous_managed_applications = Application.get_env(:nixploy, :managed_applications)
 
     inventory = %LocalHost.Inventory{
       hostname: "nixploy-vps",
@@ -199,6 +200,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       restore_env(:machine_health_probe, previous_machine_health_probe)
       restore_env(:local_store_input_probe, previous_store_probe)
       restore_env(:native_deployment_executor, previous_native_executor)
+      restore_env(:managed_applications, previous_managed_applications)
     end)
 
     operator = Fixtures.operator_fixture()
@@ -355,6 +357,38 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     |> render_click()
 
     assert has_element?(view, "#local-inventory-error", "Podman socket unavailable")
+  end
+
+  test "queues direct-main preparation only from a trusted application action", %{conn: conn} do
+    Application.put_env(:nixploy, :managed_applications, %{
+      "jomat" => %{
+        "project" => "jomat",
+        "target" => "production",
+        "repository" => "https://github.com/JonasThowsen/jomat.git",
+        "repository_identity" => "JonasThowsen/jomat",
+        "subdirectory" => "."
+      }
+    })
+
+    {:ok, view, html} = live(conn, ~p"/releases")
+
+    assert has_element?(view, "#managed-application-jomat", "refs/heads/main")
+    assert has_element?(view, "#prepare-main-jomat", "Deploy new release")
+    refute html =~ "name=\"repository\""
+    refute html =~ "name=\"ref\""
+    refute html =~ "name=\"branch\""
+
+    view |> element("#prepare-main-jomat") |> render_click()
+    [input] = Deployments.list_deployment_inputs()
+    assert_redirect(view, ~p"/releases/#{input.id}")
+    assert input.input_kind == :git_main
+    assert input.source_ref == "refs/heads/main"
+    assert input.source_revision == nil
+
+    {:ok, detail, _html} = live(conn, ~p"/releases/#{input.id}")
+    assert has_element?(detail, "#main-preparation-progress", "Preparing immutable release")
+    assert has_element?(detail, "#deployment-input-detail", "refs/heads/main")
+    refute has_element?(detail, "#deploy-native-input")
   end
 
   test "keeps release plumbing behind an advanced high-level boundary", %{conn: conn} do

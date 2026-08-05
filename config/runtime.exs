@@ -13,6 +13,42 @@ worker? = role in [:worker, :all]
 
 config :nixploy, role: role
 
+managed_applications =
+  System.get_env("NIXPLOY_MANAGED_APPLICATIONS_JSON", "{}")
+  |> Jason.decode!()
+  |> Map.new(fn {key, application} ->
+    normalized = %{
+      "project" => Map.fetch!(application, "project"),
+      "target" => Map.fetch!(application, "target"),
+      "repository" => Map.fetch!(application, "repository"),
+      "repository_identity" => Map.fetch!(application, "repositoryIdentity"),
+      "subdirectory" => Map.get(application, "subdirectory", ".")
+    }
+
+    {key, normalized}
+  end)
+
+managed_application_credentials =
+  if worker? do
+    System.get_env("NIXPLOY_MANAGED_APPLICATION_CREDENTIALS_JSON", "{}")
+    |> Jason.decode!()
+  else
+    %{}
+  end
+
+managed_applications =
+  Map.new(managed_applications, fn {key, application} ->
+    credential_path = Map.get(managed_application_credentials, key)
+
+    {key,
+     if(is_binary(credential_path),
+       do: Map.put(application, "credential_path", credential_path),
+       else: application
+     )}
+  end)
+
+config :nixploy, managed_applications: managed_applications
+
 auth_mode =
   case System.get_env(
          "NIXPLOY_AUTH_MODE",

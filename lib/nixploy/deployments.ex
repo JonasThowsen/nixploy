@@ -4,8 +4,19 @@ defmodule Nixploy.Deployments do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
-  alias Nixploy.Deployments.{Deployment, DeploymentInput, Event, LocalStoreInput, Output, Spec}
-  alias Nixploy.{Audit, Notifications, Repo}
+
+  alias Nixploy.Deployments.{
+    Deployment,
+    DeploymentInput,
+    DeploymentInputEvent,
+    Event,
+    LocalStoreInput,
+    MainSource,
+    Output,
+    Spec
+  }
+
+  alias Nixploy.{Audit, ManagedApplications, Notifications, Repo}
 
   @history_limit 50
   @input_history_limit 50
@@ -95,6 +106,194 @@ defmodule Nixploy.Deployments do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  def prepare_main(application_key, opts \\ []) do
+    operator = Keyword.get(opts, :operator)
+    worker = Keyword.get(opts, :worker, main_preparation_worker())
+    now = now()
+
+    with {:ok, application} <- ManagedApplications.fetch(application_key) do
+      result =
+        Multi.new()
+        |> Multi.insert(
+          :deployment_input,
+          DeploymentInput.create_main_changeset(%DeploymentInput{}, %{
+            input_kind: :git_main,
+            registration_channel: :operator,
+            application_key: application.key,
+            source_repository: application.repository_identity,
+            source_ref: ManagedApplications.source_ref(),
+            repository_subdirectory: application.subdirectory,
+            selected_target: application.target,
+            requested_by_operator_id: operator_id(operator),
+            requested_at: now,
+            started_at: now
+          })
+        )
+        |> Multi.insert(:event, fn %{deployment_input: input} ->
+          input_event_changeset(input.id, "queued", "Main preparation queued", now)
+        end)
+        |> Multi.insert(:audit, fn %{deployment_input: input} ->
+          Audit.changeset(operator, :main_preparation_requested, :deployment_input, input.id,
+            outcome: :requested,
+            metadata: %{
+              "application_key" => application.key,
+              "repository" => application.repository_identity,
+              "source_ref" => ManagedApplications.source_ref(),
+              "target" => application.target
+            }
+          )
+        end)
+        |> Oban.insert(:job, fn %{deployment_input: input} ->
+          worker.new(%{deployment_input_id: input.id})
+        end)
+        |> Repo.transaction()
+
+      case result do
+        {:ok, %{deployment_input: input, job: job}} ->
+          publish(input.id)
+          {:ok, Repo.preload(input, :requested_by_operator), job}
+
+        {:error, _operation, reason, _changes} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  def list_input_events(input_id) do
+    DeploymentInputEvent
+    |> where([event], event.deployment_input_id == ^input_id)
+    |> order_by([event], asc: event.id)
+    |> limit(^@event_limit)
+    |> Repo.all()
+  end
+
+  def resolve_main_input(id, oid) do
+    now = now()
+
+    Multi.new()
+    |> Multi.run(:locked_input, fn repo, _changes -> {:ok, locked_deployment_input(repo, id)} end)
+    |> Multi.update(:deployment_input, fn %{locked_input: input} ->
+      DeploymentInput.resolved_changeset(input, %{
+        source_revision: oid,
+        resolved_at: now,
+        started_at: now
+      })
+    end)
+    |> Multi.insert(:event, fn %{deployment_input: input} ->
+      input_event_changeset(input.id, "resolved", "Exact main commit persisted", now,
+        metadata: %{"source_revision" => input.source_revision}
+      )
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{deployment_input: input}} ->
+        publish(input.id)
+        {:ok, input}
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  def complete_main_preparation(id, result) when is_map(result) do
+    now = now()
+
+    Multi.new()
+    |> Multi.run(:locked_input, fn repo, _changes -> {:ok, locked_deployment_input(repo, id)} end)
+    |> Multi.update(:deployment_input, fn %{locked_input: input} ->
+      DeploymentInput.staged_changeset(
+        input,
+        Map.merge(result, %{state: :staged, finished_at: now})
+      )
+    end)
+    |> Multi.insert(:event, fn %{deployment_input: input} ->
+      input_event_changeset(input.id, "staged", "Immutable main release prepared", now,
+        metadata: %{
+          "store_path" => input.store_path,
+          "nar_hash" => input.nar_hash,
+          "configuration_digest" => input.configuration_digest
+        }
+      )
+    end)
+    |> Multi.insert(:audit, fn %{deployment_input: input} ->
+      Audit.changeset(
+        input.requested_by_operator_id,
+        :main_release_prepared,
+        :deployment_input,
+        input.id,
+        metadata: %{
+          "application_key" => input.application_key,
+          "source_revision" => input.source_revision,
+          "store_path" => input.store_path,
+          "nar_hash" => input.nar_hash,
+          "configuration_digest" => input.configuration_digest
+        }
+      )
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{deployment_input: input}} ->
+        publish(input.id)
+        {:ok, Repo.preload(input, :requested_by_operator)}
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  def fail_main_preparation(id, reason) do
+    failure = MainSource.failure(reason)
+    now = now()
+
+    Multi.new()
+    |> Multi.run(:locked_input, fn repo, _changes -> {:ok, locked_deployment_input(repo, id)} end)
+    |> Multi.update(:deployment_input, fn %{locked_input: input} ->
+      DeploymentInput.failed_changeset(input, %{
+        state: :failed,
+        failure: failure,
+        finished_at: now
+      })
+    end)
+    |> Multi.insert(:event, fn %{deployment_input: input} ->
+      input_event_changeset(
+        input.id,
+        "failed",
+        "Main preparation failed: #{failure["message"]}",
+        now,
+        level: :error,
+        metadata: %{"failure_code" => failure["code"]}
+      )
+    end)
+    |> Multi.insert(:audit, fn %{deployment_input: input} ->
+      Audit.changeset(
+        input.requested_by_operator_id,
+        :main_preparation_failed,
+        :deployment_input,
+        input.id,
+        outcome: :failed,
+        metadata: %{"failure_code" => failure["code"], "application_key" => input.application_key}
+      )
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{deployment_input: input}} ->
+        publish(input.id)
+        {:ok, Repo.preload(input, :requested_by_operator)}
+
+      {:error, _operation, transition_reason, _changes} ->
+        {:error, transition_reason}
+    end
+  end
+
+  def record_input_event(input_id, stage, message, opts \\ []) do
+    result =
+      input_event_changeset(input_id, stage, message, now(), opts)
+      |> Repo.insert()
+
+    if match?({:ok, _}, result), do: publish(input_id)
+    result
   end
 
   def list_events(deployment_id) do
@@ -619,8 +818,27 @@ defmodule Nixploy.Deployments do
     :ok
   end
 
+  defp input_event_changeset(input_id, stage, message, now, opts \\ []) do
+    DeploymentInputEvent.changeset(%DeploymentInputEvent{}, %{
+      deployment_input_id: input_id,
+      stage: stage,
+      level: Keyword.get(opts, :level, :info),
+      message: message,
+      metadata: Keyword.get(opts, :metadata, %{}),
+      inserted_at: now
+    })
+  end
+
   defp deployment_worker do
     Application.get_env(:nixploy, :deployment_worker, Nixploy.Deployments.Worker)
+  end
+
+  defp main_preparation_worker do
+    Application.get_env(
+      :nixploy,
+      :main_preparation_worker,
+      Nixploy.Deployments.MainPreparationWorker
+    )
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)

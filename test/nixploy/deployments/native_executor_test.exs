@@ -59,6 +59,8 @@ defmodule Nixploy.Deployments.NativeExecutorTest do
                  "--quiet",
                  "--json",
                  "--no-link",
+                 "--no-update-lock-file",
+                 "--no-write-lock-file",
                  "#{@store_path}#fixtureImage"
                ] and command.timeout == 900_000 and
                command.max_output_bytes == 1_048_576
