@@ -243,6 +243,32 @@ defmodule Nixploy.NativeDeploymentsTest do
            )
   end
 
+  test "queues a worker-only remote status refresh and persists bounded observation evidence" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+
+    old_status = Application.get_env(:nixploy, :remote_status_probe)
+    Application.put_env(:nixploy, :remote_status_probe, RemoteStatusConverged)
+    on_exit(fn -> restore_env(:remote_status_probe, old_status) end)
+
+    assert {:ok, job} = NativeDeployments.enqueue_status_refresh(deployment.id, operator)
+    assert job.worker == inspect(Nixploy.Deployments.RemoteStatusWorker)
+
+    assert :ok =
+             perform_job(Nixploy.Deployments.RemoteStatusWorker, %{
+               remote_status_deployment_id: deployment.id
+             })
+
+    observation =
+      NativeDeployments.list_events(deployment.id)
+      |> Enum.find(&(&1.stage == "observation"))
+
+    assert observation.message =~ "matches the exact deployment identity"
+    assert observation.metadata["converged"]
+  end
+
   test "persists concise credential and pre-start stages without values" do
     operator = Fixtures.operator_fixture()
 

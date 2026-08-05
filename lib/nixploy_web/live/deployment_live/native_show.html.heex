@@ -32,6 +32,14 @@
         </div>
         <div class="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
           <.button
+            :if={deployment.resource_prefix && deployment.image_id && deployment.container_name}
+            id="refresh-remote-status"
+            phx-click="refresh_remote_status"
+            class="btn-outline btn-sm min-h-11 w-full sm:w-auto"
+          >
+            Refresh remote status
+          </.button>
+          <.button
             :if={@rollback_status == :available}
             id="rollback-native-deployment"
             phx-click="rollback_native_deployment"

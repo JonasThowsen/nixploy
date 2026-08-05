@@ -196,6 +196,71 @@ defmodule Nixploy.NativeDeployments do
     end
   end
 
+  def enqueue_status_refresh(id, operator, opts \\ []) do
+    worker = Keyword.get(opts, :worker, Nixploy.Deployments.RemoteStatusWorker)
+    deployment = get_deployment!(id)
+
+    result =
+      Multi.new()
+      |> Multi.insert(
+        :audit,
+        Audit.changeset(operator, :remote_status_requested, :native_deployment, id,
+          outcome: :requested,
+          metadata: %{"resource_key" => deployment.resource_prefix}
+        )
+      )
+      |> Oban.insert(:job, worker.new(%{remote_status_deployment_id: id}))
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{job: job}} -> {:ok, job}
+      {:error, _step, reason, _changes} -> {:error, reason}
+    end
+  end
+
+  def record_remote_observation(id, observation) when is_map(observation) do
+    metadata =
+      Map.take(observation, [
+        "container_verified",
+        "container_id",
+        "image_id",
+        "ingress_available",
+        "active_port",
+        "expected_port",
+        "healthy",
+        "converged",
+        "error"
+      ])
+
+    message =
+      cond do
+        is_binary(metadata["error"]) -> "Remote status refresh failed"
+        metadata["converged"] -> "Remote runtime matches the exact deployment identity"
+        true -> "Remote runtime does not match the exact deployment identity"
+      end
+
+    result =
+      %NativeEvent{}
+      |> NativeEvent.changeset(%{
+        native_deployment_id: id,
+        stage: "observation",
+        level: if(metadata["converged"], do: :info, else: :warning),
+        message: message,
+        metadata: metadata,
+        inserted_at: DateTime.utc_now()
+      })
+      |> Repo.insert()
+
+    case result do
+      {:ok, event} ->
+        publish(id)
+        {:ok, event}
+
+      error ->
+        error
+    end
+  end
+
   def transition(id, next_state, message, attrs \\ %{})
       when is_atom(next_state) and is_binary(message) do
     attrs = Map.new(attrs)

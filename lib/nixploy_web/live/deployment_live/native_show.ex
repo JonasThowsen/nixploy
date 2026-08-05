@@ -65,6 +65,20 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   end
 
   @impl true
+  def handle_event("refresh_remote_status", _params, socket) do
+    case NativeDeployments.enqueue_status_refresh(
+           socket.assigns.deployment.id,
+           socket.assigns.current_operator
+         ) do
+      {:ok, _job} ->
+        {:noreply, put_flash(socket, :info, "Remote status refresh queued")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not queue remote status refresh")}
+    end
+  end
+
+  @impl true
   def handle_event("cancel_native_deployment", _params, socket) do
     case NativeDeployments.request_cancellation(socket.assigns.deployment.id,
            operator: socket.assigns.current_operator
