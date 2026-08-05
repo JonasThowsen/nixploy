@@ -2,7 +2,10 @@ using System.Text;
 
 namespace Nixploy.Cli;
 
-public sealed class SopsService(ICommandRunner commandRunner) : ISopsService
+public sealed class SopsService(
+    ICommandRunner commandRunner,
+    Func<string?>? ageKeyFile = null
+) : ISopsService
 {
     public async Task<IReadOnlyList<Secret>> LoadSecretsAsync(NixployTarget target)
     {
@@ -11,11 +14,16 @@ public sealed class SopsService(ICommandRunner commandRunner) : ISopsService
             return [];
         }
 
+        var ageIdentityPath = RequirePrivateAgeKeyFile(
+            ageKeyFile?.Invoke() ?? Environment.GetEnvironmentVariable("SOPS_AGE_KEY_FILE")
+        );
         var secrets = new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
         foreach (var (label, path) in target.Secrets.OrderBy(secret => secret.Key))
         {
             Console.WriteLine($"Decrypting secrets '{label}'...");
+
+            Console.WriteLine($"Using worker-owned age identity from {ageIdentityPath}.");
 
             CommandRunResult result = await commandRunner.RunAsync(
                 "sops",
@@ -45,6 +53,42 @@ public sealed class SopsService(ICommandRunner commandRunner) : ISopsService
         }
 
         return [.. secrets.Values.Select(source => source.Secret)];
+    }
+
+    private static string RequirePrivateAgeKeyFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
+        {
+            throw new InvalidOperationException(
+                "SOPS_AGE_KEY_FILE must name an absolute worker-owned age identity file."
+            );
+        }
+
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
+            throw new InvalidOperationException("The configured worker age identity file does not exist.");
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var exposed = info.UnixFileMode &
+                (UnixFileMode.GroupRead |
+                 UnixFileMode.GroupWrite |
+                 UnixFileMode.GroupExecute |
+                 UnixFileMode.OtherRead |
+                 UnixFileMode.OtherWrite |
+                 UnixFileMode.OtherExecute);
+
+            if (exposed != 0)
+            {
+                throw new InvalidOperationException(
+                    "The configured worker age identity file must not be accessible by group or other users."
+                );
+            }
+        }
+
+        return info.FullName;
     }
 
     private static List<Secret> ParseDotEnv(string content)

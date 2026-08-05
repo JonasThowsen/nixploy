@@ -94,9 +94,16 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
             return false;
         }
 
-        if (!await EnsureRouteAsync(resourcePrefix, target, port))
+        var route = await EnsureRouteAsync(resourcePrefix, target, port);
+        if (!route.Success)
         {
             return false;
+        }
+
+        if (route.Created)
+        {
+            Console.WriteLine("Caddy route was created directly at the selected upstream.");
+            return true;
         }
 
         Console.WriteLine($"Switching Caddy route for {target.Web.Domain} to 127.0.0.1:{port}...");
@@ -193,56 +200,39 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
         return false;
     }
 
-    private async Task<bool> EnsureRouteAsync(string resourcePrefix, NixployTarget target, int port)
+    private async Task<RoutePreparationResult> EnsureRouteAsync(
+        string resourcePrefix,
+        NixployTarget target,
+        int port
+    )
     {
         var routeId = RouteId(resourcePrefix);
         var existing = await GetCaddyConfigAsync(target, $"/id/{routeId}");
 
         if (existing is null)
         {
-            return false;
+            return new RoutePreparationResult(false, false);
         }
 
         if (existing.StatusCode == 200 && !IsNullJson(existing.Body))
         {
-            if (RouteMatchesDomain(existing.Body, target.Web!.Domain))
+            if (RouteMatchesManagedShape(existing.Body, resourcePrefix, target.Web!.Domain))
             {
-                return true;
+                return new RoutePreparationResult(true, false);
             }
 
-            Console.WriteLine($"Updating Caddy route hostname to {target.Web.Domain}...");
-
-            var matchJson = JsonSerializer.Serialize(new[]
-            {
-                new
-                {
-                    host = new[] { target.Web.Domain }
-                }
-            });
-
-            var update = await CaddyRequestAsync(
-                target,
-                "PATCH",
-                $"/id/{routeId}/match",
-                matchJson
+            Console.Error.WriteLine(
+                $"Caddy route '{routeId}' exists but does not exactly match the managed route identity and hostname."
             );
-
-            if (update.ExitCode == 0)
-            {
-                return true;
-            }
-
-            Console.Error.WriteLine($"Failed to update Caddy route hostname to {target.Web.Domain}.");
-            Console.Error.WriteLine(update.StdError);
-            Console.Error.WriteLine(update.StdOutput);
-            return false;
+            Console.Error.WriteLine("Refusing to repair or mutate an ambiguously owned route.");
+            return new RoutePreparationResult(false, false);
         }
 
         if (existing.StatusCode != 404 && !(existing.StatusCode == 200 && IsNullJson(existing.Body)))
         {
             Console.Error.WriteLine($"Failed to inspect Caddy route '{routeId}' (HTTP {existing.StatusCode}).");
             Console.Error.WriteLine(existing.Body);
-            return false;
+            return new RoutePreparationResult(false, false);
         }
 
         Console.WriteLine($"Creating Caddy route for {target.Web!.Domain}...");
@@ -299,13 +289,13 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
 
         if (result.ExitCode == 0)
         {
-            return true;
+            return new RoutePreparationResult(true, true);
         }
 
         Console.Error.WriteLine($"Failed to create Caddy route for {target.Web.Domain}.");
         Console.Error.WriteLine(result.StdError);
         Console.Error.WriteLine(result.StdOutput);
-        return false;
+        return new RoutePreparationResult(false, false);
     }
 
     private async Task<CaddyGetResponse?> GetCaddyConfigAsync(NixployTarget target, string path)
@@ -341,39 +331,56 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
         return new CaddyGetResponse(statusCode, response[..statusSeparator]);
     }
 
-    private static bool RouteMatchesDomain(string routeJson, string domain)
+    private static bool RouteMatchesManagedShape(
+        string routeJson,
+        string resourcePrefix,
+        string domain
+    )
     {
         try
         {
             using var document = JsonDocument.Parse(routeJson);
+            var route = document.RootElement;
 
-            if (!document.RootElement.TryGetProperty("match", out var match) ||
+            if (!StringPropertyEquals(route, "@id", RouteId(resourcePrefix)) ||
+                !route.TryGetProperty("terminal", out var terminal) ||
+                terminal.ValueKind != JsonValueKind.True ||
+                !route.TryGetProperty("match", out var match) ||
                 match.ValueKind != JsonValueKind.Array ||
-                match.GetArrayLength() != 1)
-            {
-                return false;
-            }
-
-            var matcher = match[0];
-
-            if (matcher.ValueKind != JsonValueKind.Object ||
-                !matcher.TryGetProperty("host", out var hosts) ||
+                match.GetArrayLength() != 1 ||
+                !match[0].TryGetProperty("host", out var hosts) ||
                 hosts.ValueKind != JsonValueKind.Array ||
-                hosts.GetArrayLength() != 1)
+                hosts.GetArrayLength() != 1 ||
+                !string.Equals(hosts[0].GetString(), domain, StringComparison.OrdinalIgnoreCase) ||
+                !route.TryGetProperty("handle", out var handles) ||
+                handles.ValueKind != JsonValueKind.Array ||
+                handles.GetArrayLength() != 1 ||
+                !StringPropertyEquals(handles[0], "handler", "subroute") ||
+                !handles[0].TryGetProperty("routes", out var routes) ||
+                routes.ValueKind != JsonValueKind.Array ||
+                routes.GetArrayLength() != 1 ||
+                !routes[0].TryGetProperty("handle", out var proxyHandles) ||
+                proxyHandles.ValueKind != JsonValueKind.Array ||
+                proxyHandles.GetArrayLength() != 1)
             {
                 return false;
             }
 
-            return string.Equals(
-                hosts[0].GetString(),
-                domain,
-                StringComparison.OrdinalIgnoreCase
-            );
+            var proxy = proxyHandles[0];
+            return StringPropertyEquals(proxy, "@id", ProxyId(resourcePrefix)) &&
+                StringPropertyEquals(proxy, "handler", "reverse_proxy");
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             return false;
         }
+    }
+
+    private static bool StringPropertyEquals(JsonElement element, string property, string expected)
+    {
+        return element.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.String &&
+            string.Equals(value.GetString(), expected, StringComparison.Ordinal);
     }
 
     private static bool IsNullJson(string output)
@@ -428,4 +435,5 @@ public sealed class CaddyService(IRemoteCommandRunner remoteCommandRunner) : ICa
     }
 
     private sealed record CaddyGetResponse(int StatusCode, string Body);
+    private sealed record RoutePreparationResult(bool Success, bool Created);
 }

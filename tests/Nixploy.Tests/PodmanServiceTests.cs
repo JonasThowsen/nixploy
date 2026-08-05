@@ -218,6 +218,102 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task VerifyContainerAsync_RequiresExactRunningManagedIdentity()
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(0, """
+        [{
+          "Id":"abc123",
+          "Name":"/nixploy-my-app-prod-blue",
+          "State":{"Running":true},
+          "Config":{
+            "Image":"localhost/app:latest",
+            "Labels":{
+              "io.nixploy.managed":"true",
+              "io.nixploy.project":"my-app",
+              "io.nixploy.target":"prod",
+              "io.nixploy.repository":"fixture/repository",
+              "io.nixploy.revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "io.nixploy.configuration_digest":"digest",
+              "io.nixploy.operation_id":"operation",
+              "io.nixploy.resource_key":"resource"
+            }
+          }
+        }]
+        """, ""));
+        var service = new PodmanService(runner);
+        var metadata = new DeploymentMetadata(
+            "my-app",
+            "project-id",
+            "prod",
+            "fixture/repository",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "2026-08-05T00:00:00Z",
+            "digest",
+            "operation",
+            "resource"
+        );
+
+        var verified = await service.VerifyContainerAsync(
+            "connection",
+            "nixploy-my-app-prod-blue",
+            "localhost/app:latest",
+            metadata
+        );
+
+        Assert.Equal("abc123", verified?.Id);
+        Assert.Equal(
+            ["--connection", "connection", "inspect", "--type", "container", "nixploy-my-app-prod-blue"],
+            runner.Calls[0].Arguments
+        );
+    }
+
+    [Fact]
+    public async Task VerifyContainerAsync_RejectsMismatchedRevision()
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(0, """
+        [{
+          "Id":"abc123",
+          "Name":"nixploy-my-app-prod-blue",
+          "State":{"Running":true},
+          "Config":{
+            "Image":"localhost/app:latest",
+            "Labels":{
+              "io.nixploy.managed":"true",
+              "io.nixploy.project":"my-app",
+              "io.nixploy.target":"prod",
+              "io.nixploy.repository":"fixture/repository",
+              "io.nixploy.revision":"wrong",
+              "io.nixploy.configuration_digest":"digest",
+              "io.nixploy.operation_id":"operation",
+              "io.nixploy.resource_key":"resource"
+            }
+          }
+        }]
+        """, ""));
+        var service = new PodmanService(runner);
+        var metadata = new DeploymentMetadata(
+            "my-app",
+            "project-id",
+            "prod",
+            "fixture/repository",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "2026-08-05T00:00:00Z",
+            "digest",
+            "operation",
+            "resource"
+        );
+
+        var verified = await service.VerifyContainerAsync(
+            "connection",
+            "nixploy-my-app-prod-blue",
+            "localhost/app:latest",
+            metadata
+        );
+
+        Assert.Null(verified);
+    }
+
+    [Fact]
     public async Task PruneTargetAsync_RemovesKnownContainersAndPrefixedSecrets()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(0, "nixploy-my-app-prod-DATABASE_URL\nother-secret\n", ""));

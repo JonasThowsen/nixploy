@@ -6,5 +6,8 @@ public sealed record DeploymentMetadata(
     string Target,
     string Repository,
     string GitCommit,
-    string DeployedAt
+    string DeployedAt,
+    string ConfigurationDigest = "",
+    string OperationId = "",
+    string ResourceKey = ""
 );

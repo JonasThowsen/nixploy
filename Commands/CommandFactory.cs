@@ -138,7 +138,12 @@ public static class CommandFactory
                     targetName,
                     immutable.RepositoryIdentity!,
                     immutable.GitRevision!
-                );
+                ) with
+                {
+                    ConfigurationDigest = immutable.ConfigurationDigest!,
+                    OperationId = immutable.OperationId!,
+                    ResourceKey = immutable.ResourceKey!
+                };
             }
             catch (InvalidOperationException exception)
             {
@@ -435,6 +440,7 @@ public static class CommandFactory
                 metadata
             ))
         {
+            await podmanService.StopContainerAsync(podmanConnection, newContainerName);
             return false;
         }
 
@@ -443,6 +449,7 @@ public static class CommandFactory
         if (!await caddyService.CheckHealthAsync(target, slotPort))
         {
             Console.Error.WriteLine("New slot failed health check. Leaving existing Caddy route unchanged.");
+            await podmanService.StopContainerAsync(podmanConnection, newContainerName);
             return false;
         }
 
@@ -450,18 +457,49 @@ public static class CommandFactory
 
         if (!await caddyService.SwitchAsync(resourcePrefix, target, slotPort))
         {
-            Console.Error.WriteLine("New slot is healthy, but Caddy switch failed. Leaving new container running for inspection.");
+            Console.Error.WriteLine("New slot is healthy, but the Caddy switch did not complete.");
+            if (activePort is not null)
+            {
+                await RestoreRouteAsync(resourcePrefix, target, activePort, caddyService);
+            }
+            await podmanService.StopContainerAsync(podmanConnection, newContainerName);
+            return false;
+        }
+
+        var switchedPort = await caddyService.GetActivePortAsync(resourcePrefix, target);
+        if (!switchedPort.Success || switchedPort.Port != slotPort)
+        {
+            Console.Error.WriteLine("Independent Caddy readback did not match the selected slot; restoring the prior route.");
+            await RestoreRouteAsync(resourcePrefix, target, activePort, caddyService);
+            await podmanService.StopContainerAsync(podmanConnection, newContainerName);
+            return false;
+        }
+
+        var verifiedContainer = await podmanService.VerifyContainerAsync(
+            podmanConnection,
+            newContainerName,
+            imageReference,
+            metadata
+        );
+        if (verifiedContainer is null)
+        {
+            Console.Error.WriteLine("Independent container readback did not match the expected managed identity.");
+            await RestoreRouteAsync(resourcePrefix, target, activePort, caddyService);
+            await podmanService.StopContainerAsync(podmanConnection, newContainerName);
             return false;
         }
 
         reporter.Stage(
             "verifying",
-            "Reading back remote container and ingress identity",
+            "Independent ingress and container readback matched the selected slot",
             new Dictionary<string, object?>
             {
                 ["selected_slot"] = slotName,
                 ["selected_port"] = slotPort,
-                ["verified_upstream"] = $"127.0.0.1:{slotPort}"
+                ["verified_upstream"] = $"127.0.0.1:{slotPort}",
+                ["container_name"] = verifiedContainer.Name,
+                ["container_id"] = verifiedContainer.Id,
+                ["image_reference"] = verifiedContainer.ImageReference
             }
         );
 
@@ -473,6 +511,30 @@ public static class CommandFactory
 
         Console.WriteLine($"Deployment completed successfully. {target.Web!.Domain} now routes to {slotName} ({slotPort}).");
         return true;
+    }
+
+    private static async Task RestoreRouteAsync(
+        string resourcePrefix,
+        NixployTarget target,
+        int? priorPort,
+        ICaddyService caddyService
+    )
+    {
+        var restored = priorPort is int port
+            ? await caddyService.SwitchAsync(resourcePrefix, target, port)
+            : await caddyService.DeleteRouteAsync(resourcePrefix, target);
+
+        if (!restored)
+        {
+            Console.Error.WriteLine("Caddy compensation failed; the prior route could not be proven restored.");
+            return;
+        }
+
+        var readback = await caddyService.GetActivePortAsync(resourcePrefix, target);
+        if (!readback.Success || readback.Port != priorPort)
+        {
+            Console.Error.WriteLine("Caddy compensation completed but independent readback did not match prior state.");
+        }
     }
 
     private static async Task<bool> DeploySimpleTargetAsync(
@@ -527,10 +589,27 @@ public static class CommandFactory
             return false;
         }
 
+        var verifiedContainer = await podmanService.VerifyContainerAsync(
+            podmanConnection,
+            containerName,
+            imageReference,
+            metadata
+        );
+        if (verifiedContainer is null)
+        {
+            await podmanService.StopContainerAsync(podmanConnection, containerName);
+            return false;
+        }
+
         reporter.Stage(
             "verifying",
-            "Reading back the managed container identity",
-            new Dictionary<string, object?> { ["container_name"] = containerName }
+            "Independent container readback matched the managed identity",
+            new Dictionary<string, object?>
+            {
+                ["container_name"] = verifiedContainer.Name,
+                ["container_id"] = verifiedContainer.Id,
+                ["image_reference"] = verifiedContainer.ImageReference
+            }
         );
         Console.WriteLine("Deployment completed successfully.");
         return true;

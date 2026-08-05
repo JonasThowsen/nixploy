@@ -316,6 +316,71 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         return false;
     }
 
+    public async Task<VerifiedContainer?> VerifyContainerAsync(
+        string connectionName,
+        string containerName,
+        string imageReference,
+        DeploymentMetadata metadata
+    )
+    {
+        var result = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "inspect", "--type", "container", containerName],
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (result.ExitCode != 0)
+        {
+            Console.Error.WriteLine($"Could not read back candidate container '{containerName}'.");
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.StdOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Array ||
+                document.RootElement.GetArrayLength() != 1)
+            {
+                return null;
+            }
+
+            var container = document.RootElement[0];
+            var id = container.GetProperty("Id").GetString();
+            var name = container.GetProperty("Name").GetString()?.TrimStart('/');
+            var state = container.GetProperty("State");
+            var config = container.GetProperty("Config");
+            var configuredImage = config.GetProperty("Image").GetString();
+            var labels = config.GetProperty("Labels");
+
+            var valid = !string.IsNullOrWhiteSpace(id) &&
+                string.Equals(name, containerName, StringComparison.Ordinal) &&
+                state.GetProperty("Running").GetBoolean() &&
+                string.Equals(configuredImage, imageReference, StringComparison.Ordinal) &&
+                LabelEquals(labels, "io.nixploy.managed", "true") &&
+                LabelEquals(labels, "io.nixploy.project", metadata.Project) &&
+                LabelEquals(labels, "io.nixploy.target", metadata.Target) &&
+                LabelEquals(labels, "io.nixploy.repository", metadata.Repository) &&
+                LabelEquals(labels, "io.nixploy.revision", metadata.GitCommit) &&
+                LabelEquals(labels, "io.nixploy.configuration_digest", metadata.ConfigurationDigest) &&
+                LabelEquals(labels, "io.nixploy.operation_id", metadata.OperationId) &&
+                LabelEquals(labels, "io.nixploy.resource_key", metadata.ResourceKey);
+
+            if (!valid)
+            {
+                Console.Error.WriteLine("Candidate container readback did not match the expected managed identity.");
+                return null;
+            }
+
+            return new VerifiedContainer(id!, name!, configuredImage!);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            Console.Error.WriteLine("Candidate container readback was malformed.");
+            Console.Error.WriteLine(exception.Message);
+            return null;
+        }
+    }
+
     public async Task StopContainerAsync(string connectionName, string containerName)
     {
         await commandRunner.RunAsync(
@@ -452,6 +517,14 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         return arguments;
     }
 
+    private static bool LabelEquals(JsonElement labels, string name, string expected)
+    {
+        return labels.ValueKind == JsonValueKind.Object &&
+            labels.TryGetProperty(name, out var value) &&
+            value.ValueKind == JsonValueKind.String &&
+            string.Equals(value.GetString(), expected, StringComparison.Ordinal);
+    }
+
     private static void AddLabels(List<string> arguments, DeploymentMetadata metadata)
     {
         var labels = new Dictionary<string, string>
@@ -468,6 +541,9 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             ["io.nixploy.repository"] = metadata.Repository,
             ["io.nixploy.revision"] = metadata.GitCommit,
             ["io.nixploy.deployed_at"] = metadata.DeployedAt,
+            ["io.nixploy.configuration_digest"] = metadata.ConfigurationDigest,
+            ["io.nixploy.operation_id"] = metadata.OperationId,
+            ["io.nixploy.resource_key"] = metadata.ResourceKey,
             ["org.opencontainers.image.source"] = metadata.Repository,
             ["org.opencontainers.image.revision"] = metadata.GitCommit
         };

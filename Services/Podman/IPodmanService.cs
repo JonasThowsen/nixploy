@@ -34,6 +34,13 @@ public interface IPodmanService
         DeploymentMetadata metadata
     );
 
+    Task<VerifiedContainer?> VerifyContainerAsync(
+        string connectionName,
+        string containerName,
+        string imageReference,
+        DeploymentMetadata metadata
+    );
+
     Task StopContainerAsync(string connectionName, string containerName);
 
     Task<bool> PruneTargetAsync(string connectionName, string resourcePrefix);

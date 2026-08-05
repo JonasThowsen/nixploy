@@ -15,7 +15,8 @@ public sealed class SopsServiceTests
         SINGLE_QUOTED='literal value'
         INVALID_LINE
         """, ""));
-        var service = new SopsService(runner);
+        using var key = PrivateAgeKeyFile();
+        var service = new SopsService(runner, () => key.Name);
         var target = new NixployTarget
         {
             Secrets = new Dictionary<string, string> { ["app"] = "secrets/prod.env" }
@@ -42,7 +43,8 @@ public sealed class SopsServiceTests
             new CommandRunResult(0, "API_KEY=one", ""),
             new CommandRunResult(0, "API_KEY=two", "")
         );
-        var service = new SopsService(runner);
+        using var key = PrivateAgeKeyFile();
+        var service = new SopsService(runner, () => key.Name);
         var target = new NixployTarget
         {
             Secrets = new Dictionary<string, string>
@@ -55,5 +57,49 @@ public sealed class SopsServiceTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.LoadSecretsAsync(target));
 
         Assert.Contains("Duplicate secret 'API_KEY'", exception.Message);
+    }
+
+    [Fact]
+    public async Task LoadSecretsAsync_RejectsMissingOrExposedWorkerKey()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var runner = new RecordingCommandRunner();
+        var target = new NixployTarget
+        {
+            Secrets = new Dictionary<string, string> { ["app"] = "secrets/prod.env" }
+        };
+
+        var missing = new SopsService(runner, () => null);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => missing.LoadSecretsAsync(target));
+
+        using var exposed = PrivateAgeKeyFile();
+        File.SetUnixFileMode(
+            exposed.Name,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead
+        );
+        var exposedService = new SopsService(runner, () => exposed.Name);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => exposedService.LoadSecretsAsync(target));
+    }
+
+    private static FileStream PrivateAgeKeyFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"nixploy-age-{Guid.NewGuid():N}");
+        var file = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.ReadWrite,
+            FileShare.None,
+            4096,
+            FileOptions.DeleteOnClose
+        );
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        return file;
     }
 }

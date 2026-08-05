@@ -72,34 +72,23 @@ public sealed class CaddyServiceTests
     }
 
     [Fact]
-    public async Task SwitchAsync_UpdatesStaleDomainBeforeSwitchingUpstream()
+    public async Task SwitchAsync_RejectsRouteWithStaleDomainWithoutMutation()
     {
         var runner = new RecordingRemoteCommandRunner(
             ExistingServer(),
-            RouteResponse(RouteJson("old.example.com")),
-            Success(),
-            Success()
+            RouteResponse(RouteJson("old.example.com"))
         );
         var service = new CaddyService(runner);
 
         var success = await service.SwitchAsync(ResourcePrefix, WebTarget("new.example.com"), 8081);
 
-        Assert.True(success);
-        Assert.Equal(4, runner.Calls.Count);
-
-        var matcherUpdate = runner.Calls[2];
-        Assert.Contains($"/id/{RouteId}/match", matcherUpdate.Command);
-        Assert.Contains("-X PATCH", matcherUpdate.Command);
-        Assert.Contains("new.example.com", matcherUpdate.Options?.StandardInput);
-        Assert.DoesNotContain("old.example.com", matcherUpdate.Options?.StandardInput);
-
-        var upstreamUpdate = runner.Calls[3];
-        Assert.Contains($"/id/{ProxyId}/upstreams", upstreamUpdate.Command);
-        Assert.Contains("127.0.0.1:8081", upstreamUpdate.Options?.StandardInput);
+        Assert.False(success);
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.DoesNotContain(runner.Calls, call => call.Command.Contains("-X PATCH"));
     }
 
     [Fact]
-    public async Task SwitchAsync_RepairsMalformedHostMatcher()
+    public async Task SwitchAsync_RejectsMalformedManagedRouteWithoutMutation()
     {
         var malformedRoute = $$"""
         {
@@ -109,21 +98,19 @@ public sealed class CaddyServiceTests
         """;
         var runner = new RecordingRemoteCommandRunner(
             ExistingServer(),
-            RouteResponse(malformedRoute),
-            Success(),
-            Success()
+            RouteResponse(malformedRoute)
         );
         var service = new CaddyService(runner);
 
         var success = await service.SwitchAsync(ResourcePrefix, WebTarget("app.example.com"), 8080);
 
-        Assert.True(success);
-        Assert.Contains($"/id/{RouteId}/match", runner.Calls[2].Command);
-        Assert.Contains("app.example.com", runner.Calls[2].Options?.StandardInput);
+        Assert.False(success);
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.DoesNotContain(runner.Calls, call => call.Command.Contains("-X PATCH"));
     }
 
     [Fact]
-    public async Task SwitchAsync_CreatesMissingRouteAndPatchesUpstream()
+    public async Task SwitchAsync_CreatesMissingRouteDirectlyAtSelectedUpstream()
     {
         var runner = new RecordingRemoteCommandRunner(
             ExistingServer(),
@@ -140,7 +127,7 @@ public sealed class CaddyServiceTests
             call.Command.Contains("/config/apps/http/servers/nixploy/routes") &&
             call.Command.Contains("-X POST")
         );
-        Assert.Contains(runner.Calls, call => call.Command.Contains($"/id/{ProxyId}/upstreams"));
+        Assert.DoesNotContain(runner.Calls, call => call.Command.Contains($"/id/{ProxyId}/upstreams"));
         Assert.Contains(runner.Calls, call =>
             call.Options?.StandardInput?.Contains("app.example.com") == true
         );
@@ -181,45 +168,22 @@ public sealed class CaddyServiceTests
     }
 
     [Fact]
-    public async Task SwitchAsync_AbortsWhenDomainUpdateFails()
-    {
-        var runner = new RecordingRemoteCommandRunner(
-            ExistingServer(),
-            RouteResponse(RouteJson("old.example.com")),
-            new CommandRunResult(22, "", "update failed")
-        );
-        var service = new CaddyService(runner);
-
-        var success = await service.SwitchAsync(ResourcePrefix, WebTarget("new.example.com"), 8080);
-
-        Assert.False(success);
-        Assert.Equal(3, runner.Calls.Count);
-        Assert.DoesNotContain(runner.Calls, call => call.Command.Contains($"/id/{ProxyId}/upstreams"));
-    }
-
-    [Fact]
-    public async Task SwitchAsync_ReconcilesDomainAcrossConsecutiveDeployments()
+    public async Task SwitchAsync_RefusesDomainDriftAcrossConsecutiveDeployments()
     {
         var runner = new RecordingRemoteCommandRunner(
             ExistingServer(),
             RouteResponse("", 404),
             Success(),
-            Success(),
             ExistingServer(),
-            RouteResponse(RouteJson("old.example.com")),
-            Success(),
-            Success()
+            RouteResponse(RouteJson("old.example.com"))
         );
         var service = new CaddyService(runner);
 
         Assert.True(await service.SwitchAsync(ResourcePrefix, WebTarget("old.example.com"), 8080));
-        Assert.True(await service.SwitchAsync(ResourcePrefix, WebTarget("new.example.com"), 8081));
+        Assert.False(await service.SwitchAsync(ResourcePrefix, WebTarget("new.example.com"), 8081));
 
-        Assert.Equal(8, runner.Calls.Count);
-        Assert.Contains($"/id/{RouteId}/match", runner.Calls[6].Command);
-        Assert.Contains("new.example.com", runner.Calls[6].Options?.StandardInput);
-        Assert.Contains($"/id/{ProxyId}/upstreams", runner.Calls[7].Command);
-        Assert.Contains("127.0.0.1:8081", runner.Calls[7].Options?.StandardInput);
+        Assert.Equal(5, runner.Calls.Count);
+        Assert.DoesNotContain(runner.Calls.Skip(3), call => call.Command.Contains("-X PATCH"));
     }
 
     [Fact]
