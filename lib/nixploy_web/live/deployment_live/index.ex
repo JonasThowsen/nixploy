@@ -9,11 +9,11 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Fleet.Target
 
   alias Nixploy.{
-    LocalHost,
     MachineHealth,
     NativeDeployments,
     Notifications,
     Operations,
+    Runtime,
     RuntimeMode,
     WorkerHeartbeat
   }
@@ -300,6 +300,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def handle_event("refresh_local_inventory", _params, socket) do
+    _ = runtime_refresh().(socket.assigns.current_operator)
     send(self(), :load_local_inventory)
 
     {:noreply,
@@ -549,15 +550,19 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   defp local_inventory_probe do
-    Application.get_env(:nixploy, :local_inventory_probe, &LocalHost.inventory/0)
+    Application.get_env(:nixploy, :local_inventory_probe, &Runtime.inventory/0)
   end
 
   defp local_workload_probe do
-    Application.get_env(:nixploy, :local_workload_probe, &LocalHost.workload_details/1)
+    Application.get_env(:nixploy, :local_workload_probe, &Runtime.workload_details/1)
   end
 
   defp local_health_probe do
-    Application.get_env(:nixploy, :local_health_probe, &LocalHost.observe_health/1)
+    Application.get_env(:nixploy, :local_health_probe, &Runtime.observe_health/1)
+  end
+
+  defp runtime_refresh do
+    Application.get_env(:nixploy, :runtime_refresh, &Runtime.request_refresh_all/1)
   end
 
   defp select_workload(socket, workload) do
@@ -593,8 +598,11 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp machine_health_error(_reason), do: "Machine health is temporarily unavailable"
 
+  defp local_inventory_error(:managed_application_not_found),
+    do: "The managed application is no longer allowlisted"
+
   defp local_inventory_error({:executable_not_found, executable}),
-    do: "#{executable} is not available to the nixploy service"
+    do: "#{executable} is not available to the nixploy worker"
 
   defp local_inventory_error({:podman_failed, _status, output}) when output != "",
     do: String.trim(output)
@@ -604,8 +612,11 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp local_inventory_error(reason), do: inspect(reason)
 
+  defp local_workload_error(:managed_application_not_found),
+    do: "The managed application is no longer allowlisted"
+
   defp local_workload_error({:podman_inspect_failed, :timeout}),
-    do: "Podman inspection timed out after 15 seconds"
+    do: "Remote Podman inspection timed out after 15 seconds"
 
   defp local_workload_error({:podman_inspect_failed, status, output})
        when is_integer(status) and is_binary(output) and output != "",

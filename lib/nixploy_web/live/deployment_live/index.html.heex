@@ -9,7 +9,7 @@
         <p class="np-kicker">Production</p>
         <h1 class="np-page-title">Everything at a glance</h1>
         <p class="np-page-description">
-          Applications, health, resource state, and recent deployment activity.
+          Managed remote targets, observation freshness, and recent deployment activity.
         </p>
       </div>
       <.button
@@ -47,7 +47,7 @@
           </span>
         </div>
         <p class="np-stat-number">{running_workload_count(@local_inventory)}</p>
-        <p class="np-stat-meta">containers online</p>
+        <p class="np-stat-meta">verified remotely</p>
       </article>
       <article class="np-stat">
         <div class="flex items-center justify-between gap-3">
@@ -94,7 +94,7 @@
         <div class="np-panel-header">
           <div>
             <h2 class="np-panel-title">Applications</h2>
-            <p class="np-panel-description">What is serving traffic right now.</p>
+            <p class="np-panel-description">Latest worker-observed managed target state.</p>
           </div>
           <.link navigate={~p"/applications"} class="btn btn-ghost btn-sm">View all</.link>
         </div>
@@ -426,7 +426,7 @@
         <p class="np-kicker">Runtime</p>
         <h1 class="np-page-title">Applications</h1>
         <p class="np-page-description">
-          Health, resource usage, recent logs, and deployed version.
+          Worker-observed remote identity, freshness, health, resources, and logs.
         </p>
       </div>
       <.button
@@ -451,7 +451,7 @@
       <aside class="np-panel min-w-0 self-start overflow-hidden lg:sticky lg:top-8">
         <div class="np-panel-header">
           <div>
-            <h2 class="np-panel-title">Production</h2>
+            <h2 class="np-panel-title">Managed targets</h2>
             <p class="np-panel-description">
               {if @local_inventory,
                 do: "#{managed_workload_count(@local_inventory)} applications",
@@ -506,7 +506,7 @@
             {Enum.count(@local_inventory.workloads, &(not &1.managed?))} infrastructure containers
           </summary>
           <div class="border-t border-base-300 px-4 py-3 text-xs text-base-content/45">
-            Infrastructure containers are observed but intentionally excluded from application controls.
+            Unmanaged containers are excluded from remote inventory and application controls.
           </div>
         </details>
       </aside>
@@ -522,7 +522,7 @@
             </span>
             <h2 class="mt-4 text-lg font-semibold">Choose an application</h2>
             <p class="mt-1 text-sm text-base-content/50">
-              Its health, resource usage, logs, and release identity will appear here.
+              Its latest worker-observed target state and immutable release identity will appear here.
             </p>
           </div>
         </div>
@@ -546,7 +546,8 @@
                 </span>
               </div>
               <p class="mt-1 text-xs text-base-content/45">
-                {@selected_workload.status || @selected_workload.state} · slot {@selected_workload.slot ||
+                {Map.get(@selected_workload, :connection_state, "local recovery")} · {@selected_workload.status ||
+                  @selected_workload.state} · slot {@selected_workload.slot ||
                   "unknown"}
               </p>
             </div>
