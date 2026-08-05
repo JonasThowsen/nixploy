@@ -38,7 +38,7 @@ defmodule Nixploy.NativeDeployments do
     NativeDeployment
     |> order_by([deployment], desc: deployment.inserted_at)
     |> limit(^@history_limit)
-    |> preload([:requested_by_operator, :deployment_input, :rollback_of])
+    |> preload([:requested_by_operator, :deployment_input, :rollback_of, :retry_of])
     |> Repo.all()
   end
 
@@ -47,14 +47,14 @@ defmodule Nixploy.NativeDeployments do
     |> where([deployment], deployment.deployment_input_id == ^input_id)
     |> order_by([deployment], desc: deployment.inserted_at)
     |> limit(^@history_limit)
-    |> preload([:requested_by_operator, :deployment_input, :rollback_of])
+    |> preload([:requested_by_operator, :deployment_input, :rollback_of, :retry_of])
     |> Repo.all()
   end
 
   def get_deployment!(id) do
     NativeDeployment
     |> Repo.get!(id)
-    |> Repo.preload([:requested_by_operator, :deployment_input, :rollback_of])
+    |> Repo.preload([:requested_by_operator, :deployment_input, :rollback_of, :retry_of])
   end
 
   def list_events(id) do
@@ -124,6 +124,102 @@ defmodule Nixploy.NativeDeployments do
 
         {:ok, Repo.preload(deployment, [:requested_by_operator, :deployment_input, :rollback_of]),
          job}
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  def retry(id, opts \\ []) do
+    operator = Keyword.get(opts, :operator)
+    worker = Keyword.get(opts, :worker, Nixploy.Deployments.NativeWorker)
+
+    result =
+      Multi.new()
+      |> Multi.run(:previous, fn repo, _changes ->
+        previous = locked(repo, id)
+
+        if previous.state in [:failed, :cancelled],
+          do: {:ok, previous},
+          else: {:error, {:retry_not_terminal_failure, previous.state}}
+      end)
+      |> Multi.insert(:deployment, fn %{previous: previous} ->
+        NativeDeployment.create_changeset(%NativeDeployment{}, %{
+          deployment_input_id: previous.deployment_input_id,
+          requested_by_operator_id: operator_id(operator),
+          project: previous.project,
+          target: previous.target,
+          operation_kind: previous.operation_kind,
+          resource_prefix: previous.resource_prefix,
+          retry_of_id: previous.id,
+          rollback_of_id: previous.rollback_of_id,
+          expected_image_id: previous.expected_image_id,
+          expected_slot: previous.expected_slot
+        })
+      end)
+      |> Multi.insert(:event, fn %{deployment: deployment, previous: previous} ->
+        NativeEvent.changeset(%NativeEvent{}, %{
+          native_deployment_id: deployment.id,
+          stage: "queued",
+          message: "Exact immutable retry of native operation #{previous.id} queued",
+          metadata: %{
+            "retry_of_id" => previous.id,
+            "deployment_input_id" => previous.deployment_input_id
+          },
+          inserted_at: DateTime.utc_now()
+        })
+      end)
+      |> Multi.insert(:audit, fn %{deployment: deployment, previous: previous} ->
+        Audit.changeset(operator, :native_deployment_retried, :native_deployment, deployment.id,
+          outcome: :requested,
+          metadata: %{
+            "retry_of_id" => previous.id,
+            "deployment_input_id" => previous.deployment_input_id,
+            "resource_key" => previous.resource_prefix
+          }
+        )
+      end)
+      |> Oban.insert(:job, fn %{deployment: deployment} ->
+        worker.new(%{native_deployment_id: deployment.id})
+      end)
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{deployment: deployment, job: job}} ->
+        publish(deployment.id)
+        {:ok, get_deployment!(deployment.id), job}
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  def assign_fencing_token(id, token) when is_integer(token) and token > 0 do
+    now = DateTime.utc_now()
+
+    result =
+      Multi.new()
+      |> Multi.run(:deployment, fn repo, _changes ->
+        repo
+        |> locked(id)
+        |> NativeDeployment.transition_changeset(%{fencing_token: token})
+        |> repo.update()
+      end)
+      |> Multi.insert(:event, fn %{deployment: deployment} ->
+        NativeEvent.changeset(%NativeEvent{}, %{
+          native_deployment_id: deployment.id,
+          stage: "fencing",
+          message: "Exclusive target fencing lease acquired",
+          metadata: %{"fencing_token" => token, "resource_key" => deployment.resource_prefix},
+          inserted_at: now
+        })
+      end)
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{deployment: deployment}} ->
+        publish(id)
+        {:ok, deployment}
 
       {:error, _operation, reason, _changes} ->
         {:error, reason}

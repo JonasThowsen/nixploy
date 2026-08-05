@@ -5,7 +5,7 @@ defmodule Nixploy.NativeDeploymentsTest do
   import Ecto.Query
 
   alias Nixploy.Audit.Event
-  alias Nixploy.Deployments.NativeWorker
+  alias Nixploy.Deployments.{NativeTargetLease, NativeWorker}
   alias Nixploy.Execution.Result
   alias Nixploy.{Fixtures, NativeDeployments}
 
@@ -95,6 +95,24 @@ defmodule Nixploy.NativeDeploymentsTest do
     end
   end
 
+  defmodule RemoteStatusDiverged do
+    def observe(_deployment) do
+      {:ok,
+       %{
+         "converged" => false,
+         "container_verified" => false,
+         "ingress_available" => true,
+         "healthy" => true,
+         "active_port" => 18_081,
+         "expected_port" => 18_080
+       }}
+    end
+  end
+
+  defmodule RemoteStatusUnavailable do
+    def observe(_deployment), do: {:error, :strict_remote_read_unavailable}
+  end
+
   defmodule GreenExecutorStub do
     def deploy(_deployment, opts) do
       stage = Keyword.fetch!(opts, :stage)
@@ -174,6 +192,7 @@ defmodule Nixploy.NativeDeploymentsTest do
 
     completed = NativeDeployments.get_deployment!(deployment.id)
     assert completed.state == :succeeded
+    assert completed.fencing_token == 1
     assert completed.resource_prefix == "nixploy-native-fixture-prefix-production"
     assert completed.selected_slot == "blue"
     assert completed.selected_port == 18_080
@@ -187,6 +206,7 @@ defmodule Nixploy.NativeDeploymentsTest do
 
     assert Enum.map(NativeDeployments.list_events(deployment.id), & &1.stage) == [
              "queued",
+             "fencing",
              "preparing",
              "building",
              "loading",
@@ -197,6 +217,48 @@ defmodule Nixploy.NativeDeploymentsTest do
              "verifying",
              "succeeded"
            ]
+  end
+
+  test "retries only a terminal failure with the exact immutable input and ancestry" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    assert {:ok, _failed, _event} = NativeDeployments.fail(deployment.id, :fixture_failure)
+
+    assert {:ok, retry, job} =
+             NativeDeployments.retry(deployment.id, operator: operator, worker: NativeWorker)
+
+    assert retry.retry_of_id == deployment.id
+    assert retry.deployment_input_id == deployment.deployment_input_id
+    assert retry.project == deployment.project
+    assert retry.target == deployment.target
+    assert retry.resource_prefix == deployment.resource_prefix
+    assert retry.operation_kind == deployment.operation_kind
+    assert job.args[:native_deployment_id] == retry.id
+
+    assert Enum.any?(
+             NativeDeployments.list_events(retry.id),
+             &(&1.metadata["retry_of_id"] == deployment.id)
+           )
+
+    assert {:error, {:retry_not_terminal_failure, :queued}} =
+             NativeDeployments.retry(retry.id, operator: operator)
+  end
+
+  test "fencing lease serializes a canonical native target and rotates after release" do
+    operator = Fixtures.operator_fixture()
+    first_input = staged_input(operator)
+    {:ok, first, _job} = NativeDeployments.enqueue(first_input.id, operator: operator)
+
+    assert {:ok, lease} = NativeTargetLease.acquire(first.resource_prefix, first.id)
+    assert lease.fencing_token == 1
+    assert {:error, :target_busy} = NativeTargetLease.acquire(first.resource_prefix, first.id)
+    assert :ok = NativeTargetLease.maintain(lease)
+    assert :ok = NativeTargetLease.release(lease)
+
+    assert {:ok, next_lease} = NativeTargetLease.acquire(first.resource_prefix, first.id)
+    assert next_lease.fencing_token == 2
+    assert :ok = NativeTargetLease.release(next_lease)
   end
 
   test "reconciles an interrupted remote effect from independent identity without replaying mutation" do
@@ -241,6 +303,60 @@ defmodule Nixploy.NativeDeploymentsTest do
              NativeDeployments.list_events(deployment.id),
              &(&1.stage == "reconciliation")
            )
+  end
+
+  test "classifies divergent and unavailable interrupted remote state without replay" do
+    old_status = Application.get_env(:nixploy, :remote_status_probe)
+
+    Application.put_env(
+      :nixploy,
+      :native_deployment_executor,
+      Nixploy.Deployments.RemoteCliExecutor
+    )
+
+    on_exit(fn -> restore_env(:remote_status_probe, old_status) end)
+
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+
+    for {probe, code} <- [
+          {RemoteStatusDiverged, "interrupted_remote_state"},
+          {RemoteStatusUnavailable, "remote_reconciliation_failed"}
+        ] do
+      {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+      :ok = transition(deployment.id, :preparing, %{})
+      Application.put_env(:nixploy, :remote_status_probe, probe)
+
+      assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+      failed = NativeDeployments.get_deployment!(deployment.id)
+      assert failed.state == :failed
+      assert failed.failure["code"] == code
+    end
+  end
+
+  test "reconciles cancellation requested after possible remote effects before terminal state" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    :ok = transition(deployment.id, :preparing, %{})
+    assert {:ok, _deployment, _event} = NativeDeployments.request_cancellation(deployment.id)
+
+    old_status = Application.get_env(:nixploy, :remote_status_probe)
+
+    Application.put_env(
+      :nixploy,
+      :native_deployment_executor,
+      Nixploy.Deployments.RemoteCliExecutor
+    )
+
+    Application.put_env(:nixploy, :remote_status_probe, RemoteStatusConverged)
+    on_exit(fn -> restore_env(:remote_status_probe, old_status) end)
+
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+    cancelled = NativeDeployments.get_deployment!(deployment.id)
+    assert cancelled.state == :cancelled
+    assert cancelled.failure["code"] == "cancelled_after_remote_reconciliation"
+    assert cancelled.failure["observation"]["converged"]
   end
 
   test "queues a worker-only remote status refresh and persists bounded observation evidence" do

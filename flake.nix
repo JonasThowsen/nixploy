@@ -227,6 +227,35 @@
               }
             ];
           }).config.system.build.toplevel;
+        nixos-module-staged =
+          let
+            staged = lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  system.stateVersion = "26.05";
+                  boot.loader.grub.devices = [ "/dev/vda" ];
+                  fileSystems."/" = {
+                    device = "/dev/vda";
+                    fsType = "ext4";
+                  };
+                  services.nixploy-control-plane = {
+                    enable = true;
+                    splitRoles = true;
+                    workerEnabled = false;
+                    workerSopsAgeKeyFile = "/run/keys/nixploy.age";
+                    workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
+                    workerSshIdentityFile = "/run/keys/nixploy-ssh";
+                    workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+                    environmentFile = "/run/keys/nixploy.env";
+                  };
+                }
+              ];
+            };
+          in
+          assert !(staged.config.systemd.services ? nixploy-control-plane-worker);
+          staged.config.system.build.toplevel;
       });
 
       devShells = forAllSystems (

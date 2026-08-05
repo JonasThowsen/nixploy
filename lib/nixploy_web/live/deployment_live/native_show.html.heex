@@ -40,6 +40,15 @@
             Refresh remote status
           </.button>
           <.button
+            :if={deployment.state in [:failed, :cancelled]}
+            id="retry-native-deployment"
+            phx-click="retry_native_deployment"
+            class="btn-primary btn-sm min-h-11 w-full sm:w-auto"
+            data-confirm="Retry this exact immutable release and target plan?"
+          >
+            Retry exact release
+          </.button>
+          <.button
             :if={@rollback_status == :available}
             id="rollback-native-deployment"
             phx-click="rollback_native_deployment"
@@ -80,6 +89,26 @@
         <p class="sr-only">
           {deployment.rollback_of && deployment.rollback_of.id} {deployment.expected_image_id}
         </p>
+      </div>
+    </section>
+
+    <section
+      :if={deployment.retry_of}
+      id="native-retry-identity"
+      class="alert items-start border border-info/30 bg-info/10"
+    >
+      <.icon name="hero-arrow-path" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Exact immutable retry</p>
+        <p class="text-sm">
+          This attempt reuses the prior persisted release and target identity.
+        </p>
+        <.link
+          navigate={~p"/deployments/#{deployment.retry_of.id}"}
+          class="link mt-2 block text-xs"
+        >
+          View the prior attempt
+        </.link>
       </div>
     </section>
 

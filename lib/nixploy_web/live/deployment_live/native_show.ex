@@ -79,6 +79,22 @@ defmodule NixployWeb.DeploymentLive.NativeShow do
   end
 
   @impl true
+  def handle_event("retry_native_deployment", _params, socket) do
+    case NativeDeployments.retry(socket.assigns.deployment.id,
+           operator: socket.assigns.current_operator
+         ) do
+      {:ok, deployment, _job} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Exact immutable retry queued")
+         |> push_navigate(to: ~p"/deployments/#{deployment.id}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not retry: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
   def handle_event("cancel_native_deployment", _params, socket) do
     case NativeDeployments.request_cancellation(socket.assigns.deployment.id,
            operator: socket.assigns.current_operator

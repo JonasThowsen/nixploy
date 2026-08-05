@@ -29,7 +29,7 @@ defmodule Nixploy.Audit.Event do
       :occurred_at
     ])
     |> validate_required([:action, :resource_type, :resource_id, :outcome, :occurred_at])
-    |> validate_inclusion(:outcome, ["succeeded", "failed", "requested"])
+    |> validate_inclusion(:outcome, ["succeeded", "failed", "requested", "cancelled"])
     |> assoc_constraint(:operator)
   end
 end

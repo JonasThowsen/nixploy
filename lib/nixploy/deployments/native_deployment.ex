@@ -34,6 +34,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
     field :state, Ecto.Enum, values: @states, default: :queued
     field :current_stage, Ecto.Enum, values: @states, default: :queued
     field :resource_prefix, :string
+    field :fencing_token, :integer
     field :previous_upstream, :string
     field :selected_slot, :string
     field :selected_port, :integer
@@ -51,6 +52,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
     belongs_to :deployment_input, Nixploy.Deployments.DeploymentInput
     belongs_to :requested_by_operator, Nixploy.Accounts.Operator
     belongs_to :rollback_of, __MODULE__
+    belongs_to :retry_of, __MODULE__
     field :expected_image_id, :string
     field :expected_slot, :string
     has_many :events, Nixploy.Deployments.NativeEvent
@@ -72,6 +74,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
       :operation_kind,
       :resource_prefix,
       :rollback_of_id,
+      :retry_of_id,
       :expected_image_id,
       :expected_slot
     ])
@@ -89,6 +92,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
     |> assoc_constraint(:deployment_input)
     |> assoc_constraint(:requested_by_operator)
     |> assoc_constraint(:rollback_of)
+    |> assoc_constraint(:retry_of)
     |> check_constraint(:operation_kind, name: :valid_native_operation_kind)
     |> check_constraint(:operation_kind, name: :valid_native_rollback_identity)
     |> unique_constraint([:project, :target], name: :one_active_native_deployment_per_target)
@@ -101,6 +105,7 @@ defmodule Nixploy.Deployments.NativeDeployment do
       :state,
       :current_stage,
       :resource_prefix,
+      :fencing_token,
       :previous_upstream,
       :selected_slot,
       :selected_port,
@@ -116,7 +121,9 @@ defmodule Nixploy.Deployments.NativeDeployment do
     ])
     |> validate_required([:state, :current_stage])
     |> validate_inclusion(:selected_slot, ["blue", "green"])
+    |> validate_number(:fencing_token, greater_than: 0)
     |> check_constraint(:state, name: :valid_native_deployment_state)
+    |> check_constraint(:fencing_token, name: :valid_native_fencing_token)
   end
 
   @doc false

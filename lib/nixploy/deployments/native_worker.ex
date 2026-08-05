@@ -6,7 +6,14 @@ defmodule Nixploy.Deployments.NativeWorker do
     max_attempts: 1,
     unique: [period: :infinity, fields: [:args], states: :incomplete]
 
-  alias Nixploy.Deployments.{NativeDeployment, NativeExecutor, RemoteCliExecutor, RemoteStatus}
+  alias Nixploy.Deployments.{
+    NativeDeployment,
+    NativeExecutor,
+    NativeTargetLease,
+    RemoteCliExecutor,
+    RemoteStatus
+  }
+
   alias Nixploy.NativeDeployments
 
   @impl Oban.Worker
@@ -17,8 +24,11 @@ defmodule Nixploy.Deployments.NativeWorker do
       NativeDeployment.terminal?(deployment) ->
         :ok
 
-      deployment.cancellation_requested_at ->
+      deployment.cancellation_requested_at && deployment.state == :queued ->
         cancel(id)
+
+      deployment.cancellation_requested_at ->
+        reconcile_cancellation(deployment)
 
       true ->
         execute_or_reconcile(deployment)
@@ -35,7 +45,7 @@ defmodule Nixploy.Deployments.NativeWorker do
     if executor == RemoteCliExecutor and deployment.state != :queued do
       reconcile(deployment)
     else
-      execute(deployment, executor)
+      with_target_lease(deployment, executor)
     end
   end
 
@@ -64,15 +74,74 @@ defmodule Nixploy.Deployments.NativeWorker do
     end
   end
 
-  defp execute(deployment, executor) do
+  defp reconcile_cancellation(deployment) do
+    status = Application.get_env(:nixploy, :remote_status_probe, RemoteStatus)
+
+    case status.observe(deployment) do
+      {:ok, observation} ->
+        safe = safe_observation(observation)
+
+        transition_cancelled(deployment.id, %{
+          "code" => "cancelled_after_remote_reconciliation",
+          "message" => "Cancellation reconciled against current remote identity",
+          "observation" => safe
+        })
+
+      {:error, reason} ->
+        transition_cancelled(deployment.id, %{
+          "code" => "cancelled_with_remote_state_unavailable",
+          "message" => "Cancellation completed with remote identity unavailable",
+          "reason" => inspect(reason)
+        })
+    end
+  end
+
+  defp transition_cancelled(id, failure) do
+    case NativeDeployments.transition(
+           id,
+           :cancelled,
+           failure["message"],
+           %{failure: failure, metadata: failure}
+         ) do
+      {:ok, _deployment, _event} -> :ok
+      {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
+  defp with_target_lease(deployment, executor) do
+    case NativeTargetLease.acquire(deployment.resource_prefix, deployment.id) do
+      {:ok, lease} ->
+        try do
+          with {:ok, deployment} <-
+                 NativeDeployments.assign_fencing_token(deployment.id, lease.fencing_token) do
+            execute(deployment, executor, lease)
+          end
+        after
+          NativeTargetLease.release(lease)
+        end
+
+      {:error, :target_busy} ->
+        {:snooze, 10}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
+  defp execute(deployment, executor, lease) do
     stage = fn state, message, attrs ->
-      case NativeDeployments.transition(deployment.id, state, message, attrs) do
-        {:ok, _deployment, _event} -> :ok
-        {:error, reason} -> {:error, reason}
+      with :ok <- NativeTargetLease.maintain(lease) do
+        case NativeDeployments.transition(deployment.id, state, message, attrs) do
+          {:ok, _deployment, _event} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
       end
     end
 
-    cancelled? = fn -> NativeDeployments.cancellation_requested?(deployment.id) end
+    cancelled? = fn ->
+      NativeTargetLease.maintain(lease) != :ok or
+        NativeDeployments.cancellation_requested?(deployment.id)
+    end
 
     case executor.deploy(deployment, stage: stage, cancelled?: cancelled?) do
       :ok ->
