@@ -17,8 +17,21 @@ runtime_mode =
   System.get_env("NIXPLOY_RUNTIME_MODE", "local_recovery")
   |> Nixploy.RuntimeMode.parse!()
 
+policy_mode =
+  case System.get_env(
+         "NIXPLOY_POLICY_MODE",
+         if(runtime_mode == :remote_control_plane, do: "enforce", else: "shadow")
+       ) do
+    "shadow" -> :shadow
+    "enforce" -> :enforce
+    invalid -> raise "invalid NIXPLOY_POLICY_MODE #{inspect(invalid)}; expected shadow or enforce"
+  end
+
 config :nixploy,
   runtime_mode: runtime_mode,
+  deployment_policy_mode: policy_mode,
+  deployment_policy_component: System.get_env("NIXPLOY_POLICY_COMPONENT"),
+  wasmtime_executable: System.get_env("NIXPLOY_WASMTIME_EXECUTABLE"),
   native_deployment_executor:
     if(runtime_mode == :remote_control_plane,
       do: Nixploy.Deployments.RemoteCliExecutor,

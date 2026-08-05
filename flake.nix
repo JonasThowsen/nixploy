@@ -75,6 +75,53 @@
             dotnet-sdk = pkgs.dotnet-sdk_10;
           };
 
+          moonbitPolicy = pkgs.stdenvNoCC.mkDerivation {
+            pname = "nixploy-deployment-policy";
+            version = "0.1.20260803";
+            src = ./policy;
+
+            moonbitToolchain = pkgs.fetchurl {
+              url = "https://cli.moonbitlang.com/binaries/latest/moonbit-linux-x86_64.tar.gz";
+              hash = "sha256-xnrU4xMgpbDM44juxRpMk4S3+QLo0n50efJhJJGxO28=";
+            };
+
+            moonbitCore = pkgs.fetchurl {
+              url = "https://cli.moonbitlang.com/cores/core-latest.tar.gz";
+              hash = "sha256-o8pynyUXt8YXCiZFq6mq55FUs9cfEzAkcMmVMxE5gXQ=";
+            };
+
+            nativeBuildInputs = [ pkgs.file pkgs.patchelf pkgs.gnutar pkgs.gzip ];
+
+            buildPhase = ''
+              runHook preBuild
+              export HOME=$TMPDIR/home
+              export MOON_HOME=$TMPDIR/moon
+              mkdir -p "$HOME" "$MOON_HOME/lib"
+              tar -xzf "$moonbitToolchain" -C "$MOON_HOME"
+              tar -xzf "$moonbitCore" -C "$MOON_HOME/lib"
+              chmod -R u+rwX "$MOON_HOME"
+              find "$MOON_HOME/bin" -type f -print0 | while IFS= read -r -d "" executable; do
+                if file "$executable" | grep -q ELF; then
+                  chmod +x "$executable"
+                  if patchelf --print-interpreter "$executable" >/dev/null 2>&1; then
+                    patchelf --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} "$executable"
+                  fi
+                fi
+              done
+              export PATH="$MOON_HOME/bin:$PATH"
+              moon -C "$MOON_HOME/lib/core" bundle --warn-list -a --all
+              moon build --target wasm --release --frozen --deny-warn
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              install -Dm444 _build/wasm/release/build/cmd/main/main.wasm \
+                $out/lib/nixploy/policy/deployment-policy.wasm
+              runHook postInstall
+            '';
+          };
+
           control-plane = (beamPackages pkgs).mixRelease {
             pname = "nixploy-control-plane";
             version = "0.1.0";
@@ -119,13 +166,16 @@
                     pkgs.podman
                     pkgs.sops
                     pkgs.ssh-to-age
+                    pkgs.wasmtime
                   ]
-                }
+                } \
+                --set-default NIXPLOY_POLICY_COMPONENT ${moonbitPolicy}/lib/nixploy/policy/deployment-policy.wasm \
+                --set-default NIXPLOY_WASMTIME_EXECUTABLE ${pkgs.wasmtime}/bin/wasmtime
             '';
           };
         in
         {
-          inherit nixploy control-plane;
+          inherit nixploy control-plane moonbitPolicy;
           default = nixploy;
           fetch-deps = nixploy.fetch-deps;
         }

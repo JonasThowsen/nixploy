@@ -1,7 +1,7 @@
 defmodule Nixploy.Deployments.RemoteCliExecutor do
   @moduledoc "Invokes the packaged remote-target CLI for one exact immutable release."
 
-  alias Nixploy.Deployments.{EventProtocol, NativeDeployment, ResourceIdentity}
+  alias Nixploy.Deployments.{DeploymentPolicy, EventProtocol, NativeDeployment, ResourceIdentity}
   alias Nixploy.Execution
   alias Nixploy.Execution.Command
 
@@ -14,7 +14,9 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
     workspace_root = Keyword.get(opts, :workspace_root, workspace_root())
     workspace = Path.join(workspace_root, deployment.id)
 
-    with :ok <- private_workspace(workspace) do
+    with {:ok, policy} <- evaluate_policy(deployment, opts),
+         :ok <- record_policy_stage(policy, opts),
+         :ok <- private_workspace(workspace) do
       try do
         command = command(deployment, workspace, opts)
         state_key = {__MODULE__, make_ref()}
@@ -97,6 +99,36 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
       timeout: @timeout,
       max_output_bytes: @protocol_bytes + @diagnostic_bytes
     }
+  end
+
+  defp evaluate_policy(deployment, opts) do
+    case Keyword.get(opts, :policy, DeploymentPolicy) do
+      module when is_atom(module) -> module.evaluate(deployment)
+      callback when is_function(callback, 1) -> callback.(deployment)
+    end
+  end
+
+  defp record_policy_stage(policy, opts) do
+    message =
+      if policy.allow?,
+        do: "Pinned deployment policy allowed the immutable remote plan",
+        else: "Pinned deployment policy denied in shadow mode; evidence retained"
+
+    apply_stage(
+      %{
+        stage: :preparing,
+        message: message,
+        attrs: %{
+          metadata: %{
+            policy_mode: policy.mode,
+            policy_code: policy.code,
+            policy_payload_digest: policy.payload_digest,
+            policy_component_digest: policy.component_digest
+          }
+        }
+      },
+      opts
+    )
   end
 
   defp consume_line(line, deployment, opts, state_key) do

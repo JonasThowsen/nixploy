@@ -25,7 +25,8 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
              RemoteCliExecutor.deploy(deployment(),
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
-               workspace_root: root
+               workspace_root: root,
+               policy: allow_policy()
              )
 
     assert_receive {:command, command, mode}
@@ -72,7 +73,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
     parent = self()
 
     stages =
-      ~w(preparing building installing_credentials loading preparing_slot starting health_checking switching verifying)a
+      ~w(building installing_credentials loading preparing_slot starting health_checking switching verifying)a
 
     execute = fn _command, opts ->
       opts[:on_line].("human diagnostic")
@@ -83,7 +84,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
         opts[:on_line].(event(sequence, "stage", Atom.to_string(stage), nil, nil))
       end)
 
-      opts[:on_line].(event(10, "terminal", "succeeded", "succeeded", "ok"))
+      opts[:on_line].(event(9, "terminal", "succeeded", "succeeded", "ok"))
       {:ok, %Result{exit_status: 0, output_tail: "", output_truncated?: false}}
     end
 
@@ -102,10 +103,11 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
-               stage: stage
+               stage: stage,
+               policy: allow_policy()
              )
 
-    assert_receive {:stage, :preparing, %{}}
+    assert_receive {:stage, :preparing, %{metadata: %{policy_code: "allowed"}}}
     assert_receive {:stage, :verifying, %{}}
     assert_receive {:stage, :succeeded, %{}}
   end
@@ -125,7 +127,8 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
              RemoteCliExecutor.deploy(deployment(),
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
-               workspace_root: root
+               workspace_root: root,
+               policy: allow_policy()
              )
   end
 
@@ -143,8 +146,22 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
              RemoteCliExecutor.deploy(deployment(),
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
-               workspace_root: root
+               workspace_root: root,
+               policy: allow_policy()
              )
+  end
+
+  defp allow_policy do
+    fn _deployment ->
+      {:ok,
+       %{
+         allow?: true,
+         mode: :enforce,
+         code: "allowed",
+         payload_digest: String.duplicate("d", 64),
+         component_digest: String.duplicate("e", 64)
+       }}
+    end
   end
 
   defp event(sequence, type, stage, status, code) do

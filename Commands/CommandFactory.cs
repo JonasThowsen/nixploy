@@ -86,8 +86,6 @@ public static class CommandFactory
                 parseResult.GetValue(eventsOption),
                 immutable.OperationId!
             );
-            reporter.Stage("preparing", "Validating immutable source and remote target identity");
-
             if (string.IsNullOrWhiteSpace(targetName))
             {
                 Console.Error.WriteLine("Missing required target. Pass one with --target <name>.");
