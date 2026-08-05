@@ -150,7 +150,13 @@ public static class CommandFactory
                 return 1;
             }
 
-            var resourcePrefix = immutable.ResourceKey!;
+            var resourcePrefix = ResourcePrefix(metadata.Project, targetName);
+            if (!string.Equals(resourcePrefix, immutable.ResourceKey, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine("Canonical resource key does not match the immutable deployment input.");
+                return 1;
+            }
+
             var podmanConnection = podmanService.GetConnectionName(resourcePrefix);
             const string imageOutputPath = "result-nixploy-image";
 
@@ -374,7 +380,7 @@ public static class CommandFactory
                 ResourceKey = immutable.ResourceKey!
             };
 
-            var expectedResource = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
+            var expectedResource = ResourcePrefix(metadata.Project, targetName);
             if (!string.Equals(expectedResource, immutable.ResourceKey, StringComparison.Ordinal))
             {
                 Console.Error.WriteLine("Canonical resource key does not match the immutable task input.");
@@ -485,7 +491,7 @@ public static class CommandFactory
                 return 1;
             }
 
-            var resourcePrefix = ResourcePrefix(metadata.Project, metadata.ProjectId, targetName);
+            var resourcePrefix = ResourcePrefix(metadata.Project, targetName);
             var podmanConnection = podmanService.GetConnectionName(resourcePrefix);
 
             Console.WriteLine($"Pruning deployment identity: {resourcePrefix}");
@@ -607,7 +613,7 @@ public static class CommandFactory
                     ResourceKey = immutable.ResourceKey!
                 };
 
-                if (ResourcePrefix(metadata.Project, metadata.ProjectId, targetName) != immutable.ResourceKey ||
+                if (ResourcePrefix(metadata.Project, targetName) != immutable.ResourceKey ||
                     !await podmanService.EnsureConnectionAsync(immutable.ResourceKey!, targetName, target))
                 {
                     return 1;
@@ -988,24 +994,15 @@ public static class CommandFactory
             : null;
     }
 
-    private static string ResourcePrefix(string project, string projectId, string targetName)
+    private static string ResourcePrefix(string project, string targetName)
     {
-        return $"nixploy-{SanitizeName(project)}-{projectId}-{SanitizeName(targetName)}";
+        return ManagedResourceIdentity.Derive(project, targetName);
     }
 
     private static string ShortHash(string value)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes)[..10].ToLowerInvariant();
-    }
-
-    private static string SanitizeName(string value)
-    {
-        return string.Concat(value.Select(character =>
-            char.IsLetterOrDigit(character) || character is '-' or '_'
-                ? char.ToLowerInvariant(character)
-                : '-'
-        )).Trim('-');
     }
 
     private sealed record ImmutableInvocation(
