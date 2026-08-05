@@ -92,6 +92,8 @@ let
     NIXPLOY_AUTH_MODE = cfg.authMode;
     NIXPLOY_RUNTIME_MODE = cfg.runtimeMode;
     NIXPLOY_MANAGED_APPLICATIONS_JSON = builtins.toJSON publicApplications;
+    NIXPLOY_BACKUP_ENABLED = if cfg.backup.enable then "true" else "false";
+    NIXPLOY_BACKUP_SCHEDULE = cfg.backup.schedule;
     RELEASE_DISTRIBUTION = "none";
   };
 in

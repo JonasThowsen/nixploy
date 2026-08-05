@@ -4,15 +4,22 @@ defmodule Nixploy.ControlPlaneHealth do
   import Ecto.Query, warn: false
 
   alias Nixploy.Deployments.DeploymentInput
-  alias Nixploy.{ManagedApplications, Repo, RuntimeRole}
+  alias Nixploy.{ManagedApplications, Repo, RuntimeRole, WorkerHeartbeat}
 
   def snapshot do
     applications = ManagedApplications.list()
     latest = latest_inputs(Enum.map(applications, & &1.key))
+    workers = WorkerHeartbeat.active()
 
     %{
       database: database_readiness(),
       web: %{ready?: true, role: RuntimeRole.current()},
+      workers: %{
+        active_count: length(workers),
+        singleton?: length(workers) == 1,
+        latest: List.first(workers)
+      },
+      backup: backup_readiness(),
       queues: queue_state(),
       repositories:
         Enum.map(applications, fn application ->
@@ -72,6 +79,13 @@ defmodule Nixploy.ControlPlaneHealth do
   defp repository_state(%DeploymentInput{state: :staged}), do: :available
   defp repository_state(%DeploymentInput{state: :staging}), do: :preparing
   defp repository_state(%DeploymentInput{state: :failed}), do: :unavailable
+
+  defp backup_readiness do
+    %{
+      enabled?: System.get_env("NIXPLOY_BACKUP_ENABLED") == "true",
+      schedule: System.get_env("NIXPLOY_BACKUP_SCHEDULE")
+    }
+  end
 
   defp package_version do
     case Application.spec(:nixploy, :vsn) do

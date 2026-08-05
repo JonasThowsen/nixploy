@@ -358,6 +358,22 @@
           <dt>Release source</dt>
           <dd class="break-all font-mono text-xs">{input.store_path}</dd>
         </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Immutable source identity</dt>
+          <dd class="break-all font-mono text-xs">
+            {input.source_revision || "non-Git recovery input"}<br />{input.nar_hash}<br />{input.configuration_digest}
+          </dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Fencing token</dt>
+          <dd class="font-mono text-xs">{deployment.fencing_token || "pending"}</dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Attempt ancestry</dt>
+          <dd class="break-all font-mono text-xs">
+            {deployment.retry_of_id || deployment.rollback_of_id || "first attempt"}
+          </dd>
+        </div>
         <div class="np-data-cell">
           <dt>Candidate slot</dt>
           <dd>{deployment.selected_slot || "—"}:{deployment.selected_port || "—"}</dd>

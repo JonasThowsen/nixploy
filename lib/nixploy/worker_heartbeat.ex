@@ -29,6 +29,15 @@ defmodule Nixploy.WorkerHeartbeat do
     |> Repo.one()
   end
 
+  def active do
+    cutoff = DateTime.add(DateTime.utc_now(), -@stale_after, :millisecond)
+
+    __MODULE__
+    |> where([heartbeat], heartbeat.last_seen_at >= ^cutoff)
+    |> order_by([heartbeat], desc: heartbeat.last_seen_at)
+    |> Repo.all()
+  end
+
   def available?(heartbeat \\ latest())
   def available?(nil), do: false
 

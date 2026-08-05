@@ -387,29 +387,72 @@
               </p>
             </div>
             <div id="worker-heartbeat" class="np-data-cell">
-              <dt>Deployment worker</dt>
+              <dt>Deployment worker fence</dt>
               <dd class="flex items-center gap-2">
                 <span class={[
                   "np-status-dot",
-                  Nixploy.WorkerHeartbeat.available?(@worker_heartbeat) && "np-status-dot-success",
-                  !Nixploy.WorkerHeartbeat.available?(@worker_heartbeat) && "np-status-dot-error"
+                  @control_plane_health.workers.singleton? && "np-status-dot-success",
+                  !@control_plane_health.workers.singleton? && "np-status-dot-error"
                 ]}>
                 </span>
-                {if Nixploy.WorkerHeartbeat.available?(@worker_heartbeat),
-                  do: "available",
-                  else: "unavailable"}
+                {case @control_plane_health.workers.active_count do
+                  0 -> "no active worker"
+                  1 -> "single active worker"
+                  count -> "unsafe: #{count} active workers"
+                end}
               </dd>
-              <p :if={@worker_heartbeat} class="mt-1 text-xs text-base-content/45">
-                {@worker_heartbeat.hostname} · last seen {format_time(
-                  @worker_heartbeat.last_seen_at
+              <p
+                :if={@control_plane_health.workers.latest}
+                class="mt-1 text-xs text-base-content/45"
+              >
+                {@control_plane_health.workers.latest.hostname} · last seen {format_time(
+                  @control_plane_health.workers.latest.last_seen_at
                 )}
               </p>
+              <div
+                :if={@control_plane_health.workers.latest}
+                class="mt-2 flex flex-wrap gap-1"
+                aria-label="Worker capabilities"
+              >
+                <span
+                  :for={
+                    {capability, available?} <- @control_plane_health.workers.latest.capabilities
+                  }
+                  class={[
+                    "badge badge-outline badge-xs",
+                    available? && "badge-success",
+                    !available? && "badge-error"
+                  ]}
+                >
+                  {capability}
+                </span>
+              </div>
             </div>
             <div class="np-data-cell">
               <dt>Oban queues</dt>
               <dd>
                 {@control_plane_health.queues.executing} running · {@control_plane_health.queues.available} queued · {@control_plane_health.queues.retryable} retryable
               </dd>
+            </div>
+            <div id="backup-readiness" class="np-data-cell">
+              <dt>Database recovery</dt>
+              <dd class="flex items-center gap-2">
+                <span class={[
+                  "np-status-dot",
+                  @control_plane_health.backup.enabled? && "np-status-dot-success",
+                  !@control_plane_health.backup.enabled? && "np-status-dot-error"
+                ]}>
+                </span>
+                {if @control_plane_health.backup.enabled?,
+                  do: "scheduled backup",
+                  else: "not configured"}
+              </dd>
+              <p
+                :if={@control_plane_health.backup.schedule}
+                class="mt-1 font-mono text-xs text-base-content/45"
+              >
+                {@control_plane_health.backup.schedule}
+              </p>
             </div>
             <div class="np-data-cell">
               <dt>Control-plane mode</dt>
