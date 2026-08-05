@@ -254,7 +254,8 @@
               ];
             };
           in
-          assert !(staged.config.systemd.services ? nixploy-control-plane-worker);
+          assert staged.config.systemd.services ? nixploy-control-plane-worker;
+          assert staged.config.systemd.services.nixploy-control-plane-worker.wantedBy == [ ];
           staged.config.system.build.toplevel;
       });
 

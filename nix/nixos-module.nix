@@ -137,9 +137,9 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Materialize and start the split-role mutation worker. Set false while
-        staging a replacement control plane; enable only after the old worker
-        is fenced and the final database restore is complete.
+        Start the materialized split-role mutation worker at boot. Set false
+        while staging a replacement control plane; start/enable only after the
+        old worker is fenced and the final database restore is complete.
       '';
     };
 
@@ -448,10 +448,10 @@ in
         };
       };
     }
-    // lib.optionalAttrs (cfg.splitRoles && cfg.workerEnabled) {
+    // lib.optionalAttrs cfg.splitRoles {
       nixploy-control-plane-worker = {
         description = "nixploy deployment control plane worker";
-        wantedBy = [ "multi-user.target" ];
+        wantedBy = lib.optional cfg.workerEnabled "multi-user.target";
         after = [
           "network-online.target"
           "nixploy-control-plane.service"
