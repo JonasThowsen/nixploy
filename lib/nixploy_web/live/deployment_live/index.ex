@@ -14,7 +14,8 @@ defmodule NixployWeb.DeploymentLive.Index do
     NativeDeployments,
     Notifications,
     Operations,
-    RuntimeMode
+    RuntimeMode,
+    WorkerHeartbeat
   }
 
   @impl true
@@ -708,6 +709,7 @@ defmodule NixployWeb.DeploymentLive.Index do
       log_snapshots_by_service: log_snapshots_by_service,
       events_by_deployment: events_by_deployment,
       audit_events: audit_events,
+      worker_heartbeat: WorkerHeartbeat.latest(),
       repository_options: Enum.map(repositories, &{&1.name, &1.id}),
       target_options: Enum.map(targets, &{&1.name, &1.id}),
       service_options: Enum.map(services, &{service_label(&1), &1.id})

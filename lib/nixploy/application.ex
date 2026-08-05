@@ -26,7 +26,7 @@ defmodule Nixploy.Application do
 
   defp worker_preflight_children(role) do
     if RuntimeRole.worker?(role),
-      do: [Nixploy.Deployments.PreparationWorkspaceReconciler],
+      do: [Nixploy.Deployments.PreparationWorkspaceReconciler, Nixploy.WorkerHeartbeat],
       else: []
   end
 

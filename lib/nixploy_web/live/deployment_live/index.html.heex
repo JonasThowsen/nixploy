@@ -382,6 +382,25 @@
                   else: "local recovery"}
               </dd>
             </div>
+            <div id="worker-heartbeat" class="np-data-cell">
+              <dt>Deployment worker</dt>
+              <dd class="flex items-center gap-2">
+                <span class={[
+                  "np-status-dot",
+                  Nixploy.WorkerHeartbeat.available?(@worker_heartbeat) && "np-status-dot-success",
+                  !Nixploy.WorkerHeartbeat.available?(@worker_heartbeat) && "np-status-dot-error"
+                ]}>
+                </span>
+                {if Nixploy.WorkerHeartbeat.available?(@worker_heartbeat),
+                  do: "available",
+                  else: "unavailable"}
+              </dd>
+              <p :if={@worker_heartbeat} class="mt-1 text-xs text-base-content/45">
+                {@worker_heartbeat.hostname} · last seen {format_time(
+                  @worker_heartbeat.last_seen_at
+                )}
+              </p>
+            </div>
             <div class="np-data-cell">
               <dt>Processes</dt>
               <dd>{health.running_processes} running · {health.total_processes} total</dd>

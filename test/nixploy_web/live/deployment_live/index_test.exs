@@ -236,6 +236,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
     assert has_element?(view, "#machine-health-page", "local Podman is recovery-only")
     assert has_element?(view, "#runtime-mode", "local recovery")
+    assert has_element?(view, "#worker-heartbeat", "Deployment worker")
     assert has_element?(view, "#machine-health-page", "nixploy-vps")
     assert has_element?(view, "#machine-cpu", "18.4%")
     assert has_element?(view, "#machine-memory", "37.5%")

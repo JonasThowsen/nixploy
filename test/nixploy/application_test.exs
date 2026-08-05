@@ -8,6 +8,7 @@ defmodule Nixploy.ApplicationTest do
 
     assert NixployWeb.Endpoint in ids
     refute Nixploy.Deployments.PreparationWorkspaceReconciler in ids
+    refute Nixploy.WorkerHeartbeat in ids
   end
 
   test "worker role omits all HTTP children" do
@@ -19,6 +20,7 @@ defmodule Nixploy.ApplicationTest do
     refute Nixploy.Notifications in ids
     refute DNSCluster in ids
     assert Nixploy.Deployments.PreparationWorkspaceReconciler in ids
+    assert Nixploy.WorkerHeartbeat in ids
   end
 
   test "all role starts web and shared infrastructure" do
@@ -31,6 +33,7 @@ defmodule Nixploy.ApplicationTest do
     assert Nixploy.Notifications in ids
     assert NixployWeb.Endpoint in ids
     assert Nixploy.Deployments.PreparationWorkspaceReconciler in ids
+    assert Nixploy.WorkerHeartbeat in ids
   end
 
   defp child_ids(children) do
