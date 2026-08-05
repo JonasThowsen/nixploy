@@ -13,12 +13,19 @@ defmodule Nixploy.NativeDeployments do
   @allowed_transitions %{
     queued: [:preparing, :failed, :cancelled],
     preparing: [:building, :failed, :cancelled],
-    building: [:loading, :failed, :cancelled],
-    loading: [:installing_credentials, :preparing_slot, :failed, :cancelled],
-    installing_credentials: [:preparing_slot, :failed, :cancelled],
+    building: [:loading, :installing_credentials, :failed, :cancelled],
+    loading: [
+      :installing_credentials,
+      :preparing_slot,
+      :pre_starting,
+      :starting,
+      :failed,
+      :cancelled
+    ],
+    installing_credentials: [:loading, :preparing_slot, :failed, :cancelled],
     preparing_slot: [:pre_starting, :starting, :failed, :cancelled],
     pre_starting: [:starting, :failed, :cancelled],
-    starting: [:health_checking, :failed, :cancelled],
+    starting: [:health_checking, :verifying, :failed, :cancelled],
     health_checking: [:switching, :failed, :cancelled],
     switching: [:verifying, :failed, :cancelled],
     verifying: [:succeeded, :failed, :cancelled],

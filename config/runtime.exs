@@ -17,7 +17,13 @@ runtime_mode =
   System.get_env("NIXPLOY_RUNTIME_MODE", "local_recovery")
   |> Nixploy.RuntimeMode.parse!()
 
-config :nixploy, runtime_mode: runtime_mode
+config :nixploy,
+  runtime_mode: runtime_mode,
+  native_deployment_executor:
+    if(runtime_mode == :remote_control_plane,
+      do: Nixploy.Deployments.RemoteCliExecutor,
+      else: Nixploy.Deployments.NativeExecutor
+    )
 
 managed_applications =
   System.get_env("NIXPLOY_MANAGED_APPLICATIONS_JSON", "{}")

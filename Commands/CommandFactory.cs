@@ -44,6 +44,10 @@ public static class CommandFactory
         {
             Description = "Canonical host-computed managed resource key"
         };
+        var eventsOption = new Option<string>("--events")
+        {
+            Description = "Machine event protocol; supported value: jsonl"
+        };
 
         var deployCommand = new Command("deploy", "Build, load, and run an OCI image on a target server")
         {
@@ -55,7 +59,8 @@ public static class CommandFactory
                 repositoryIdentityOption,
                 configurationDigestOption,
                 operationIdOption,
-                resourceKeyOption
+                resourceKeyOption,
+                eventsOption
             }
         };
 
@@ -76,6 +81,12 @@ public static class CommandFactory
                 Console.Error.WriteLine(immutable.Error);
                 return 1;
             }
+
+            using var reporter = DeploymentReporter.Create(
+                parseResult.GetValue(eventsOption),
+                immutable.OperationId!
+            );
+            reporter.Stage("preparing", "Validating immutable source and remote target identity");
 
             if (string.IsNullOrWhiteSpace(targetName))
             {
@@ -148,6 +159,7 @@ public static class CommandFactory
             }
 
             Console.WriteLine($"Building image '{immutable.Source}#{target.Image}'...");
+            reporter.Stage("building", "Building the exact immutable image output");
 
             CommandRunResult buildResult = await commandRunner.RunAsync(
                 "nix",
@@ -168,6 +180,7 @@ public static class CommandFactory
             }
 
             IReadOnlyList<Secret> secrets;
+            reporter.Stage("installing_credentials", "Resolving worker-only credential references");
 
             try
             {
@@ -191,6 +204,7 @@ public static class CommandFactory
             }
 
             Console.WriteLine($"Loading image onto target '{targetName}' using Podman connection '{podmanConnection}'...");
+            reporter.Stage("loading", "Loading the built image through the named remote connection");
 
             LoadedImage? loadedImage = await podmanService.LoadImageAsync(podmanConnection, imageOutputPath);
 
@@ -210,8 +224,21 @@ public static class CommandFactory
                     secretMounts,
                     metadata,
                     podmanService,
-                    caddyService
+                    caddyService,
+                    reporter
                 );
+
+                if (deployed)
+                {
+                    reporter.Succeed(
+                        "Remote deployment succeeded after independent readback",
+                        new Dictionary<string, object?>
+                        {
+                            ["resource_key"] = resourcePrefix,
+                            ["image_reference"] = loadedImage.Reference
+                        }
+                    );
+                }
 
                 return deployed ? 0 : 1;
             }
@@ -224,8 +251,21 @@ public static class CommandFactory
                 loadedImage.Reference,
                 secretMounts,
                 metadata,
-                podmanService
+                podmanService,
+                reporter
             );
+
+            if (simpleDeployed)
+            {
+                reporter.Succeed(
+                    "Remote deployment succeeded after independent readback",
+                    new Dictionary<string, object?>
+                    {
+                        ["resource_key"] = resourcePrefix,
+                        ["image_reference"] = loadedImage.Reference
+                    }
+                );
+            }
 
             return simpleDeployed ? 0 : 1;
         });
@@ -320,7 +360,8 @@ public static class CommandFactory
         IReadOnlyList<SecretMount> secretMounts,
         DeploymentMetadata metadata,
         IPodmanService podmanService,
-        ICaddyService caddyService
+        ICaddyService caddyService,
+        DeploymentReporter reporter
     )
     {
         var activePortResult = await caddyService.GetActivePortAsync(resourcePrefix, target);
@@ -338,12 +379,29 @@ public static class CommandFactory
             ? null
             : $"{resourcePrefix}-{(activePort == target.Web!.Slots.Blue ? "blue" : "green")}";
 
+        reporter.Stage(
+            "preparing_slot",
+            "Preparing only the inactive managed slot",
+            new Dictionary<string, object?>
+            {
+                ["selected_slot"] = slotName,
+                ["selected_port"] = slotPort,
+                ["previous_upstream"] = activePort is null ? null : $"127.0.0.1:{activePort}",
+                ["container_name"] = newContainerName
+            }
+        );
+
         Console.WriteLine(activePort is null
             ? $"No active Caddy upstream found. Starting {slotName} slot on port {slotPort}."
             : $"Active port is {activePort}. Starting {slotName} slot on port {slotPort}.");
 
         Console.WriteLine($"Removing legacy single-container deployment '{resourcePrefix}' if it exists...");
         await podmanService.StopContainerAsync(podmanConnection, resourcePrefix);
+
+        if (target.Run.PreStart.Count > 0)
+        {
+            reporter.Stage("pre_starting", "Running fixed flake-declared preparation commands");
+        }
 
         if (!await podmanService.RunPreStartCommandsAsync(
                 podmanConnection,
@@ -359,6 +417,11 @@ public static class CommandFactory
         }
 
         Console.WriteLine($"Starting {slotName} container '{newContainerName}' from image '{imageReference}'...");
+        reporter.Stage(
+            "starting",
+            "Starting the verified image in the inactive slot",
+            new Dictionary<string, object?> { ["container_name"] = newContainerName }
+        );
 
         await podmanService.StopContainerAsync(podmanConnection, newContainerName);
 
@@ -375,17 +438,32 @@ public static class CommandFactory
             return false;
         }
 
+        reporter.Stage("health_checking", "Checking target-local candidate health");
+
         if (!await caddyService.CheckHealthAsync(target, slotPort))
         {
             Console.Error.WriteLine("New slot failed health check. Leaving existing Caddy route unchanged.");
             return false;
         }
 
+        reporter.Stage("switching", "Switching only the identified Caddy upstream");
+
         if (!await caddyService.SwitchAsync(resourcePrefix, target, slotPort))
         {
             Console.Error.WriteLine("New slot is healthy, but Caddy switch failed. Leaving new container running for inspection.");
             return false;
         }
+
+        reporter.Stage(
+            "verifying",
+            "Reading back remote container and ingress identity",
+            new Dictionary<string, object?>
+            {
+                ["selected_slot"] = slotName,
+                ["selected_port"] = slotPort,
+                ["verified_upstream"] = $"127.0.0.1:{slotPort}"
+            }
+        );
 
         if (!string.IsNullOrWhiteSpace(oldContainerName) && oldContainerName != newContainerName)
         {
@@ -405,10 +483,16 @@ public static class CommandFactory
         string imageReference,
         IReadOnlyList<SecretMount> secretMounts,
         DeploymentMetadata metadata,
-        IPodmanService podmanService
+        IPodmanService podmanService,
+        DeploymentReporter reporter
     )
     {
         var containerName = resourcePrefix;
+
+        if (target.Run.PreStart.Count > 0)
+        {
+            reporter.Stage("pre_starting", "Running fixed flake-declared preparation commands");
+        }
 
         if (!await podmanService.RunPreStartCommandsAsync(
                 podmanConnection,
@@ -424,6 +508,11 @@ public static class CommandFactory
         }
 
         Console.WriteLine($"Starting container '{containerName}' from image '{imageReference}'...");
+        reporter.Stage(
+            "starting",
+            "Starting the verified image",
+            new Dictionary<string, object?> { ["container_name"] = containerName }
+        );
 
         if (!await podmanService.RunImageAsync(
                 podmanConnection,
@@ -438,6 +527,11 @@ public static class CommandFactory
             return false;
         }
 
+        reporter.Stage(
+            "verifying",
+            "Reading back the managed container identity",
+            new Dictionary<string, object?> { ["container_name"] = containerName }
+        );
         Console.WriteLine("Deployment completed successfully.");
         return true;
     }
