@@ -525,6 +525,7 @@ public static class CommandFactory
 
         var planCommand = CreatePlanCommand(configProvider, podmanService, caddyService);
         var statusCommand = CreateStatusCommand(commandRunner, configProvider, podmanService, caddyService);
+        var logsCommand = CreateLogsCommand(configProvider, podmanService);
 
         var root = new RootCommand("Nixploy")
         {
@@ -534,6 +535,7 @@ public static class CommandFactory
                 taskCommand,
                 planCommand,
                 statusCommand,
+                logsCommand,
                 pruneCommand
             }
         };
@@ -761,6 +763,7 @@ public static class CommandFactory
 
                 var connection = podmanService.GetConnectionName(immutable.ResourceKey!);
                 VerifiedContainer? container = null;
+                RuntimeWorkloadObservation? workload = null;
                 if (!string.IsNullOrWhiteSpace(containerName) &&
                     !string.IsNullOrWhiteSpace(imageReference) &&
                     !string.IsNullOrWhiteSpace(imageId))
@@ -772,30 +775,81 @@ public static class CommandFactory
                         imageId,
                         metadata
                     );
+
+                    if (container is not null)
+                    {
+                        workload = await podmanService.ObserveWorkloadAsync(connection, containerName, metadata);
+                    }
                 }
 
                 ActivePortResult ingress = target.Web is null
                     ? new ActivePortResult(true, null)
                     : await caddyService.GetActivePortAsync(immutable.ResourceKey!, target);
 
-                var healthy = expectedPort is int port && target.Web is not null
+                var targetLocalHealthy = expectedPort is int port && target.Web is not null
                     ? await caddyService.CheckHealthAsync(target, port)
                     : container is not null;
+                var publicHealth = await ObservePublicHealthAsync(target.Web);
+                var activeSlot = target.Web is null ? null : ingress.Port switch
+                {
+                    var active when active == target.Web.Slots.Blue => "blue",
+                    var active when active == target.Web.Slots.Green => "green",
+                    _ => null
+                };
+                var upstream = ingress.Port is int activePort ? $"127.0.0.1:{activePort}" : null;
+                var converged = container is not null && workload is not null && ingress.Success &&
+                    (expectedPort is null || ingress.Port == expectedPort) && targetLocalHealthy;
 
                 protocol.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
                 {
                     ["schema"] = "nixploy.status/v1",
                     ["operation_id"] = immutable.OperationId,
                     ["resource_key"] = immutable.ResourceKey,
-                    ["container_verified"] = container is not null,
-                    ["container_id"] = container?.Id,
-                    ["image_id"] = container?.ImageId,
+                    ["project"] = config.Project,
+                    ["target"] = targetName,
+                    ["connection"] = connection,
+                    ["target_identity"] = new Dictionary<string, object?>
+                    {
+                        ["host"] = target.Ip,
+                        ["user"] = target.User,
+                        ["port"] = target.Port
+                    },
+                    ["container_verified"] = container is not null && workload is not null,
+                    ["container_id"] = workload?.ContainerId,
+                    ["container_name"] = workload?.ContainerName,
+                    ["container_state"] = workload?.State,
+                    ["container_status"] = workload?.Status,
+                    ["image_reference"] = workload?.ImageReference,
+                    ["image_id"] = workload?.ImageId,
+                    ["revision"] = workload?.Revision,
+                    ["deployed_at"] = workload?.StartedAt,
                     ["ingress_available"] = ingress.Success,
+                    ["active_slot"] = activeSlot,
                     ["active_port"] = ingress.Port,
                     ["expected_port"] = expectedPort,
-                    ["healthy"] = healthy,
-                    ["converged"] = container is not null && ingress.Success &&
-                        (expectedPort is null || ingress.Port == expectedPort) && healthy
+                    ["caddy_route_id"] = target.Web is null ? null : $"nixploy-route-{immutable.ResourceKey}",
+                    ["caddy_proxy_id"] = target.Web is null ? null : $"nixploy-proxy-{immutable.ResourceKey}",
+                    ["caddy_upstream"] = upstream,
+                    ["target_local_health"] = new Dictionary<string, object?>
+                    {
+                        ["healthy"] = targetLocalHealthy,
+                        ["endpoint"] = target.Web is null || expectedPort is null
+                            ? null
+                            : $"http://127.0.0.1:{expectedPort}{target.Web.HealthPath}"
+                    },
+                    ["public_health"] = publicHealth,
+                    ["metrics"] = workload is null ? null : new Dictionary<string, object?>
+                    {
+                        ["cpu_percent"] = workload.CpuPercent,
+                        ["memory_usage"] = workload.MemoryUsage,
+                        ["memory_percent"] = workload.MemoryPercent,
+                        ["pids"] = workload.Pids,
+                        ["network_io"] = workload.NetworkIo,
+                        ["block_io"] = workload.BlockIo
+                    },
+                    ["observed_at"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["healthy"] = targetLocalHealthy,
+                    ["converged"] = converged
                 }));
                 protocol.Flush();
                 return 0;
@@ -812,6 +866,155 @@ public static class CommandFactory
         });
 
         return command;
+    }
+
+    private static Command CreateLogsCommand(
+        INixployConfigProvider configProvider,
+        IPodmanService podmanService
+    )
+    {
+        var targetOption = new Option<string>("--target");
+        var sourceOption = new Option<string>("--source");
+        var revisionOption = new Option<string>("--git-revision");
+        var repositoryOption = new Option<string>("--repository-identity");
+        var digestOption = new Option<string>("--configuration-digest");
+        var operationOption = new Option<string>("--operation-id");
+        var resourceOption = new Option<string>("--resource-key");
+        var containerOption = new Option<string>("--container-name");
+
+        var command = new Command("logs", "Read one bounded redacted managed-container log snapshot")
+        {
+            Options =
+            {
+                targetOption,
+                sourceOption,
+                revisionOption,
+                repositoryOption,
+                digestOption,
+                operationOption,
+                resourceOption,
+                containerOption
+            }
+        };
+
+        command.SetAction(async parseResult =>
+        {
+            var targetName = parseResult.GetValue(targetOption);
+            var containerName = parseResult.GetValue(containerOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(sourceOption),
+                parseResult.GetValue(revisionOption),
+                parseResult.GetValue(repositoryOption),
+                parseResult.GetValue(digestOption),
+                parseResult.GetValue(operationOption),
+                parseResult.GetValue(resourceOption)
+            );
+
+            var protocol = Console.Out;
+            Console.SetOut(Console.Error);
+
+            try
+            {
+                if (!immutable.Success || string.IsNullOrWhiteSpace(targetName) ||
+                    string.IsNullOrWhiteSpace(containerName))
+                {
+                    Console.Error.WriteLine(immutable.Error ?? "Log observation identity is invalid.");
+                    return 1;
+                }
+
+                var config = await configProvider.GetConfigAsync(immutable.Source!);
+                if (!config.Targets.TryGetValue(targetName, out var target))
+                {
+                    return 1;
+                }
+
+                var metadata = CreateDeploymentMetadata(
+                    config.Project,
+                    targetName,
+                    immutable.RepositoryIdentity!,
+                    immutable.GitRevision!
+                ) with
+                {
+                    ConfigurationDigest = immutable.ConfigurationDigest!,
+                    OperationId = immutable.OperationId!,
+                    ResourceKey = immutable.ResourceKey!
+                };
+
+                if (ResourcePrefix(metadata.Project, targetName) != immutable.ResourceKey ||
+                    !await podmanService.EnsureConnectionAsync(immutable.ResourceKey!, targetName, target))
+                {
+                    return 1;
+                }
+
+                var connection = podmanService.GetConnectionName(immutable.ResourceKey!);
+                var snapshot = await podmanService.ReadLogsAsync(connection, containerName, metadata);
+                if (snapshot is null)
+                {
+                    return 1;
+                }
+
+                protocol.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["schema"] = "nixploy.logs/v1",
+                    ["operation_id"] = immutable.OperationId,
+                    ["resource_key"] = immutable.ResourceKey,
+                    ["container_name"] = containerName,
+                    ["content"] = snapshot.Content,
+                    ["line_count"] = snapshot.LineCount,
+                    ["truncated"] = snapshot.Truncated,
+                    ["observed_at"] = DateTimeOffset.UtcNow.ToString("O")
+                }));
+                protocol.Flush();
+                return 0;
+            }
+            catch (InvalidOperationException exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+            finally
+            {
+                Console.SetOut(protocol);
+            }
+        });
+
+        return command;
+    }
+
+    private static async Task<Dictionary<string, object?>> ObservePublicHealthAsync(NixployWebConfig? web)
+    {
+        if (web is null || string.IsNullOrWhiteSpace(web.Domain))
+        {
+            return new Dictionary<string, object?>
+            {
+                ["healthy"] = false,
+                ["status_code"] = null,
+                ["error"] = "not_configured"
+            };
+        }
+
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://{web.Domain}{web.HealthPath}");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            var status = (int)response.StatusCode;
+            return new Dictionary<string, object?>
+            {
+                ["healthy"] = status is >= 200 and < 300,
+                ["status_code"] = status,
+                ["error"] = null
+            };
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["healthy"] = false,
+                ["status_code"] = null,
+                ["error"] = exception is TaskCanceledException ? "timeout" : "unreachable"
+            };
+        }
     }
 
     private static async Task<TargetPlanState?> ReadTargetPlanAsync(

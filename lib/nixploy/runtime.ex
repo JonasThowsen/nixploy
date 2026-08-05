@@ -3,8 +3,17 @@ defmodule Nixploy.Runtime do
 
   import Ecto.Query, warn: false
 
+  alias Ecto.Multi
   alias Nixploy.Deployments.{NativeDeployment, NativeEvent}
-  alias Nixploy.{ManagedApplications, NativeDeployments, Repo}
+
+  alias Nixploy.{
+    Audit,
+    ManagedApplications,
+    NativeDeployments,
+    Notifications,
+    Repo,
+    RuntimeLogSnapshot
+  }
 
   @stale_after_seconds 300
 
@@ -40,6 +49,11 @@ defmodule Nixploy.Runtime do
       :error,
       :deployment_id,
       :deployed_at,
+      :caddy_route_id,
+      :caddy_upstream,
+      :target_local_health,
+      :public_health,
+      :metrics,
       managed?: true
     ]
   end
@@ -69,6 +83,9 @@ defmodule Nixploy.Runtime do
       :logs,
       :logs_error,
       :log_line_count,
+      :log_status,
+      :logs_fetched_at,
+      :logs_truncated,
       :published_ports,
       :target_host,
       :target_user,
@@ -77,7 +94,11 @@ defmodule Nixploy.Runtime do
       :connection,
       :connection_state,
       :stale?,
-      :observation_error
+      :observation_error,
+      :caddy_route_id,
+      :caddy_upstream,
+      :target_local_health,
+      :public_health
     ]
   end
 
@@ -106,6 +127,9 @@ defmodule Nixploy.Runtime do
   def workload_details(application_key) when is_binary(application_key) do
     with {:ok, inventory} <- inventory(),
          %Workload{} = workload <- Enum.find(inventory.workloads, &(&1.id == application_key)) do
+      log_snapshot = Repo.get_by(RuntimeLogSnapshot, application_key: application_key)
+      log = visible_log(log_snapshot)
+
       {:ok,
        struct(Details,
          id: workload.id,
@@ -120,16 +144,19 @@ defmodule Nixploy.Runtime do
          started_at: workload.deployed_at,
          observed_at: workload.observed_at,
          health: health_label(workload),
-         cpu_percent: nil,
-         memory_percent: nil,
-         memory_usage: nil,
-         pids: nil,
-         network_io: nil,
-         block_io: nil,
-         metrics_error: :remote_detail_not_observed,
-         logs: nil,
-         logs_error: nil,
-         log_line_count: 0,
+         cpu_percent: metric(workload, "cpu_percent"),
+         memory_percent: metric(workload, "memory_percent"),
+         memory_usage: metric(workload, "memory_usage"),
+         pids: metric(workload, "pids"),
+         network_io: metric(workload, "network_io"),
+         block_io: metric(workload, "block_io"),
+         metrics_error: metrics_error(workload),
+         logs: log_content(log),
+         logs_error: log_error(log_snapshot, log),
+         log_line_count: (log && log.line_count) || 0,
+         log_status: log_status(log_snapshot, log),
+         logs_fetched_at: log && log.fetched_at,
+         logs_truncated: (log && log.truncated) || false,
          published_ports: [],
          target_host: workload.target_host,
          target_user: workload.target_user,
@@ -138,7 +165,11 @@ defmodule Nixploy.Runtime do
          connection: workload.connection,
          connection_state: workload.connection_state,
          stale?: workload.stale?,
-         observation_error: workload.error
+         observation_error: workload.error,
+         caddy_route_id: workload.caddy_route_id,
+         caddy_upstream: workload.caddy_upstream,
+         target_local_health: workload.target_local_health,
+         public_health: workload.public_health
        )}
     else
       nil -> {:error, :managed_application_not_found}
@@ -180,6 +211,76 @@ defmodule Nixploy.Runtime do
 
   def request_refresh_all(_operator, []), do: {:ok, %{queued: 0, unavailable: []}}
 
+  def request_logs(application_key, operator, opts \\ []) when is_binary(application_key) do
+    worker = Keyword.get(opts, :worker, Nixploy.Deployments.RemoteLogsWorker)
+    request_id = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    with {:ok, _application} <- ManagedApplications.fetch(application_key),
+         %NativeDeployment{} = deployment <- latest_deployment(application_key) do
+      result =
+        Multi.new()
+        |> Multi.run(:snapshot, fn repo, _changes ->
+          request_log_snapshot(repo, application_key, deployment.id, request_id, now)
+        end)
+        |> Oban.insert(:job, fn %{snapshot: snapshot} ->
+          worker.new(%{
+            application_key: application_key,
+            native_deployment_id: deployment.id,
+            request_id: snapshot.request_id
+          })
+        end)
+        |> Multi.insert(:audit, fn %{snapshot: snapshot} ->
+          Audit.changeset(
+            operator,
+            :runtime_logs_requested,
+            :runtime_log_snapshot,
+            snapshot.id,
+            outcome: :requested,
+            metadata: %{
+              "application_key" => application_key,
+              "native_deployment_id" => deployment.id,
+              "resource_key" => deployment.resource_prefix
+            }
+          )
+        end)
+        |> Repo.transaction()
+
+      case result do
+        {:ok, %{snapshot: snapshot, job: job}} -> {:ok, snapshot, job}
+        {:error, _step, reason, _changes} -> {:error, reason}
+      end
+    else
+      nil -> {:error, :remote_deployment_unavailable}
+      error -> error
+    end
+  end
+
+  def complete_logs(application_key, request_id, attrs) do
+    update_log_snapshot(application_key, request_id, fn snapshot ->
+      now = DateTime.utc_now()
+
+      snapshot
+      |> RuntimeLogSnapshot.available_changeset(
+        attrs
+        |> Map.put(:fetched_at, now)
+        |> Map.put(:expires_at, DateTime.add(now, 300, :second))
+      )
+    end)
+  end
+
+  def fail_logs(application_key, request_id, reason) do
+    update_log_snapshot(application_key, request_id, fn snapshot ->
+      now = DateTime.utc_now()
+
+      RuntimeLogSnapshot.failed_changeset(snapshot, %{
+        failure: %{message: inspect(reason, limit: 10, printable_limit: 1_000)},
+        fetched_at: now,
+        expires_at: DateTime.add(now, 300, :second)
+      })
+    end)
+  end
+
   defp latest_deployments(applications) do
     keys = Enum.map(applications, & &1.key)
 
@@ -192,6 +293,56 @@ defmodule Nixploy.Runtime do
     |> Enum.reduce(%{}, fn deployment, acc ->
       Map.put_new(acc, deployment.deployment_input.application_key, deployment)
     end)
+  end
+
+  defp latest_deployment(application_key) do
+    NativeDeployment
+    |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
+    |> where([_deployment, input], input.application_key == ^application_key)
+    |> order_by([deployment], desc: deployment.inserted_at)
+    |> preload([:deployment_input])
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp request_log_snapshot(repo, application_key, deployment_id, request_id, now) do
+    attrs = %{
+      application_key: application_key,
+      native_deployment_id: deployment_id,
+      request_id: request_id,
+      requested_at: now
+    }
+
+    case repo.get_by(RuntimeLogSnapshot, application_key: application_key) do
+      nil -> %RuntimeLogSnapshot{} |> RuntimeLogSnapshot.request_changeset(attrs) |> repo.insert()
+      snapshot -> snapshot |> RuntimeLogSnapshot.request_changeset(attrs) |> repo.update()
+    end
+  end
+
+  defp update_log_snapshot(application_key, request_id, changeset_fun) do
+    result =
+      Repo.transaction(fn ->
+        snapshot =
+          RuntimeLogSnapshot
+          |> where([snapshot], snapshot.application_key == ^application_key)
+          |> lock("FOR UPDATE")
+          |> Repo.one()
+
+        cond do
+          is_nil(snapshot) -> Repo.rollback(:request_not_found)
+          snapshot.request_id != request_id -> Repo.rollback(:stale_request)
+          true -> snapshot |> changeset_fun.() |> Repo.update!()
+        end
+      end)
+
+    case result do
+      {:ok, snapshot} ->
+        _ = Notifications.publish(snapshot.native_deployment_id)
+        {:ok, snapshot}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp latest_observations([]), do: %{}
@@ -229,6 +380,7 @@ defmodule Nixploy.Runtime do
   defp workload(application, deployment, observation, now) do
     target = deployment.deployment_input.derived_snapshot["target"] || %{}
     metadata = if observation, do: observation.metadata || %{}, else: %{}
+    identity = metadata["target_identity"] || %{}
     observed_at = observation && observation.inserted_at
     stale? = stale?(observed_at, now)
     error = metadata["error"]
@@ -240,25 +392,30 @@ defmodule Nixploy.Runtime do
       application_key: application.key,
       project: application.project,
       target: application.target,
-      target_host: metadata["target_host"] || target["host"],
-      target_user: metadata["target_user"] || target["user"],
-      target_port: metadata["target_port"] || target["port"],
+      target_host: identity["host"] || target["host"],
+      target_user: identity["user"] || target["user"],
+      target_port: identity["port"] || target["port"],
       resource_key: deployment.resource_prefix,
       connection: deployment.resource_prefix,
       connection_state: connection_state(observation, error),
       state: if(verified?, do: "running", else: "unavailable"),
       status: observation_status(observation, metadata, stale?),
-      slot: deployment.selected_slot,
+      slot: metadata["active_slot"] || deployment.selected_slot,
       container_id: metadata["container_id"] || deployment.container_id,
-      container_name: deployment.container_name,
-      image: deployment.image_reference,
+      container_name: metadata["container_name"] || deployment.container_name,
+      image: metadata["image_reference"] || deployment.image_reference,
       image_id: metadata["image_id"] || deployment.image_id,
-      revision: deployment.deployment_input.source_revision,
+      revision: metadata["revision"] || deployment.deployment_input.source_revision,
       observed_at: observed_at,
       stale?: stale?,
       error: error,
       deployment_id: deployment.id,
-      deployed_at: deployment.finished_at
+      deployed_at: parse_datetime(metadata["deployed_at"]) || deployment.finished_at,
+      caddy_route_id: metadata["caddy_route_id"],
+      caddy_upstream: metadata["caddy_upstream"],
+      target_local_health: metadata["target_local_health"],
+      public_health: metadata["public_health"],
+      metrics: metadata["metrics"]
     }
   end
 
@@ -286,4 +443,38 @@ defmodule Nixploy.Runtime do
   defp health_status(_workload), do: :unhealthy
 
   defp health_label(workload), do: workload |> health_status() |> Atom.to_string()
+
+  defp metric(%Workload{metrics: metrics}, key) when is_map(metrics), do: metrics[key]
+  defp metric(_workload, _key), do: nil
+
+  defp metrics_error(%Workload{metrics: metrics}) when is_map(metrics), do: nil
+  defp metrics_error(_workload), do: :remote_detail_not_observed
+
+  defp visible_log(%RuntimeLogSnapshot{status: :available, expires_at: expires_at} = snapshot) do
+    if DateTime.compare(expires_at, DateTime.utc_now()) == :gt, do: snapshot
+  end
+
+  defp visible_log(_snapshot), do: nil
+
+  defp log_content(%RuntimeLogSnapshot{} = snapshot), do: snapshot.content
+  defp log_content(_snapshot), do: nil
+
+  defp log_error(%RuntimeLogSnapshot{status: :failed, failure: failure}, _visible),
+    do: (failure || %{})["message"] || "Remote log observation failed"
+
+  defp log_error(%RuntimeLogSnapshot{status: :available}, nil), do: :expired
+  defp log_error(_snapshot, _visible), do: nil
+
+  defp log_status(nil, _visible), do: :idle
+  defp log_status(%RuntimeLogSnapshot{status: :available}, nil), do: :expired
+  defp log_status(%RuntimeLogSnapshot{status: status}, _visible), do: status
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _error -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
 end

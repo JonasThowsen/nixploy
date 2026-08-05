@@ -379,6 +379,55 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task ObserveWorkloadAsync_UsesNamedConnectionAndRequiresManagedIdentity()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, ManagedContainerJson(), ""),
+            new CommandRunResult(0, """[{"cpu_percent":"1.25%","mem_usage":"12MiB / 1GiB","mem_percent":"1.2%","pids":"7","net_io":"1kB / 2kB","block_io":"3kB / 4kB"}]""", "")
+        );
+        var service = new PodmanService(runner);
+
+        var observed = await service.ObserveWorkloadAsync(
+            "resource",
+            "nixploy-my-app-prod-blue",
+            ManagedMetadata()
+        );
+
+        Assert.NotNull(observed);
+        Assert.Equal("abc123", observed.ContainerId);
+        Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", observed.Revision);
+        Assert.Equal("1.25%", observed.CpuPercent);
+        Assert.Equal("7", observed.Pids);
+        Assert.All(runner.Calls, call => Assert.Equal(["--connection", "resource"], call.Arguments.Take(2)));
+        Assert.Contains("--no-stream", runner.Calls[1].Arguments);
+    }
+
+    [Fact]
+    public async Task ReadLogsAsync_IsManagedOnlyBoundedAndRedactsKnownShapes()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, ManagedContainerJson(), ""),
+            new CommandRunResult(0, "[]", ""),
+            new CommandRunResult(0, "ready\nTOKEN=do-not-retain\n", "")
+        );
+        var service = new PodmanService(runner);
+
+        var snapshot = await service.ReadLogsAsync(
+            "resource",
+            "nixploy-my-app-prod-blue",
+            ManagedMetadata()
+        );
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("ready\nTOKEN=[REDACTED]", snapshot.Content);
+        Assert.Equal(2, snapshot.LineCount);
+        var logs = runner.Calls[2];
+        Assert.Equal(["--connection", "resource", "logs", "--tail", "200", "nixploy-my-app-prod-blue"], logs.Arguments);
+        Assert.Equal(60_000, logs.Options?.MaxStandardOutputBytes);
+        Assert.Equal(TimeSpan.FromSeconds(30), logs.Options?.Timeout);
+    }
+
+    [Fact]
     public async Task PruneTargetAsync_RemovesKnownContainersAndPrefixedSecrets()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(0, "nixploy-my-app-prod-DATABASE_URL\nother-secret\n", ""));
@@ -419,4 +468,38 @@ public sealed class PodmanServiceTests
         Assert.Contains("source=secret-source,type=env,target=SECRET_TARGET", arguments);
         Assert.Equal("/app/migrate", arguments[^1]);
     }
+
+    private static DeploymentMetadata ManagedMetadata() => new(
+        "my-app",
+        "project-id",
+        "prod",
+        "fixture/repository",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "2026-08-05T00:00:00Z",
+        "digest",
+        "operation",
+        "resource"
+    );
+
+    private static string ManagedContainerJson() => """
+    [{
+      "Id":"abc123",
+      "Name":"/nixploy-my-app-prod-blue",
+      "Image":"sha256:image123",
+      "State":{"Running":true,"Status":"running","StartedAt":"2026-08-05T00:00:00Z"},
+      "Config":{
+        "Image":"localhost/app:latest",
+        "Labels":{
+          "io.nixploy.managed":"true",
+          "io.nixploy.project":"my-app",
+          "io.nixploy.target":"prod",
+          "io.nixploy.repository":"fixture/repository",
+          "io.nixploy.revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "io.nixploy.configuration_digest":"digest",
+          "io.nixploy.operation_id":"operation",
+          "io.nixploy.resource_key":"resource"
+        }
+      }
+    }]
+    """;
 }

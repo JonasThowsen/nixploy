@@ -54,6 +54,18 @@ public interface IPodmanService
         DeploymentMetadata metadata
     );
 
+    Task<RuntimeWorkloadObservation?> ObserveWorkloadAsync(
+        string connectionName,
+        string containerName,
+        DeploymentMetadata metadata
+    );
+
+    Task<RuntimeLogSnapshot?> ReadLogsAsync(
+        string connectionName,
+        string containerName,
+        DeploymentMetadata metadata
+    );
+
     Task StopContainerAsync(string connectionName, string containerName);
 
     Task<bool> PruneTargetAsync(string connectionName, string resourcePrefix);

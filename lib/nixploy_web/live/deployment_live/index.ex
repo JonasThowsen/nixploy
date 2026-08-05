@@ -375,6 +375,26 @@ defmodule NixployWeb.DeploymentLive.Index do
      )}
   end
 
+  def handle_event("fetch_runtime_logs", _params, socket) do
+    case socket.assigns.selected_workload do
+      %{id: application_key} ->
+        case Runtime.request_logs(application_key, socket.assigns.current_operator) do
+          {:ok, _snapshot, _job} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Bounded remote log snapshot queued")
+             |> assign(:workload_details_status, :loading)}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Could not queue remote logs: #{inspect(reason)}")}
+        end
+
+      nil ->
+        {:noreply, put_flash(socket, :error, "Choose a managed application first")}
+    end
+  end
+
   def handle_event("fetch_service_logs", %{"id" => service_id}, socket) do
     case Operations.request_log_snapshot(service_id, operator: socket.assigns.current_operator) do
       {:ok, _snapshot, _job} ->
@@ -534,6 +554,12 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def handle_info({:deployment_changed, _deployment_id}, socket) do
+    send(self(), :load_local_inventory)
+
+    if socket.assigns.selected_workload do
+      send(self(), {:load_workload_details, socket.assigns.selected_workload.id})
+    end
+
     {:noreply, load_dashboard(socket)}
   end
 
@@ -626,6 +652,11 @@ defmodule NixployWeb.DeploymentLive.Index do
     do: "Podman inspect exceeded the bounded 1 MiB output limit"
 
   defp local_workload_error(reason), do: inspect(reason)
+
+  def workload_logs_error(:expired),
+    do: "The ephemeral log snapshot expired; request a fresh bounded snapshot"
+
+  def workload_logs_error(reason) when is_binary(reason), do: reason
 
   def workload_logs_error({:podman_logs_failed, :timeout}),
     do: "Podman logs timed out after 15 seconds"

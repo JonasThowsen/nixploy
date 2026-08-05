@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Nixploy.Cli;
 
@@ -486,6 +487,156 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         }
     }
 
+    public async Task<RuntimeWorkloadObservation?> ObserveWorkloadAsync(
+        string connectionName,
+        string containerName,
+        DeploymentMetadata metadata
+    )
+    {
+        var inspect = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "inspect", "--type", "container", containerName],
+            new CommandRunOptions
+            {
+                StreamOutput = false,
+                MaxStandardOutputBytes = 65_536,
+                MaxStandardErrorBytes = 8_192
+            }
+        );
+
+        if (inspect.ExitCode != 0 || inspect.StdOutputTruncated)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(inspect.StdOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() != 1)
+            {
+                return null;
+            }
+
+            var container = document.RootElement[0];
+            var id = container.GetProperty("Id").GetString();
+            var name = container.GetProperty("Name").GetString()?.TrimStart('/');
+            var imageId = container.GetProperty("Image").GetString();
+            var state = container.GetProperty("State");
+            var config = container.GetProperty("Config");
+            var imageReference = config.GetProperty("Image").GetString();
+            var labels = config.GetProperty("Labels");
+
+            var valid = !string.IsNullOrWhiteSpace(id) &&
+                string.Equals(name, containerName, StringComparison.Ordinal) &&
+                !string.IsNullOrWhiteSpace(imageReference) &&
+                !string.IsNullOrWhiteSpace(imageId) &&
+                LabelEquals(labels, "io.nixploy.managed", "true") &&
+                LabelEquals(labels, "io.nixploy.project", metadata.Project) &&
+                LabelEquals(labels, "io.nixploy.target", metadata.Target) &&
+                LabelEquals(labels, "io.nixploy.repository", metadata.Repository) &&
+                LabelEquals(labels, "io.nixploy.revision", metadata.GitCommit) &&
+                LabelEquals(labels, "io.nixploy.configuration_digest", metadata.ConfigurationDigest) &&
+                LabelEquals(labels, "io.nixploy.operation_id", metadata.OperationId) &&
+                LabelEquals(labels, "io.nixploy.resource_key", metadata.ResourceKey);
+
+            if (!valid)
+            {
+                Console.Error.WriteLine("Remote workload observation did not match the managed immutable identity.");
+                return null;
+            }
+
+            var stats = await commandRunner.RunAsync(
+                "podman",
+                ["--connection", connectionName, "stats", "--no-stream", "--format", "json", containerName],
+                new CommandRunOptions
+                {
+                    StreamOutput = false,
+                    MaxStandardOutputBytes = 65_536,
+                    MaxStandardErrorBytes = 8_192
+                }
+            );
+
+            JsonElement? metrics = null;
+            if (stats.ExitCode == 0 && !stats.StdOutputTruncated && !string.IsNullOrWhiteSpace(stats.StdOutput))
+            {
+                using var statsDocument = JsonDocument.Parse(stats.StdOutput);
+                var root = statsDocument.RootElement;
+                metrics = root.ValueKind == JsonValueKind.Array && root.GetArrayLength() == 1
+                    ? root[0].Clone()
+                    : root.ValueKind == JsonValueKind.Object ? root.Clone() : null;
+            }
+
+            return new RuntimeWorkloadObservation(
+                id!,
+                name!,
+                imageReference!,
+                imageId!,
+                GetStringProperty(state, "Status") ?? (state.GetProperty("Running").GetBoolean() ? "running" : "stopped"),
+                GetStringProperty(state, "Status") ?? "unknown",
+                metadata.Project,
+                metadata.Target,
+                metadata.Repository,
+                metadata.GitCommit,
+                metadata.ConfigurationDigest,
+                metadata.OperationId,
+                metadata.ResourceKey,
+                GetStringProperty(state, "StartedAt"),
+                GetStringProperty(metrics, "cpu_percent", "CPU"),
+                GetStringProperty(metrics, "mem_usage", "MemUsage"),
+                GetStringProperty(metrics, "mem_percent", "MemPerc"),
+                GetStringProperty(metrics, "pids", "PIDs"),
+                GetStringProperty(metrics, "net_io", "NetIO"),
+                GetStringProperty(metrics, "block_io", "BlockIO")
+            );
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            Console.Error.WriteLine("Remote workload observation was malformed.");
+            Console.Error.WriteLine(exception.Message);
+            return null;
+        }
+    }
+
+    public async Task<RuntimeLogSnapshot?> ReadLogsAsync(
+        string connectionName,
+        string containerName,
+        DeploymentMetadata metadata
+    )
+    {
+        if (await ObserveWorkloadAsync(connectionName, containerName, metadata) is null)
+        {
+            return null;
+        }
+
+        var result = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "logs", "--tail", "200", containerName],
+            new CommandRunOptions
+            {
+                StreamOutput = false,
+                Timeout = TimeSpan.FromSeconds(30),
+                MaxStandardOutputBytes = 60_000,
+                MaxStandardErrorBytes = 8_192
+            }
+        );
+
+        if (result.ExitCode != 0)
+        {
+            return null;
+        }
+
+        var content = RedactRuntimeLogs(result.StdOutput);
+        if (result.StdOutputTruncated)
+        {
+            var newline = content.IndexOf('\n');
+            content = newline < 0 ? "" : content[(newline + 1)..];
+        }
+
+        content = content.TrimEnd();
+        var lineCount = content.Length == 0 ? 0 : content.Count(character => character == '\n') + 1;
+        return new RuntimeLogSnapshot(content, lineCount, result.StdOutputTruncated);
+    }
+
     public async Task StopContainerAsync(string connectionName, string containerName)
     {
         await commandRunner.RunAsync(
@@ -656,6 +807,42 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             labels.TryGetProperty(name, out var value) &&
             value.ValueKind == JsonValueKind.String &&
             string.Equals(value.GetString(), expected, StringComparison.Ordinal);
+    }
+
+    private static string? GetStringProperty(JsonElement? element, params string[] names)
+    {
+        if (element is not JsonElement value || value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var property in value.EnumerateObject())
+        {
+            if (!names.Any(name => string.Equals(name, property.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            return property.Value.ValueKind switch
+            {
+                JsonValueKind.String => property.Value.GetString(),
+                JsonValueKind.Number => property.Value.GetRawText(),
+                _ => null
+            };
+        }
+
+        return null;
+    }
+
+    private static string RedactRuntimeLogs(string output)
+    {
+        return Regex.Replace(
+            output,
+            @"(?im)\b(password|passwd|token|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)",
+            "$1=[REDACTED]",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(100)
+        );
     }
 
     private static void AddLabels(List<string> arguments, DeploymentMetadata metadata)

@@ -146,6 +146,18 @@ public sealed class DeploymentCompensationTests
             DeploymentMetadata metadata
         ) => Task.FromResult<VerifiedContainer?>(new VerifiedContainer("id", containerName, imageReference));
 
+        public Task<RuntimeWorkloadObservation?> ObserveWorkloadAsync(
+            string connectionName,
+            string containerName,
+            DeploymentMetadata metadata
+        ) => Task.FromResult<RuntimeWorkloadObservation?>(null);
+
+        public Task<RuntimeLogSnapshot?> ReadLogsAsync(
+            string connectionName,
+            string containerName,
+            DeploymentMetadata metadata
+        ) => Task.FromResult<RuntimeLogSnapshot?>(null);
+
         public Task StopContainerAsync(string connectionName, string containerName)
         {
             StoppedContainers.Add(containerName);

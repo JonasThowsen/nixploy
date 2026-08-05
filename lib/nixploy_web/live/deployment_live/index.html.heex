@@ -597,7 +597,7 @@
                     <h3 id="application-vitals-title" class="text-sm font-semibold">
                       Current vitals
                     </h3>
-                    <p class="text-xs text-base-content/45">Point-in-time runtime sample</p>
+                    <p class="text-xs text-base-content/45">Point-in-time worker observation</p>
                   </div>
                   <time class="font-mono text-[0.68rem] text-base-content/40">
                     {format_time(details.observed_at)}
@@ -675,6 +675,55 @@
                 </div>
               </section>
 
+              <% target_health = Map.get(details, :target_local_health) || %{} %>
+              <% public_health = Map.get(details, :public_health) || %{} %>
+              <section
+                id="remote-runtime-signals"
+                class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+              >
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Remote connection</p>
+                  <p class="mt-1 font-medium">{Map.get(details, :connection_state, "unknown")}</p>
+                  <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                    {Map.get(details, :target_user) || "—"}@{Map.get(details, :target_host) || "—"}:{Map.get(
+                      details,
+                      :target_port
+                    ) || "—"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Target-local health</p>
+                  <p class="mt-1 font-medium">
+                    {if target_health["healthy"], do: "healthy", else: "unhealthy / unavailable"}
+                  </p>
+                  <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                    {target_health["endpoint"] || "No worker observation"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Public HTTPS health</p>
+                  <p class="mt-1 font-medium">
+                    {if public_health["healthy"],
+                      do: "healthy",
+                      else: public_health["error"] || "unavailable"}
+                  </p>
+                  <p class="mt-1 font-mono text-xs text-base-content/45">
+                    {if public_health["status_code"],
+                      do: "HTTP #{public_health["status_code"]}",
+                      else: "No status"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4 sm:col-span-2 xl:col-span-3">
+                  <p class="np-field-label">Caddy ingress</p>
+                  <p class="mt-1 break-all font-mono text-xs">
+                    {Map.get(details, :caddy_route_id) || "route unavailable"} → {Map.get(
+                      details,
+                      :caddy_upstream
+                    ) || "upstream unavailable"}
+                  </p>
+                </div>
+              </section>
+
               <section class="grid gap-3 sm:grid-cols-2">
                 <div class="rounded-box border border-base-300 p-4">
                   <p class="np-field-label">Network I/O</p>
@@ -694,9 +743,19 @@
                       Latest 200 lines, bounded to 64 KiB
                     </p>
                   </div>
-                  <span class="font-mono text-xs text-base-content/45">
-                    {details.log_line_count || 0} lines
-                  </span>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs text-base-content/45">
+                      {details.log_line_count || 0} lines{if Map.get(details, :logs_truncated),
+                        do: " · truncated"}
+                    </span>
+                    <.button
+                      id="fetch-runtime-logs"
+                      phx-click="fetch_runtime_logs"
+                      class="btn-outline btn-xs min-h-9"
+                    >
+                      Fetch logs
+                    </.button>
+                  </div>
                 </div>
                 <div
                   :if={details.logs_error}
@@ -705,6 +764,18 @@
                 >
                   {workload_logs_error(details.logs_error)}
                 </div>
+                <p
+                  :if={Map.get(details, :log_status) == :pending}
+                  class="text-xs text-base-content/45"
+                >
+                  Worker is reading an exact managed container…
+                </p>
+                <p
+                  :if={Map.get(details, :logs_fetched_at)}
+                  class="text-xs text-base-content/45"
+                >
+                  Ephemeral snapshot fetched {format_time(Map.get(details, :logs_fetched_at))}; expires after 5 minutes.
+                </p>
                 <pre :if={is_binary(details.logs)} id="local-workload-logs" class="np-log-view"><code>{details.logs}</code></pre>
               </section>
 
@@ -731,6 +802,13 @@
                     <dt>Image</dt>
                     <dd class="break-all font-mono text-xs">
                       {details.image}<br />{details.image_id}
+                    </dd>
+                  </div>
+                  <div class="np-data-cell sm:col-span-2">
+                    <dt>Managed resource</dt>
+                    <dd class="break-all font-mono text-xs">
+                      {Map.get(details, :resource_key) || "—"}<br />{Map.get(details, :connection) ||
+                        "—"}
                     </dd>
                   </div>
                   <div class="np-data-cell sm:col-span-2">
