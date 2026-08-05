@@ -190,13 +190,21 @@ public sealed class PodmanServiceTests
     [Fact]
     public async Task LoadImageAsync_ParsesLoadedImageReference()
     {
-        var runner = new RecordingCommandRunner(new CommandRunResult(0, "Loaded image: localhost/app:latest\n", ""));
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "Loaded image: localhost/app:latest\n", ""),
+            new CommandRunResult(0, "[{\"Id\":\"sha256:abc123\"}]", "")
+        );
         var service = new PodmanService(runner);
 
         var image = await service.LoadImageAsync("connection", "result-image");
 
         Assert.Equal("localhost/app:latest", image?.Reference);
+        Assert.Equal("sha256:abc123", image?.Id);
         Assert.Equal(["--connection", "connection", "load", "-i", "result-image"], runner.Calls[0].Arguments);
+        Assert.Equal(
+            ["--connection", "connection", "inspect", "--type", "image", "localhost/app:latest"],
+            runner.Calls[1].Arguments
+        );
     }
 
     [Fact]
@@ -224,6 +232,7 @@ public sealed class PodmanServiceTests
         [{
           "Id":"abc123",
           "Name":"/nixploy-my-app-prod-blue",
+          "Image":"sha256:image123",
           "State":{"Running":true},
           "Config":{
             "Image":"localhost/app:latest",
@@ -257,6 +266,7 @@ public sealed class PodmanServiceTests
             "connection",
             "nixploy-my-app-prod-blue",
             "localhost/app:latest",
+            "sha256:image123",
             metadata
         );
 
@@ -274,6 +284,7 @@ public sealed class PodmanServiceTests
         [{
           "Id":"abc123",
           "Name":"nixploy-my-app-prod-blue",
+          "Image":"sha256:image123",
           "State":{"Running":true},
           "Config":{
             "Image":"localhost/app:latest",
@@ -307,6 +318,7 @@ public sealed class PodmanServiceTests
             "connection",
             "nixploy-my-app-prod-blue",
             "localhost/app:latest",
+            "sha256:image123",
             metadata
         );
 

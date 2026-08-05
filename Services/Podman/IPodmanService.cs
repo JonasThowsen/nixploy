@@ -38,6 +38,7 @@ public interface IPodmanService
         string connectionName,
         string containerName,
         string imageReference,
+        string imageId,
         DeploymentMetadata metadata
     );
 

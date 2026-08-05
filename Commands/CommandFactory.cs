@@ -209,7 +209,6 @@ public static class CommandFactory
             }
 
             Console.WriteLine($"Loading image onto target '{targetName}' using Podman connection '{podmanConnection}'...");
-            reporter.Stage("loading", "Loading the built image through the named remote connection");
 
             LoadedImage? loadedImage = await podmanService.LoadImageAsync(podmanConnection, imageOutputPath);
 
@@ -217,6 +216,16 @@ public static class CommandFactory
             {
                 return 1;
             }
+
+            reporter.Stage(
+                "loading",
+                "Loaded the built image and read back its immutable identity",
+                new Dictionary<string, object?>
+                {
+                    ["image_reference"] = loadedImage.Reference,
+                    ["image_id"] = loadedImage.Id
+                }
+            );
 
             if (target.Web is not null)
             {
@@ -226,6 +235,7 @@ public static class CommandFactory
                     target,
                     podmanConnection,
                     loadedImage.Reference,
+                    loadedImage.Id,
                     secretMounts,
                     metadata,
                     podmanService,
@@ -254,6 +264,7 @@ public static class CommandFactory
                 target,
                 podmanConnection,
                 loadedImage.Reference,
+                loadedImage.Id,
                 secretMounts,
                 metadata,
                 podmanService,
@@ -362,6 +373,7 @@ public static class CommandFactory
         NixployTarget target,
         string podmanConnection,
         string imageReference,
+        string imageId,
         IReadOnlyList<SecretMount> secretMounts,
         DeploymentMetadata metadata,
         IPodmanService podmanService,
@@ -479,6 +491,7 @@ public static class CommandFactory
             podmanConnection,
             newContainerName,
             imageReference,
+            imageId,
             metadata
         );
         if (verifiedContainer is null)
@@ -499,7 +512,8 @@ public static class CommandFactory
                 ["verified_upstream"] = $"127.0.0.1:{slotPort}",
                 ["container_name"] = verifiedContainer.Name,
                 ["container_id"] = verifiedContainer.Id,
-                ["image_reference"] = verifiedContainer.ImageReference
+                ["image_reference"] = verifiedContainer.ImageReference,
+                ["image_id"] = verifiedContainer.ImageId
             }
         );
 
@@ -543,6 +557,7 @@ public static class CommandFactory
         NixployTarget target,
         string podmanConnection,
         string imageReference,
+        string imageId,
         IReadOnlyList<SecretMount> secretMounts,
         DeploymentMetadata metadata,
         IPodmanService podmanService,
@@ -593,6 +608,7 @@ public static class CommandFactory
             podmanConnection,
             containerName,
             imageReference,
+            imageId,
             metadata
         );
         if (verifiedContainer is null)
@@ -608,7 +624,8 @@ public static class CommandFactory
             {
                 ["container_name"] = verifiedContainer.Name,
                 ["container_id"] = verifiedContainer.Id,
-                ["image_reference"] = verifiedContainer.ImageReference
+                ["image_reference"] = verifiedContainer.ImageReference,
+                ["image_id"] = verifiedContainer.ImageId
             }
         );
         Console.WriteLine("Deployment completed successfully.");

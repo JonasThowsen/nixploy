@@ -175,7 +175,41 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             return null;
         }
 
-        return new LoadedImage(imageReference);
+        var inspect = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "inspect", "--type", "image", imageReference],
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (inspect.ExitCode != 0)
+        {
+            Console.Error.WriteLine("Image loaded, but its immutable image ID could not be read back.");
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(inspect.StdOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Array ||
+                document.RootElement.GetArrayLength() != 1)
+            {
+                return null;
+            }
+
+            var imageId = document.RootElement[0].GetProperty("Id").GetString();
+            if (string.IsNullOrWhiteSpace(imageId))
+            {
+                return null;
+            }
+
+            return new LoadedImage(imageReference, imageId);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            Console.Error.WriteLine("Loaded image identity response was malformed.");
+            Console.Error.WriteLine(exception.Message);
+            return null;
+        }
     }
 
     public async Task<IReadOnlyList<SecretMount>?> InstallSecretsAsync(
@@ -320,6 +354,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         string connectionName,
         string containerName,
         string imageReference,
+        string imageId,
         DeploymentMetadata metadata
     )
     {
@@ -347,6 +382,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             var container = document.RootElement[0];
             var id = container.GetProperty("Id").GetString();
             var name = container.GetProperty("Name").GetString()?.TrimStart('/');
+            var observedImageId = container.GetProperty("Image").GetString();
             var state = container.GetProperty("State");
             var config = container.GetProperty("Config");
             var configuredImage = config.GetProperty("Image").GetString();
@@ -356,6 +392,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
                 string.Equals(name, containerName, StringComparison.Ordinal) &&
                 state.GetProperty("Running").GetBoolean() &&
                 string.Equals(configuredImage, imageReference, StringComparison.Ordinal) &&
+                string.Equals(observedImageId, imageId, StringComparison.Ordinal) &&
                 LabelEquals(labels, "io.nixploy.managed", "true") &&
                 LabelEquals(labels, "io.nixploy.project", metadata.Project) &&
                 LabelEquals(labels, "io.nixploy.target", metadata.Target) &&
@@ -371,7 +408,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
                 return null;
             }
 
-            return new VerifiedContainer(id!, name!, configuredImage!);
+            return new VerifiedContainer(id!, name!, configuredImage!, observedImageId!);
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
         {

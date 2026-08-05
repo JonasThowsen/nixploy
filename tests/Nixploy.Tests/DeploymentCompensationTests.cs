@@ -130,6 +130,7 @@ public sealed class DeploymentCompensationTests
             string connectionName,
             string containerName,
             string imageReference,
+            string imageId,
             DeploymentMetadata metadata
         ) => Task.FromResult<VerifiedContainer?>(new VerifiedContainer("id", containerName, imageReference));
 
