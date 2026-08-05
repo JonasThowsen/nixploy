@@ -51,6 +51,7 @@ let
       set -euo pipefail
       umask 0077
       : "''${DATABASE_URL:?DATABASE_URL is required}"
+      database_url="''${DATABASE_URL/#ecto:/postgresql:}"
       backup_dir=/var/lib/nixploy-backups
       timestamp=$(date -u +%Y%m%dT%H%M%SZ)
       partial="$backup_dir/nixploy-$timestamp.dump.partial"
@@ -59,7 +60,7 @@ let
       checksum="$backup_dir/nixploy-$timestamp.sha256"
       cleanup() { rm -f "$partial"; }
       trap cleanup EXIT
-      pg_dump --format=custom --no-owner --no-privileges --dbname="$DATABASE_URL" --file="$partial"
+      pg_dump --format=custom --no-owner --no-privileges --dbname="$database_url" --file="$partial"
       test -s "$partial"
       pg_restore --list "$partial" > "$manifest.partial"
       test -s "$manifest.partial"
