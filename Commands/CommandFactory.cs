@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace Nixploy.Cli;
 
@@ -508,17 +509,163 @@ public static class CommandFactory
             return 0;
         });
 
+        var statusCommand = CreateStatusCommand(commandRunner, configProvider, podmanService, caddyService);
+
         var root = new RootCommand("Nixploy")
         {
             Subcommands =
             {
                 deployCommand,
                 taskCommand,
+                statusCommand,
                 pruneCommand
             }
         };
 
         return root;
+    }
+
+    private static Command CreateStatusCommand(
+        ICommandRunner commandRunner,
+        INixployConfigProvider configProvider,
+        IPodmanService podmanService,
+        ICaddyService caddyService
+    )
+    {
+        var targetOption = new Option<string>("--target");
+        var sourceOption = new Option<string>("--source");
+        var revisionOption = new Option<string>("--git-revision");
+        var repositoryOption = new Option<string>("--repository-identity");
+        var digestOption = new Option<string>("--configuration-digest");
+        var operationOption = new Option<string>("--operation-id");
+        var resourceOption = new Option<string>("--resource-key");
+        var containerOption = new Option<string>("--container-name");
+        var imageOption = new Option<string>("--image-reference");
+        var imageIdOption = new Option<string>("--image-id");
+        var expectedPortOption = new Option<int?>("--expected-port");
+
+        var command = new Command("status", "Read exact managed remote deployment status")
+        {
+            Options =
+            {
+                targetOption,
+                sourceOption,
+                revisionOption,
+                repositoryOption,
+                digestOption,
+                operationOption,
+                resourceOption,
+                containerOption,
+                imageOption,
+                imageIdOption,
+                expectedPortOption
+            }
+        };
+
+        command.SetAction(async parseResult =>
+        {
+            var targetName = parseResult.GetValue(targetOption);
+            var containerName = parseResult.GetValue(containerOption);
+            var imageReference = parseResult.GetValue(imageOption);
+            var imageId = parseResult.GetValue(imageIdOption);
+            var expectedPort = parseResult.GetValue(expectedPortOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(sourceOption),
+                parseResult.GetValue(revisionOption),
+                parseResult.GetValue(repositoryOption),
+                parseResult.GetValue(digestOption),
+                parseResult.GetValue(operationOption),
+                parseResult.GetValue(resourceOption)
+            );
+
+            var protocol = Console.Out;
+            Console.SetOut(Console.Error);
+
+            try
+            {
+                if (!immutable.Success || string.IsNullOrWhiteSpace(targetName))
+                {
+                    Console.Error.WriteLine(immutable.Error ?? "Status identity is invalid.");
+                    return 1;
+                }
+
+                var config = await configProvider.GetConfigAsync(immutable.Source!);
+                if (!config.Targets.TryGetValue(targetName, out var target))
+                {
+                    return 1;
+                }
+
+                var metadata = CreateDeploymentMetadata(
+                    config.Project,
+                    targetName,
+                    immutable.RepositoryIdentity!,
+                    immutable.GitRevision!
+                ) with
+                {
+                    ConfigurationDigest = immutable.ConfigurationDigest!,
+                    OperationId = immutable.OperationId!,
+                    ResourceKey = immutable.ResourceKey!
+                };
+
+                if (ResourcePrefix(metadata.Project, metadata.ProjectId, targetName) != immutable.ResourceKey ||
+                    !await podmanService.EnsureConnectionAsync(immutable.ResourceKey!, targetName, target))
+                {
+                    return 1;
+                }
+
+                var connection = podmanService.GetConnectionName(immutable.ResourceKey!);
+                VerifiedContainer? container = null;
+                if (!string.IsNullOrWhiteSpace(containerName) &&
+                    !string.IsNullOrWhiteSpace(imageReference) &&
+                    !string.IsNullOrWhiteSpace(imageId))
+                {
+                    container = await podmanService.VerifyContainerAsync(
+                        connection,
+                        containerName,
+                        imageReference,
+                        imageId,
+                        metadata
+                    );
+                }
+
+                ActivePortResult ingress = target.Web is null
+                    ? new ActivePortResult(true, null)
+                    : await caddyService.GetActivePortAsync(immutable.ResourceKey!, target);
+
+                var healthy = expectedPort is int port && target.Web is not null
+                    ? await caddyService.CheckHealthAsync(target, port)
+                    : container is not null;
+
+                protocol.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["schema"] = "nixploy.status/v1",
+                    ["operation_id"] = immutable.OperationId,
+                    ["resource_key"] = immutable.ResourceKey,
+                    ["container_verified"] = container is not null,
+                    ["container_id"] = container?.Id,
+                    ["image_id"] = container?.ImageId,
+                    ["ingress_available"] = ingress.Success,
+                    ["active_port"] = ingress.Port,
+                    ["expected_port"] = expectedPort,
+                    ["healthy"] = healthy,
+                    ["converged"] = container is not null && ingress.Success &&
+                        (expectedPort is null || ingress.Port == expectedPort) && healthy
+                }));
+                protocol.Flush();
+                return 0;
+            }
+            catch (InvalidOperationException exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+            finally
+            {
+                Console.SetOut(protocol);
+            }
+        });
+
+        return command;
     }
 
     private static async Task<bool> DeployWebTargetAsync(

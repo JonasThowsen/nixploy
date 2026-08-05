@@ -6,7 +6,7 @@ defmodule Nixploy.Deployments.NativeWorker do
     max_attempts: 1,
     unique: [period: :infinity, fields: [:args], states: :incomplete]
 
-  alias Nixploy.Deployments.{NativeDeployment, NativeExecutor}
+  alias Nixploy.Deployments.{NativeDeployment, NativeExecutor, RemoteCliExecutor, RemoteStatus}
   alias Nixploy.NativeDeployments
 
   @impl Oban.Worker
@@ -21,7 +21,7 @@ defmodule Nixploy.Deployments.NativeWorker do
         cancel(id)
 
       true ->
-        execute(deployment)
+        execute_or_reconcile(deployment)
     end
   rescue
     error ->
@@ -29,7 +29,42 @@ defmodule Nixploy.Deployments.NativeWorker do
       {:error, Exception.message(error)}
   end
 
-  defp execute(deployment) do
+  defp execute_or_reconcile(deployment) do
+    executor = Application.get_env(:nixploy, :native_deployment_executor, NativeExecutor)
+
+    if executor == RemoteCliExecutor and deployment.state != :queued do
+      reconcile(deployment)
+    else
+      execute(deployment, executor)
+    end
+  end
+
+  defp reconcile(deployment) do
+    status = Application.get_env(:nixploy, :remote_status_probe, RemoteStatus)
+
+    case status.observe(deployment) do
+      {:ok, %{"converged" => true} = observation} ->
+        case NativeDeployments.reconcile_success(deployment.id, observation) do
+          {:ok, _deployment, _event} -> :ok
+          {:error, reason} -> {:error, inspect(reason)}
+        end
+
+      {:ok, observation} ->
+        _ =
+          NativeDeployments.fail(
+            deployment.id,
+            {:interrupted_remote_state, safe_observation(observation)}
+          )
+
+        :ok
+
+      {:error, reason} ->
+        _ = NativeDeployments.fail(deployment.id, {:remote_reconciliation_failed, reason})
+        :ok
+    end
+  end
+
+  defp execute(deployment, executor) do
     stage = fn state, message, attrs ->
       case NativeDeployments.transition(deployment.id, state, message, attrs) do
         {:ok, _deployment, _event} -> :ok
@@ -38,8 +73,6 @@ defmodule Nixploy.Deployments.NativeWorker do
     end
 
     cancelled? = fn -> NativeDeployments.cancellation_requested?(deployment.id) end
-
-    executor = Application.get_env(:nixploy, :native_deployment_executor, NativeExecutor)
 
     case executor.deploy(deployment, stage: stage, cancelled?: cancelled?) do
       :ok ->
@@ -59,9 +92,17 @@ defmodule Nixploy.Deployments.NativeWorker do
     end
   end
 
-  # TODO(tracer): Slice 3.3 must reconcile a worker process killed between an
-  # external side effect and its persisted transition. Cooperative cancellation
-  # now completes bounded Caddy preservation before it reaches this boundary.
+  defp safe_observation(observation) do
+    Map.take(observation, [
+      "container_verified",
+      "ingress_available",
+      "active_port",
+      "expected_port",
+      "healthy",
+      "converged"
+    ])
+  end
+
   defp cancel(id) do
     case NativeDeployments.transition(
            id,

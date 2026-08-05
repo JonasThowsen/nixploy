@@ -80,6 +80,21 @@ defmodule Nixploy.NativeDeploymentsTest do
     end
   end
 
+  defmodule RemoteStatusConverged do
+    def observe(deployment) do
+      {:ok,
+       %{
+         "converged" => true,
+         "container_id" => "reconciled-container",
+         "image_id" => deployment.image_id,
+         "active_port" => deployment.selected_port,
+         "container_verified" => true,
+         "ingress_available" => true,
+         "healthy" => true
+       }}
+    end
+  end
+
   defmodule GreenExecutorStub do
     def deploy(_deployment, opts) do
       stage = Keyword.fetch!(opts, :stage)
@@ -182,6 +197,50 @@ defmodule Nixploy.NativeDeploymentsTest do
              "verifying",
              "succeeded"
            ]
+  end
+
+  test "reconciles an interrupted remote effect from independent identity without replaying mutation" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+
+    :ok = transition(deployment.id, :preparing, %{})
+    :ok = transition(deployment.id, :building, %{})
+
+    :ok =
+      transition(deployment.id, :loading, %{
+        image_reference: "fixture:latest",
+        image_id: "sha256:image"
+      })
+
+    :ok =
+      transition(deployment.id, :preparing_slot, %{selected_slot: "blue", selected_port: 18_080})
+
+    :ok = transition(deployment.id, :starting, %{container_name: "fixture-blue"})
+    :ok = transition(deployment.id, :health_checking, %{})
+    :ok = transition(deployment.id, :switching, %{})
+    :ok = transition(deployment.id, :verifying, %{})
+
+    old_status = Application.get_env(:nixploy, :remote_status_probe)
+
+    Application.put_env(
+      :nixploy,
+      :native_deployment_executor,
+      Nixploy.Deployments.RemoteCliExecutor
+    )
+
+    Application.put_env(:nixploy, :remote_status_probe, RemoteStatusConverged)
+    on_exit(fn -> restore_env(:remote_status_probe, old_status) end)
+
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: deployment.id})
+    reconciled = NativeDeployments.get_deployment!(deployment.id)
+    assert reconciled.state == :succeeded
+    assert reconciled.container_id == "reconciled-container"
+
+    assert Enum.any?(
+             NativeDeployments.list_events(deployment.id),
+             &(&1.stage == "reconciliation")
+           )
   end
 
   test "persists concise credential and pre-start stages without values" do
@@ -356,6 +415,13 @@ defmodule Nixploy.NativeDeploymentsTest do
         }
       }
     }
+  end
+
+  defp transition(id, state, attrs) do
+    assert {:ok, _deployment, _event} =
+             NativeDeployments.transition(id, state, Atom.to_string(state), attrs)
+
+    :ok
   end
 
   defp ok(output),

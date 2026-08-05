@@ -263,6 +263,75 @@ defmodule Nixploy.NativeDeployments do
     end
   end
 
+  def reconcile_success(id, observation) when is_map(observation) do
+    now = DateTime.utc_now()
+
+    result =
+      Multi.new()
+      |> Multi.run(:deployment, fn repo, _changes ->
+        deployment = locked(repo, id)
+
+        cond do
+          NativeDeployment.terminal?(deployment) ->
+            {:error, {:terminal, deployment.state}}
+
+          observation["converged"] != true ->
+            {:error, :remote_state_not_converged}
+
+          true ->
+            attrs = %{
+              state: :succeeded,
+              current_stage: :succeeded,
+              container_id: observation["container_id"] || deployment.container_id,
+              image_id: observation["image_id"] || deployment.image_id,
+              verified_upstream:
+                if(is_integer(observation["active_port"]),
+                  do: "127.0.0.1:#{observation["active_port"]}",
+                  else: deployment.verified_upstream
+                ),
+              started_at: deployment.started_at || now,
+              finished_at: now
+            }
+
+            deployment |> NativeDeployment.transition_changeset(attrs) |> repo.update()
+        end
+      end)
+      |> Multi.insert(:event, fn %{deployment: deployment} ->
+        NativeEvent.changeset(%NativeEvent{}, %{
+          native_deployment_id: deployment.id,
+          stage: "reconciliation",
+          level: "info",
+          message: "Reconciled interrupted worker from independent remote identity",
+          metadata: %{
+            "container_id" => observation["container_id"],
+            "image_id" => observation["image_id"],
+            "active_port" => observation["active_port"]
+          },
+          inserted_at: now
+        })
+      end)
+      |> Multi.insert(:audit, fn %{deployment: deployment} ->
+        Audit.changeset(
+          deployment.requested_by_operator_id,
+          :native_deployment_reconciled,
+          :native_deployment,
+          deployment.id,
+          outcome: :succeeded,
+          metadata: terminal_audit_metadata(deployment)
+        )
+      end)
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{deployment: deployment, event: event}} ->
+        publish(id)
+        {:ok, deployment, event}
+
+      {:error, _step, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
   def fail(id, reason) do
     failure = Nixploy.Deployments.NativeExecutor.failure(reason)
 
