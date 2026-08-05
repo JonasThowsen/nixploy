@@ -188,10 +188,11 @@
   <section :if={@live_action == :machine} id="machine-health-page" class="np-page-stack">
     <header class="np-page-header">
       <div>
-        <p class="np-kicker">Host</p>
+        <p class="np-kicker">Control plane</p>
         <h1 class="np-page-title">Machine health</h1>
         <p class="np-page-description">
-          CPU, memory, storage, load, and runtime capacity for this server.
+          Build capacity, database readiness, and worker health for this control-plane host.
+          Application runtime belongs to positively identified remote targets.
         </p>
       </div>
       <.button
@@ -353,13 +354,15 @@
         <section class="np-panel overflow-hidden">
           <div class="np-panel-header">
             <div>
-              <h2 class="np-panel-title">Local runtime</h2>
-              <p class="np-panel-description">Application capacity visible to nixploy.</p>
+              <h2 class="np-panel-title">Runtime boundary</h2>
+              <p class="np-panel-description">
+                This host builds and coordinates; local Podman is recovery-only.
+              </p>
             </div>
           </div>
           <dl class="grid gap-px bg-base-300 sm:grid-cols-2">
             <div class="np-data-cell">
-              <dt>Podman</dt>
+              <dt>Legacy local adapter</dt>
               <dd class="flex items-center gap-2">
                 <span class={[
                   "np-status-dot",
@@ -372,11 +375,11 @@
               </dd>
             </div>
             <div class="np-data-cell">
-              <dt>Applications</dt>
-              <dd>
-                {running_workload_count(@local_inventory)} running of {managed_workload_count(
-                  @local_inventory
-                )}
+              <dt>Control-plane mode</dt>
+              <dd id="runtime-mode" class="font-mono text-xs">
+                {if @runtime_mode == :remote_control_plane,
+                  do: "remote targets",
+                  else: "local recovery"}
               </dd>
             </div>
             <div class="np-data-cell">

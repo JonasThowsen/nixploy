@@ -7,7 +7,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   alias Nixploy.Deployments.{Deployment, DeploymentInput, LocalStoreInput}
   alias Nixploy.Fleet
   alias Nixploy.Fleet.Target
-  alias Nixploy.{LocalHost, MachineHealth, NativeDeployments, Notifications, Operations}
+  alias Nixploy.{LocalHost, MachineHealth, NativeDeployments, Notifications, Operations, RuntimeMode}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -16,6 +16,7 @@ defmodule NixployWeb.DeploymentLive.Index do
     socket =
       socket
       |> assign(:page_title, page_title(socket.assigns.live_action))
+      |> assign(:runtime_mode, RuntimeMode.current())
       |> assign(:local_inventory, nil)
       |> assign(:local_inventory_error, nil)
       |> assign(:local_inventory_status, :loading)

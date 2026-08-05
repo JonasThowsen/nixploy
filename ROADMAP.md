@@ -13,6 +13,13 @@ calendar estimates or broad horizontal layers. Each slice must cross the real
 boundaries needed to prove useful behavior, pass its acceptance checks, and be
 committed and deployed independently before the next slice broadens it.
 
+> **V1 topology correction:** the control plane and Nix builder move to
+> `netcup-dev`; application Podman and Caddy remain on positively identified
+> remote targets. Unqualified local Podman is recovery-only and must not be
+> presented as production application state. The ordered local-repository,
+> remote-target completion slices below supersede historical “native local”
+> wording while retaining its durable release, event, rollback, and audit facts.
+
 ## Product direction
 
 nixploy is a self-hosted operational control plane for applications deployed by
@@ -158,10 +165,10 @@ legacy C# tests when that adapter changes.
 
 # V1 completion — current delivery order
 
-The production facts recorded in the historical milestones below remain valid.
-They are evidence, not the current implementation order. V1 now completes the
-native local control plane without depending on GitHub delivery, OAuth, Ash,
-agents, MCP, or a generic plugin system.
+The production facts recorded in the historical milestones below are historical
+evidence, not current runtime claims or the implementation order. V1 now
+completes the local-repository, remote-target control plane without depending on
+GitHub delivery, OAuth, Ash, agents, MCP, or a generic plugin system.
 
 Work proceeds as eight independently verified tracer slices:
 

@@ -13,6 +13,12 @@ worker? = role in [:worker, :all]
 
 config :nixploy, role: role
 
+runtime_mode =
+  System.get_env("NIXPLOY_RUNTIME_MODE", "local_recovery")
+  |> Nixploy.RuntimeMode.parse!()
+
+config :nixploy, runtime_mode: runtime_mode
+
 managed_applications =
   System.get_env("NIXPLOY_MANAGED_APPLICATIONS_JSON", "{}")
   |> Jason.decode!()
