@@ -135,6 +135,9 @@ defmodule Nixploy.Deployments.MainSource do
   def error_message(:workspace_unavailable),
     do: "The worker could not create a private preparation workspace."
 
+  def error_message({:release_already_prepared, existing_id}),
+    do: "This exact main commit is already available as release #{existing_id}."
+
   def error_message({:project_mismatch, expected, _actual}),
     do: "The flake project does not match managed application #{expected}."
 

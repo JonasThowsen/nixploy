@@ -2,7 +2,7 @@ defmodule Nixploy.ReleasePreparationsTest do
   use Nixploy.DataCase, async: false
   use Oban.Testing, repo: Nixploy.Repo
 
-  alias Nixploy.{Deployments, Fixtures}
+  alias Nixploy.{Deployments, Fixtures, Repo}
   alias Nixploy.Deployments.MainPreparationWorker
 
   defmodule SourceStub do
@@ -109,9 +109,37 @@ defmodule Nixploy.ReleasePreparationsTest do
              "queued",
              "resolving",
              "resolved",
-             "fetching",
+             "snapshotting",
              "staged"
            ]
+  end
+
+  test "concurrent preparation requests converge to the one active operation" do
+    operator = Fixtures.operator_fixture()
+
+    assert {:ok, first, first_job} = Deployments.prepare_main("fixture", operator: operator)
+    assert {:ok, second, second_job} = Deployments.prepare_main("fixture", operator: operator)
+
+    assert second.id == first.id
+    assert second_job.id == first_job.id
+    assert Repo.aggregate(Oban.Job, :count) == 1
+    assert Enum.map(Deployments.list_input_events(first.id), & &1.stage) == ["queued"]
+  end
+
+  test "a duplicate exact commit returns a bounded existing-release result without materializing twice" do
+    operator = Fixtures.operator_fixture()
+    assert {:ok, first, _job} = Deployments.prepare_main("fixture", operator: operator)
+    assert :ok = perform(first.id)
+    assert_received {:materialized, _revision, "production"}
+
+    assert {:ok, duplicate, _job} = Deployments.prepare_main("fixture", operator: operator)
+    assert :ok = perform(duplicate.id)
+
+    refute_received {:materialized, _revision, "production"}
+    duplicate = Deployments.get_deployment_input!(duplicate.id)
+    assert duplicate.state == :failed
+    assert duplicate.failure["code"] == "release_already_prepared"
+    assert duplicate.failure["message"] =~ first.id
   end
 
   test "rejects an application identity outside the trusted map" do
@@ -121,6 +149,10 @@ defmodule Nixploy.ReleasePreparationsTest do
              Deployments.prepare_main("other", operator: operator)
 
     assert Deployments.list_deployment_inputs() == []
+  end
+
+  defp perform(id) do
+    MainPreparationWorker.perform(%Oban.Job{args: %{"deployment_input_id" => id}})
   end
 
   defp restore(key, nil), do: Application.delete_env(:nixploy, key)

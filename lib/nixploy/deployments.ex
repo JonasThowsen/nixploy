@@ -114,51 +114,104 @@ defmodule Nixploy.Deployments do
     now = now()
 
     with {:ok, application} <- ManagedApplications.fetch(application_key) do
-      result =
-        Multi.new()
-        |> Multi.insert(
-          :deployment_input,
-          DeploymentInput.create_main_changeset(%DeploymentInput{}, %{
-            input_kind: :git_main,
-            registration_channel: :operator,
-            application_key: application.key,
-            source_repository: application.repository_identity,
-            source_ref: ManagedApplications.source_ref(),
-            repository_subdirectory: application.subdirectory,
-            selected_target: application.target,
-            requested_by_operator_id: operator_id(operator),
-            requested_at: now,
-            started_at: now
-          })
-        )
-        |> Multi.insert(:event, fn %{deployment_input: input} ->
-          input_event_changeset(input.id, "queued", "Main preparation queued", now)
-        end)
-        |> Multi.insert(:audit, fn %{deployment_input: input} ->
-          Audit.changeset(operator, :main_preparation_requested, :deployment_input, input.id,
-            outcome: :requested,
-            metadata: %{
-              "application_key" => application.key,
-              "repository" => application.repository_identity,
-              "source_ref" => ManagedApplications.source_ref(),
-              "target" => application.target
-            }
-          )
-        end)
-        |> Oban.insert(:job, fn %{deployment_input: input} ->
-          worker.new(%{deployment_input_id: input.id})
-        end)
-        |> Repo.transaction()
+      case active_main_preparation(application.key, application.target) do
+        %DeploymentInput{} = input ->
+          {:ok, Repo.preload(input, :requested_by_operator), preparation_job(input.id)}
 
-      case result do
-        {:ok, %{deployment_input: input, job: job}} ->
-          publish(input.id)
-          {:ok, Repo.preload(input, :requested_by_operator), job}
-
-        {:error, _operation, reason, _changes} ->
-          {:error, reason}
+        nil ->
+          insert_main_preparation(application, operator, worker, now)
       end
     end
+  end
+
+  def existing_main_release(%DeploymentInput{} = input) do
+    DeploymentInput
+    |> where(
+      [candidate],
+      candidate.id != ^input.id and candidate.input_kind == :git_main and
+        candidate.application_key == ^input.application_key and
+        candidate.source_revision == ^input.source_revision and
+        candidate.selected_target == ^input.selected_target and candidate.state == :staged
+    )
+    |> order_by([candidate], desc: candidate.finished_at)
+    |> limit(1)
+    |> preload(:requested_by_operator)
+    |> Repo.one()
+  end
+
+  defp insert_main_preparation(application, operator, worker, now) do
+    result =
+      Multi.new()
+      |> Multi.insert(
+        :deployment_input,
+        DeploymentInput.create_main_changeset(%DeploymentInput{}, %{
+          input_kind: :git_main,
+          registration_channel: :operator,
+          application_key: application.key,
+          source_repository: application.repository_identity,
+          source_ref: ManagedApplications.source_ref(),
+          repository_subdirectory: application.subdirectory,
+          selected_target: application.target,
+          requested_by_operator_id: operator_id(operator),
+          requested_at: now,
+          started_at: now
+        })
+      )
+      |> Multi.insert(:event, fn %{deployment_input: input} ->
+        input_event_changeset(input.id, "queued", "Main preparation queued", now)
+      end)
+      |> Multi.insert(:audit, fn %{deployment_input: input} ->
+        Audit.changeset(operator, :main_preparation_requested, :deployment_input, input.id,
+          outcome: :requested,
+          metadata: %{
+            "application_key" => application.key,
+            "repository" => application.repository_identity,
+            "source_ref" => ManagedApplications.source_ref(),
+            "target" => application.target
+          }
+        )
+      end)
+      |> Oban.insert(:job, fn %{deployment_input: input} ->
+        worker.new(%{deployment_input_id: input.id})
+      end)
+      |> Repo.transaction()
+
+    case result do
+      {:ok, %{deployment_input: input, job: job}} ->
+        publish(input.id)
+        {:ok, Repo.preload(input, :requested_by_operator), job}
+
+      {:error, :deployment_input, %Ecto.Changeset{} = changeset, _changes} ->
+        if constraint?(changeset, "one_active_main_preparation_per_application_target") do
+          input = active_main_preparation(application.key, application.target)
+          {:ok, Repo.preload(input, :requested_by_operator), preparation_job(input.id)}
+        else
+          {:error, changeset}
+        end
+
+      {:error, _operation, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  defp active_main_preparation(application_key, target) do
+    DeploymentInput
+    |> where(
+      [input],
+      input.input_kind == :git_main and input.application_key == ^application_key and
+        input.selected_target == ^target and input.state == :staging
+    )
+    |> order_by([input], asc: input.inserted_at)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp preparation_job(input_id) do
+    Oban.Job
+    |> where([job], fragment("?->>'deployment_input_id' = ?", job.args, ^input_id))
+    |> order_by([job], desc: job.id)
+    |> limit(1)
+    |> Repo.one()
   end
 
   def list_input_events(input_id) do
@@ -708,6 +761,10 @@ defmodule Nixploy.Deployments do
       probe when is_function(probe, 1) -> probe.(store_path)
       module -> module.probe(store_path, opts)
     end
+  end
+
+  defp constraint?(changeset, name) do
+    Enum.any?(changeset.constraints, &(&1.constraint_name == name))
   end
 
   defp attr(attrs, key) when is_map(attrs),

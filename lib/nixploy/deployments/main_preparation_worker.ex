@@ -28,16 +28,26 @@ defmodule Nixploy.Deployments.MainPreparationWorker do
     source = Application.get_env(:nixploy, :main_source, Nixploy.Deployments.MainSource)
 
     with {:ok, application} <- ManagedApplications.fetch(input.application_key),
-         :ok <- progress(input.id, "resolving", "Resolving exact refs/heads/main"),
+         :ok <- progress(input.id, "resolving", "Resolving exact local refs/heads/main"),
          {:ok, oid} <- source.resolve_main(application, source_opts(input.id)),
-         {:ok, resolved} <- Deployments.resolve_main_input(input.id, oid),
-         :ok <- progress(input.id, "fetching", "Fetching the persisted Git object"),
-         {:ok, result} <- source.materialize(resolved, application, source_opts(input.id)),
-         {:ok, _staged} <- Deployments.complete_main_preparation(input.id, result) do
-      :ok
+         {:ok, resolved} <- Deployments.resolve_main_input(input.id, oid) do
+      case Deployments.existing_main_release(resolved) do
+        nil -> materialize(resolved, application, source)
+        existing -> fail(input.id, {:release_already_prepared, existing.id})
+      end
     else
       {:error, %DeploymentInput{state: :failed}} -> :ok
       {:error, reason} -> fail(input.id, reason)
+    end
+  end
+
+  defp materialize(resolved, application, source) do
+    with :ok <- progress(resolved.id, "snapshotting", "Copying the persisted local Git object"),
+         {:ok, result} <- source.materialize(resolved, application, source_opts(resolved.id)),
+         {:ok, _staged} <- Deployments.complete_main_preparation(resolved.id, result) do
+      :ok
+    else
+      {:error, reason} -> fail(resolved.id, reason)
     end
   end
 

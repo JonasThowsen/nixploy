@@ -101,6 +101,9 @@ defmodule Nixploy.Deployments.DeploymentInput do
     |> validate_length(:selected_target, max: 255)
     |> assoc_constraint(:requested_by_operator)
     |> check_constraint(:input_kind, name: :valid_direct_main_provenance)
+    |> unique_constraint([:application_key, :selected_target],
+      name: :one_active_main_preparation_per_application_target
+    )
   end
 
   @doc false
