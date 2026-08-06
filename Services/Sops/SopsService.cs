@@ -4,7 +4,8 @@ namespace Nixploy.Cli;
 
 public sealed class SopsService(
     ICommandRunner commandRunner,
-    Func<string?>? ageKeyFile = null
+    Func<string?>? ageKeyFile = null,
+    Func<string, AgeIdentityFileMetadata>? ageIdentityMetadata = null
 ) : ISopsService
 {
     public async Task<IReadOnlyList<Secret>> LoadSecretsAsync(NixployTarget target)
@@ -57,7 +58,7 @@ public sealed class SopsService(
         return [.. secrets.Values.Select(source => source.Secret)];
     }
 
-    private static string RequirePrivateAgeKeyFile(string? path)
+    private string RequirePrivateAgeKeyFile(string? path)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
         {
@@ -66,31 +67,68 @@ public sealed class SopsService(
             );
         }
 
-        var info = new FileInfo(path);
-        if (!info.Exists)
+        var metadata = (ageIdentityMetadata ?? AgeIdentityFileMetadata.Inspect)(path);
+
+        if (!metadata.Exists)
         {
             throw new InvalidOperationException("The configured worker age identity file does not exist.");
         }
 
+        if (!metadata.IsRegularFile || metadata.HasSymlinkComponent)
+        {
+            throw new InvalidOperationException(
+                "The configured worker age identity must be a regular file without symbolic-link components."
+            );
+        }
+
+        if (!metadata.IsReadable)
+        {
+            throw new InvalidOperationException(
+                "The configured worker age identity file is not readable by the worker."
+            );
+        }
+
         if (!OperatingSystem.IsWindows())
         {
-            var exposed = info.UnixFileMode &
-                (UnixFileMode.GroupRead |
-                 UnixFileMode.GroupWrite |
+            var forbidden = metadata.Mode &
+                (UnixFileMode.GroupWrite |
                  UnixFileMode.GroupExecute |
                  UnixFileMode.OtherRead |
                  UnixFileMode.OtherWrite |
                  UnixFileMode.OtherExecute);
 
-            if (exposed != 0)
+            if (forbidden != 0)
             {
                 throw new InvalidOperationException(
-                    "The configured worker age identity file must not be accessible by group or other users."
+                    "The configured worker age identity file has unsafe group or other permissions."
+                );
+            }
+
+            if (metadata.Mode.HasFlag(UnixFileMode.GroupRead) &&
+                (metadata.OwnerUserId != 0 ||
+                 metadata.Mode != (UnixFileMode.UserRead | UnixFileMode.GroupRead) ||
+                 !IsSystemdCredentialPath(metadata.FullPath)))
+            {
+                throw new InvalidOperationException(
+                    "A group-readable worker age identity is allowed only for a root-owned read-only systemd credential."
                 );
             }
         }
 
-        return info.FullName;
+        return metadata.FullPath;
+    }
+
+    private static bool IsSystemdCredentialPath(string fullPath)
+    {
+        const string credentialsRoot = "/run/credentials";
+        var canonicalPath = Path.GetFullPath(fullPath);
+        var relative = Path.GetRelativePath(credentialsRoot, canonicalPath);
+        var parts = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        return parts.Length == 2 &&
+            parts.All(part => part is not "." and not "..") &&
+            !string.IsNullOrWhiteSpace(parts[0]) &&
+            !string.IsNullOrWhiteSpace(parts[1]);
     }
 
     private static List<Secret> ParseDotEnv(string content)
