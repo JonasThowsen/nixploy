@@ -871,6 +871,7 @@
               Review and deploy latest
             </.link>
             <.button
+              :if={is_nil(latest) || latest.registration_channel != :ci}
               id={"prepare-main-#{application.key}"}
               phx-click="prepare_main"
               phx-value-application={application.key}
