@@ -13,6 +13,14 @@ worker? = role in [:worker, :all]
 
 config :nixploy, role: role
 
+state_directory = System.get_env("STATE_DIRECTORY")
+
+if worker? and is_binary(state_directory) do
+  config :nixploy,
+    preparation_workspace_root: Path.join(state_directory, "preparations"),
+    operation_workspace_root: Path.join(state_directory, "operations")
+end
+
 runtime_mode =
   System.get_env("NIXPLOY_RUNTIME_MODE", "local_recovery")
   |> Nixploy.RuntimeMode.parse!()
