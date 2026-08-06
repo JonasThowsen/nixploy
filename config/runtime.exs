@@ -15,10 +15,18 @@ config :nixploy, role: role
 
 state_directory = System.get_env("STATE_DIRECTORY")
 
-if worker? and is_binary(state_directory) do
-  config :nixploy,
-    preparation_workspace_root: Path.join(state_directory, "preparations"),
-    operation_workspace_root: Path.join(state_directory, "operations")
+if is_binary(state_directory) do
+  if web? do
+    config :nixploy,
+      release_registration_workspace_root: Path.join(state_directory, "release-registration")
+  end
+
+  if worker? do
+    config :nixploy,
+      preparation_workspace_root: Path.join(state_directory, "preparations"),
+      operation_workspace_root: Path.join(state_directory, "operations"),
+      release_gc_root_directory: Path.join(state_directory, "gcroots/releases")
+  end
 end
 
 runtime_mode =
