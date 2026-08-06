@@ -47,7 +47,7 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
         _operation -> 0
       end,
       if(payload["runtime_mode"] == "remote_control_plane", do: 1, else: 0),
-      if(payload["source_kind"] == "git_main", do: 1, else: 0),
+      if(trusted_source?(input), do: 1, else: 0),
       if(resource_key_valid?(resource_key), do: 1, else: 0),
       if(immutable_identity_valid?(payload), do: 1, else: 0),
       if(plan_valid?(operation, fresh_plan, deployment, resource_key), do: 1, else: 0)
@@ -131,6 +131,22 @@ defmodule Nixploy.Deployments.DeploymentPolicy do
       {:error, _reason} -> {:error, :policy_component_unavailable}
     end
   end
+
+  defp trusted_source?(%{input_kind: :git_main}), do: true
+
+  defp trusted_source?(%{
+         input_kind: :local_store,
+         registration_channel: :ci,
+         source_repository: repository,
+         source_revision: revision,
+         nar_hash: nar_hash
+       }) do
+    is_binary(repository) and repository != "" and is_binary(revision) and
+      Regex.match?(@revision, revision) and is_binary(nar_hash) and
+      String.starts_with?(nar_hash, "sha256-")
+  end
+
+  defp trusted_source?(_input), do: false
 
   defp immutable_identity_valid?(payload) do
     is_binary(payload["store_path"]) and String.starts_with?(payload["store_path"], "/nix/store/") and

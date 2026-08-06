@@ -55,6 +55,48 @@ defmodule Nixploy.Deployments.DeploymentPolicyTest do
     refute "--env" in command.args
   end
 
+  test "trusts validated CI NAR inputs but rejects operator local-store inputs" do
+    parent = self()
+
+    execute = fn command, _opts ->
+      send(parent, command.args)
+      decision = if Enum.at(command.args, -4) == "1", do: "1\n", else: "0\n"
+      {:ok, %Result{exit_status: 0, output_tail: decision, output_truncated?: false}}
+    end
+
+    base = [
+      execute: execute,
+      component: "/nix/store/policy/deployment-policy.wasm",
+      wasmtime: "/nix/store/wasmtime/bin/wasmtime",
+      read: fn _path -> {:ok, "wasm-component"} end,
+      runtime_mode: :remote_control_plane,
+      mode: :enforce,
+      plan: plan()
+    ]
+
+    ci_input = %{
+      deployment().deployment_input
+      | input_kind: :local_store,
+        registration_channel: :ci,
+        source_repository: "owner/fixture",
+        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    }
+
+    assert {:ok, %{allow?: true}} =
+             DeploymentPolicy.evaluate(%{deployment() | deployment_input: ci_input}, base)
+
+    assert_receive ci_args
+    assert Enum.at(ci_args, -4) == "1"
+
+    operator_input = %{ci_input | registration_channel: :operator}
+
+    assert {:error, {:policy_denied, %{allow?: false}}} =
+             DeploymentPolicy.evaluate(%{deployment() | deployment_input: operator_input}, base)
+
+    assert_receive operator_args
+    assert Enum.at(operator_args, -4) == "0"
+  end
+
   test "records deny evidence in shadow mode and fails closed in enforce mode" do
     execute = fn _command, _opts ->
       {:ok, %Result{exit_status: 0, output_tail: "0\n", output_truncated?: false}}
