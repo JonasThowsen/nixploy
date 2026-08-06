@@ -490,27 +490,36 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   def application_releases(_inputs, nil, _deployments), do: []
 
-  def application_releases(inputs, inventory, deployments) do
+  def application_releases(inputs, inventory, _deployments) do
     projects = if inventory, do: managed_projects(inventory), else: MapSet.new()
 
-    latest_states =
-      Enum.reduce(deployments, %{}, fn deployment, states ->
-        Map.put_new(states, deployment.deployment_input_id, deployment.state)
-      end)
-
     Enum.filter(inputs, fn input ->
-      (input.input_kind == :git_main or
-         MapSet.member?(projects, input.derived_snapshot["project"])) and
-        latest_states[input.id] != :failed
+      input.state == :staged and
+        (input.input_kind == :git_main or
+           MapSet.member?(projects, input.derived_snapshot["project"]))
     end)
   end
 
   def application_inputs(inputs, application_key) do
-    Enum.filter(inputs, &(&1.application_key == application_key))
+    Enum.filter(inputs, &input_for_application?(&1, application_key))
   end
 
   def latest_application_input(inputs, application_key) do
-    Enum.find(inputs, &(&1.application_key == application_key))
+    Enum.find(inputs, &input_for_application?(&1, application_key))
+  end
+
+  defp input_for_application?(input, application_key) do
+    case ManagedApplications.fetch(application_key) do
+      {:ok, application} ->
+        input.application_key == application_key or
+          (input.registration_channel == :ci and
+             input.source_repository == application.repository_identity and
+             input.selected_target == application.target and
+             input.derived_snapshot["project"] == application.project)
+
+      {:error, _reason} ->
+        false
+    end
   end
 
   defp managed_projects(inventory) do

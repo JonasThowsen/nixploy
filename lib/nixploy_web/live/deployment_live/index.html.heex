@@ -854,28 +854,41 @@
               </dd>
             </div>
             <div>
-              <dt class="np-field-label">Last main resolution</dt>
+              <dt class="np-field-label">Release registered</dt>
               <dd class="mt-1">
-                {if latest, do: format_time(latest.resolved_at), else: "Never"}
+                {if latest,
+                  do: format_time(latest.resolved_at || latest.inserted_at),
+                  else: "Never"}
               </dd>
             </div>
           </dl>
           <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <.link
+              :if={latest && latest.state == :staged}
+              navigate={~p"/releases/#{latest.id}"}
+              class="btn btn-primary min-h-11 flex-1"
+            >
+              Review and deploy latest
+            </.link>
             <.button
               id={"prepare-main-#{application.key}"}
               phx-click="prepare_main"
               phx-value-application={application.key}
-              class="btn-primary min-h-11 flex-1"
+              class={[
+                "min-h-11 flex-1",
+                latest && latest.state == :staged && "btn-outline",
+                (!latest || latest.state != :staged) && "btn-primary"
+              ]}
               phx-disable-with="Preparing…"
             >
-              Deploy new release
+              Prepare current main
             </.button>
             <.link
-              :if={latest}
+              :if={latest && latest.state != :staged}
               navigate={~p"/releases/#{latest.id}"}
               class="btn btn-outline min-h-11 flex-1"
             >
-              View latest release
+              View latest attempt
             </.link>
           </div>
         </div>

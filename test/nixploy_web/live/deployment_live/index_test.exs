@@ -5,7 +5,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   import Phoenix.LiveViewTest
 
   alias Nixploy.Deployments
-  alias Nixploy.Deployments.{LocalStoreInput, NativeWorker}
+  alias Nixploy.Deployments.{DeploymentInput, LocalStoreInput, NativeWorker}
   alias Nixploy.{Fixtures, LocalHost, Runtime}
 
   defmodule NativeExecutorStub do
@@ -432,7 +432,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     {:ok, view, html} = live(conn, ~p"/releases")
 
     assert has_element?(view, "#managed-application-jomat", "refs/heads/main")
-    assert has_element?(view, "#prepare-main-jomat", "Deploy new release")
+    assert has_element?(view, "#prepare-main-jomat", "Prepare current main")
     refute html =~ "name=\"repository\""
     refute html =~ "name=\"ref\""
     refute html =~ "name=\"branch\""
@@ -448,6 +448,33 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(detail, "#main-preparation-progress", "Preparing immutable release")
     assert has_element?(detail, "#deployment-input-detail", "refs/heads/main")
     refute has_element?(detail, "#deploy-native-input")
+  end
+
+  test "associates a validated CI release with its managed application" do
+    Application.put_env(:nixploy, :managed_applications, %{
+      "jomat" => %{
+        "project" => "jomat",
+        "target" => "production",
+        "repository" => "/srv/nixploy/repositories/jomat",
+        "repository_identity" => "JonasThowsen/jomat"
+      }
+    })
+
+    release = %DeploymentInput{
+      application_key: nil,
+      input_kind: :local_store,
+      registration_channel: :ci,
+      source_repository: "JonasThowsen/jomat",
+      source_revision: String.duplicate("a", 40),
+      selected_target: "production",
+      derived_snapshot: %{"project" => "jomat"},
+      state: :staged
+    }
+
+    assert [^release] = NixployWeb.DeploymentLive.Index.application_inputs([release], "jomat")
+
+    assert ^release =
+             NixployWeb.DeploymentLive.Index.latest_application_input([release], "jomat")
   end
 
   test "exposes only allowlisted release actions and retires arbitrary-path compatibility UI", %{
