@@ -42,6 +42,17 @@ defmodule Nixploy.NativeDeploymentsTest do
     end
   end
 
+  defmodule LoadedInputExecutorStub do
+    alias Nixploy.Deployments.{DeploymentInput, NativeDeployment}
+
+    def deploy(
+          %NativeDeployment{deployment_input: %DeploymentInput{store_path: store_path}},
+          _opts
+        )
+        when is_binary(store_path),
+        do: :ok
+  end
+
   defmodule PreStartExecutorStub do
     def deploy(_deployment, opts) do
       stage = Keyword.fetch!(opts, :stage)
@@ -243,6 +254,25 @@ defmodule Nixploy.NativeDeploymentsTest do
 
     assert {:error, {:retry_not_terminal_failure, :queued}} =
              NativeDeployments.retry(retry.id, operator: operator)
+  end
+
+  test "fencing reloads the exact immutable input before executor dispatch" do
+    operator = Fixtures.operator_fixture()
+    input = staged_input(operator)
+    {:ok, deployment, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+
+    assert {:ok, fenced} = NativeDeployments.assign_fencing_token(deployment.id, 1)
+    assert Ecto.assoc_loaded?(fenced.deployment_input)
+    assert fenced.deployment_input.id == input.id
+    assert fenced.deployment_input.store_path == input.store_path
+    assert fenced.fencing_token == 1
+    assert {:ok, _failed, _event} = NativeDeployments.fail(deployment.id, :fixture_complete)
+
+    {:ok, second, _job} = NativeDeployments.enqueue(input.id, operator: operator)
+    Application.put_env(:nixploy, :native_deployment_executor, LoadedInputExecutorStub)
+
+    assert :ok = perform_job(NativeWorker, %{native_deployment_id: second.id})
+    assert NativeDeployments.get_deployment!(second.id).fencing_token == 1
   end
 
   test "fencing lease serializes a canonical native target and rotates after release" do

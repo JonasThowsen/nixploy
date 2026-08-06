@@ -219,7 +219,7 @@ defmodule Nixploy.NativeDeployments do
     case result do
       {:ok, %{deployment: deployment}} ->
         publish(id)
-        {:ok, deployment}
+        {:ok, get_deployment!(deployment.id)}
 
       {:error, _operation, reason, _changes} ->
         {:error, reason}
