@@ -238,6 +238,8 @@
           in
           assert web.RuntimeDirectory == "nixploy-web";
           assert worker.RuntimeDirectory == "nixploy-worker";
+          assert web.RuntimeDirectoryMode == "0700";
+          assert worker.RuntimeDirectoryMode == "0700";
           assert web.User == "nixploy-web";
           assert worker.User == "nixploy-worker";
           assert split.config.virtualisation.podman.enable == false;

@@ -35,6 +35,7 @@ let
     RestartSec = 5;
     StateDirectory = roleState role;
     RuntimeDirectory = roleState role;
+    RuntimeDirectoryMode = "0700";
     WorkingDirectory = "/var/lib/${roleState role}";
     UMask = "0077";
     NoNewPrivileges = true;
