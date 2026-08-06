@@ -11,6 +11,52 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         return resourcePrefix;
     }
 
+    public async Task<bool> VerifyConnectionAsync(string resourcePrefix, string targetName, NixployTarget target)
+    {
+        var connectionName = GetConnectionName(resourcePrefix);
+        var expectedIdentity = WorkerIdentityFile(target);
+
+        if (!await VerifySshTargetAsync(target))
+        {
+            return false;
+        }
+
+        Console.WriteLine($"Verifying provisioned Podman connection '{connectionName}' without mutation...");
+        var storedConnection = await GetStoredConnectionAsync(connectionName);
+
+        if (storedConnection is null)
+        {
+            Console.Error.WriteLine($"Podman connection '{connectionName}' is not provisioned.");
+            return false;
+        }
+
+        if (!string.Equals(
+                NormalizePath(storedConnection.Identity),
+                NormalizePath(expectedIdentity),
+                StringComparison.Ordinal
+            ) || !ConnectionMatchesTarget(storedConnection.Uri, target))
+        {
+            Console.Error.WriteLine($"Podman connection '{connectionName}' does not match the configured target identity.");
+            return false;
+        }
+
+        CommandRunResult infoResult = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connectionName, "info"],
+            new CommandRunOptions { StreamOutput = false }
+        );
+
+        if (infoResult.ExitCode == 0)
+        {
+            Console.WriteLine($"Verified provisioned Podman connection '{connectionName}'.");
+            return true;
+        }
+
+        Console.Error.WriteLine($"Podman connection '{connectionName}' is provisioned but unavailable.");
+        Console.Error.WriteLine(infoResult.StdError);
+        return false;
+    }
+
     public async Task<bool> EnsureConnectionAsync(string resourcePrefix, string targetName, NixployTarget target)
     {
         var connectionName = GetConnectionName(resourcePrefix);

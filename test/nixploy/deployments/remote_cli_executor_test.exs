@@ -26,6 +26,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               prepare_connection: allow_connection(),
                plan: allow_plan(),
                policy: allow_policy()
              )
@@ -58,6 +59,49 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
            ]
 
     refute File.exists?(command.cd)
+  end
+
+  test "prepares the exact named connection before plan and fails closed on preparation error" do
+    command =
+      RemoteCliExecutor.connection_command(deployment(), "/tmp/workspace",
+        executable: "/nix/store/cli/bin/nixploy"
+      )
+
+    assert command.args == [
+             "prepare-connection",
+             "--target",
+             "production",
+             "--source",
+             @source,
+             "--git-revision",
+             @revision,
+             "--repository-identity",
+             "fixture/repository",
+             "--configuration-digest",
+             @digest,
+             "--operation-id",
+             deployment().id,
+             "--resource-key",
+             "nixploy-fixture-bab0990cab-production"
+           ]
+
+    root =
+      Path.join(System.tmp_dir!(), "nixploy-connection-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    execute = fn _command, _opts ->
+      {:ok, %Result{exit_status: 1, output_tail: "safe diagnostic", output_truncated?: false}}
+    end
+
+    assert {:error, {:connection_preparation_failed, 1}} =
+             RemoteCliExecutor.deploy(deployment(),
+               execute: execute,
+               executable: "/nix/store/cli/bin/nixploy",
+               workspace_root: root,
+               plan: fn _ -> flunk("plan must not run") end,
+               policy: fn _ -> flunk("policy must not run") end
+             )
   end
 
   test "fails before invocation when immutable Git identity is absent" do
@@ -105,6 +149,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
                stage: stage,
+               prepare_connection: allow_connection(),
                plan: allow_plan(),
                policy: allow_policy()
              )
@@ -142,6 +187,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               prepare_connection: allow_connection(),
                plan: allow_plan(),
                policy: policy
              )
@@ -163,6 +209,7 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               prepare_connection: allow_connection(),
                plan: allow_plan(),
                policy: allow_policy()
              )
@@ -183,10 +230,13 @@ defmodule Nixploy.Deployments.RemoteCliExecutorTest do
                execute: execute,
                executable: "/nix/store/cli/bin/nixploy",
                workspace_root: root,
+               prepare_connection: allow_connection(),
                plan: allow_plan(),
                policy: allow_policy()
              )
   end
+
+  defp allow_connection, do: fn _deployment -> :ok end
 
   defp allow_plan do
     fn _deployment ->

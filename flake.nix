@@ -90,7 +90,12 @@
               hash = "sha256-o8pynyUXt8YXCiZFq6mq55FUs9cfEzAkcMmVMxE5gXQ=";
             };
 
-            nativeBuildInputs = [ pkgs.file pkgs.patchelf pkgs.gnutar pkgs.gzip ];
+            nativeBuildInputs = [
+              pkgs.file
+              pkgs.patchelf
+              pkgs.gnutar
+              pkgs.gzip
+            ];
 
             buildPhase = ''
               runHook preBuild
@@ -203,30 +208,40 @@
             ];
           }).config.system.build.toplevel;
         nixos-module-split =
-          (lib.nixosSystem {
-            inherit system;
-            modules = [
-              self.nixosModules.default
-              {
-                system.stateVersion = "26.05";
-                boot.loader.grub.devices = [ "/dev/vda" ];
-                fileSystems."/" = {
-                  device = "/dev/vda";
-                  fsType = "ext4";
-                };
-                services.nixploy-control-plane = {
-                  enable = true;
-                  splitRoles = true;
-                  workerSopsAgeKeyFile = "/run/keys/nixploy.age";
-                  workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
-                  workerSshIdentityFile = "/run/keys/nixploy-ssh";
-                  workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
-                  backup.enable = true;
-                  environmentFile = "/run/keys/nixploy.env";
-                };
-              }
-            ];
-          }).config.system.build.toplevel;
+          let
+            split = lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  system.stateVersion = "26.05";
+                  boot.loader.grub.devices = [ "/dev/vda" ];
+                  fileSystems."/" = {
+                    device = "/dev/vda";
+                    fsType = "ext4";
+                  };
+                  services.nixploy-control-plane = {
+                    enable = true;
+                    splitRoles = true;
+                    workerSopsAgeKeyFile = "/run/keys/nixploy.age";
+                    workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
+                    workerSshIdentityFile = "/run/keys/nixploy-ssh";
+                    workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+                    backup.enable = true;
+                    environmentFile = "/run/keys/nixploy.env";
+                  };
+                }
+              ];
+            };
+            web = split.config.systemd.services.nixploy-control-plane.serviceConfig;
+            worker = split.config.systemd.services.nixploy-control-plane-worker.serviceConfig;
+          in
+          assert web.RuntimeDirectory == "nixploy-web";
+          assert worker.RuntimeDirectory == "nixploy-worker";
+          assert web.User == "nixploy-web";
+          assert worker.User == "nixploy-worker";
+          assert split.config.virtualisation.podman.enable == false;
+          split.config.system.build.toplevel;
         nixos-module-staged =
           let
             staged = lib.nixosSystem {

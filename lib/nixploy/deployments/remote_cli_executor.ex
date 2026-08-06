@@ -14,6 +14,8 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
   alias Nixploy.Execution.Command
 
   @timeout :timer.hours(1)
+  @connection_timeout :timer.seconds(45)
+  @connection_output_bytes 65_536
   @protocol_bytes 1_048_576
   @diagnostic_bytes 65_536
 
@@ -24,7 +26,8 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
 
     with :ok <- private_workspace(workspace) do
       try do
-        with {:ok, fresh_plan} <- read_plan(deployment, workspace, opts),
+        with :ok <- prepare_connection(deployment, workspace, opts),
+             {:ok, fresh_plan} <- read_plan(deployment, workspace, opts),
              {:ok, policy} <- evaluate_policy(deployment, fresh_plan, opts),
              :ok <- record_policy_stage(policy, fresh_plan, opts) do
           command = command(deployment, workspace, opts)
@@ -109,6 +112,61 @@ defmodule Nixploy.Deployments.RemoteCliExecutor do
       timeout: @timeout,
       max_output_bytes: @protocol_bytes + @diagnostic_bytes
     }
+  end
+
+  @doc false
+  def connection_command(%NativeDeployment{} = deployment, workspace, opts \\ []) do
+    input = deployment.deployment_input
+    executable = Keyword.get_lazy(opts, :executable, &executable!/0)
+    resource_key = ResourceIdentity.derive!(deployment.project, deployment.target)
+
+    %Command{
+      executable: executable,
+      args: [
+        "prepare-connection",
+        "--target",
+        deployment.target,
+        "--source",
+        input.store_path,
+        "--git-revision",
+        input.source_revision,
+        "--repository-identity",
+        input.source_repository,
+        "--configuration-digest",
+        input.configuration_digest,
+        "--operation-id",
+        deployment.id,
+        "--resource-key",
+        resource_key
+      ],
+      cd: workspace,
+      env: %{
+        "HOME" => workspace,
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => "/dev/null"
+      },
+      timeout: @connection_timeout,
+      max_output_bytes: @connection_output_bytes
+    }
+  end
+
+  defp prepare_connection(deployment, workspace, opts) do
+    case Keyword.get(opts, :prepare_connection) do
+      callback when is_function(callback, 1) ->
+        callback.(deployment)
+
+      nil ->
+        execute = Keyword.get(opts, :execute, &Execution.run/2)
+
+        case execute.(connection_command(deployment, workspace, opts),
+               cancelled?: Keyword.get(opts, :cancelled?, fn -> false end)
+             ) do
+          {:ok, %{exit_status: 0, output_truncated?: false}} -> :ok
+          {:ok, %{output_truncated?: true}} -> {:error, :connection_preparation_output_too_large}
+          {:ok, %{exit_status: status}} -> {:error, {:connection_preparation_failed, status}}
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   defp read_plan(deployment, workspace, opts) do

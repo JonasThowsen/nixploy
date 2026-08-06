@@ -55,6 +55,46 @@ public sealed class PodmanServiceTests
     }
 
     [Fact]
+    public async Task VerifyConnectionAsync_UsesOnlyReadOnlyConnectionCommands()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(0, """
+            [{"Name":"nixploy-my-app-prod","Identity":"/tmp/id_ed25519","URI":"ssh://deploy@203.0.113.10:2222/run/user/1000/podman/podman.sock"}]
+            """, ""),
+            new CommandRunResult(0, "", "")
+        );
+        var service = new PodmanService(runner);
+        var target = new NixployTarget
+        {
+            Ip = "203.0.113.10",
+            User = "deploy",
+            Port = 2222,
+            IdentityFile = "/tmp/id_ed25519"
+        };
+
+        Assert.True(await service.VerifyConnectionAsync("nixploy-my-app-prod", "prod", target));
+        Assert.Equal(["system", "connection", "list", "--format", "json"], runner.Calls[1].Arguments);
+        Assert.Equal(["--connection", "nixploy-my-app-prod", "info"], runner.Calls[2].Arguments);
+        Assert.DoesNotContain(runner.Calls, call => call.Arguments.Contains("add") || call.Arguments.Contains("rm"));
+    }
+
+    [Fact]
+    public async Task VerifyConnectionAsync_FailsMissingWithoutConfigurationMutation()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(0, "[]", "")
+        );
+        var service = new PodmanService(runner);
+        var target = new NixployTarget { Ip = "203.0.113.10", User = "deploy", Port = 22 };
+
+        Assert.False(await service.VerifyConnectionAsync("nixploy-my-app-prod", "prod", target));
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.DoesNotContain(runner.Calls, call => call.Arguments.Contains("add") || call.Arguments.Contains("rm"));
+    }
+
+    [Fact]
     public async Task EnsureConnectionAsync_FailsWhenStrictSshPreflightFails()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(255, "", "host key verification failed"));

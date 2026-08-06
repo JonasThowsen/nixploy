@@ -97,6 +97,9 @@ public sealed class DeploymentCompensationTests
         public Task<bool> EnsureConnectionAsync(string resourcePrefix, string targetName, NixployTarget target) =>
             Task.FromResult(true);
 
+        public Task<bool> VerifyConnectionAsync(string resourcePrefix, string targetName, NixployTarget target) =>
+            Task.FromResult(true);
+
         public Task<LoadedImage?> LoadImageAsync(string connectionName, string imagePath) =>
             Task.FromResult<LoadedImage?>(new LoadedImage("localhost/fixture:latest"));
 

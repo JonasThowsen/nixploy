@@ -523,6 +523,7 @@ public static class CommandFactory
             return 0;
         });
 
+        var prepareConnectionCommand = CreatePrepareConnectionCommand(configProvider, podmanService);
         var planCommand = CreatePlanCommand(configProvider, podmanService, caddyService);
         var statusCommand = CreateStatusCommand(commandRunner, configProvider, podmanService, caddyService);
         var logsCommand = CreateLogsCommand(configProvider, podmanService);
@@ -533,6 +534,7 @@ public static class CommandFactory
             {
                 deployCommand,
                 taskCommand,
+                prepareConnectionCommand,
                 planCommand,
                 statusCommand,
                 logsCommand,
@@ -541,6 +543,70 @@ public static class CommandFactory
         };
 
         return root;
+    }
+
+    private static Command CreatePrepareConnectionCommand(
+        INixployConfigProvider configProvider,
+        IPodmanService podmanService
+    )
+    {
+        var targetOption = new Option<string>("--target");
+        var sourceOption = new Option<string>("--source");
+        var revisionOption = new Option<string>("--git-revision");
+        var repositoryOption = new Option<string>("--repository-identity");
+        var digestOption = new Option<string>("--configuration-digest");
+        var operationOption = new Option<string>("--operation-id");
+        var resourceOption = new Option<string>("--resource-key");
+
+        var command = new Command("prepare-connection", "Provision the exact named remote Podman connection before planning")
+        {
+            Options =
+            {
+                targetOption,
+                sourceOption,
+                revisionOption,
+                repositoryOption,
+                digestOption,
+                operationOption,
+                resourceOption
+            }
+        };
+
+        command.SetAction(async parseResult =>
+        {
+            var targetName = parseResult.GetValue(targetOption);
+            var immutable = ImmutableInvocation.Parse(
+                parseResult.GetValue(sourceOption),
+                parseResult.GetValue(revisionOption),
+                parseResult.GetValue(repositoryOption),
+                parseResult.GetValue(digestOption),
+                parseResult.GetValue(operationOption),
+                parseResult.GetValue(resourceOption)
+            );
+
+            if (!immutable.Success || string.IsNullOrWhiteSpace(targetName))
+            {
+                Console.Error.WriteLine(immutable.Error ?? "Connection preparation identity is invalid.");
+                return 1;
+            }
+
+            var config = await configProvider.GetConfigAsync(immutable.Source!);
+            if (!config.Targets.TryGetValue(targetName, out var target))
+            {
+                return 1;
+            }
+
+            var expectedResource = ResourcePrefix(config.Project, targetName);
+            if (!string.Equals(expectedResource, immutable.ResourceKey, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine("Canonical resource key does not match the immutable connection input.");
+                return 1;
+            }
+
+            return await podmanService.EnsureConnectionAsync(expectedResource, targetName, target) ? 0 : 1;
+        });
+
+        return command;
     }
 
     private static Command CreatePlanCommand(
@@ -602,7 +668,7 @@ public static class CommandFactory
 
                 var expectedResource = ResourcePrefix(config.Project, targetName);
                 if (!string.Equals(expectedResource, immutable.ResourceKey, StringComparison.Ordinal) ||
-                    !await podmanService.EnsureConnectionAsync(expectedResource, targetName, target))
+                    !await podmanService.VerifyConnectionAsync(expectedResource, targetName, target))
                 {
                     return 1;
                 }

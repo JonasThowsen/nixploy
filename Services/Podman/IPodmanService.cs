@@ -6,6 +6,8 @@ public interface IPodmanService
 
     Task<bool> EnsureConnectionAsync(string resourcePrefix, string targetName, NixployTarget target);
 
+    Task<bool> VerifyConnectionAsync(string resourcePrefix, string targetName, NixployTarget target);
+
     Task<LoadedImage?> LoadImageAsync(string connectionName, string imagePath);
 
     Task<IReadOnlyList<SecretMount>?> InstallSecretsAsync(

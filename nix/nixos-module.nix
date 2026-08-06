@@ -12,15 +12,18 @@ let
   startControlPlane =
     role:
     pkgs.writeShellScript "nixploy-control-plane-${role}-start" ''
-      export XDG_RUNTIME_DIR="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
+      export XDG_RUNTIME_DIR="$RUNTIME_DIRECTORY"
       # Export after EnvironmentFile is loaded so a legacy NIXPLOY_ROLE entry
       # cannot collapse split services back into the combined process.
       export NIXPLOY_ROLE="${role}"
       exec ${cfg.package}/bin/nixploy start
     '';
 
-  roleUser = role: if cfg.splitRoles then (if role == "web" then cfg.webUser else cfg.workerUser) else cfg.user;
-  roleGroup = role: if cfg.splitRoles then (if role == "web" then cfg.webGroup else cfg.workerGroup) else cfg.group;
+  roleUser =
+    role: if cfg.splitRoles then (if role == "web" then cfg.webUser else cfg.workerUser) else cfg.user;
+  roleGroup =
+    role:
+    if cfg.splitRoles then (if role == "web" then cfg.webGroup else cfg.workerGroup) else cfg.group;
   roleState = role: if cfg.splitRoles then "nixploy-${role}" else "nixploy";
 
   commonServiceConfig = role: {
@@ -31,6 +34,7 @@ let
     Restart = "on-failure";
     RestartSec = 5;
     StateDirectory = roleState role;
+    RuntimeDirectory = roleState role;
     WorkingDirectory = "/var/lib/${roleState role}";
     UMask = "0077";
     NoNewPrivileges = true;
@@ -39,14 +43,22 @@ let
     ProtectSystem = "strict";
     ProtectHome = true;
     ReadWritePaths = [ "/var/lib/${roleState role}" ];
-    RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+    RestrictAddressFamilies = [
+      "AF_UNIX"
+      "AF_INET"
+      "AF_INET6"
+    ];
     LockPersonality = true;
     RestrictSUIDSGID = true;
   };
 
   backupScript = pkgs.writeShellApplication {
     name = "nixploy-backup";
-    runtimeInputs = [ pkgs.coreutils pkgs.findutils pkgs.postgresql_18 ];
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.postgresql_18
+    ];
     text = ''
       set -euo pipefail
       umask 0077
@@ -75,11 +87,15 @@ let
 
   credentialName = key: "git-${key}";
 
-  publicApplications = lib.mapAttrs (
-    _key: application: {
-      inherit (application) project target repository repositoryIdentity subdirectory;
-    }
-  ) cfg.applications;
+  publicApplications = lib.mapAttrs (_key: application: {
+    inherit (application)
+      project
+      target
+      repository
+      repositoryIdentity
+      subdirectory
+      ;
+  }) cfg.applications;
 
   workerCredentialPaths = lib.mapAttrs (
     key: application:
@@ -119,7 +135,10 @@ in
     };
 
     runtimeMode = lib.mkOption {
-      type = lib.types.enum [ "remote_control_plane" "local_recovery" ];
+      type = lib.types.enum [
+        "remote_control_plane"
+        "local_recovery"
+      ];
       default = "remote_control_plane";
       description = "Production application effects use named remote targets; local recovery must be explicit.";
     };
@@ -375,7 +394,9 @@ in
       {
         assertion =
           !cfg.manageUser
-          || (if cfg.splitRoles then cfg.webUser != "root" && cfg.workerUser != "root" else cfg.user != "root");
+          || (
+            if cfg.splitRoles then cfg.webUser != "root" && cfg.workerUser != "root" else cfg.user != "root"
+          );
         message = "services.nixploy-control-plane.manageUser cannot create root";
       }
       {
@@ -385,10 +406,13 @@ in
       {
         assertion =
           cfg.manageUser
-          || (if cfg.splitRoles then
-            builtins.hasAttr cfg.webUser config.users.users && builtins.hasAttr cfg.workerUser config.users.users
-          else
-            builtins.hasAttr cfg.user config.users.users);
+          || (
+            if cfg.splitRoles then
+              builtins.hasAttr cfg.webUser config.users.users
+              && builtins.hasAttr cfg.workerUser config.users.users
+            else
+              builtins.hasAttr cfg.user config.users.users
+          );
         message = "manageUser = false requires every configured runtime identity to exist";
       }
       {
@@ -415,8 +439,9 @@ in
       {
         assertion =
           !cfg.splitRoles
-          || lib.all (application: lib.hasPrefix "/var/lib/nixploy-worker/" application.repository)
-            (lib.attrValues cfg.applications);
+          || lib.all (application: lib.hasPrefix "/var/lib/nixploy-worker/" application.repository) (
+            lib.attrValues cfg.applications
+          );
         message = "splitRoles requires managed repositories under worker-owned /var/lib/nixploy-worker";
       }
     ];
@@ -434,8 +459,7 @@ in
             PORT = toString cfg.port;
           }
           // lib.optionalAttrs (cfg.releaseRegistrationTokenFile != null) {
-            NIXPLOY_RELEASE_REGISTRATION_TOKEN_FILE =
-              "/run/credentials/nixploy-control-plane.service/release-registration-token";
+            NIXPLOY_RELEASE_REGISTRATION_TOKEN_FILE = "/run/credentials/nixploy-control-plane.service/release-registration-token";
             NIXPLOY_RELEASE_REGISTRATION_PROJECT = cfg.releaseRegistrationProject;
             NIXPLOY_RELEASE_REGISTRATION_TARGET = cfg.releaseRegistrationTarget;
             NIXPLOY_RELEASE_REGISTRATION_REPOSITORY = cfg.releaseRegistrationRepository;
@@ -444,8 +468,9 @@ in
         serviceConfig = commonServiceConfig "web" // {
           ExecStart = startControlPlane (if cfg.splitRoles then "web" else cfg.role);
           ExecStartPre = lib.optional cfg.migrate "${cfg.package}/bin/nixploy eval Nixploy.Release.migrate\(\)";
-          LoadCredential = lib.optional (cfg.releaseRegistrationTokenFile != null)
-            "release-registration-token:${cfg.releaseRegistrationTokenFile}";
+          LoadCredential = lib.optional (
+            cfg.releaseRegistrationTokenFile != null
+          ) "release-registration-token:${cfg.releaseRegistrationTokenFile}";
         };
       };
     }
@@ -471,24 +496,24 @@ in
             SOPS_AGE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-key";
           }
           // lib.optionalAttrs (cfg.workerSopsAgeSshKeyFile != null) {
-            SOPS_AGE_SSH_PRIVATE_KEY_FILE =
-              "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
+            SOPS_AGE_SSH_PRIVATE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
           };
 
         serviceConfig = commonServiceConfig "worker" // {
           ExecStart = startControlPlane "worker";
-          LoadCredential =
-            [
-              "nixploy-ssh-identity:${cfg.workerSshIdentityFile}"
-              "nixploy-ssh-known-hosts:${cfg.workerSshKnownHostsFile}"
-            ]
-            ++ lib.optional (cfg.workerSopsAgeKeyFile != null)
-              "nixploy-sops-age-key:${cfg.workerSopsAgeKeyFile}"
-            ++ lib.optional (cfg.workerSopsAgeSshKeyFile != null)
-              "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
-            ++ lib.mapAttrsToList (
-              key: application: "${credentialName key}:${application.credentialFile}"
-            ) (lib.filterAttrs (_key: application: application.credentialFile != null) cfg.applications);
+          LoadCredential = [
+            "nixploy-ssh-identity:${cfg.workerSshIdentityFile}"
+            "nixploy-ssh-known-hosts:${cfg.workerSshKnownHostsFile}"
+          ]
+          ++ lib.optional (
+            cfg.workerSopsAgeKeyFile != null
+          ) "nixploy-sops-age-key:${cfg.workerSopsAgeKeyFile}"
+          ++ lib.optional (
+            cfg.workerSopsAgeSshKeyFile != null
+          ) "nixploy-sops-age-ssh-key:${cfg.workerSopsAgeSshKeyFile}"
+          ++ lib.mapAttrsToList (key: application: "${credentialName key}:${application.credentialFile}") (
+            lib.filterAttrs (_key: application: application.credentialFile != null) cfg.applications
+          );
         };
       };
     }
@@ -496,7 +521,9 @@ in
       nixploy-backup = {
         description = "Verified nixploy PostgreSQL backup";
         after = [ "postgresql.service" ];
-        environment = { HOME = "/var/lib/nixploy-backups"; };
+        environment = {
+          HOME = "/var/lib/nixploy-backups";
+        };
         serviceConfig = {
           Type = "oneshot";
           User = if cfg.splitRoles then cfg.workerUser else cfg.user;
