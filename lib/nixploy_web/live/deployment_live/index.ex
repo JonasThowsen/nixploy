@@ -505,7 +505,8 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def latest_application_input(inputs, application_key) do
-    Enum.find(inputs, &input_for_application?(&1, application_key))
+    matches = Enum.filter(inputs, &input_for_application?(&1, application_key))
+    Enum.find(matches, &(&1.state == :staged)) || List.first(matches)
   end
 
   defp input_for_application?(input, application_key) do

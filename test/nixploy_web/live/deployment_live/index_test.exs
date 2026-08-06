@@ -471,10 +471,28 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       state: :staged
     }
 
-    assert [^release] = NixployWeb.DeploymentLive.Index.application_inputs([release], "jomat")
+    newer_failed_preparation = %DeploymentInput{
+      application_key: "jomat",
+      input_kind: :git_main,
+      registration_channel: :operator,
+      source_repository: "JonasThowsen/jomat",
+      source_revision: String.duplicate("b", 40),
+      selected_target: "production",
+      derived_snapshot: %{},
+      state: :failed
+    }
+
+    assert [^newer_failed_preparation, ^release] =
+             NixployWeb.DeploymentLive.Index.application_inputs(
+               [newer_failed_preparation, release],
+               "jomat"
+             )
 
     assert ^release =
-             NixployWeb.DeploymentLive.Index.latest_application_input([release], "jomat")
+             NixployWeb.DeploymentLive.Index.latest_application_input(
+               [newer_failed_preparation, release],
+               "jomat"
+             )
   end
 
   test "exposes only allowlisted release actions and retires arbitrary-path compatibility UI", %{
