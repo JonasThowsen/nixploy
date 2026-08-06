@@ -6,7 +6,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   alias Nixploy.Deployments
   alias Nixploy.Deployments.{DeploymentInput, LocalStoreInput, NativeWorker}
-  alias Nixploy.{Fixtures, LocalHost, Runtime}
+  alias Nixploy.{Fixtures, LocalHost, NativeDeployments, Runtime}
 
   defmodule NativeExecutorStub do
     def deploy(_deployment, opts) do
@@ -418,7 +418,10 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     assert has_element?(view, "#local-inventory-error", "Podman socket unavailable")
   end
 
-  test "queues direct-main preparation only from a trusted application action", %{conn: conn} do
+  test "starts deployment from one unambiguous application action", %{
+    conn: conn,
+    operator: operator
+  } do
     Application.put_env(:nixploy, :managed_applications, %{
       "jomat" => %{
         "project" => "jomat",
@@ -429,25 +432,48 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       }
     })
 
+    Application.put_env(:nixploy, :local_store_input_probe, fn _path, _opts ->
+      {:ok,
+       %LocalStoreInput.Source{
+         store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+         nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+         project: "jomat",
+         targets: %{
+           "production" => %{
+             "name" => "production",
+             "image_output" => "packages.x86_64-linux.container-image",
+             "domain" => "jomat.example.test",
+             "health_path" => "/health",
+             "slots" => %{"blue" => 8080, "green" => 8081}
+           }
+         }
+       }}
+    end)
+
+    assert {:ok, input} =
+             Deployments.stage_local_store(
+               %{
+                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-mobile-fixture-source",
+                 selected_target: "production",
+                 registration_channel: :ci,
+                 source_repository: "JonasThowsen/jomat",
+                 source_revision: String.duplicate("a", 40)
+               },
+               operator: operator,
+               expected_project: "jomat"
+             )
+
     {:ok, view, html} = live(conn, ~p"/releases")
 
-    assert has_element?(view, "#managed-application-jomat", "refs/heads/main")
-    assert has_element?(view, "#prepare-main-jomat", "Prepare current main")
-    refute html =~ "name=\"repository\""
-    refute html =~ "name=\"ref\""
-    refute html =~ "name=\"branch\""
+    assert has_element?(view, "#releases-page", "Committed main")
+    assert has_element?(view, "#deploy-application-jomat", "Deploy")
+    refute has_element?(view, "#prepare-main-jomat")
+    refute html =~ "Review and deploy"
+    refute html =~ "Prepare current main"
 
-    view |> element("#prepare-main-jomat") |> render_click()
-    [input] = Deployments.list_deployment_inputs()
-    assert_redirect(view, ~p"/releases/#{input.id}")
-    assert input.input_kind == :git_main
-    assert input.source_ref == "refs/heads/main"
-    assert input.source_revision == nil
-
-    {:ok, detail, _html} = live(conn, ~p"/releases/#{input.id}")
-    assert has_element?(detail, "#main-preparation-progress", "Preparing immutable release")
-    assert has_element?(detail, "#deployment-input-detail", "refs/heads/main")
-    refute has_element?(detail, "#deploy-native-input")
+    view |> element("#deploy-application-jomat") |> render_click()
+    [deployment] = NativeDeployments.list_for_input(input.id)
+    assert_redirect(view, ~p"/deployments/#{deployment.id}")
   end
 
   test "associates a validated CI release with its managed application" do
@@ -500,7 +526,8 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
   } do
     {:ok, view, html} = live(conn, ~p"/releases")
 
-    assert has_element?(view, "#releases-page", "Available releases")
+    assert has_element?(view, "#releases-page", "Deploy")
+    refute has_element?(view, "#release-history")
     refute has_element?(view, "#advanced-release-import")
     refute has_element?(view, "#local-store-inspect-form")
     refute html =~ "name=\"repository\""
@@ -551,7 +578,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
     {:ok, view, html} = live(conn, ~p"/releases/#{input.id}")
 
-    assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy to production")
+    assert has_element?(view, "#deploy-native-input:not([disabled])", "Deploy")
     assert has_element?(view, "#deployment-input-detail", "1 actions · 1 credentials")
     assert html =~ "1 credential file(s)"
     assert html =~ "1 preparation action(s)"

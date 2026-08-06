@@ -812,10 +812,10 @@
   <section :if={@live_action == :releases} id="releases-page" class="np-page-stack">
     <header class="np-page-header">
       <div>
-        <p class="np-kicker">Ready to ship</p>
-        <h1 class="np-page-title">Releases</h1>
+        <p class="np-kicker">Committed main</p>
+        <h1 class="np-page-title">Deploy</h1>
         <p class="np-page-description">
-          Choose a verified application release and deploy it to production.
+          Deploy each application's latest available committed main revision.
         </p>
       </div>
     </header>
@@ -840,21 +840,21 @@
             </div>
             <span class={[
               "badge badge-sm shrink-0",
-              latest && input_state_class(latest.state),
-              is_nil(latest) && "badge-ghost"
+              latest && latest.state == :staged && "badge-success",
+              (!latest || latest.state != :staged) && "badge-ghost"
             ]}>
-              {if latest, do: latest.state, else: "no release"}
+              {if latest && latest.state == :staged, do: "ready", else: "unavailable"}
             </span>
           </div>
           <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2">
             <div>
-              <dt class="np-field-label">Latest known commit</dt>
+              <dt class="np-field-label">Committed main</dt>
               <dd class="mt-1 font-mono">
                 {if latest, do: short_commit(latest.source_revision), else: "—"}
               </dd>
             </div>
             <div>
-              <dt class="np-field-label">Release registered</dt>
+              <dt class="np-field-label">Available since</dt>
               <dd class="mt-1">
                 {if latest,
                   do: format_time(latest.resolved_at || latest.inserted_at),
@@ -862,120 +862,24 @@
               </dd>
             </div>
           </dl>
-          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
-            <.link
-              :if={latest && latest.state == :staged}
-              navigate={~p"/releases/#{latest.id}"}
-              class="btn btn-primary min-h-11 flex-1"
-            >
-              Review and deploy latest
-            </.link>
-            <.button
-              :if={is_nil(latest) || latest.registration_channel != :ci}
-              id={"prepare-main-#{application.key}"}
-              phx-click="prepare_main"
-              phx-value-application={application.key}
-              class={[
-                "min-h-11 flex-1",
-                latest && latest.state == :staged && "btn-outline",
-                (!latest || latest.state != :staged) && "btn-primary"
-              ]}
-              phx-disable-with="Preparing…"
-            >
-              Prepare current main
-            </.button>
-            <.link
-              :if={latest && latest.state != :staged}
-              navigate={~p"/releases/#{latest.id}"}
-              class="btn btn-outline min-h-11 flex-1"
-            >
-              View latest attempt
-            </.link>
-          </div>
+          <.button
+            id={"deploy-application-#{application.key}"}
+            phx-click="deploy_application"
+            phx-value-application={application.key}
+            disabled={is_nil(latest) || latest.state != :staged}
+            class="btn-primary mt-4 min-h-11 w-full"
+            phx-disable-with="Starting…"
+          >
+            Deploy
+          </.button>
         </div>
       </article>
     </section>
 
     <div :if={@managed_applications == []} class="alert alert-warning">
       <.icon name="hero-exclamation-triangle" class="size-5" />
-      <span>No trusted applications are configured for direct-main preparation.</span>
+      <span>No applications are configured for deployment.</span>
     </div>
-
-    <% releases =
-      application_releases(
-        @deployment_inputs,
-        @local_inventory,
-        @native_deployments
-      ) %>
-    <section id="release-history" class="np-panel overflow-hidden">
-      <div class="np-panel-header">
-        <div>
-          <h2 class="np-panel-title">Available releases</h2>
-          <p class="np-panel-description">
-            Newest release first. Opening a release does not deploy it.
-          </p>
-        </div>
-        <span class="font-mono text-xs text-base-content/45">
-          {length(releases)} available
-        </span>
-      </div>
-      <div :if={releases == []} id="empty-deployment-inputs" class="np-empty">
-        <strong class="block text-base-content/70">
-          No application releases are available yet.
-        </strong>
-        <span class="mt-1 block">
-          Choose Deploy new release above to resolve a configured application's main branch.
-        </span>
-      </div>
-      <div class="divide-y divide-base-300">
-        <article
-          :for={input <- releases}
-          id={"deployment-input-#{input.id}"}
-          class="grid min-w-0 gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-        >
-          <% latest = latest_native_deployment(@native_deployments, input.id) %>
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2">
-              <h3 class="truncate text-lg font-semibold">
-                {input.derived_snapshot["project"] || "Release validation failed"}
-              </h3>
-              <span class={["badge badge-sm", input_state_class(input.state)]}>
-                {if input.state == :staged, do: "ready", else: input.state}
-              </span>
-              <span :if={input.selected_target} class="badge badge-ghost badge-sm">
-                {input.selected_target}
-              </span>
-              <span
-                :if={input.registration_channel == :ci}
-                class="badge badge-info badge-outline badge-sm"
-              >
-                CI registered
-              </span>
-            </div>
-            <p :if={input.failure} class="mt-2 break-words text-sm text-error">
-              {input.failure["message"]}
-            </p>
-            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/50">
-              <span>Registered {format_time(input.inserted_at)}</span>
-              <span :if={input.source_revision} class="font-mono">
-                {input.source_repository}@{short_commit(input.source_revision)}
-              </span>
-              <span :if={latest}>
-                Last deployment:
-                <strong class="font-medium text-base-content/70">{latest.state}</strong>
-              </span>
-              <span :if={is_nil(latest)}>Never deployed</span>
-            </div>
-          </div>
-          <.link
-            navigate={~p"/releases/#{input.id}"}
-            class="btn btn-primary btn-sm min-h-11 w-full lg:w-auto"
-          >
-            {if input.state == :staged, do: "Review and deploy", else: "View failure"}
-          </.link>
-        </article>
-      </div>
-    </section>
   </section>
 
   <section :if={@live_action == :deployments} id="deployments-page" class="np-page-stack">
@@ -992,7 +896,7 @@
         navigate={~p"/releases"}
         class="btn btn-primary btn-sm min-h-11 gap-2 self-start sm:self-auto"
       >
-        <.icon name="hero-rocket-launch" class="size-4" /> Deploy release
+        <.icon name="hero-rocket-launch" class="size-4" /> Deploy
       </.link>
     </header>
 

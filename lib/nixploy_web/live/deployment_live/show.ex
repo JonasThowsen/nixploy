@@ -71,10 +71,7 @@ defmodule NixployWeb.DeploymentLive.Show do
   def latest_attempt([]), do: nil
   def latest_attempt([attempt | _]), do: attempt
 
-  def deploy_button_label(%{input_kind: :git_main, source_revision: revision}),
-    do: "Deploy commit #{short_revision(revision)}"
-
-  def deploy_button_label(input), do: "Deploy to #{input.selected_target}"
+  def deploy_button_label(_input), do: "Deploy"
 
   def format_time(nil), do: "—"
   def format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")

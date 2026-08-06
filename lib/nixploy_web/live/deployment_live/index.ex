@@ -56,6 +56,30 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   @impl true
+  def handle_event("deploy_application", %{"application" => application_key}, socket) do
+    input = latest_application_input(socket.assigns.deployment_inputs, application_key)
+
+    case input do
+      %{state: :staged} ->
+        case NativeDeployments.enqueue(input.id, operator: socket.assigns.current_operator) do
+          {:ok, deployment, _job} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Deployment started")
+             |> push_navigate(to: ~p"/deployments/#{deployment.id}")}
+
+          {:error, %Ecto.Changeset{}} ->
+            {:noreply, put_flash(socket, :error, "A deployment is already active")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Could not deploy: #{inspect(reason)}")}
+        end
+
+      _unavailable ->
+        {:noreply, put_flash(socket, :error, "No committed main release is available")}
+    end
+  end
+
   def handle_event("prepare_main", %{"application" => application_key}, socket) do
     case Deployments.prepare_main(application_key, operator: socket.assigns.current_operator) do
       {:ok, input, _job} ->
@@ -459,7 +483,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   defp page_title(:overview), do: "Overview"
   defp page_title(:machine), do: "Machine health"
   defp page_title(:applications), do: "Applications"
-  defp page_title(:releases), do: "Releases"
+  defp page_title(:releases), do: "Deploy"
   defp page_title(:deployments), do: "Deployments"
 
   def latest_native_deployment(native_deployments, input_id),

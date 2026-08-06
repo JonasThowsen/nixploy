@@ -62,7 +62,7 @@ defmodule NixployWeb.Layouts do
             active_path={@current_path}
             icon="hero-rocket-launch"
           >
-            Releases
+            Deploy
           </.utility_nav_link>
           <.utility_nav_link
             path="/deployments"
@@ -162,7 +162,7 @@ defmodule NixployWeb.Layouts do
               active_path={@current_path}
               icon="hero-rocket-launch"
             >
-              Releases
+              Deploy
             </.mobile_nav_link>
             <.mobile_nav_link
               path="/deployments"
@@ -266,7 +266,7 @@ defmodule NixployWeb.Layouts do
   defp current_path_label("/"), do: "Overview"
   defp current_path_label("/machine"), do: "Machine"
   defp current_path_label("/applications"), do: "Applications"
-  defp current_path_label("/releases"), do: "Releases"
+  defp current_path_label("/releases"), do: "Deploy"
   defp current_path_label("/deployments"), do: "Deployments"
   defp current_path_label(_path), do: "nixploy"
 
