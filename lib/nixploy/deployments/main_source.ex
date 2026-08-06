@@ -145,6 +145,10 @@ defmodule Nixploy.Deployments.MainSource do
     do: "#{boundary} exited with status #{status}: #{safe_tail(output)}"
 
   def error_message({:command_error, boundary, :timeout}), do: "#{boundary} timed out."
+
+  def error_message({:command_error, boundary, :output_too_large}),
+    do: "#{boundary} returned more metadata than the bounded preparation limit allows."
+
   def error_message({:command_error, _boundary, :cancelled}), do: "Preparation was cancelled."
   def error_message({:command_error, boundary, _reason}), do: "#{boundary} could not run."
   def error_message(reason), do: LocalStoreInput.error_message(reason)
@@ -271,10 +275,19 @@ defmodule Nixploy.Deployments.MainSource do
         {:error, :submodules_not_supported}
 
       true ->
-        command = git_in(source, ["ls-files", "--stage"])
+        # Request only object modes so repositories with many or long paths do not
+        # exhaust the bounded command output while retaining bare-gitlink detection.
+        command =
+          git_in(source, [
+            "ls-tree",
+            "-r",
+            "--full-tree",
+            "--format=%(objectmode)",
+            "HEAD"
+          ])
 
         with {:ok, output} <- command_output(command, execute, opts, :git_index) do
-          if output |> String.split("\n") |> Enum.any?(&String.starts_with?(&1, "160000 ")),
+          if output |> String.split("\n") |> Enum.any?(&(&1 == "160000")),
             do: {:error, :submodules_not_supported},
             else: :ok
         end
@@ -399,6 +412,9 @@ defmodule Nixploy.Deployments.MainSource do
     case execute.(command, execution_opts) do
       {:ok, %{exit_status: 0, output_truncated?: false, output_tail: output}} ->
         {:ok, output}
+
+      {:ok, %{exit_status: 0, output_truncated?: true}} ->
+        {:error, {:command_error, boundary, :output_too_large}}
 
       {:ok, %{exit_status: status, output_tail: output}} ->
         {:error, {:command_failed, boundary, status, output}}

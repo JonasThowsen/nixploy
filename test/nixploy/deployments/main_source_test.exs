@@ -109,6 +109,32 @@ defmodule Nixploy.Deployments.MainSourceTest do
     refute File.exists?(Path.join([root, "workspace", input.id]))
   end
 
+  test "keeps gitlink inspection bounded for repositories with a large index" do
+    %{root: root, source: source, application: application, input: input} =
+      source_fixture("large-index")
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    files = Path.join(source, "many-files")
+    File.mkdir_p!(files)
+
+    for index <- 1..1_000 do
+      File.write!(Path.join(files, "committed-source-file-#{index}.txt"), "#{index}\n")
+    end
+
+    git!(source, ["add", "many-files"])
+    git!(source, ["commit", "-m", "add a large committed index"])
+    oid = git!(source, ["rev-parse", "HEAD"])
+    full_index = git!(source, ["ls-files", "--stage"])
+    assert byte_size(full_index) > 65_536
+
+    assert {:ok, result} =
+             materialize(%{input | source_revision: oid}, application, root)
+
+    assert result.commit_subject == "add a large committed index"
+    refute File.exists?(Path.join([root, "workspace", input.id]))
+  end
+
   test "rejects committed LFS pointers without contacting an LFS server" do
     %{root: root, source: source, application: application, input: input} =
       source_fixture("lfs")

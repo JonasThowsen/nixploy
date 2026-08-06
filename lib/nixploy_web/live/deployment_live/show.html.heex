@@ -96,7 +96,9 @@
       <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
       <div class="min-w-0">
         <p class="font-semibold">This release is not deployable</p>
-        <p class="break-words text-sm">{input.failure["message"]}</p>
+        <p class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+          {input.failure["message"]}
+        </p>
       </div>
     </section>
 
