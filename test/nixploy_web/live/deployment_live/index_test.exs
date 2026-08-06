@@ -6,7 +6,7 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
 
   alias Nixploy.Deployments
   alias Nixploy.Deployments.{LocalStoreInput, NativeWorker}
-  alias Nixploy.{Fixtures, LocalHost, MachineHealth, Runtime}
+  alias Nixploy.{Fixtures, LocalHost, Runtime}
 
   defmodule NativeExecutorStub do
     def deploy(_deployment, opts) do
@@ -70,6 +70,8 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     previous_workload_probe = Application.get_env(:nixploy, :local_workload_probe)
     previous_health_probe = Application.get_env(:nixploy, :local_health_probe)
     previous_machine_health_probe = Application.get_env(:nixploy, :machine_health_probe)
+    previous_runtime_refresh = Application.get_env(:nixploy, :runtime_refresh)
+    previous_runtime_workload_refresh = Application.get_env(:nixploy, :runtime_workload_refresh)
     previous_store_probe = Application.get_env(:nixploy, :local_store_input_probe)
     previous_native_executor = Application.get_env(:nixploy, :native_deployment_executor)
     previous_managed_applications = Application.get_env(:nixploy, :managed_applications)
@@ -141,31 +143,43 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       observed_at: ~U[2026-07-27 12:06:00Z]
     }
 
-    machine_health = %MachineHealth.Snapshot{
-      hostname: "nixploy-vps",
+    machine_health = %Runtime.Machine{
+      hostname: "production",
+      target_host: "203.0.113.10",
       observed_at: ~U[2026-07-27 12:07:00Z],
-      cpu_percent: 18.4,
+      architecture: "amd64",
+      os: "linux",
+      kernel: "6.18.38",
+      distribution: "nixos",
+      distribution_version: "26.05",
       cpu_count: 4,
-      load_1: 0.42,
-      load_5: 0.31,
-      load_15: 0.25,
-      running_processes: 2,
-      total_processes: 321,
       memory_total_bytes: 8_589_934_592,
       memory_used_bytes: 3_221_225_472,
       memory_percent: 37.5,
       swap_total_bytes: 1_073_741_824,
       swap_used_bytes: 134_217_728,
-      disk_total_bytes: 107_374_182_400,
-      disk_used_bytes: 42_949_672_960,
-      disk_available_bytes: 64_424_509_440,
-      disk_percent: 40.0,
-      uptime_seconds: 183_900
+      storage_total_bytes: 107_374_182_400,
+      storage_used_bytes: 42_949_672_960,
+      storage_available_bytes: 64_424_509_440,
+      storage_percent: 40.0,
+      storage_driver: "overlay",
+      uptime: "2d 3h",
+      rootless: true,
+      containers_total: 3,
+      containers_running: 3,
+      containers_stopped: 0,
+      images_total: 68,
+      podman_version: "5.8.2"
     }
 
     Application.put_env(:nixploy, :local_inventory_probe, fn -> {:ok, inventory} end)
     Application.put_env(:nixploy, :local_workload_probe, fn _id -> {:ok, details} end)
     Application.put_env(:nixploy, :machine_health_probe, fn -> {:ok, machine_health} end)
+    Application.put_env(:nixploy, :runtime_refresh, fn _operator -> {:ok, %{queued: 1}} end)
+
+    Application.put_env(:nixploy, :runtime_workload_refresh, fn _application, _operator ->
+      {:ok, %{id: "job"}}
+    end)
 
     Application.put_env(:nixploy, :local_health_probe, fn _id ->
       {:ok, health_observation}
@@ -197,6 +211,8 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
       restore_env(:local_workload_probe, previous_workload_probe)
       restore_env(:local_health_probe, previous_health_probe)
       restore_env(:machine_health_probe, previous_machine_health_probe)
+      restore_env(:runtime_refresh, previous_runtime_refresh)
+      restore_env(:runtime_workload_refresh, previous_runtime_workload_refresh)
       restore_env(:local_store_input_probe, previous_store_probe)
       restore_env(:native_deployment_executor, previous_native_executor)
       restore_env(:managed_applications, previous_managed_applications)
@@ -222,45 +238,34 @@ defmodule NixployWeb.DeploymentLive.IndexTest do
     refute has_element?(view, "#deployments-page")
   end
 
-  test "shows overall machine health and refreshes a bounded sample", %{conn: conn} do
+  test "shows the remote application host and refreshes through the worker", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/machine")
 
-    assert has_element?(view, "#machine-health-page", "Machine health")
-
-    assert has_element?(
-             view,
-             "#machine-health-page",
-             "Application runtime belongs to positively identified remote targets"
-           )
-
-    assert has_element?(view, "#machine-health-page", "local Podman is recovery-only")
-    assert has_element?(view, "#machine-health-page", "Web readiness")
-    assert has_element?(view, "#machine-health-page", "PostgreSQL")
-    assert has_element?(view, "#machine-health-page", "Oban queues")
-    assert has_element?(view, "#machine-health-page", "Package")
-    assert has_element?(view, "#runtime-mode", "local recovery")
-    assert has_element?(view, "#worker-heartbeat", "Deployment worker fence")
-    assert has_element?(view, "#backup-readiness", "Database recovery")
-    assert has_element?(view, "#machine-health-page", "nixploy-vps")
-    assert has_element?(view, "#machine-cpu", "18.4%")
+    assert has_element?(view, "#machine-health-page", "Application host")
+    assert has_element?(view, "#machine-health-page", "machine hosting managed applications")
+    refute has_element?(view, "#machine-health-page", "Control plane")
+    assert has_element?(view, "#machine-health-page", "production")
+    assert has_element?(view, "#machine-health-page", "203.0.113.10")
+    assert has_element?(view, "#machine-cpu", "4")
     assert has_element?(view, "#machine-memory", "37.5%")
     assert has_element?(view, "#machine-disk", "40.0%")
-    assert has_element?(view, "#machine-load", "0.42")
+    assert has_element?(view, "#machine-containers", "3")
     assert has_element?(view, "#machine-health-page", "2d 3h")
+    assert has_element?(view, "#machine-health-page", "Podman")
     assert has_element?(view, "a[aria-current='page'][href='/machine']", "Machine")
 
     view |> element("#refresh-machine-health") |> render_click()
-    assert has_element?(view, "#machine-health-page", "sampled 2026-07-27 12:07:00 UTC")
+    assert render(view) =~ "Remote target refresh queued"
   end
 
   test "renders machine observation failures without losing navigation", %{conn: conn} do
     Application.put_env(:nixploy, :machine_health_probe, fn ->
-      {:error, {:disk_usage_failed, :timeout}}
+      {:error, :remote_observation_unavailable}
     end)
 
     {:ok, view, _html} = live(conn, ~p"/machine")
 
-    assert has_element?(view, "#machine-health-error", "timed out after 10 seconds")
+    assert has_element?(view, "#machine-health-error", "No remote target observation")
     assert has_element?(view, "nav[aria-label='Primary navigation']", "Applications")
   end
 

@@ -206,6 +206,10 @@ public static class CommandFactory
             catch (InvalidOperationException exception)
             {
                 Console.Error.WriteLine(exception.Message);
+                reporter.Fail(
+                    "credential_resolution_failed",
+                    "Encrypted project credentials could not be resolved by the deployment worker."
+                );
                 return 1;
             }
 
@@ -865,6 +869,7 @@ public static class CommandFactory
                 var upstream = ingress.Port is int activePort ? $"127.0.0.1:{activePort}" : null;
                 var converged = container is not null && workload is not null && ingress.Success &&
                     (expectedPort is null || ingress.Port == expectedPort) && targetLocalHealthy;
+                var hostMetrics = await ObserveTargetHostAsync(commandRunner, connection);
 
                 protocol.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
                 {
@@ -913,6 +918,7 @@ public static class CommandFactory
                         ["network_io"] = workload.NetworkIo,
                         ["block_io"] = workload.BlockIo
                     },
+                    ["host_metrics"] = hostMetrics,
                     ["observed_at"] = DateTimeOffset.UtcNow.ToString("O"),
                     ["healthy"] = targetLocalHealthy,
                     ["converged"] = converged
@@ -933,6 +939,95 @@ public static class CommandFactory
 
         return command;
     }
+
+    private static async Task<IReadOnlyDictionary<string, object?>?> ObserveTargetHostAsync(
+        ICommandRunner commandRunner,
+        string connection
+    )
+    {
+        var result = await commandRunner.RunAsync(
+            "podman",
+            ["--connection", connection, "info", "--format", "json"],
+            new CommandRunOptions
+            {
+                StreamOutput = false,
+                Timeout = TimeSpan.FromSeconds(15),
+                MaxStandardOutputBytes = 65_536,
+                MaxStandardErrorBytes = 16_384
+            }
+        );
+
+        if (result.ExitCode != 0 || result.StdOutputTruncated)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.StdOutput);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("host", out var host) || !root.TryGetProperty("store", out var store))
+            {
+                return null;
+            }
+
+            host.TryGetProperty("distribution", out var distribution);
+            host.TryGetProperty("security", out var security);
+            store.TryGetProperty("containerStore", out var containers);
+            store.TryGetProperty("imageStore", out var images);
+            root.TryGetProperty("version", out var version);
+
+            return new Dictionary<string, object?>
+            {
+                ["hostname"] = JsonString(host, "hostname"),
+                ["architecture"] = JsonString(host, "arch"),
+                ["os"] = JsonString(host, "os"),
+                ["kernel"] = JsonString(host, "kernel"),
+                ["cpu_count"] = JsonInt64(host, "cpus"),
+                ["distribution"] = JsonString(distribution, "distribution"),
+                ["distribution_version"] = JsonString(distribution, "version"),
+                ["memory_free_bytes"] = JsonInt64(host, "memFree"),
+                ["memory_total_bytes"] = JsonInt64(host, "memTotal"),
+                ["swap_free_bytes"] = JsonInt64(host, "swapFree"),
+                ["swap_total_bytes"] = JsonInt64(host, "swapTotal"),
+                ["uptime"] = JsonString(host, "uptime"),
+                ["rootless"] = JsonBool(security, "rootless"),
+                ["containers_total"] = JsonInt64(containers, "number"),
+                ["containers_running"] = JsonInt64(containers, "running"),
+                ["containers_stopped"] = JsonInt64(containers, "stopped"),
+                ["images_total"] = JsonInt64(images, "number"),
+                ["storage_driver"] = JsonString(store, "graphDriverName"),
+                ["storage_total_bytes"] = JsonInt64(store, "graphRootAllocated"),
+                ["storage_used_bytes"] = JsonInt64(store, "graphRootUsed"),
+                ["podman_version"] = JsonString(version, "Version")
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? JsonString(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static long? JsonInt64(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(property, out var value) &&
+        value.TryGetInt64(out var number)
+            ? number
+            : null;
+
+    private static bool? JsonBool(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(property, out var value) &&
+        value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
 
     private static Command CreateLogsCommand(
         INixployConfigProvider configProvider,

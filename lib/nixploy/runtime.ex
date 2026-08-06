@@ -58,6 +58,38 @@ defmodule Nixploy.Runtime do
     ]
   end
 
+  defmodule Machine do
+    @moduledoc false
+    defstruct [
+      :hostname,
+      :target_host,
+      :observed_at,
+      :architecture,
+      :os,
+      :kernel,
+      :distribution,
+      :distribution_version,
+      :cpu_count,
+      :memory_total_bytes,
+      :memory_used_bytes,
+      :memory_percent,
+      :swap_total_bytes,
+      :swap_used_bytes,
+      :storage_total_bytes,
+      :storage_used_bytes,
+      :storage_available_bytes,
+      :storage_percent,
+      :storage_driver,
+      :uptime,
+      :rootless,
+      :containers_total,
+      :containers_running,
+      :containers_stopped,
+      :images_total,
+      :podman_version
+    ]
+  end
+
   defmodule Details do
     @moduledoc false
     defstruct [
@@ -122,6 +154,18 @@ defmodule Nixploy.Runtime do
        observed_at: observed_at,
        workloads: workloads
      }}
+  end
+
+  def target_machine do
+    machine =
+      ManagedApplications.list()
+      |> latest_deployments()
+      |> Map.values()
+      |> latest_observations()
+      |> Map.values()
+      |> Enum.find_value(&machine_from_observation/1)
+
+    if machine, do: {:ok, machine}, else: {:error, :remote_observation_unavailable}
   end
 
   def workload_details(application_key) when is_binary(application_key) do
@@ -193,6 +237,16 @@ defmodule Nixploy.Runtime do
     else
       nil -> {:error, :managed_application_not_found}
       false -> {:error, :remote_observation_unavailable}
+      error -> error
+    end
+  end
+
+  def request_refresh(application_key, operator) when is_binary(application_key) do
+    with {:ok, _application} <- ManagedApplications.fetch(application_key),
+         %NativeDeployment{} = deployment <- latest_deployment(application_key) do
+      NativeDeployments.enqueue_status_refresh(deployment.id, operator)
+    else
+      nil -> {:error, :remote_deployment_unavailable}
       error -> error
     end
   end
@@ -286,7 +340,10 @@ defmodule Nixploy.Runtime do
 
     NativeDeployment
     |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
-    |> where([_deployment, input], input.application_key in ^keys)
+    |> where(
+      [deployment, input],
+      input.application_key in ^keys and deployment.state == :succeeded
+    )
     |> order_by([deployment], desc: deployment.inserted_at)
     |> preload([:deployment_input])
     |> Repo.all()
@@ -298,7 +355,10 @@ defmodule Nixploy.Runtime do
   defp latest_deployment(application_key) do
     NativeDeployment
     |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
-    |> where([_deployment, input], input.application_key == ^application_key)
+    |> where(
+      [deployment, input],
+      input.application_key == ^application_key and deployment.state == :succeeded
+    )
     |> order_by([deployment], desc: deployment.inserted_at)
     |> preload([:deployment_input])
     |> limit(1)
@@ -418,6 +478,50 @@ defmodule Nixploy.Runtime do
       metrics: metadata["metrics"]
     }
   end
+
+  defp machine_from_observation(%NativeEvent{metadata: metadata, inserted_at: observed_at}) do
+    host = metadata["target_identity"] || %{}
+    metrics = metadata["host_metrics"]
+
+    if is_map(metrics) do
+      memory_total = metrics["memory_total_bytes"]
+      memory_used = max(memory_total - metrics["memory_free_bytes"], 0)
+      storage_total = metrics["storage_total_bytes"]
+      storage_used = metrics["storage_used_bytes"]
+
+      struct(Machine,
+        hostname: metrics["hostname"],
+        target_host: host["host"],
+        observed_at: observed_at,
+        architecture: metrics["architecture"],
+        os: metrics["os"],
+        kernel: metrics["kernel"],
+        distribution: metrics["distribution"],
+        distribution_version: metrics["distribution_version"],
+        cpu_count: metrics["cpu_count"],
+        memory_total_bytes: memory_total,
+        memory_used_bytes: memory_used,
+        memory_percent: percent(memory_used, memory_total),
+        swap_total_bytes: metrics["swap_total_bytes"],
+        swap_used_bytes: max(metrics["swap_total_bytes"] - metrics["swap_free_bytes"], 0),
+        storage_total_bytes: storage_total,
+        storage_used_bytes: storage_used,
+        storage_available_bytes: max(storage_total - storage_used, 0),
+        storage_percent: percent(storage_used, storage_total),
+        storage_driver: metrics["storage_driver"],
+        uptime: metrics["uptime"],
+        rootless: metrics["rootless"],
+        containers_total: metrics["containers_total"],
+        containers_running: metrics["containers_running"],
+        containers_stopped: metrics["containers_stopped"],
+        images_total: metrics["images_total"],
+        podman_version: metrics["podman_version"]
+      )
+    end
+  end
+
+  defp percent(value, total) when is_integer(value) and is_integer(total) and total > 0,
+    do: Float.round(value / total * 100, 1)
 
   defp connection_state(nil, _error), do: "not observed"
   defp connection_state(_observation, error) when is_binary(error), do: "error"

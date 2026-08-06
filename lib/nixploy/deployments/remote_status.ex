@@ -106,6 +106,7 @@ defmodule Nixploy.Deployments.RemoteStatus do
     local_health = observation["target_local_health"]
     public_health = observation["public_health"]
     metrics = observation["metrics"]
+    host_metrics = observation["host_metrics"]
 
     cond do
       observation["operation_id"] != deployment.id ->
@@ -141,6 +142,9 @@ defmodule Nixploy.Deployments.RemoteStatus do
 
       not valid_metrics?(metrics) ->
         {:error, :status_metrics_invalid}
+
+      not valid_host_metrics?(host_metrics) ->
+        {:error, :status_host_metrics_invalid}
 
       not valid_observed_at?(observation["observed_at"]) ->
         {:error, :status_timestamp_invalid}
@@ -198,6 +202,29 @@ defmodule Nixploy.Deployments.RemoteStatus do
   end
 
   defp valid_metrics?(_metrics), do: false
+
+  defp valid_host_metrics?(metrics) when is_map(metrics) do
+    bounded_strings =
+      ~w(hostname architecture os kernel distribution distribution_version uptime storage_driver podman_version)
+
+    non_negative =
+      ~w(memory_free_bytes memory_total_bytes swap_free_bytes swap_total_bytes containers_total containers_running containers_stopped images_total storage_total_bytes storage_used_bytes)
+
+    is_integer(metrics["cpu_count"]) and metrics["cpu_count"] > 0 and
+      is_boolean(metrics["rootless"]) and
+      Enum.all?(bounded_strings, fn key ->
+        is_binary(metrics[key]) and metrics[key] != "" and byte_size(metrics[key]) <= 255
+      end) and
+      Enum.all?(non_negative, fn key ->
+        is_integer(metrics[key]) and metrics[key] >= 0
+      end) and
+      metrics["memory_total_bytes"] > 0 and
+      metrics["memory_free_bytes"] <= metrics["memory_total_bytes"] and
+      metrics["storage_total_bytes"] > 0 and
+      metrics["storage_used_bytes"] <= metrics["storage_total_bytes"]
+  end
+
+  defp valid_host_metrics?(_metrics), do: false
 
   defp valid_observed_at?(value) when is_binary(value),
     do: match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value))

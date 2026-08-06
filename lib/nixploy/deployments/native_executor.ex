@@ -146,6 +146,9 @@ defmodule Nixploy.Deployments.NativeExecutor do
   def error_message({:credential_resolution_failed, reason}),
     do: "worker credential resolution failed: #{safe_inspect(reason)}"
 
+  def error_message({:remote_cli_reported_failure, _status, "credential_resolution_failed"}),
+    do: "the deployment worker could not decrypt this release's project credentials"
+
   def error_message({:pre_start_failed, index, count, reason}),
     do:
       "flake-declared pre-start action #{index} of #{count} failed before candidate startup: #{safe_inspect(reason)}"

@@ -188,11 +188,10 @@
   <section :if={@live_action == :machine} id="machine-health-page" class="np-page-stack">
     <header class="np-page-header">
       <div>
-        <p class="np-kicker">Control plane</p>
-        <h1 class="np-page-title">Machine health</h1>
+        <p class="np-kicker">Remote target</p>
+        <h1 class="np-page-title">Application host</h1>
         <p class="np-page-description">
-          Build capacity, database readiness, and worker health for this control-plane host.
-          Application runtime belongs to positively identified remote targets.
+          Worker-observed capacity and Podman health for the machine hosting managed applications.
         </p>
       </div>
       <.button
@@ -204,7 +203,7 @@
         <.icon
           name="hero-arrow-path"
           class={[@machine_health_status == :loading && "animate-spin", "size-4"]}
-        /> Refresh
+        /> Refresh target
       </.button>
     </header>
 
@@ -213,10 +212,10 @@
       id="machine-health-loading"
       class="np-panel flex min-h-40 items-center justify-center p-6 text-sm text-base-content/55"
     >
-      <span class="loading loading-spinner loading-sm mr-3"></span> Sampling machine health…
+      <span class="loading loading-spinner loading-sm mr-3"></span> Reading remote target…
     </div>
 
-    <div :if={@machine_health_error} id="machine-health-error" class="alert alert-error">
+    <div :if={@machine_health_error} id="machine-health-error" class="alert alert-warning">
       <.icon name="hero-exclamation-triangle" class="size-5" />
       <span>{@machine_health_error}</span>
     </div>
@@ -231,14 +230,7 @@
               machine_status(health) == :warning && "bg-warning/15 text-warning",
               machine_status(health) == :critical && "bg-error/15 text-error"
             ]}>
-              <.icon
-                name={
-                  if machine_status(health) == :healthy,
-                    do: "hero-check",
-                    else: "hero-exclamation-triangle"
-                }
-                class="size-5"
-              />
+              <.icon name="hero-server-stack" class="size-5" />
             </span>
             <div>
               <div class="flex flex-wrap items-center gap-2">
@@ -247,31 +239,27 @@
                   {machine_status(health)}
                 </span>
               </div>
-              <p class="mt-1 text-xs text-base-content/50">
-                Up {format_duration(health.uptime_seconds)} · sampled {format_time(
-                  health.observed_at
-                )}
+              <p class="mt-1 font-mono text-xs text-base-content/50">
+                {health.target_host} · sampled {format_time(health.observed_at)}
               </p>
             </div>
           </div>
-          <p class="text-sm text-base-content/55">
-            {health.cpu_count} CPU cores · {health.total_processes} processes
-          </p>
+          <p class="text-sm text-base-content/55">Up {health.uptime}</p>
         </div>
       </section>
 
-      <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Machine vitals">
+      <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Remote machine vitals">
         <article class="np-metric">
           <div class="flex items-center justify-between gap-3">
-            <p class="np-metric-label">CPU usage</p>
+            <p class="np-metric-label">CPU capacity</p>
             <.icon name="hero-cpu-chip" class="size-4 text-base-content/30" />
           </div>
-          <p id="machine-cpu" class="np-metric-number">{format_percent(health.cpu_percent)}</p>
-          <p class="np-metric-meta">sampled across {health.cpu_count} cores</p>
+          <p id="machine-cpu" class="np-metric-number">{health.cpu_count}</p>
+          <p class="np-metric-meta">logical cores</p>
         </article>
         <article class="np-metric">
           <div class="flex items-center justify-between gap-3">
-            <p class="np-metric-label">Memory</p>
+            <p class="np-metric-label">Memory used</p>
             <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
           </div>
           <p id="machine-memory" class="np-metric-number">
@@ -283,21 +271,21 @@
         </article>
         <article class="np-metric">
           <div class="flex items-center justify-between gap-3">
-            <p class="np-metric-label">Storage</p>
+            <p class="np-metric-label">Container storage</p>
             <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
           </div>
-          <p id="machine-disk" class="np-metric-number">{format_percent(health.disk_percent)}</p>
-          <p class="np-metric-meta">{format_bytes(health.disk_available_bytes)} available</p>
+          <p id="machine-disk" class="np-metric-number">
+            {format_percent(health.storage_percent)}
+          </p>
+          <p class="np-metric-meta">{format_bytes(health.storage_available_bytes)} available</p>
         </article>
         <article class="np-metric">
           <div class="flex items-center justify-between gap-3">
-            <p class="np-metric-label">Load</p>
-            <.icon name="hero-chart-bar" class="size-4 text-base-content/30" />
+            <p class="np-metric-label">Containers</p>
+            <.icon name="hero-cube" class="size-4 text-base-content/30" />
           </div>
-          <p id="machine-load" class="np-metric-number">{health.load_1}</p>
-          <p class="np-metric-meta">
-            1 min · {health.load_5} at 5 min · {health.load_15} at 15 min
-          </p>
+          <p id="machine-containers" class="np-metric-number">{health.containers_running}</p>
+          <p class="np-metric-meta">running of {health.containers_total} total</p>
         </article>
       </section>
 
@@ -306,7 +294,7 @@
           <div class="np-panel-header">
             <div>
               <h2 class="np-panel-title">Capacity</h2>
-              <p class="np-panel-description">Current memory and root storage headroom.</p>
+              <p class="np-panel-description">Remote application-host headroom.</p>
             </div>
           </div>
           <div class="space-y-5 p-4 sm:p-5">
@@ -331,20 +319,20 @@
             </div>
             <div>
               <div class="flex items-center justify-between gap-3 text-sm">
-                <span class="font-medium">Root storage</span>
+                <span class="font-medium">Container storage</span>
                 <span class="font-mono text-xs text-base-content/50">
-                  {format_percent(health.disk_percent)}
+                  {format_percent(health.storage_percent)}
                 </span>
               </div>
               <progress
                 class="progress progress-info mt-2 h-2 w-full"
-                value={health.disk_percent}
+                value={health.storage_percent}
                 max="100"
               >
               </progress>
               <p class="mt-2 text-xs text-base-content/45">
-                {format_bytes(health.disk_used_bytes)} used of {format_bytes(
-                  health.disk_total_bytes
+                {format_bytes(health.storage_used_bytes)} used of {format_bytes(
+                  health.storage_total_bytes
                 )}
               </p>
             </div>
@@ -354,141 +342,42 @@
         <section class="np-panel overflow-hidden">
           <div class="np-panel-header">
             <div>
-              <h2 class="np-panel-title">Runtime boundary</h2>
+              <h2 class="np-panel-title">Remote Podman</h2>
               <p class="np-panel-description">
-                This host builds and coordinates; local Podman is recovery-only.
+                Runtime identity reported by the application host.
               </p>
             </div>
           </div>
-          <dl class="grid gap-px bg-base-300 sm:grid-cols-2">
-            <div class="np-data-cell">
-              <dt>Web readiness</dt>
-              <dd class="flex items-center gap-2">
-                <span class="np-status-dot np-status-dot-success"></span>
-                ready · {@control_plane_health.web.role}
+          <dl class="divide-y divide-base-300 text-sm">
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Operating system</dt>
+              <dd class="text-right font-medium">
+                {health.distribution} {health.distribution_version}
               </dd>
             </div>
-            <div class="np-data-cell">
-              <dt>PostgreSQL</dt>
-              <dd class="flex items-center gap-2">
-                <span class={[
-                  "np-status-dot",
-                  @control_plane_health.database.ready? && "np-status-dot-success",
-                  !@control_plane_health.database.ready? && "np-status-dot-error"
-                ]}>
-                </span>
-                {if @control_plane_health.database.ready?, do: "ready", else: "unavailable"}
-              </dd>
-              <p
-                :if={@control_plane_health.database.ready?}
-                class="mt-1 text-xs text-base-content/45"
-              >
-                {@control_plane_health.database.database} · {@control_plane_health.database.version}
-              </p>
-            </div>
-            <div id="worker-heartbeat" class="np-data-cell">
-              <dt>Deployment worker fence</dt>
-              <dd class="flex items-center gap-2">
-                <span class={[
-                  "np-status-dot",
-                  @control_plane_health.workers.singleton? && "np-status-dot-success",
-                  !@control_plane_health.workers.singleton? && "np-status-dot-error"
-                ]}>
-                </span>
-                {case @control_plane_health.workers.active_count do
-                  0 -> "no active worker"
-                  1 -> "single active worker"
-                  count -> "unsafe: #{count} active workers"
-                end}
-              </dd>
-              <p
-                :if={@control_plane_health.workers.latest}
-                class="mt-1 text-xs text-base-content/45"
-              >
-                {@control_plane_health.workers.latest.hostname} · last seen {format_time(
-                  @control_plane_health.workers.latest.last_seen_at
-                )}
-              </p>
-              <div
-                :if={@control_plane_health.workers.latest}
-                class="mt-2 flex flex-wrap gap-1"
-                aria-label="Worker capabilities"
-              >
-                <span
-                  :for={
-                    {capability, available?} <- @control_plane_health.workers.latest.capabilities
-                  }
-                  class={[
-                    "badge badge-outline badge-xs",
-                    available? && "badge-success",
-                    !available? && "badge-error"
-                  ]}
-                >
-                  {capability}
-                </span>
-              </div>
-            </div>
-            <div class="np-data-cell">
-              <dt>Oban queues</dt>
-              <dd>
-                {@control_plane_health.queues.executing} running · {@control_plane_health.queues.available} queued · {@control_plane_health.queues.retryable} retryable
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Kernel / architecture</dt>
+              <dd class="text-right font-mono text-xs">
+                {health.kernel} · {health.architecture}
               </dd>
             </div>
-            <div id="backup-readiness" class="np-data-cell">
-              <dt>Database recovery</dt>
-              <dd class="flex items-center gap-2">
-                <span class={[
-                  "np-status-dot",
-                  @control_plane_health.backup.enabled? && "np-status-dot-success",
-                  !@control_plane_health.backup.enabled? && "np-status-dot-error"
-                ]}>
-                </span>
-                {if @control_plane_health.backup.enabled?,
-                  do: "scheduled backup",
-                  else: "not configured"}
-              </dd>
-              <p
-                :if={@control_plane_health.backup.schedule}
-                class="mt-1 font-mono text-xs text-base-content/45"
-              >
-                {@control_plane_health.backup.schedule}
-              </p>
-            </div>
-            <div class="np-data-cell">
-              <dt>Control-plane mode</dt>
-              <dd id="runtime-mode" class="font-mono text-xs">
-                {if @runtime_mode == :remote_control_plane,
-                  do: "remote targets",
-                  else: "local recovery"}
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Podman</dt>
+              <dd class="text-right font-mono text-xs">
+                {health.podman_version} · {health.storage_driver}
               </dd>
             </div>
-            <div class="np-data-cell">
-              <dt>Package</dt>
-              <dd class="font-mono text-xs">nixploy {@control_plane_health.package_version}</dd>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Isolation</dt>
+              <dd class="text-right font-medium">
+                {if health.rootless, do: "Rootless", else: "Rootful"}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Images</dt>
+              <dd class="text-right font-mono">{health.images_total}</dd>
             </div>
           </dl>
-          <div class="border-t border-base-300 p-4">
-            <p class="np-field-label">Allowlisted repository observations</p>
-            <div class="mt-2 flex flex-wrap gap-2">
-              <span
-                :for={repository <- @control_plane_health.repositories}
-                class={[
-                  "badge badge-outline badge-sm",
-                  repository.state == :available && "badge-success",
-                  repository.state in [:not_observed, :preparing] && "badge-warning",
-                  repository.state == :unavailable && "badge-error"
-                ]}
-                title={repository.error}
-              >
-                {repository.key}: {repository.state}
-              </span>
-            </div>
-          </div>
-          <div class="border-t border-base-300 p-4">
-            <.link navigate={~p"/applications"} class="btn btn-outline btn-sm min-h-10 w-full">
-              View applications
-            </.link>
-          </div>
         </section>
       </div>
     </div>
@@ -842,7 +731,7 @@
                       id="fetch-runtime-logs"
                       phx-click="fetch_runtime_logs"
                       class="btn-outline btn-xs min-h-9"
-                      disabled={@selected_workload.state == "unavailable"}
+                      disabled={is_nil(Map.get(@selected_workload, :deployment_id))}
                     >
                       Fetch logs
                     </.button>

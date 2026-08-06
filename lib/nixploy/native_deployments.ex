@@ -340,6 +340,7 @@ defmodule Nixploy.NativeDeployments do
         "target_local_health",
         "public_health",
         "metrics",
+        "host_metrics",
         "observed_at",
         "healthy",
         "converged",

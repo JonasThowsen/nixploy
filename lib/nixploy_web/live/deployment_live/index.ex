@@ -5,7 +5,6 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   alias Nixploy.{
     ControlPlaneHealth,
-    MachineHealth,
     NativeDeployments,
     Notifications,
     Runtime,
@@ -74,13 +73,20 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   def handle_event("refresh_machine_health", _params, socket) do
-    send(self(), :load_machine_health)
+    case runtime_refresh().(socket.assigns.current_operator) do
+      {:ok, %{queued: queued}} when queued > 0 ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Remote target refresh queued")
+         |> assign(machine_health_status: :loading, machine_health_error: nil)}
 
-    {:noreply,
-     assign(socket,
-       machine_health_status: :loading,
-       machine_health_error: nil
-     )}
+      {:ok, _result} ->
+        {:noreply, put_flash(socket, :error, "No deployed application target is available")}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Could not refresh remote target: #{inspect(reason)}")}
+    end
   end
 
   def handle_event("refresh_local_inventory", _params, socket) do
@@ -120,19 +126,24 @@ defmodule NixployWeb.DeploymentLive.Index do
         {:noreply, socket}
 
       workload ->
-        send(self(), {:load_workload_details, workload.id})
+        case runtime_workload_refresh().(workload.id, socket.assigns.current_operator) do
+          {:ok, _job} ->
+            send(self(), {:load_workload_details, workload.id})
 
-        if workload.managed? and workload.state != "unavailable",
-          do: send(self(), {:probe_local_health, workload.id})
+            {:noreply,
+             socket
+             |> put_flash(:info, "Remote application refresh queued")
+             |> assign(
+               workload_details_error: nil,
+               workload_details_status: :loading,
+               local_health_error: nil,
+               local_health_status: :loading
+             )}
 
-        {:noreply,
-         assign(socket,
-           workload_details_error: nil,
-           workload_details_status: :loading,
-           local_health_error: nil,
-           local_health_status:
-             if(workload.managed? and workload.state != "unavailable", do: :loading, else: :idle)
-         )}
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Could not refresh remote application: #{inspect(reason)}")}
+        end
     end
   end
 
@@ -187,9 +198,6 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   @impl true
   def handle_info(:load_machine_health, socket) do
-    # TODO(tracer): Move machine sampling to a supervised periodic observer before
-    # adding history, charts, alerts, or multiple hosts. This page intentionally
-    # shows one bounded sample requested by an authenticated operator.
     case machine_health_probe().() do
       {:ok, snapshot} ->
         {:noreply,
@@ -288,6 +296,7 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   def handle_info({:deployment_changed, _deployment_id}, socket) do
     send(self(), :load_local_inventory)
+    if socket.assigns.live_action == :machine, do: send(self(), :load_machine_health)
 
     if socket.assigns.selected_workload do
       send(self(), {:load_workload_details, socket.assigns.selected_workload.id})
@@ -297,7 +306,7 @@ defmodule NixployWeb.DeploymentLive.Index do
   end
 
   defp machine_health_probe do
-    Application.get_env(:nixploy, :machine_health_probe, &MachineHealth.snapshot/0)
+    Application.get_env(:nixploy, :machine_health_probe, &Runtime.target_machine/0)
   end
 
   defp local_inventory_probe do
@@ -314,6 +323,10 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   defp runtime_refresh do
     Application.get_env(:nixploy, :runtime_refresh, &Runtime.request_refresh_all/1)
+  end
+
+  defp runtime_workload_refresh do
+    Application.get_env(:nixploy, :runtime_workload_refresh, &Runtime.request_refresh/2)
   end
 
   defp select_workload(socket, workload) do
@@ -339,16 +352,10 @@ defmodule NixployWeb.DeploymentLive.Index do
     Enum.find(inventory.workloads, &(&1.id == workload_id))
   end
 
-  defp machine_health_error({:disk_usage_failed, :timeout}),
-    do: "Disk observation timed out after 10 seconds"
+  defp machine_health_error(:remote_observation_unavailable),
+    do: "No remote target observation is available yet. Refresh the application target."
 
-  defp machine_health_error({:disk_usage_failed, _reason}),
-    do: "Disk usage is temporarily unavailable"
-
-  defp machine_health_error({:machine_health_read_failed, _path, _reason}),
-    do: "Host kernel metrics are temporarily unavailable"
-
-  defp machine_health_error(_reason), do: "Machine health is temporarily unavailable"
+  defp machine_health_error(_reason), do: "Remote target diagnostics are temporarily unavailable"
 
   defp local_inventory_error(:managed_application_not_found),
     do: "The managed application is no longer allowlisted"
@@ -537,10 +544,8 @@ defmodule NixployWeb.DeploymentLive.Index do
 
   def machine_status(snapshot) do
     cond do
-      snapshot.disk_percent >= 95 or snapshot.memory_percent >= 95 -> :critical
-      snapshot.disk_percent >= 85 or snapshot.memory_percent >= 85 -> :warning
-      snapshot.cpu_percent >= 90 -> :warning
-      snapshot.load_1 > snapshot.cpu_count * 1.5 -> :warning
+      snapshot.storage_percent >= 95 or snapshot.memory_percent >= 95 -> :critical
+      snapshot.storage_percent >= 85 or snapshot.memory_percent >= 85 -> :warning
       true -> :healthy
     end
   end

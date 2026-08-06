@@ -62,6 +62,7 @@ defmodule Nixploy.RuntimeTest do
                  "network_io" => "1kB / 2kB",
                  "block_io" => "3kB / 4kB"
                },
+               "host_metrics" => host_metrics(),
                "healthy" => true,
                "converged" => true
              })
@@ -88,6 +89,14 @@ defmodule Nixploy.RuntimeTest do
     assert details.target_local_health["healthy"]
     assert details.public_health["status_code"] == 200
     assert details.observation_error == nil
+
+    assert {:ok, machine} = Runtime.target_machine()
+    assert machine.hostname == "production"
+    assert machine.target_host == "203.0.113.10"
+    assert machine.cpu_count == 2
+    assert machine.memory_percent == 75.0
+    assert machine.storage_percent == 37.5
+    assert machine.containers_running == 3
   end
 
   test "allowlisted application without a deployment is explicit unavailable state" do
@@ -95,6 +104,34 @@ defmodule Nixploy.RuntimeTest do
 
     assert [%Runtime.Workload{state: "unavailable", status: "no deployment", stale?: true}] =
              inventory.workloads
+  end
+
+  test "runtime refresh and logs use the latest successful deployment after a failed attempt" do
+    succeeded = deployment_fixture()
+    operator = Fixtures.operator_fixture()
+    now = DateTime.utc_now()
+
+    %NativeDeployment{
+      deployment_input_id: succeeded.deployment_input_id,
+      requested_by_operator_id: operator.id,
+      project: "fixture",
+      target: "production",
+      operation_kind: :deploy,
+      state: :failed,
+      current_stage: :failed,
+      resource_prefix: succeeded.resource_prefix,
+      started_at: now,
+      finished_at: now,
+      failure: %{"code" => "fixture_failure"}
+    }
+    |> Repo.insert!()
+
+    assert {:ok, refresh_job} = Runtime.request_refresh("fixture", operator)
+    assert refresh_job.args[:remote_status_deployment_id] == succeeded.id
+
+    assert {:ok, snapshot, log_job} = Runtime.request_logs("fixture", operator)
+    assert snapshot.native_deployment_id == succeeded.id
+    assert log_job.args[:native_deployment_id] == succeeded.id
   end
 
   test "ephemeral logs are request-generation fenced and exposed without history" do
@@ -124,6 +161,32 @@ defmodule Nixploy.RuntimeTest do
     assert details.logs == "ready\nTOKEN=[REDACTED]"
     assert details.log_status == :available
     assert details.log_line_count == 2
+  end
+
+  defp host_metrics do
+    %{
+      "hostname" => "production",
+      "architecture" => "amd64",
+      "os" => "linux",
+      "kernel" => "6.18.38",
+      "cpu_count" => 2,
+      "distribution" => "nixos",
+      "distribution_version" => "26.05",
+      "memory_free_bytes" => 1_000_000_000,
+      "memory_total_bytes" => 4_000_000_000,
+      "swap_free_bytes" => 0,
+      "swap_total_bytes" => 0,
+      "uptime" => "19d 17h",
+      "rootless" => true,
+      "containers_total" => 3,
+      "containers_running" => 3,
+      "containers_stopped" => 0,
+      "images_total" => 68,
+      "storage_driver" => "overlay",
+      "storage_total_bytes" => 80_000_000_000,
+      "storage_used_bytes" => 30_000_000_000,
+      "podman_version" => "5.8.2"
+    }
   end
 
   defp deployment_fixture do
