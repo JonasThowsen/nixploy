@@ -99,6 +99,28 @@ defmodule Nixploy.RuntimeTest do
     assert machine.containers_running == 3
   end
 
+  test "CI-registered local-store releases map back to the host-owned application" do
+    deployment = deployment_fixture()
+
+    DeploymentInput
+    |> Repo.get!(deployment.deployment_input_id)
+    |> Ecto.Changeset.change(%{
+      application_key: nil,
+      input_kind: :local_store,
+      registration_channel: :ci,
+      source_repository: "owner/fixture"
+    })
+    |> Repo.update!()
+
+    assert {:ok, inventory} = Runtime.inventory()
+    assert [%Runtime.Workload{} = workload] = inventory.workloads
+    assert workload.deployment_id == deployment.id
+    assert workload.status == "observation unavailable"
+
+    assert {:ok, job} = Runtime.request_refresh("fixture", Fixtures.operator_fixture())
+    assert job.args[:remote_status_deployment_id] == deployment.id
+  end
+
   test "allowlisted application without a deployment is explicit unavailable state" do
     assert {:ok, inventory} = Runtime.inventory()
 

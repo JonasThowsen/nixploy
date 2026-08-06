@@ -336,33 +336,53 @@ defmodule Nixploy.Runtime do
   end
 
   defp latest_deployments(applications) do
-    keys = Enum.map(applications, & &1.key)
+    projects = Enum.map(applications, & &1.project)
+    targets = Enum.map(applications, & &1.target)
 
     NativeDeployment
     |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
     |> where(
-      [deployment, input],
-      input.application_key in ^keys and deployment.state == :succeeded
+      [deployment, _input],
+      deployment.project in ^projects and deployment.target in ^targets and
+        deployment.state == :succeeded
     )
     |> order_by([deployment], desc: deployment.inserted_at)
     |> preload([:deployment_input])
     |> Repo.all()
     |> Enum.reduce(%{}, fn deployment, acc ->
-      Map.put_new(acc, deployment.deployment_input.application_key, deployment)
+      case matching_application(applications, deployment) do
+        nil -> acc
+        application -> Map.put_new(acc, application.key, deployment)
+      end
     end)
   end
 
   defp latest_deployment(application_key) do
-    NativeDeployment
-    |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
-    |> where(
-      [deployment, input],
-      input.application_key == ^application_key and deployment.state == :succeeded
-    )
-    |> order_by([deployment], desc: deployment.inserted_at)
-    |> preload([:deployment_input])
-    |> limit(1)
-    |> Repo.one()
+    with {:ok, application} <- ManagedApplications.fetch(application_key) do
+      NativeDeployment
+      |> join(:inner, [deployment], input in assoc(deployment, :deployment_input))
+      |> where(
+        [deployment, input],
+        deployment.project == ^application.project and
+          deployment.target == ^application.target and deployment.state == :succeeded and
+          (is_nil(input.source_repository) or
+             input.source_repository == ^application.repository_identity)
+      )
+      |> order_by([deployment], desc: deployment.inserted_at)
+      |> preload([:deployment_input])
+      |> limit(1)
+      |> Repo.one()
+    else
+      _error -> nil
+    end
+  end
+
+  defp matching_application(applications, deployment) do
+    Enum.find(applications, fn application ->
+      deployment.project == application.project and deployment.target == application.target and
+        (is_nil(deployment.deployment_input.source_repository) or
+           deployment.deployment_input.source_repository == application.repository_identity)
+    end)
   end
 
   defp request_log_snapshot(repo, application_key, deployment_id, request_id, now) do
