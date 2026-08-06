@@ -234,8 +234,13 @@
               ];
             };
             web = split.config.systemd.services.nixploy-control-plane.serviceConfig;
-            worker = split.config.systemd.services.nixploy-control-plane-worker.serviceConfig;
+            workerService = split.config.systemd.services.nixploy-control-plane-worker;
+            worker = workerService.serviceConfig;
           in
+          assert
+            workerService.environment.NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE
+            == "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
+          assert !(workerService.environment ? SOPS_AGE_SSH_PRIVATE_KEY_FILE);
           assert web.RuntimeDirectory == "nixploy-web";
           assert worker.RuntimeDirectory == "nixploy-worker";
           assert web.RuntimeDirectoryMode == "0700";

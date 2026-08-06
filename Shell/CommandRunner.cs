@@ -32,6 +32,18 @@ public class CommandRunner : ICommandRunner
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        foreach (var (name, value) in options.EnvironmentVariables)
+        {
+            if (value is null)
+            {
+                process.StartInfo.Environment.Remove(name);
+            }
+            else
+            {
+                process.StartInfo.Environment[name] = value;
+            }
+        }
+
         process.Start();
 
         if (options.StandardInput is not null)
@@ -41,19 +53,42 @@ public class CommandRunner : ICommandRunner
             process.StandardInput.Close();
         }
 
-        var output = new BoundedTextBuffer(options.MaxStandardOutputBytes);
-        var error = new BoundedTextBuffer(options.MaxStandardErrorBytes);
+        var output = options.StandardOutputFile is null
+            ? new BoundedTextBuffer(options.MaxStandardOutputBytes)
+            : null;
+        var error = options.RetainStandardError
+            ? new BoundedTextBuffer(options.MaxStandardErrorBytes)
+            : null;
 
-        var outputTask = ReadAsync(
-            process.StandardOutput,
-            output,
-            options.StreamOutput ? Console.Out : null
-        );
+        using var outputFile = options.StandardOutputFile is null
+            ? null
+            : new FileStream(
+                options.StandardOutputFile,
+                FileMode.Truncate,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan
+            );
+
+        var outputTask = outputFile is null
+            ? ReadAsync(
+                process.StandardOutput,
+                output,
+                options.StreamOutput ? Console.Out : null,
+                options.MaxStandardOutputBytes
+            )
+            : CopyBoundedAsync(
+                process.StandardOutput.BaseStream,
+                outputFile,
+                options.MaxStandardOutputBytes
+            );
 
         var errorTask = ReadAsync(
             process.StandardError,
             error,
-            options.StreamOutput ? Console.Error : null
+            options.StreamOutput ? Console.Error : null,
+            options.MaxStandardErrorBytes
         );
 
         using var timeout = new CancellationTokenSource(options.Timeout);
@@ -84,20 +119,22 @@ public class CommandRunner : ICommandRunner
 
         await Task.WhenAll(outputTask, errorTask);
 
+        var outputTruncated = outputTask.Result;
+        var errorTruncated = errorTask.Result;
         var boundedExitCode = cancelled
             ? 130
             : timedOut
                 ? 124
-                : output.Truncated || error.Truncated
+                : outputTruncated || errorTruncated
                     ? 125
                     : process.ExitCode;
 
         return new CommandRunResult(
             boundedExitCode,
-            output.Value,
-            error.Value,
-            output.Truncated,
-            error.Truncated,
+            output?.Value ?? "",
+            error?.Value ?? "",
+            outputTruncated,
+            errorTruncated,
             timedOut,
             cancelled
         );
@@ -116,21 +153,56 @@ public class CommandRunner : ICommandRunner
         }
     }
 
-    private static async Task ReadAsync(
+    private static async Task<bool> ReadAsync(
         TextReader reader,
-        BoundedTextBuffer output,
-        TextWriter? writer
+        BoundedTextBuffer? output,
+        TextWriter? writer,
+        int maximumBytes
     )
     {
+        var observedBytes = 0L;
+
         while (await reader.ReadLineAsync() is { } line)
         {
-            output.AppendLine(line);
+            observedBytes += Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+            output?.AppendLine(line);
 
             if (writer is not null)
             {
                 await writer.WriteLineAsync(line);
             }
         }
+
+        return output?.Truncated ?? observedBytes > maximumBytes;
+    }
+
+    private static async Task<bool> CopyBoundedAsync(
+        Stream source,
+        Stream destination,
+        int maximumBytes
+    )
+    {
+        var buffer = new byte[8192];
+        var written = 0;
+        var truncated = false;
+        int count;
+
+        while ((count = await source.ReadAsync(buffer)) > 0)
+        {
+            var remaining = maximumBytes - written;
+            var writeCount = Math.Min(count, Math.Max(remaining, 0));
+
+            if (writeCount > 0)
+            {
+                await destination.WriteAsync(buffer.AsMemory(0, writeCount));
+                written += writeCount;
+            }
+
+            truncated |= writeCount != count;
+        }
+
+        await destination.FlushAsync();
+        return truncated;
     }
 
     private sealed class BoundedTextBuffer(int maximumBytes)

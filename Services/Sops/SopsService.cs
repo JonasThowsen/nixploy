@@ -8,6 +8,12 @@ public sealed class SopsService(
     Func<string, AgeIdentityFileMetadata>? ageIdentityMetadata = null
 ) : ISopsService
 {
+    private const int MaximumIdentityBytes = 65_536;
+    private const int MaximumDecryptedBytes = 65_536;
+    private const int MaximumDiagnosticBytes = 16_384;
+    private static readonly TimeSpan ConversionTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DecryptionTimeout = TimeSpan.FromMinutes(2);
+
     public async Task<IReadOnlyList<Secret>> LoadSecretsAsync(NixployTarget target)
     {
         if (target.Secrets.Count == 0)
@@ -15,23 +21,94 @@ public sealed class SopsService(
             return [];
         }
 
-        var ageIdentityPath = RequirePrivateAgeKeyFile(
+        var configuredSshIdentity =
             ageKeyFile?.Invoke() ??
-            Environment.GetEnvironmentVariable("SOPS_AGE_KEY_FILE") ??
-            Environment.GetEnvironmentVariable("SOPS_AGE_SSH_PRIVATE_KEY_FILE")
+            Environment.GetEnvironmentVariable("NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE") ??
+            Environment.GetEnvironmentVariable("SOPS_AGE_SSH_PRIVATE_KEY_FILE");
+        var configuredAgeIdentity = configuredSshIdentity is null
+            ? Environment.GetEnvironmentVariable("SOPS_AGE_KEY_FILE")
+            : null;
+        var sourceIdentityPath = RequirePrivateAgeKeyFile(
+            configuredSshIdentity ?? configuredAgeIdentity
         );
+        var temporaryDirectory = default(string);
+
+        try
+        {
+            var sopsIdentityPath = sourceIdentityPath;
+
+            if (configuredSshIdentity is not null)
+            {
+                // SOPS_AGE_SSH_PRIVATE_KEY_CMD returns an OpenSSH identity and
+                // therefore cannot unlock the flake's X25519 age1 recipients.
+                // Convert without retaining either the derived identity or the
+                // converter's potentially key-bearing diagnostics in command results.
+                temporaryDirectory = CreatePrivateIdentityDirectory();
+                sopsIdentityPath = Path.Combine(temporaryDirectory, "age-identity");
+                CreatePrivateIdentityFile(sopsIdentityPath);
+
+                var conversion = await commandRunner.RunAsync(
+                    "ssh-to-age",
+                    ["-private-key", "-i", sourceIdentityPath],
+                    new CommandRunOptions
+                    {
+                        StreamOutput = false,
+                        StandardOutputFile = sopsIdentityPath,
+                        RetainStandardError = false,
+                        Timeout = ConversionTimeout,
+                        MaxStandardOutputBytes = MaximumIdentityBytes,
+                        MaxStandardErrorBytes = MaximumDiagnosticBytes
+                    }
+                );
+
+                if (conversion.ExitCode != 0 || new FileInfo(sopsIdentityPath).Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to derive the worker age identity (exit code {conversion.ExitCode})."
+                    );
+                }
+            }
+
+            return await DecryptSecretsAsync(target, sopsIdentityPath);
+        }
+        finally
+        {
+            if (temporaryDirectory is not null && Directory.Exists(temporaryDirectory))
+            {
+                Directory.Delete(temporaryDirectory, recursive: true);
+            }
+        }
+    }
+
+    private async Task<IReadOnlyList<Secret>> DecryptSecretsAsync(
+        NixployTarget target,
+        string sopsIdentityPath
+    )
+    {
         var secrets = new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
         foreach (var (label, path) in target.Secrets.OrderBy(secret => secret.Key))
         {
-            Console.WriteLine($"Decrypting secrets '{label}'...");
-
-            Console.WriteLine($"Using worker-owned age identity from {ageIdentityPath}.");
+            Console.WriteLine($"Decrypting secrets '{label}' with the worker-owned identity.");
 
             CommandRunResult result = await commandRunner.RunAsync(
                 "sops",
                 ["--decrypt", "--input-type", "dotenv", "--output-type", "dotenv", path],
-                new CommandRunOptions { StreamOutput = false }
+                new CommandRunOptions
+                {
+                    StreamOutput = false,
+                    Timeout = DecryptionTimeout,
+                    MaxStandardOutputBytes = MaximumDecryptedBytes,
+                    MaxStandardErrorBytes = MaximumDiagnosticBytes,
+                    EnvironmentVariables = new Dictionary<string, string?>
+                    {
+                        ["SOPS_AGE_KEY"] = null,
+                        ["SOPS_AGE_KEY_CMD"] = null,
+                        ["SOPS_AGE_KEY_FILE"] = sopsIdentityPath,
+                        ["SOPS_AGE_SSH_PRIVATE_KEY_CMD"] = null,
+                        ["SOPS_AGE_SSH_PRIVATE_KEY_FILE"] = null
+                    }
+                }
             );
 
             if (result.ExitCode != 0)
@@ -56,6 +133,34 @@ public sealed class SopsService(
         }
 
         return [.. secrets.Values.Select(source => source.Secret)];
+    }
+
+    private static string CreatePrivateIdentityDirectory()
+    {
+        var path = Path.Combine(
+            Directory.GetCurrentDirectory(),
+            $".nixploy-sops-{Guid.NewGuid():N}"
+        );
+        Directory.CreateDirectory(path);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        return path;
+    }
+
+    private static void CreatePrivateIdentityFile(string path)
+    {
+        using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
     }
 
     private string RequirePrivateAgeKeyFile(string? path)

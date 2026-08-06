@@ -32,8 +32,37 @@ public sealed class SopsServiceTests
             ],
             secrets
         );
-        Assert.Equal("sops", runner.Calls[0].FileName);
-        Assert.Equal(["--decrypt", "--input-type", "dotenv", "--output-type", "dotenv", "secrets/prod.env"], runner.Calls[0].Arguments);
+        Assert.Equal(2, runner.Calls.Count);
+        var conversion = runner.Calls[0];
+        var conversionOptions = conversion.Options!;
+        var derivedIdentityPath = conversionOptions.StandardOutputFile!;
+        Assert.Equal("ssh-to-age", conversion.FileName);
+        Assert.Equal(["-private-key", "-i", key.Name], conversion.Arguments);
+        Assert.False(conversionOptions.StreamOutput);
+        Assert.False(conversionOptions.RetainStandardError);
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                runner.OutputFileModeAtCall
+            );
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                runner.OutputDirectoryModeAtCall
+            );
+        }
+
+        var decrypt = runner.Calls[1];
+        Assert.Equal("sops", decrypt.FileName);
+        Assert.Equal(["--decrypt", "--input-type", "dotenv", "--output-type", "dotenv", "secrets/prod.env"], decrypt.Arguments);
+        Assert.Equal(
+            derivedIdentityPath,
+            decrypt.Options!.EnvironmentVariables["SOPS_AGE_KEY_FILE"]
+        );
+        Assert.Null(decrypt.Options.EnvironmentVariables["SOPS_AGE_SSH_PRIVATE_KEY_FILE"]);
+        Assert.Null(decrypt.Options.EnvironmentVariables["SOPS_AGE_SSH_PRIVATE_KEY_CMD"]);
+        Assert.False(File.Exists(derivedIdentityPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(derivedIdentityPath)!));
     }
 
     [Fact]
@@ -108,8 +137,9 @@ public sealed class SopsServiceTests
         var secrets = await service.LoadSecretsAsync(target);
 
         Assert.Single(secrets);
-        Assert.Single(runner.Calls);
-        Assert.Equal("sops", runner.Calls[0].FileName);
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.Equal("ssh-to-age", runner.Calls[0].FileName);
+        Assert.Equal("sops", runner.Calls[1].FileName);
     }
 
     [Fact]
@@ -161,6 +191,105 @@ public sealed class SopsServiceTests
     }
 
     [Fact]
+    public async Task LoadSecretsAsync_DoesNotRetainOrReportIdentityOnConversionFailure()
+    {
+        const string privateMaterial = "PRIVATE-IDENTITY-MUST-NOT-ESCAPE";
+        var runner = new RecordingCommandRunner(new CommandRunResult(23, privateMaterial, privateMaterial));
+        using var key = PrivateAgeKeyFile();
+        await using (var writer = new StreamWriter(key, leaveOpen: true))
+        {
+            await writer.WriteAsync(privateMaterial.AsMemory(), TestContext.Current.CancellationToken);
+            await writer.FlushAsync(TestContext.Current.CancellationToken);
+        }
+        key.Position = 0;
+        var service = new SopsService(runner, () => key.Name);
+        var target = TargetWithSecrets();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.LoadSecretsAsync(target)
+        );
+
+        Assert.DoesNotContain(privateMaterial, exception.Message);
+        Assert.Single(runner.Calls);
+        var conversionOptions = runner.Calls[0].Options!;
+        var derivedIdentityPath = conversionOptions.StandardOutputFile!;
+        Assert.False(conversionOptions.RetainStandardError);
+        Assert.False(File.Exists(derivedIdentityPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(derivedIdentityPath)!));
+    }
+
+    [Fact]
+    public async Task LoadSecretsAsync_CleansDerivedIdentityAfterDecryptFailure()
+    {
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(9, "", "safe diagnostic")
+        );
+        using var key = PrivateAgeKeyFile();
+        var service = new SopsService(runner, () => key.Name);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.LoadSecretsAsync(TargetWithSecrets())
+        );
+
+        var derivedPath = runner.Calls[0].Options!.StandardOutputFile!;
+        Assert.False(File.Exists(derivedPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(derivedPath)!));
+    }
+
+    [Fact]
+    public async Task LoadSecretsAsync_CleansDerivedIdentityAfterCancellation()
+    {
+        using var key = PrivateAgeKeyFile();
+        var runner = new CancellingCommandRunner();
+        var service = new SopsService(runner, () => key.Name);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => service.LoadSecretsAsync(TargetWithSecrets())
+        );
+
+        Assert.Equal(2, runner.InvocationCount);
+        Assert.NotNull(runner.OutputFile);
+        Assert.False(File.Exists(runner.OutputFile));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(runner.OutputFile!)!));
+    }
+
+    [Fact]
+    public async Task LoadSecretsAsync_DoesNotWritePlaintextSecretsToConsoleOrCommandInputs()
+    {
+        const string value = "plaintext-must-remain-in-memory-only";
+        var runner = new RecordingCommandRunner(
+            new CommandRunResult(0, "", ""),
+            new CommandRunResult(0, $"TOKEN={value}", "")
+        );
+        using var key = PrivateAgeKeyFile();
+        var service = new SopsService(runner, () => key.Name);
+        var originalOutput = Console.Out;
+        var output = new StringWriter();
+
+        try
+        {
+            Console.SetOut(output);
+            var secrets = await service.LoadSecretsAsync(TargetWithSecrets());
+            Assert.Equal(value, Assert.Single(secrets).Value);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
+
+        Assert.DoesNotContain(value, output.ToString());
+        Assert.All(runner.Calls, call =>
+        {
+            Assert.DoesNotContain(call.Arguments, argument => argument.Contains(value, StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                call.Options?.EnvironmentVariables.Values ?? [],
+                environmentValue => environmentValue?.Contains(value, StringComparison.Ordinal) == true
+            );
+        });
+    }
+
+    [Fact]
     public void Inspect_ReadsActualPrivateRegularFileMetadata()
     {
         if (!OperatingSystem.IsLinux())
@@ -180,6 +309,11 @@ public sealed class SopsServiceTests
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, metadata.Mode);
     }
 
+    private static NixployTarget TargetWithSecrets() => new()
+    {
+        Secrets = new Dictionary<string, string> { ["app"] = "secrets/prod.env" }
+    };
+
     private static AgeIdentityFileMetadata Metadata(
         string path,
         uint ownerUserId,
@@ -193,6 +327,31 @@ public sealed class SopsServiceTests
         ownerUserId,
         mode
     );
+
+    private sealed class CancellingCommandRunner : ICommandRunner
+    {
+        public string? OutputFile { get; private set; }
+
+        public int InvocationCount { get; private set; }
+
+        public Task<CommandRunResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CommandRunOptions? options = null
+        )
+        {
+            InvocationCount++;
+
+            if (options?.StandardOutputFile is { } outputFile)
+            {
+                OutputFile = outputFile;
+                File.WriteAllText(outputFile, "AGE-SECRET-KEY-1TEST\n");
+                return Task.FromResult(new CommandRunResult(0, "", ""));
+            }
+
+            throw new OperationCanceledException("simulated cancellation");
+        }
+    }
 
     private static FileStream PrivateAgeKeyFile()
     {

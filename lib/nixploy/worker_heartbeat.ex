@@ -58,7 +58,7 @@ defmodule Nixploy.WorkerHeartbeat do
         "deployment_policy" => configured?(:deployment_policy_component),
         "sops_identity" =>
           is_binary(System.get_env("SOPS_AGE_KEY_FILE")) or
-            is_binary(System.get_env("SOPS_AGE_SSH_PRIVATE_KEY_FILE")),
+            is_binary(System.get_env("NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE")),
         "ssh_identity" => is_binary(System.get_env("NIXPLOY_SSH_IDENTITY_FILE"))
       },
       started_at: started_at,

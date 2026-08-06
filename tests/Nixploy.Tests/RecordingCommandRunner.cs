@@ -10,6 +10,10 @@ internal sealed class RecordingCommandRunner(params CommandRunResult[] results) 
 
     public List<CommandCall> Calls { get; } = [];
 
+    public UnixFileMode? OutputFileModeAtCall { get; private set; }
+
+    public UnixFileMode? OutputDirectoryModeAtCall { get; private set; }
+
     public Task<CommandRunResult> RunAsync(
         string fileName,
         IReadOnlyList<string> arguments,
@@ -21,6 +25,26 @@ internal sealed class RecordingCommandRunner(params CommandRunResult[] results) 
         var result = results.Count > 1
             ? results.Dequeue()
             : results.Peek();
+
+        if (options?.StandardOutputFile is { } outputFile)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                OutputFileModeAtCall = File.GetUnixFileMode(outputFile);
+                OutputDirectoryModeAtCall = File.GetUnixFileMode(Path.GetDirectoryName(outputFile)!);
+            }
+
+            if (result.ExitCode == 0)
+            {
+                File.WriteAllText(outputFile, "AGE-SECRET-KEY-1TEST\n");
+            }
+
+            result = result with
+            {
+                StdOutput = "",
+                StdError = options.RetainStandardError ? result.StdError : ""
+            };
+        }
 
         return Task.FromResult(result);
     }

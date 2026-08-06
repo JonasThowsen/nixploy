@@ -497,7 +497,9 @@ in
             SOPS_AGE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-key";
           }
           // lib.optionalAttrs (cfg.workerSopsAgeSshKeyFile != null) {
-            SOPS_AGE_SSH_PRIVATE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
+            # The remote CLI validates this SSH identity, converts it into an
+            # operation-private age identity, and gives SOPS only that 0600 file.
+            NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE = "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
           };
 
         serviceConfig = commonServiceConfig "worker" // {
