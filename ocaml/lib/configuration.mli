@@ -32,7 +32,7 @@ module Target : sig
   val run : t -> Run.t
   val web : t -> Web.t option
   val secret_references : t -> (string * string) list
-  val require_no_secret_web : t -> Web.t Or_error.t
+  val require_web : t -> Web.t Or_error.t
 end
 
 type t

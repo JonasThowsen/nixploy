@@ -1,8 +1,8 @@
 # nixploy OCaml rewrite
 
-This directory contains the replacement nixploy implementation. The existing
-C# CLI and Elixir control plane remain packaged while the OCaml CLI proves each
-deployment boundary against currently hosted applications.
+This directory contains the default nixploy CLI and its Bonsai control-plane
+surface. The C# CLI remains packaged as `legacy-nixploy` only for the existing
+Phoenix remote-adapter path while that separate integration is retired.
 
 ## Direction
 
@@ -44,9 +44,14 @@ nixploy deploy --target production
 It resolves the exact local `refs/heads/main`, builds and loads an immutable
 Nix image, starts the inactive Podman slot, switches the owned Caddy route, and
 independently verifies the result. Every stage and terminal outcome is recorded
-in SQLite. Secret-bearing targets are rejected until the secrets boundary is
-implemented, and this mutating path still needs an isolated no-secret target
-before it can replace the existing CLI.
+in SQLite. Secret references are decrypted with SOPS, installed into remote
+Podman through stdin, and mounted as container environment secrets without
+placing values in argv or retained errors.
+
+This path has deployed Jomat production in both directions across its blue and
+green slots. The runs adopted its established legacy resource identity, ran two
+secret-backed pre-start commands, kept the previous slot available for rollback,
+switched the exact Caddy route, and preserved public health throughout.
 
 The Bonsai control-plane tracer is served by the second packaged executable:
 
@@ -54,20 +59,19 @@ The Bonsai control-plane tracer is served by the second packaged executable:
 nixploy-web --port 8080
 ```
 
-It reads the NixOS-owned `NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays
-the latest persisted deployment for each application, and sends deploy requests
-through the same `Tracked_deployment.deploy` path as the CLI. The first slice
-serializes web deployments within one process. A durable host lease is required
-before CLI and web mutations may safely run concurrently.
+It binds to loopback, reads the NixOS-owned
+`NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays the latest persisted
+deployment for each application, and sends deploy requests through the same
+`Tracked_deployment.deploy` path as the CLI. CLI and web mutations share a
+cross-process target lease rooted beside the SQLite state database.
 
 Build and test through the repository flake:
 
 ```console
-nix build .#ocaml-nixploy
+nix build .#nixploy
 nix develop
 dune runtest --root ocaml
 ```
 
-The next tracer is one isolated no-secret deployment initiated from Bonsai and
-observed through persisted progress, Caddy compensation, and independent
-readback.
+The remaining legacy boundary is the Phoenix remote CLI protocol. It continues
+to use `legacy-nixploy`; direct-main CLI and Bonsai deployments are fully OCaml.

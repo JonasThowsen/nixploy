@@ -41,4 +41,21 @@ let derive ~project ~target =
       (String.concat
          [ "nixploy-"; project_part; "-"; digest; "-"; target_part ])
 
+let derive_legacy ~project ~target ~repository =
+  let project_text = Project_name.to_string project in
+  let target_text = Target_name.to_string target in
+  let project_part = sanitize project_text in
+  let target_part = sanitize target_text in
+  if String.is_empty project_part || String.is_empty target_part then
+    Or_error.error_string
+      "project and target must contain a resource-safe character"
+  else
+    let digest =
+      Digestif.SHA256.digest_string repository |> Digestif.SHA256.to_hex
+      |> fun value -> String.prefix value 10
+    in
+    Ok
+      (String.concat
+         [ "nixploy-"; project_part; "-"; digest; "-"; target_part ])
+
 let to_string t = t

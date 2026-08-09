@@ -3,6 +3,13 @@ open Core
 
 type image
 type candidate
+type secret_mount
+
+val select_resource_key :
+  target:Configuration.Target.t ->
+  canonical:Resource_key.t ->
+  legacy:Resource_key.t ->
+  Resource_key.t Deferred.Or_error.t
 
 val ensure_connection :
   target:Configuration.Target.t ->
@@ -23,11 +30,19 @@ val prepare_candidate :
   slot:Deployment_plan.slot ->
   unit Deferred.Or_error.t
 
+val install_secrets :
+  connection:string ->
+  resource_key:Resource_key.t ->
+  secrets:Secrets.t list ->
+  secret_mount list Deferred.Or_error.t
+
 val run_pre_start :
   connection:string ->
   target:Configuration.Target.t ->
   port:int ->
   image:image ->
+  secrets:Secrets.t list ->
+  secret_mounts:secret_mount list ->
   unit Deferred.Or_error.t
 
 val start_candidate :
@@ -42,6 +57,8 @@ val start_candidate :
   operation_id:string ->
   deployed_at:string ->
   image:image ->
+  secrets:Secrets.t list ->
+  secret_mounts:secret_mount list ->
   candidate Deferred.Or_error.t
 
 val verify_candidate :

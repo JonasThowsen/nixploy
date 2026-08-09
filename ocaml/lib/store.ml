@@ -116,6 +116,36 @@ let open_ ~path =
               exec db migration);
           store))
 
+let lease_path t ~working_directory ~target =
+  let identity =
+    working_directory ^ "\000" ^ Target_name.to_string target
+    |> Digestif.SHA256.digest_string |> Digestif.SHA256.to_hex
+  in
+  t.path ^ "." ^ identity ^ ".lock"
+
+let acquire_lease t ~working_directory ~target =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          let path = lease_path t ~working_directory ~target in
+          let descriptor =
+            Core_unix.openfile path ~mode:[ O_CREAT; O_RDWR ] ~perm:0o600
+          in
+          if Core_unix.flock descriptor Core_unix.Flock_command.lock_exclusive
+          then descriptor
+          else (
+            Core_unix.close descriptor;
+            failwith "another deployment already holds the target lease")))
+
+let release_lease descriptor =
+  In_thread.run (fun () ->
+      ignore (Core_unix.flock descriptor Core_unix.Flock_command.unlock : bool);
+      Core_unix.close descriptor)
+
+let with_lease t ~working_directory ~target deploy =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind descriptor = acquire_lease t ~working_directory ~target in
+  Monitor.protect deploy ~finally:(fun () -> release_lease descriptor)
+
 let request t ~working_directory ~target =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->

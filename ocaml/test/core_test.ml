@@ -36,6 +36,16 @@ let%test_unit "resource identity bounds both readable parts" =
   assert (String.is_prefix key ~prefix:expected);
   assert (String.is_suffix key ~suffix:("-" ^ String.make 48 'b'))
 
+let%test_unit "legacy resource identity adopts the deployed repository key" =
+  let project = Nixploy.Project_name.of_string "jomat" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let key =
+    Nixploy.Resource_key.derive_legacy ~project ~target
+      ~repository:"git@github.com:JonasThowsen/jomat.git"
+    |> assert_ok |> Nixploy.Resource_key.to_string
+  in
+  [%test_eq: string] "nixploy-jomat-4df9ec6871-production" key
+
 let%test_unit "managed applications preserve host-owned deployment identity" =
   let applications =
     Nixploy.Managed_application.all_of_json
@@ -127,9 +137,7 @@ let%test_unit "deployment configuration renders the selected slot port" =
   let target =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
-  let web =
-    Nixploy.Configuration.Target.require_no_secret_web target |> assert_ok
-  in
+  let web = Nixploy.Configuration.Target.require_web target |> assert_ok in
   [%test_eq: int] 8081 (Nixploy.Configuration.Web.green_port web);
   [%test_eq: (string * string) list]
     [ ("PORT", "8081"); ("URL", "http://0.0.0.0:8081") ]
@@ -137,7 +145,7 @@ let%test_unit "deployment configuration renders the selected slot port" =
        (Nixploy.Configuration.Target.run target)
        ~port:8081)
 
-let%test_unit "secret-bearing targets are rejected before deployment" =
+let%test_unit "secret-bearing web targets remain deployable" =
   let configuration =
     Nixploy.Configuration.of_json
       {|{
@@ -158,8 +166,26 @@ let%test_unit "secret-bearing targets are rejected before deployment" =
   let target =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
+  ignore (Nixploy.Configuration.Target.require_web target |> assert_ok)
+
+let%test_unit "dotenv secrets are strict and redact retained output" =
+  let secrets =
+    Nixploy.Secrets.For_testing.parse_dotenv
+      "DATABASE_URL='postgres://private'\nTOKEN=secret\\nvalue\n"
+    |> assert_ok
+  in
+  [%test_eq: string list]
+    [ "DATABASE_URL"; "TOKEN" ]
+    (List.map secrets ~f:Nixploy.Secrets.name);
+  [%test_eq: string] "failed [REDACTED] and [REDACTED]"
+    (Nixploy.Secrets.redact secrets
+       "failed postgres://private and secret\\nvalue");
   assert (
-    Result.is_error (Nixploy.Configuration.Target.require_no_secret_web target))
+    Result.is_error
+      (Nixploy.Secrets.For_testing.parse_dotenv "GOOD=one\nnot valid\n"));
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.parse_dotenv "DUP=one\nDUP=two\n"))
 
 let%test_unit "workload accepts current deployment labels" =
   let json =
@@ -234,9 +260,7 @@ let%test_unit "deployment plan always selects the inactive slot" =
   let target =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
-  let web =
-    Nixploy.Configuration.Target.require_no_secret_web target |> assert_ok
-  in
+  let web = Nixploy.Configuration.Target.require_web target |> assert_ok in
   let first =
     Nixploy.Deployment_plan.create ~web ~active_port:None |> assert_ok
   in

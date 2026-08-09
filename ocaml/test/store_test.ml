@@ -8,6 +8,17 @@ let run_tests () =
   let target = Nixploy.Target_name.of_string "production" |> Or_error.ok_exn in
   let%bind opened = Nixploy.Store.open_ ~path in
   let store = Or_error.ok_exn opened in
+  let%bind lease_test =
+    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
+      (fun () ->
+        let%map nested =
+          Nixploy.Store.with_lease store ~working_directory:"/tmp/project"
+            ~target (fun () -> Deferred.Or_error.return ())
+        in
+        if Result.is_error nested then Ok ()
+        else Or_error.error_string "a second target lease was acquired")
+  in
+  Or_error.ok_exn lease_test;
   let%bind requested =
     Nixploy.Store.request store ~working_directory:"/tmp/project" ~target
   in

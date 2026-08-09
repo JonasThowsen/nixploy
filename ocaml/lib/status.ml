@@ -23,10 +23,24 @@ let load ~working_directory ~target:target_name =
     Deferred.return (Configuration.find_target configuration target_name)
   in
   let project = Configuration.project configuration in
-  let%bind resource_key =
+  let%bind canonical_resource_key =
     Deferred.return (Resource_key.derive ~project ~target:target_name)
   in
-  let key = Resource_key.to_string resource_key in
+  let%bind repository =
+    Process_runner.run_stdout ~working_directory ~timeout:query_timeout
+      ~max_output_bytes:65_536 ~prog:"git"
+      ~args:[ "remote"; "get-url"; "origin" ]
+      ()
+  in
+  let%bind legacy_resource_key =
+    Deferred.return
+      (Resource_key.derive_legacy ~project ~target:target_name
+         ~repository:(String.strip repository))
+  in
+  let%bind resource_key =
+    Podman.select_resource_key ~target ~canonical:canonical_resource_key
+      ~legacy:legacy_resource_key
+  in
   let%bind connection_output =
     Process_runner.run_stdout ~timeout:query_timeout
       ~max_output_bytes:max_connection_output_bytes ~prog:"podman"
@@ -37,7 +51,14 @@ let load ~working_directory ~target:target_name =
     Deferred.return (Podman_connection.all_of_json connection_output)
   in
   let%bind connection =
-    Deferred.return (Podman_connection.find_for_target connections target)
+    match
+      Podman_connection.find_by_name connections
+        (Resource_key.to_string resource_key)
+    with
+    | Some connection when Podman_connection.matches_target connection target ->
+        Deferred.Or_error.return connection
+    | _ ->
+        Deferred.return (Podman_connection.find_for_target connections target)
   in
   let%bind output =
     Process_runner.run_stdout ~timeout:query_timeout
@@ -49,7 +70,9 @@ let load ~working_directory ~target:target_name =
           "ps";
           "--all";
           "--filter";
-          "label=io.nixploy.resource_key=" ^ key;
+          "label=nixploy.project=" ^ Project_name.to_string project;
+          "--filter";
+          "label=nixploy.target=" ^ Target_name.to_string target_name;
           "--format";
           "json";
         ]

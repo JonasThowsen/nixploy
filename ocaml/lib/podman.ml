@@ -3,6 +3,7 @@ open Core
 
 type image = { reference : string; id : string }
 type candidate = { name : string; id : string }
+type secret_mount = { source : string; target : string }
 
 let podman_timeout = Time_ns.Span.of_min 5.
 let build_timeout = Time_ns.Span.of_hr 1.
@@ -16,7 +17,7 @@ let run ?stdin ?(timeout = podman_timeout) args =
   Process_runner.run ?stdin ~timeout ~max_output_bytes:max_output ~prog:"podman"
     ~args ()
 
-let run_ok ?stdin ?timeout args =
+let run_ok ?stdin ?timeout ?(redact = Fn.id) args =
   let open Deferred.Or_error.Let_syntax in
   let%bind result = run ?stdin ?timeout args in
   match result.exit_status with
@@ -24,7 +25,7 @@ let run_ok ?stdin ?timeout args =
   | Error failure ->
       Deferred.Or_error.errorf "podman failed (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip result.stderr)
+        (String.strip result.stderr |> redact)
 
 let list_connections () =
   let open Deferred.Or_error.Let_syntax in
@@ -32,6 +33,22 @@ let list_connections () =
     run_ok [ "system"; "connection"; "list"; "--format"; "json" ]
   in
   Deferred.return (Podman_connection.all_of_json result.stdout)
+
+let select_resource_key ~target ~canonical ~legacy =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind connections = list_connections () in
+  let matching key =
+    Podman_connection.find_by_name connections (Resource_key.to_string key)
+    |> Option.exists ~f:(fun connection ->
+        Podman_connection.matches_target connection target)
+  in
+  match (matching canonical, matching legacy) with
+  | true, true when not (Resource_key.equal canonical legacy) ->
+      Deferred.Or_error.error_string
+        "both canonical and legacy Podman connections exist for this target"
+  | true, _ -> Deferred.Or_error.return canonical
+  | false, true -> Deferred.Or_error.return legacy
+  | false, false -> Deferred.Or_error.return canonical
 
 let ensure_connection ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
@@ -58,7 +75,7 @@ let ensure_connection ~target ~resource_key =
                 (String.strip preflight.stderr)
         in
         let identity =
-          Configuration.Target.identity_file target
+          Remote_command.identity_file target
           |> Option.value_map ~default:[] ~f:(fun path ->
               [ "--identity"; path ])
         in
@@ -204,6 +221,35 @@ let owned_container output ~project ~target ~resource_key =
       Or_error.error_string
         "container inspect must contain exactly one container"
 
+let owned_candidate_collision output ~project ~target ~resource_key =
+  let open Or_error.Let_syntax in
+  let%bind modern = owned_container output ~project ~target ~resource_key in
+  if modern then Ok true
+  else
+    let%bind json =
+      Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+    in
+    match json with
+    | `List [ `Assoc container ] -> (
+        match List.Assoc.find container ~equal:String.equal "Config" with
+        | Some (`Assoc config) -> (
+            match List.Assoc.find config ~equal:String.equal "Labels" with
+            | Some (`Assoc labels) ->
+                Ok
+                  (Option.equal String.equal
+                     (label labels "nixploy.project")
+                     (Some (Project_name.to_string project))
+                  && Option.equal String.equal
+                       (label labels "nixploy.target")
+                       (Some
+                          (Configuration.Target.name target
+                          |> Target_name.to_string)))
+            | _ -> Ok false)
+        | _ -> Ok false)
+    | _ ->
+        Or_error.error_string
+          "container inspect must contain exactly one container"
+
 let prepare_candidate ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key slot in
@@ -215,7 +261,8 @@ let prepare_candidate ~connection ~project ~target ~resource_key ~slot =
       let%bind inspected = inspect_container ~connection name in
       let%bind owned =
         Deferred.return
-          (owned_container inspected.stdout ~project ~target ~resource_key)
+          (owned_candidate_collision inspected.stdout ~project ~target
+             ~resource_key)
       in
       if not owned then
         Deferred.Or_error.errorf
@@ -229,7 +276,30 @@ let prepare_candidate ~connection ~project ~target ~resource_key ~slot =
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip exists.stderr)
 
-let runtime_args run ~port =
+let secret_args secret_mounts =
+  List.concat_map secret_mounts ~f:(fun secret ->
+      [
+        "--secret";
+        sprintf "source=%s,type=env,target=%s" secret.source secret.target;
+      ])
+
+let install_secrets ~connection ~resource_key ~secrets =
+  let open Deferred.Or_error.Let_syntax in
+  let redact = Secrets.redact secrets in
+  Deferred.Or_error.List.map secrets ~how:`Sequential ~f:(fun secret ->
+      let remote_name =
+        Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
+      in
+      let%bind _ =
+        run [ "--connection"; connection; "secret"; "rm"; remote_name ]
+      in
+      let%map _ =
+        run_ok ~stdin:(Secrets.value secret) ~redact
+          [ "--connection"; connection; "secret"; "create"; remote_name; "-" ]
+      in
+      { source = remote_name; target = Secrets.name secret })
+
+let runtime_args ?(include_ports = true) run ~port =
   let network =
     Configuration.Run.network run
     |> Option.value_map ~default:[] ~f:(fun network -> [ "--network"; network ])
@@ -239,20 +309,23 @@ let runtime_args run ~port =
     |> List.concat_map ~f:(fun (name, value) -> [ "-e"; name ^ "=" ^ value ])
   in
   let ports =
-    Configuration.Run.ports run
-    |> List.concat_map ~f:(fun mapping -> [ "-p"; mapping ])
+    if include_ports then
+      Configuration.Run.ports run
+      |> List.concat_map ~f:(fun mapping -> [ "-p"; mapping ])
+    else []
   in
   network @ environment @ ports
 
-let run_pre_start ~connection ~target ~port ~image =
+let run_pre_start ~connection ~target ~port ~image ~secrets ~secret_mounts =
   let open Deferred.Or_error.Let_syntax in
   let run_config = Configuration.Target.run target in
   Deferred.Or_error.List.iter (Configuration.Run.pre_start run_config)
     ~how:`Sequential ~f:(fun command ->
       let%map _ =
-        run_ok
+        run_ok ~redact:(Secrets.redact secrets)
           ([ "--connection"; connection; "run"; "--rm" ]
-          @ runtime_args run_config ~port
+          @ secret_args secret_mounts
+          @ runtime_args ~include_ports:false run_config ~port
           @ [ image.reference ] @ command)
       in
       ())
@@ -262,7 +335,8 @@ let project_id repository =
   |> fun digest -> String.prefix digest 10
 
 let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
-    ~source ~configuration_digest ~operation_id ~deployed_at ~image =
+    ~source ~configuration_digest ~operation_id ~deployed_at ~image ~secrets
+    ~secret_mounts =
   let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key slot in
   let target_name = Configuration.Target.name target |> Target_name.to_string in
@@ -294,8 +368,9 @@ let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
     Configuration.Run.command run_config |> Option.value ~default:[]
   in
   let%bind started =
-    run_ok
+    run_ok ~redact:(Secrets.redact secrets)
       ([ "--connection"; connection; "run"; "-d"; "--name"; name ]
+      @ secret_args secret_mounts
       @ runtime_args run_config ~port
       @ labels metadata @ [ image.reference ] @ command)
   in

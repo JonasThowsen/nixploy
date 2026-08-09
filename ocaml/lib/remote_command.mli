@@ -1,6 +1,8 @@
 open Async
 open Core
 
+val identity_file : Configuration.Target.t -> string option
+
 val run :
   ?stdin:string ->
   target:Configuration.Target.t ->

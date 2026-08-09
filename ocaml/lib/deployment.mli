@@ -19,6 +19,7 @@ type t
 
 val deploy :
   ?on_stage:(stage -> string -> unit Deferred.t) ->
+  operation_id:string ->
   working_directory:string ->
   target:Target_name.t ->
   unit ->

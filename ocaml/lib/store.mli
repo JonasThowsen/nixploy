@@ -10,6 +10,13 @@ type deployment
 
 val open_ : path:string -> t Deferred.Or_error.t
 
+val with_lease :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  (unit -> 'a Deferred.Or_error.t) ->
+  'a Deferred.Or_error.t
+
 val request :
   t ->
   working_directory:string ->

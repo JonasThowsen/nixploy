@@ -57,9 +57,6 @@ let timestamp () =
   sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (tm.tm_year + 1900) (tm.tm_mon + 1)
     tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
 
-let new_operation_id () =
-  Uuid.create_random (Random.State.make_self_init ()) |> Uuid.to_string
-
 let no_stage _ _ = Deferred.unit
 
 let combine_failure primary secondary =
@@ -85,7 +82,8 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
   in
   Deferred.return (Error error)
 
-let deploy ?(on_stage = no_stage) ~working_directory ~target:target_name () =
+let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
+    ~target:target_name () =
   let open Deferred.Let_syntax in
   let%bind () = on_stage Preparing_source "Resolving the exact head of main" in
   let%bind prepared = Source.prepare ~working_directory in
@@ -110,13 +108,21 @@ let deploy ?(on_stage = no_stage) ~working_directory ~target:target_name () =
               (Configuration.find_target configuration target_name)
           in
           let%bind web =
-            Deferred.return (Configuration.Target.require_no_secret_web target)
+            Deferred.return (Configuration.Target.require_web target)
           in
           let project = Configuration.project configuration in
-          let%bind resource_key =
+          let%bind canonical_resource_key =
             Deferred.return (Resource_key.derive ~project ~target:target_name)
           in
-          let operation_id = new_operation_id () in
+          let%bind legacy_resource_key =
+            Deferred.return
+              (Resource_key.derive_legacy ~project ~target:target_name
+                 ~repository:(Source.repository source))
+          in
+          let%bind resource_key =
+            Podman.select_resource_key ~target ~canonical:canonical_resource_key
+              ~legacy:legacy_resource_key
+          in
           let configuration_digest =
             Nix_configuration.json evaluated
             |> Digestif.SHA256.digest_string |> Digestif.SHA256.to_hex
@@ -135,6 +141,10 @@ let deploy ?(on_stage = no_stage) ~working_directory ~target:target_name () =
           let%bind image =
             Podman.build_and_load ~connection ~source
               ~image_output:(Configuration.Target.image target)
+          in
+          let%bind secrets = Secrets.load ~target in
+          let%bind secret_mounts =
+            Podman.install_secrets ~connection ~resource_key ~secrets
           in
           let caddy = Caddy.create ~target ~resource_key ~web in
           let%bind () =
@@ -167,6 +177,7 @@ let deploy ?(on_stage = no_stage) ~working_directory ~target:target_name () =
           in
           let%bind () =
             Podman.run_pre_start ~connection ~target ~port:candidate_port ~image
+              ~secrets ~secret_mounts
           in
           let%bind () =
             on_stage Starting "Starting the inactive candidate slot"
@@ -176,7 +187,7 @@ let deploy ?(on_stage = no_stage) ~working_directory ~target:target_name () =
             Podman.start_candidate ~connection ~project ~target ~resource_key
               ~slot:candidate_slot ~port:candidate_port ~source
               ~configuration_digest ~operation_id ~deployed_at:(timestamp ())
-              ~image
+              ~image ~secrets ~secret_mounts
           in
           let after_candidate =
             let open Deferred.Let_syntax in

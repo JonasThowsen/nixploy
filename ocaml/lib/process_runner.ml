@@ -44,13 +44,14 @@ let terminate_process_group process wait =
   let%map _ = wait in
   ()
 
-let run ?working_directory ?stdin ~timeout ~max_output_bytes ~prog ~args () =
+let run ?working_directory ?stdin ?env ~timeout ~max_output_bytes ~prog ~args ()
+    =
   if max_output_bytes <= 0 then
     Deferred.Or_error.error_string "max_output_bytes must be positive"
   else
     let open Deferred.Let_syntax in
     let%bind created =
-      Process.create ?working_dir:working_directory
+      Process.create ?working_dir:working_directory ?env
         ~setpgid:Core_unix.Pgid.new_process_group ~prog ~args ()
     in
     match created with
@@ -98,11 +99,11 @@ let run ?working_directory ?stdin ~timeout ~max_output_bytes ~prog ~args () =
             Or_error.errorf "%s timed out after %s" prog
               (Time_ns.Span.to_short_string timeout))
 
-let run_stdout ?working_directory ?stdin ~timeout ~max_output_bytes ~prog ~args
-    () =
+let run_stdout ?working_directory ?stdin ?env ~timeout ~max_output_bytes ~prog
+    ~args () =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    run ?working_directory ?stdin ~timeout ~max_output_bytes ~prog ~args ()
+    run ?working_directory ?stdin ?env ~timeout ~max_output_bytes ~prog ~args ()
   in
   match result.exit_status with
   | Ok () -> Deferred.Or_error.return result.stdout

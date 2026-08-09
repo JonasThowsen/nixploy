@@ -3,13 +3,7 @@ open! Async
 module Managed_application = Nixploy.Managed_application
 module Store = Nixploy.Store
 
-type state = {
-  applications : Managed_application.t list;
-  store : Store.t;
-  (* TODO(tracer): Replace this process-local guard with a durable host lease
-     before allowing the OCaml CLI and web server to mutate concurrently. *)
-  mutable deployment_running : bool;
-}
+type state = { applications : Managed_application.t list; store : Store.t }
 
 let protocol_state = function
   | Store.Requested -> Protocol.Deployment.State.Requested
@@ -56,41 +50,28 @@ let list_applications state _connection_state () =
           }))
 
 let deploy state _connection_state query =
-  if state.deployment_running then
-    Deferred.return
-      (Or_error.error_string
-         "another deployment is already running in this control-plane process")
-  else
-    match
-      Managed_application.find state.applications
-        query.Protocol.Deploy.Query.application
-    with
-    | Error _ as error -> Deferred.return error
-    | Ok application ->
-        state.deployment_running <- true;
-        Monitor.protect
-          ~finally:(fun () ->
-            state.deployment_running <- false;
-            Deferred.unit)
-          (fun () ->
-            Monitor.try_with_or_error (fun () ->
-                Nixploy.Tracked_deployment.deploy ~store:state.store
-                  ~working_directory:
-                    (Managed_application.working_directory application)
-                  ~target:(Managed_application.target application))
-            >>| Or_error.join
-            >>| Or_error.bind ~f:(fun deployment ->
-                match Store.state deployment with
-                | Succeeded -> Ok (Store.id deployment)
-                | Failed ->
-                    Or_error.errorf "operation %s failed: %s"
-                      (Store.id deployment)
-                      (Store.error deployment
-                      |> Option.value ~default:(Store.message deployment))
-                | Requested | Running ->
-                    Or_error.errorf
-                      "operation %s did not reach a terminal state"
-                      (Store.id deployment)))
+  match
+    Managed_application.find state.applications
+      query.Protocol.Deploy.Query.application
+  with
+  | Error _ as error -> Deferred.return error
+  | Ok application ->
+      Monitor.try_with_or_error (fun () ->
+          Nixploy.Tracked_deployment.deploy ~store:state.store
+            ~working_directory:
+              (Managed_application.working_directory application)
+            ~target:(Managed_application.target application))
+      >>| Or_error.join
+      >>| Or_error.bind ~f:(fun deployment ->
+          match Store.state deployment with
+          | Succeeded -> Ok (Store.id deployment)
+          | Failed ->
+              Or_error.errorf "operation %s failed: %s" (Store.id deployment)
+                (Store.error deployment
+                |> Option.value ~default:(Store.message deployment))
+          | Requested | Running ->
+              Or_error.errorf "operation %s did not reach a terminal state"
+                (Store.id deployment))
 
 let implementations state =
   Rpc.Implementations.create_exn
@@ -145,10 +126,10 @@ let run ~port ~state_db =
     Managed_application.load_environment () |> Or_error.ok_exn
   in
   let%bind store = Store.open_ ~path:state_db >>| Or_error.ok_exn in
-  let state = { applications; store; deployment_running = false } in
+  let state = { applications; store } in
   let%bind server =
     Rpc_websocket.Rpc.serve ~on_handler_error:`Raise ~mode:`TCP
-      ~where_to_listen:(Tcp.Where_to_listen.of_port port)
+      ~where_to_listen:(Tcp.Where_to_listen.bind_to Localhost (On_port port))
       ~http_handler:(fun () -> http_handler)
       ~implementations:(implementations state)
       ~initial_connection_state:(fun () _initiated_from _address _connection ->

@@ -172,16 +172,12 @@ module Target = struct
   let web t = t.web
   let secret_references t = t.secret_references
 
-  let require_no_secret_web t =
-    match (t.web, t.secret_references) with
-    | None, _ ->
+  let require_web t =
+    match t.web with
+    | None ->
         Or_error.error_string
-          "the first deployment tracer supports web targets only"
-    | Some _, _ :: _ ->
-        Or_error.error_string
-          "project secrets are not implemented by the first OCaml deployment \
-           tracer"
-    | Some web, [] -> Ok web
+          "the OCaml deployment path currently supports web targets only"
+    | Some web -> Ok web
 end
 
 type t = { project : Project_name.t; targets : Target.t list }

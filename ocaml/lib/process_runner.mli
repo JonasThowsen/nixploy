@@ -10,6 +10,7 @@ type t = {
 val run :
   ?working_directory:string ->
   ?stdin:string ->
+  ?env:Core_unix.env ->
   timeout:Time_ns.Span.t ->
   max_output_bytes:int ->
   prog:string ->
@@ -20,6 +21,7 @@ val run :
 val run_stdout :
   ?working_directory:string ->
   ?stdin:string ->
+  ?env:Core_unix.env ->
   timeout:Time_ns.Span.t ->
   max_output_bytes:int ->
   prog:string ->

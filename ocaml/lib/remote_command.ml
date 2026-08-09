@@ -3,9 +3,22 @@ open Core
 let shell_quote value =
   "'" ^ String.substr_replace_all value ~pattern:"'" ~with_:"'\\''" ^ "'"
 
+let expand_home path =
+  if String.is_prefix path ~prefix:"~/" then
+    Filename.concat (Sys_unix.home_directory ()) (String.drop_prefix path 2)
+  else path
+
+let identity_file target =
+  let configured =
+    Sys.getenv "NIXPLOY_SSH_IDENTITY_FILE"
+    |> Option.filter ~f:(Fn.non (Fn.compose String.is_empty String.strip))
+  in
+  Option.first_some configured (Configuration.Target.identity_file target)
+  |> Option.map ~f:expand_home
+
 let ssh_args target remote_argv =
   let identity =
-    Configuration.Target.identity_file target
+    identity_file target
     |> Option.value_map ~default:[] ~f:(fun path -> [ "-i"; path ])
   in
   let known_hosts =

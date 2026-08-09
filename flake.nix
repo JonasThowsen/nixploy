@@ -93,7 +93,7 @@
           pkgs = pkgsFor system;
           ocamlPackages = ocamlPackagesFor pkgs;
 
-          nixploy = pkgs.buildDotnetModule {
+          legacyNixploy = pkgs.buildDotnetModule {
             pname = "nixploy";
             version = "0.1.0";
             src = ./.;
@@ -111,10 +111,13 @@
             src = ./ocaml;
             duneVersion = "3";
 
-            nativeBuildInputs = with ocamlPackages; [
-              js_of_ocaml-compiler_5_9
-              ocaml-embed-file
-            ];
+            nativeBuildInputs =
+              with ocamlPackages;
+              [
+                js_of_ocaml-compiler_5_9
+                ocaml-embed-file
+              ]
+              ++ [ pkgs.makeWrapper ];
 
             propagatedBuildInputs = with ocamlPackages; [
               async
@@ -134,6 +137,24 @@
             ];
 
             doCheck = true;
+
+            postFixup = ''
+              for executable in $out/bin/nixploy $out/bin/nixploy-web; do
+                wrapProgram "$executable" --prefix PATH : ${
+                  lib.makeBinPath [
+                    pkgs.coreutils
+                    pkgs.curl
+                    pkgs.git
+                    pkgs.nix
+                    pkgs.openssh
+                    pkgs.podman
+                    pkgs.sops
+                    pkgs.ssh-to-age
+                    pkgs.util-linux
+                  ]
+                }
+              done
+            '';
           };
 
           moonbitPolicy = pkgs.stdenvNoCC.mkDerivation {
@@ -217,11 +238,11 @@
 
             postInstall = ''
               wrapProgram $out/bin/nixploy \
-                --set-default NIXPLOY_LEGACY_EXECUTABLE ${nixploy}/bin/nixploy \
-                --set-default NIXPLOY_REMOTE_CLI_EXECUTABLE ${nixploy}/bin/nixploy \
+                --set-default NIXPLOY_LEGACY_EXECUTABLE ${legacyNixploy}/bin/nixploy \
+                --set-default NIXPLOY_REMOTE_CLI_EXECUTABLE ${legacyNixploy}/bin/nixploy \
                 --prefix PATH : ${
                   lib.makeBinPath [
-                    nixploy
+                    legacyNixploy
                     pkgs.git
                     pkgs.nix
                     pkgs.bash
@@ -241,15 +262,18 @@
           };
         in
         {
-          inherit nixploy control-plane moonbitPolicy;
+          inherit control-plane moonbitPolicy;
+          nixploy = ocamlNixploy;
           ocaml-nixploy = ocamlNixploy;
-          default = nixploy;
-          fetch-deps = nixploy.fetch-deps;
+          legacy-nixploy = legacyNixploy;
+          default = ocamlNixploy;
+          fetch-deps = legacyNixploy.fetch-deps;
         }
       );
 
       checks = forAllSystems (system: {
         control-plane = self.packages.${system}.control-plane;
+        nixploy = self.packages.${system}.nixploy;
         ocaml-nixploy = self.packages.${system}.ocaml-nixploy;
         nixos-module =
           (lib.nixosSystem {
