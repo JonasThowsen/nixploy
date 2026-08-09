@@ -4,6 +4,28 @@ module Managed_application = Nixploy.Managed_application
 module Store = Nixploy.Store
 
 type state = { applications : Managed_application.t list; store : Store.t }
+type authorization = Unrestricted | Tailscale of string
+
+let normalized_login login = String.strip login |> String.lowercase
+
+let load_authorization () =
+  match Sys.getenv "NIXPLOY_AUTH_MODE" with
+  | Some mode when String.Caseless.equal mode "tailscale" -> (
+      match Sys.getenv "NIXPLOY_OPERATOR_EMAIL" with
+      | Some email when not (String.is_empty (String.strip email)) ->
+          Ok (Tailscale (normalized_login email))
+      | _ ->
+          Or_error.error_string
+            "NIXPLOY_OPERATOR_EMAIL is required in Tailscale auth mode")
+  | _ -> Ok Unrestricted
+
+let authorized authorization headers =
+  match authorization with
+  | Unrestricted -> true
+  | Tailscale expected ->
+      Cohttp.Header.get headers "tailscale-user-login"
+      |> Option.exists ~f:(fun login ->
+          String.equal (normalized_login login) expected)
 
 let protocol_state = function
   | Store.Requested -> Protocol.Deployment.State.Requested
@@ -91,6 +113,10 @@ let respond_string ~content_type ?status body =
   in
   Cohttp_async.Server.respond_string ~headers ?status body
 
+let forbidden () =
+  respond_string ~content_type:"text/plain" ~status:`Forbidden
+    "Tailscale identity is not authorized for nixploy\n"
+
 let html =
   {|
 <!doctype html>
@@ -110,28 +136,44 @@ let html =
 let not_found =
   {|<!doctype html><html lang="en"><body><h1>Not found</h1></body></html>|}
 
-let http_handler ~body:_ _address request =
+let http_handler ~authorization ~body:_ _address request =
   match Uri.path (Cohttp.Request.uri request) with
-  | "" | "/" | "/index.html" -> respond_string ~content_type:"text/html" html
-  | "/main.js" ->
-      respond_string ~content_type:"application/javascript"
-        Embedded_files.main_dot_bc_dot_js
-  | "/app.css" ->
-      respond_string ~content_type:"text/css" Embedded_files.app_dot_css
   | "/healthz" -> respond_string ~content_type:"text/plain" "ok\n"
+  | ("" | "/" | "/index.html") when authorized authorization request.headers ->
+      respond_string ~content_type:"text/html" html
+  | "/main.js" ->
+      if authorized authorization request.headers then
+        respond_string ~content_type:"application/javascript"
+          Embedded_files.main_dot_bc_dot_js
+      else forbidden ()
+  | "/app.css" ->
+      if authorized authorization request.headers then
+        respond_string ~content_type:"text/css" Embedded_files.app_dot_css
+      else forbidden ()
+  | "" | "/" | "/index.html" -> forbidden ()
   | _ -> respond_string ~content_type:"text/html" ~status:`Not_found not_found
+
+let should_process_request authorization _address = function
+  | Rpc_websocket.Rpc.Connection_source.Plain_tcp ->
+      Or_error.error_string "plain TCP RPC is disabled"
+  | Web (_headers, `is_websocket_request false) -> Ok ()
+  | Web (headers, `is_websocket_request true) ->
+      if authorized authorization headers then Ok ()
+      else Or_error.error_string "Tailscale identity is not authorized"
 
 let run ~port ~state_db =
   let open Deferred.Let_syntax in
   let applications =
     Managed_application.load_environment () |> Or_error.ok_exn
   in
+  let authorization = load_authorization () |> Or_error.ok_exn in
   let%bind store = Store.open_ ~path:state_db >>| Or_error.ok_exn in
   let state = { applications; store } in
   let%bind server =
     Rpc_websocket.Rpc.serve ~on_handler_error:`Raise ~mode:`TCP
       ~where_to_listen:(Tcp.Where_to_listen.bind_to Localhost (On_port port))
-      ~http_handler:(fun () -> http_handler)
+      ~http_handler:(fun () -> http_handler ~authorization)
+      ~should_process_request:(should_process_request authorization)
       ~implementations:(implementations state)
       ~initial_connection_state:(fun () _initiated_from _address _connection ->
         ())
