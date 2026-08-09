@@ -229,7 +229,7 @@ let%test_unit "connection resolution uses the target SSH endpoint, not its name"
   let connections =
     Nixploy.Podman_connection.all_of_json
       {|[
-        {"Name":"stale-resource-name","URI":"ssh://deploy@server.internal:2222/run/user/1000/podman/podman.sock"},
+        {"Name":"stale-resource-name","URI":"ssh://deploy@server.internal:2222/run/user/1000/podman/podman.sock","Identity":"/run/credentials/retired/key"},
         {"Name":"wrong-user","URI":"ssh://root@server.internal:2222/run/podman/podman.sock"}
       ]|}
     |> assert_ok
@@ -238,7 +238,13 @@ let%test_unit "connection resolution uses the target SSH endpoint, not its name"
     Nixploy.Podman_connection.find_for_target connections target |> assert_ok
   in
   [%test_eq: string] "stale-resource-name"
-    (Nixploy.Podman_connection.name connection)
+    (Nixploy.Podman_connection.name connection);
+  [%test_eq: string option] (Some "/run/credentials/retired/key")
+    (Nixploy.Podman_connection.identity connection);
+  assert (
+    not
+      (Nixploy.Podman_connection.matches_identity connection
+         (Some "/run/credentials/current/key")))
 
 let%test_unit "deployment plan always selects the inactive slot" =
   let configuration =

@@ -50,53 +50,63 @@ let select_resource_key ~target ~canonical ~legacy =
   | false, true -> Deferred.Or_error.return legacy
   | false, false -> Deferred.Or_error.return canonical
 
+let verify_ssh target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind preflight =
+    Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 30.)
+      ~max_output_bytes:65_536 [ "true" ]
+  in
+  match preflight.exit_status with
+  | Ok () -> Deferred.Or_error.return ()
+  | Error failure ->
+      Deferred.Or_error.errorf "SSH preflight failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip preflight.stderr)
+
+let add_connection ~target ~name ~identity =
+  let identity_args =
+    Option.value_map identity ~default:[] ~f:(fun path ->
+        [ "--identity"; path ])
+  in
+  let%map result =
+    run_ok
+      ([
+         "system";
+         "connection";
+         "add";
+         name;
+         "--port";
+         Int.to_string (Configuration.Target.port target);
+       ]
+      @ identity_args
+      @ [
+          Configuration.Target.user target
+          ^ "@"
+          ^ Configuration.Target.host target;
+        ])
+  in
+  Or_error.map result ~f:(fun _ -> ())
+
 let ensure_connection ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
   let name = Resource_key.to_string resource_key in
+  let identity = Remote_command.identity_file target in
   let%bind connections = list_connections () in
   let%bind () =
     match Podman_connection.find_by_name connections name with
-    | Some connection when Podman_connection.matches_target connection target ->
+    | Some connection
+      when Podman_connection.matches_target connection target
+           && Podman_connection.matches_identity connection identity ->
         Deferred.Or_error.return ()
+    | Some connection when Podman_connection.matches_target connection target ->
+        let%bind () = verify_ssh target in
+        add_connection ~target ~name ~identity
     | Some _ ->
         Deferred.Or_error.errorf
           "Podman connection %s exists but does not match the flake target" name
     | None ->
-        let%bind preflight =
-          Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 30.)
-            ~max_output_bytes:65_536 [ "true" ]
-        in
-        let%bind () =
-          match preflight.exit_status with
-          | Ok () -> Deferred.Or_error.return ()
-          | Error failure ->
-              Deferred.Or_error.errorf "SSH preflight failed (%s): %s"
-                (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-                (String.strip preflight.stderr)
-        in
-        let identity =
-          Remote_command.identity_file target
-          |> Option.value_map ~default:[] ~f:(fun path ->
-              [ "--identity"; path ])
-        in
-        let%map _ =
-          run_ok
-            ([
-               "system";
-               "connection";
-               "add";
-               name;
-               "--port";
-               Int.to_string (Configuration.Target.port target);
-             ]
-            @ identity
-            @ [
-                Configuration.Target.user target
-                ^ "@"
-                ^ Configuration.Target.host target;
-              ])
-        in
-        ()
+        let%bind () = verify_ssh target in
+        add_connection ~target ~name ~identity
   in
   let%map _ = run_ok [ "--connection"; name; "info" ] in
   name

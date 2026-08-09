@@ -1,8 +1,9 @@
 open Core
 
-type t = { name : string; uri : Uri.t }
+type t = { name : string; uri : Uri.t; identity : string option }
 
 let name t = t.name
+let identity t = t.identity
 
 let required_string fields name =
   match List.Assoc.find fields ~equal:String.equal name with
@@ -11,12 +12,19 @@ let required_string fields name =
       Or_error.errorf "Podman connection %s must be a non-empty string" name
   | None -> Or_error.errorf "Podman connection is missing %s" name
 
+let optional_string fields name =
+  match List.Assoc.find fields ~equal:String.equal name with
+  | Some (`String value) when not (String.is_empty value) -> Ok (Some value)
+  | Some (`String _) | Some `Null | None -> Ok None
+  | Some _ -> Or_error.errorf "Podman connection %s must be a string" name
+
 let of_json = function
   | `Assoc fields ->
       let open Or_error.Let_syntax in
       let%bind name = required_string fields "Name" in
-      let%map uri = required_string fields "URI" in
-      { name; uri = Uri.of_string uri }
+      let%bind uri = required_string fields "URI" in
+      let%map identity = optional_string fields "Identity" in
+      { name; uri = Uri.of_string uri; identity }
   | _ -> Or_error.error_string "Podman connection must be an object"
 
 let all_of_json input =
@@ -37,6 +45,9 @@ let matches_target connection target =
   && Int.equal
        (Uri.port connection.uri |> Option.value ~default:22)
        (Configuration.Target.port target)
+
+let matches_identity connection identity =
+  Option.equal String.equal connection.identity identity
 
 let find_by_name connections name =
   List.find connections ~f:(fun connection -> String.equal connection.name name)
