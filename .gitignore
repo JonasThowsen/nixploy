@@ -1,5 +1,7 @@
 bin/
 obj/
+!/ocaml/bin/
+!/ocaml/bin/**
 .direnv/
 result
 result-*

@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name nixploy)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
