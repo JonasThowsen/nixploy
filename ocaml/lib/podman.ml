@@ -34,21 +34,85 @@ let list_connections () =
   in
   Deferred.return (Podman_connection.all_of_json result.stdout)
 
-let select_resource_key ~target ~canonical ~legacy =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind connections = list_connections () in
-  let matching key =
-    Podman_connection.find_by_name connections (Resource_key.to_string key)
-    |> Option.exists ~f:(fun connection ->
-        Podman_connection.matches_target connection target)
+let resource_keys_of_containers output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
   in
-  match (matching canonical, matching legacy) with
+  match json with
+  | `List containers ->
+      List.filter_map containers ~f:(function
+        | `Assoc container -> (
+            match List.Assoc.find container ~equal:String.equal "Labels" with
+            | Some (`Assoc labels) -> (
+                match
+                  List.Assoc.find labels ~equal:String.equal
+                    "io.nixploy.resource_key"
+                with
+                | Some (`String key) when not (String.is_empty key) -> Some key
+                | _ -> None)
+            | _ -> None)
+        | _ -> None)
+      |> List.dedup_and_sort ~compare:String.compare
+      |> Or_error.return
+  | _ -> Or_error.error_string "remote Podman list must be a JSON array"
+
+let discover_remote_resource_keys ~project ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 30.)
+      ~max_output_bytes:max_output
+      [
+        "podman";
+        "ps";
+        "-a";
+        "--filter";
+        "label=io.nixploy.managed=true";
+        "--filter";
+        "label=io.nixploy.project=" ^ Project_name.to_string project;
+        "--filter";
+        "label=io.nixploy.target="
+        ^ (Configuration.Target.name target |> Target_name.to_string);
+        "--format";
+        "json";
+      ]
+  in
+  match result.exit_status with
+  | Ok () -> Deferred.return (resource_keys_of_containers result.stdout)
+  | Error failure ->
+      Deferred.Or_error.errorf "remote Podman discovery failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr)
+
+let select_resource_key ~project ~target ~canonical ~legacy =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind remote_keys = discover_remote_resource_keys ~project ~target in
+  let remote_matches key =
+    List.mem remote_keys (Resource_key.to_string key) ~equal:String.equal
+  in
+  match (remote_matches canonical, remote_matches legacy) with
   | true, true when not (Resource_key.equal canonical legacy) ->
       Deferred.Or_error.error_string
-        "both canonical and legacy Podman connections exist for this target"
+        "both canonical and legacy workloads exist for this target"
   | true, _ -> Deferred.Or_error.return canonical
   | false, true -> Deferred.Or_error.return legacy
-  | false, false -> Deferred.Or_error.return canonical
+  | false, false when not (List.is_empty remote_keys) ->
+      Deferred.Or_error.error_string
+        "remote workloads use an unexpected resource identity"
+  | false, false -> (
+      let%bind connections = list_connections () in
+      let matching key =
+        Podman_connection.find_by_name connections (Resource_key.to_string key)
+        |> Option.exists ~f:(fun connection ->
+            Podman_connection.matches_target connection target)
+      in
+      match (matching canonical, matching legacy) with
+      | true, true when not (Resource_key.equal canonical legacy) ->
+          Deferred.Or_error.error_string
+            "both canonical and legacy Podman connections exist for this target"
+      | true, _ -> Deferred.Or_error.return canonical
+      | false, true -> Deferred.Or_error.return legacy
+      | false, false -> Deferred.Or_error.return canonical)
 
 let verify_ssh target =
   let open Deferred.Or_error.Let_syntax in
@@ -127,6 +191,7 @@ let loaded_reference output =
 
 module For_testing = struct
   let loaded_reference = loaded_reference
+  let resource_keys_of_containers = resource_keys_of_containers
 end
 
 let image_id_of_inspect output =

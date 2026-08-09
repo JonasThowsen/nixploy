@@ -6,6 +6,7 @@ type candidate
 type secret_mount
 
 val select_resource_key :
+  project:Project_name.t ->
   target:Configuration.Target.t ->
   canonical:Resource_key.t ->
   legacy:Resource_key.t ->
@@ -83,4 +84,5 @@ val candidate_id : candidate -> string
 
 module For_testing : sig
   val loaded_reference : string -> string Or_error.t
+  val resource_keys_of_containers : string -> string list Or_error.t
 end

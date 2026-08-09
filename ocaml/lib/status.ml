@@ -38,8 +38,8 @@ let load ~working_directory ~target:target_name =
          ~repository:(String.strip repository))
   in
   let%bind resource_key =
-    Podman.select_resource_key ~target ~canonical:canonical_resource_key
-      ~legacy:legacy_resource_key
+    Podman.select_resource_key ~project ~target
+      ~canonical:canonical_resource_key ~legacy:legacy_resource_key
   in
   let%bind connection_output =
     Process_runner.run_stdout ~timeout:query_timeout

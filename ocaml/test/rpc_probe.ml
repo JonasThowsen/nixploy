@@ -13,7 +13,12 @@ let deployment_state application =
 
 let run ~uri ~deploy =
   let open Deferred.Or_error.Let_syntax in
-  let%bind connection = Rpc_websocket.Rpc.client (Uri.of_string uri) in
+  let headers =
+    Sys.getenv "NIXPLOY_PROBE_TAILSCALE_LOGIN"
+    |> Option.map ~f:(fun login ->
+        Cohttp.Header.init_with "Tailscale-User-Login" login)
+  in
+  let%bind connection = Rpc_websocket.Rpc.client ?headers (Uri.of_string uri) in
   let%bind applications =
     Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
   in

@@ -246,6 +246,18 @@ let%test_unit "connection resolution uses the target SSH endpoint, not its name"
       (Nixploy.Podman_connection.matches_identity connection
          (Some "/run/credentials/current/key")))
 
+let%test_unit "remote workload discovery deduplicates resource identities" =
+  let keys =
+    Nixploy.Podman.For_testing.resource_keys_of_containers
+      {|[
+        {"Labels":{"io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
+        {"Labels":{"io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
+        {"Labels":{"io.nixploy.managed":"true"}}
+      ]|}
+    |> assert_ok
+  in
+  [%test_eq: string list] [ "nixploy-jomat-legacy-production" ] keys
+
 let%test_unit "deployment plan always selects the inactive slot" =
   let configuration =
     Nixploy.Configuration.of_json

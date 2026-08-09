@@ -120,8 +120,8 @@ let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
                  ~repository:(Source.repository source))
           in
           let%bind resource_key =
-            Podman.select_resource_key ~target ~canonical:canonical_resource_key
-              ~legacy:legacy_resource_key
+            Podman.select_resource_key ~project ~target
+              ~canonical:canonical_resource_key ~legacy:legacy_resource_key
           in
           let configuration_digest =
             Nix_configuration.json evaluated
