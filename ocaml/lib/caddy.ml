@@ -189,7 +189,7 @@ let inspect_internal ?ignore_termination t =
   | status ->
       Deferred.Or_error.errorf "Caddy route read returned HTTP %d" status
 
-let inspect t = inspect_internal t
+let inspect ?ignore_termination t = inspect_internal ?ignore_termination t
 let server_body = {|{"listen":[":80",":443"],"routes":[]}|}
 
 let ensure_server t =

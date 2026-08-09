@@ -31,6 +31,14 @@ val prepare_candidate :
   slot:Deployment_plan.slot ->
   unit Deferred.Or_error.t
 
+val find_owned_slot :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  slot:Deployment_plan.slot ->
+  candidate option Deferred.Or_error.t
+
 val install_secrets :
   connection:string ->
   resource_key:Resource_key.t ->

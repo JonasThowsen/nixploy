@@ -287,8 +287,13 @@ let%test_unit "deployment plan always selects the inactive slot" =
   in
   [%test_eq: Nixploy.Deployment_plan.slot] Nixploy.Deployment_plan.Blue
     (Nixploy.Deployment_plan.candidate_slot first);
+  [%test_eq: Nixploy.Deployment_plan.slot option] None
+    (Nixploy.Deployment_plan.active_slot first);
   [%test_eq: Nixploy.Deployment_plan.slot] Nixploy.Deployment_plan.Green
-    (Nixploy.Deployment_plan.candidate_slot after_blue)
+    (Nixploy.Deployment_plan.candidate_slot after_blue);
+  [%test_eq: Nixploy.Deployment_plan.slot option]
+    (Some Nixploy.Deployment_plan.Blue)
+    (Nixploy.Deployment_plan.active_slot after_blue)
 
 let%test_unit "Caddy upstream parsing is exact" =
   [%test_eq: int] 8081

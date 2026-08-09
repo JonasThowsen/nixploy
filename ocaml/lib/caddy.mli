@@ -10,7 +10,7 @@ val create :
   web:Configuration.Web.t ->
   t
 
-val inspect : t -> route Deferred.Or_error.t
+val inspect : ?ignore_termination:bool -> t -> route Deferred.Or_error.t
 
 val switch :
   t -> previous:route -> candidate_port:int -> unit Deferred.Or_error.t

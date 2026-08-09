@@ -350,7 +350,7 @@ let owned_candidate_collision output ~project ~target ~resource_key =
         Or_error.error_string
           "container inspect must contain exactly one container"
 
-let prepare_candidate ~connection ~project ~target ~resource_key ~slot =
+let remove_owned_slot ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key slot in
   let%bind exists =
@@ -372,9 +372,51 @@ let prepare_candidate ~connection ~project ~target ~resource_key ~slot =
         ()
   | Error (`Exit_non_zero 1) -> Deferred.Or_error.return ()
   | Error failure ->
-      Deferred.Or_error.errorf "could not inspect candidate collision (%s): %s"
+      Deferred.Or_error.errorf "could not inspect deployment slot (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip exists.stderr)
+
+let prepare_candidate = remove_owned_slot
+
+let find_owned_slot ~connection ~project ~target ~resource_key ~slot =
+  let open Deferred.Or_error.Let_syntax in
+  let name = Deployment_plan.container_name ~resource_key slot in
+  let%bind exists =
+    run [ "--connection"; connection; "container"; "exists"; name ]
+  in
+  match exists.exit_status with
+  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return None
+  | Error failure ->
+      Deferred.Or_error.errorf "could not inspect deployment slot (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip exists.stderr)
+  | Ok () -> (
+      let%bind inspected = inspect_container ~connection name in
+      let%bind owned =
+        Deferred.return
+          (owned_candidate_collision inspected.stdout ~project ~target
+             ~resource_key)
+      in
+      if not owned then
+        Deferred.Or_error.errorf
+          "container %s exists but is not owned by this target" name
+      else
+        let%bind json =
+          Deferred.return
+            (Or_error.try_with (fun () ->
+                 Yojson.Safe.from_string inspected.stdout))
+        in
+        match json with
+        | `List [ `Assoc container ] -> (
+            match List.Assoc.find container ~equal:String.equal "Id" with
+            | Some (`String id) when not (String.is_empty id) ->
+                Deferred.Or_error.return (Some { name; id })
+            | _ ->
+                Deferred.Or_error.error_string
+                  "deployment slot inspect did not contain an ID")
+        | _ ->
+            Deferred.Or_error.error_string
+              "deployment slot inspect must contain exactly one container")
 
 let secret_args secret_mounts =
   List.concat_map secret_mounts ~f:(fun secret ->
@@ -595,8 +637,17 @@ let verify_candidate ~connection ~project ~target ~resource_key ~source
         "candidate inspect must contain exactly one container"
 
 let remove_candidate ~connection ~candidate =
-  let%map result =
+  let%bind.Deferred removed =
     run_ok ~ignore_termination:true
-      [ "--connection"; connection; "rm"; "-f"; candidate.name ]
+      [ "--connection"; connection; "rm"; "-f"; candidate.id ]
   in
-  Or_error.map result ~f:(fun _ -> ())
+  match removed with
+  | Ok _ -> Deferred.Or_error.return ()
+  | Error removal_error -> (
+      let%map.Deferred exists =
+        run ~ignore_termination:true
+          [ "--connection"; connection; "container"; "exists"; candidate.id ]
+      in
+      match exists with
+      | Ok { exit_status = Error (`Exit_non_zero 1); _ } -> Ok ()
+      | _ -> Error removal_error)

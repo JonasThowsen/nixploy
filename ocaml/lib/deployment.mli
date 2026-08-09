@@ -12,6 +12,7 @@ type stage =
   | Health_checking
   | Switching
   | Verifying
+  | Retiring_previous
   | Succeeded
 [@@deriving compare, equal, sexp]
 

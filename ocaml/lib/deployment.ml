@@ -13,6 +13,7 @@ type stage =
   | Health_checking
   | Switching
   | Verifying
+  | Retiring_previous
   | Succeeded
 [@@deriving compare, equal, sexp]
 
@@ -50,6 +51,7 @@ let stage_name = function
   | Health_checking -> "health-checking"
   | Switching -> "switching"
   | Verifying -> "verifying"
+  | Retiring_previous -> "retiring-previous"
   | Succeeded -> "succeeded"
 
 let timestamp () =
@@ -162,6 +164,21 @@ let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
           in
           let candidate_slot = Deployment_plan.candidate_slot plan in
           let candidate_port = Deployment_plan.candidate_port plan in
+          let active_slot = Deployment_plan.active_slot plan in
+          let%bind previous_candidate =
+            match active_slot with
+            | None -> Deferred.Or_error.return None
+            | Some slot -> (
+                let%bind candidate =
+                  Podman.find_owned_slot ~connection ~project ~target
+                    ~resource_key ~slot
+                in
+                match candidate with
+                | Some candidate -> Deferred.Or_error.return (Some candidate)
+                | None ->
+                    Deferred.Or_error.error_string
+                      "Caddy active slot has no owned container")
+          in
           let%bind () =
             on_stage Preparing_candidate "Removing only the owned inactive slot"
             |> Deferred.map ~f:Or_error.return
@@ -244,24 +261,53 @@ let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
                                 ~candidate
                             in
                             match (ingress_valid, candidate_valid) with
-                            | true, Ok () ->
-                                let%bind () =
-                                  on_stage Succeeded
-                                    "Deployment independently verified"
+                            | true, Ok () -> (
+                                let%bind retired =
+                                  match previous_candidate with
+                                  | None -> Deferred.Or_error.return ()
+                                  | Some previous_candidate -> (
+                                      let%bind () =
+                                        on_stage Retiring_previous
+                                          "Retiring the previous active slot"
+                                      in
+                                      let%bind observed =
+                                        Caddy.inspect ~ignore_termination:true
+                                          caddy
+                                      in
+                                      match observed with
+                                      | Ok (Caddy.Existing { active_port })
+                                        when Int.equal active_port
+                                               candidate_port ->
+                                          Podman.remove_candidate ~connection
+                                            ~candidate:previous_candidate
+                                      | Error error ->
+                                          Deferred.return (Error error)
+                                      | _ ->
+                                          Deferred.Or_error.error_string
+                                            "Caddy route changed before \
+                                             previous slot retirement")
                                 in
-                                Deferred.Or_error.return
-                                  {
-                                    operation_id;
-                                    project;
-                                    target = target_name;
-                                    revision = Source.revision source;
-                                    image_id = Podman.image_id image;
-                                    container_name =
-                                      Podman.candidate_name candidate;
-                                    container_id = Podman.candidate_id candidate;
-                                    slot = candidate_slot;
-                                    port = candidate_port;
-                                  }
+                                match retired with
+                                | Error error -> Deferred.return (Error error)
+                                | Ok () ->
+                                    let%bind () =
+                                      on_stage Succeeded
+                                        "Deployment independently verified"
+                                    in
+                                    Deferred.Or_error.return
+                                      {
+                                        operation_id;
+                                        project;
+                                        target = target_name;
+                                        revision = Source.revision source;
+                                        image_id = Podman.image_id image;
+                                        container_name =
+                                          Podman.candidate_name candidate;
+                                        container_id =
+                                          Podman.candidate_id candidate;
+                                        slot = candidate_slot;
+                                        port = candidate_port;
+                                      })
                             | _ ->
                                 let failure =
                                   match candidate_valid with
