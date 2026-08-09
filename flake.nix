@@ -17,6 +17,35 @@
         MIX_ESBUILD_PATH = pkgs.lib.getExe pkgs.esbuild;
         MIX_TAILWIND_PATH = pkgs.lib.getExe pkgs.tailwindcss_4;
       };
+      ocamlPackagesFor =
+        pkgs:
+        let
+          base = pkgs.ocaml-ng.ocamlPackages_5_2;
+          ppxCssSedlexPatch = pkgs.fetchurl {
+            url = "https://raw.githubusercontent.com/NixOS/nixpkgs/0ac41707663949ba068cd71462a0c31cfe6b6348/pkgs/development/ocaml-modules/janestreet/ppx_css_sedlex_3_5.patch";
+            hash = "sha256-B4X6YfmhsUIsYDRv4pYAieNlUZ1GWOZrTUHrheZ8R44=";
+          };
+        in
+        base.overrideScope (
+          final: previous: {
+            js_of_ocaml-compiler_5_9 = previous.js_of_ocaml-compiler.override {
+              version = "5.9.1";
+            };
+
+            ppx_css = previous.ppx_css.overrideAttrs (old: {
+              patches = (old.patches or [ ]) ++ [ ppxCssSedlexPatch ];
+              meta = old.meta // {
+                broken = false;
+              };
+            });
+
+            bonsai = previous.bonsai.overrideAttrs (old: {
+              propagatedBuildInputs =
+                builtins.filter (dependency: dependency != previous.cohttp-async) old.propagatedBuildInputs
+                ++ [ final.cohttp-async_5_3 ];
+            });
+          }
+        );
       targetModule = import ./nix/target.nix;
       nixployConfigLib = import ./nix/config.nix {
         inherit lib targetModule;
@@ -62,6 +91,7 @@
         system:
         let
           pkgs = pkgsFor system;
+          ocamlPackages = ocamlPackagesFor pkgs;
 
           nixploy = pkgs.buildDotnetModule {
             pname = "nixploy";
@@ -73,6 +103,37 @@
             executables = [ "nixploy" ];
 
             dotnet-sdk = pkgs.dotnet-sdk_10;
+          };
+
+          ocamlNixploy = ocamlPackages.buildDunePackage {
+            pname = "nixploy";
+            version = "0.1.0-ocaml";
+            src = ./ocaml;
+            duneVersion = "3";
+
+            nativeBuildInputs = with ocamlPackages; [
+              js_of_ocaml-compiler_5_9
+              ocaml-embed-file
+            ];
+
+            propagatedBuildInputs = with ocamlPackages; [
+              async
+              async_kernel
+              async_rpc_kernel
+              async_rpc_websocket
+              bonsai
+              cohttp-async_5_3
+              core
+              core_unix
+              digestif
+              ocaml_sqlite3
+              ppx_jane
+              ppx_pattern_bind
+              uri
+              yojson
+            ];
+
+            doCheck = true;
           };
 
           moonbitPolicy = pkgs.stdenvNoCC.mkDerivation {
@@ -181,6 +242,7 @@
         in
         {
           inherit nixploy control-plane moonbitPolicy;
+          ocaml-nixploy = ocamlNixploy;
           default = nixploy;
           fetch-deps = nixploy.fetch-deps;
         }
@@ -188,6 +250,7 @@
 
       checks = forAllSystems (system: {
         control-plane = self.packages.${system}.control-plane;
+        ocaml-nixploy = self.packages.${system}.ocaml-nixploy;
         nixos-module =
           (lib.nixosSystem {
             inherit system;
@@ -285,9 +348,12 @@
         system:
         let
           pkgs = pkgsFor system;
+          ocamlPackages = ocamlPackagesFor pkgs;
         in
         {
           default = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.ocaml-nixploy ];
+
             packages = [
               (beamPackages pkgs).elixir_1_20
               pkgs.bash
@@ -305,6 +371,11 @@
               pkgs.just
               pkgs.podman
               pkgs.jq
+              ocamlPackages.dune_3
+              ocamlPackages.ocaml
+              ocamlPackages.ocaml-lsp
+              ocamlPackages.ocamlformat
+              ocamlPackages.utop
             ];
 
             env = commonEnv pkgs;

@@ -1,0 +1,21 @@
+(library
+ (name core_test)
+ (modules core_test)
+ (libraries nixploy core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name process_runner_test)
+ (modules process_runner_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name store_test)
+ (modules store_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))

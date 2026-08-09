@@ -1,0 +1,6 @@
+(library
+ (name nixploy)
+ (public_name nixploy)
+ (libraries digestif.c core async sqlite3 uri yojson)
+ (preprocess
+  (pps ppx_jane)))

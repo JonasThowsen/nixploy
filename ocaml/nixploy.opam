@@ -1,0 +1,28 @@
+opam-version: "2.0"
+synopsis: "Deploy Nix-built applications to Podman hosts"
+maintainer: "Jonas Thowsen"
+license: "MIT"
+depends: [
+  "ocaml" {>= "5.2"}
+  "dune" {>= "3.18"}
+  "async"
+  "async_js"
+  "async_rpc_kernel"
+  "async_rpc_websocket"
+  "bonsai"
+  "cohttp-async"
+  "core"
+  "core_unix"
+  "digestif"
+  "js_of_ocaml"
+  "ocaml-embed-file"
+  "ppx_jane"
+  "ppx_pattern_bind"
+  "sqlite3"
+  "uri"
+  "yojson"
+]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+]

@@ -1,0 +1,19 @@
+(executable
+ (name main)
+ (public_name nixploy-web)
+ (libraries
+  async
+  async_rpc_websocket
+  cohttp-async
+  core
+  core_unix.command_unix
+  nixploy
+  protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(rule
+ (targets embedded_files.ml embedded_files.mli)
+ (deps %{bin:ocaml-embed-file} ../client/main.bc.js ../client/app.css)
+ (action
+  (bash "%{deps} -output embedded_files")))

@@ -9,6 +9,7 @@ result-*
 
 # Elixir and Phoenix
 /_build/
+/ocaml/_build/
 /cover/
 /deps/
 /doc/

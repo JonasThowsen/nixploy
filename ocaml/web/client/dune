@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (modes js)
+ (libraries async_js async_kernel bonsai.web protocol)
+ (preprocess
+  (pps bonsai.ppx_bonsai js_of_ocaml-ppx ppx_jane)))
