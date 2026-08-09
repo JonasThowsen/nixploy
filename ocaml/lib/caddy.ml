@@ -34,7 +34,7 @@ let parse_response output =
           if status >= 100 && status <= 599 then Ok { status; body }
           else Or_error.errorf "invalid Caddy HTTP status %d" status)
 
-let request ?body t ~meth ~path =
+let request ?body ?ignore_termination t ~meth ~path =
   let args =
     [ "curl"; "-sS"; "-X"; meth; "--write-out"; "\\n%{http_code}" ]
     @
@@ -51,8 +51,8 @@ let request ?body t ~meth ~path =
   in
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Remote_command.run ?stdin:body ~target:t.target ~timeout:request_timeout
-      ~max_output_bytes:max_response_bytes args
+    Remote_command.run ?stdin:body ?ignore_termination ~target:t.target
+      ~timeout:request_timeout ~max_output_bytes:max_response_bytes args
   in
   match result.exit_status with
   | Error failure ->
@@ -164,28 +164,32 @@ module For_testing = struct
   let upstream_port_of_json = upstream_port_of_json
 end
 
-let read_active_port t =
+let read_active_port ?ignore_termination t =
   let open Deferred.Or_error.Let_syntax in
   let%bind response =
-    request t ~meth:"GET" ~path:("/id/" ^ t.proxy_id ^ "/upstreams")
+    request ?ignore_termination t ~meth:"GET"
+      ~path:("/id/" ^ t.proxy_id ^ "/upstreams")
   in
   match response.status with
   | 200 -> Deferred.return (upstream_port_of_json response.body)
   | status ->
       Deferred.Or_error.errorf "Caddy upstream read returned HTTP %d" status
 
-let inspect t =
+let inspect_internal ?ignore_termination t =
   let open Deferred.Or_error.Let_syntax in
-  let%bind response = request t ~meth:"GET" ~path:("/id/" ^ t.route_id) in
+  let%bind response =
+    request ?ignore_termination t ~meth:"GET" ~path:("/id/" ^ t.route_id)
+  in
   match response.status with
   | 404 -> Deferred.Or_error.return Missing
   | 200 ->
       let%bind () = Deferred.return (validate_route t response.body) in
-      let%map active_port = read_active_port t in
+      let%map active_port = read_active_port ?ignore_termination t in
       Existing { active_port }
   | status ->
       Deferred.Or_error.errorf "Caddy route read returned HTTP %d" status
 
+let inspect t = inspect_internal t
 let server_body = {|{"listen":[":80",":443"],"routes":[]}|}
 
 let ensure_server t =
@@ -280,9 +284,11 @@ let switch t ~previous ~candidate_port =
     Deferred.Or_error.return ()
   else Deferred.Or_error.errorf "Caddy switch returned HTTP %d" response.status
 
-let delete_route t =
+let delete_route ?ignore_termination t =
   let open Deferred.Or_error.Let_syntax in
-  let%bind response = request t ~meth:"DELETE" ~path:("/id/" ^ t.route_id) in
+  let%bind response =
+    request ?ignore_termination t ~meth:"DELETE" ~path:("/id/" ^ t.route_id)
+  in
   if List.mem [ 200; 204; 404 ] response.status ~equal:Int.equal then
     Deferred.Or_error.return ()
   else
@@ -293,10 +299,10 @@ let restore t ~previous =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
     match previous with
-    | Missing -> delete_route t
+    | Missing -> delete_route ~ignore_termination:true t
     | Existing { active_port } ->
         let%bind response =
-          request
+          request ~ignore_termination:true
             ~body:(upstream_body active_port)
             t ~meth:"PATCH"
             ~path:("/id/" ^ t.proxy_id ^ "/upstreams")
@@ -307,7 +313,7 @@ let restore t ~previous =
           Deferred.Or_error.errorf "Caddy restoration returned HTTP %d"
             response.status
   in
-  let%bind observed = inspect t in
+  let%bind observed = inspect_internal ~ignore_termination:true t in
   match (previous, observed) with
   | Missing, Missing -> Deferred.Or_error.return ()
   | Existing expected, Existing observed
@@ -329,7 +335,9 @@ let health_check t ~port =
     in
     match result with
     | Ok { exit_status = Ok (); _ } -> Deferred.Or_error.return ()
-    | _ when remaining > 1 ->
+    | _
+      when remaining > 1
+           && Option.is_none (Process_runner.termination_signal ()) ->
         let%bind () = Clock_ns.after (Time_ns.Span.of_sec 1.) in
         attempt (remaining - 1)
     | Error error -> Deferred.return (Error error)

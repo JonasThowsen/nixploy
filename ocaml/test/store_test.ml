@@ -34,7 +34,7 @@ let run_tests () =
   let%bind failed =
     Nixploy.Store.fail store
       ~id:(Nixploy.Store.id requested)
-      ~error:(Error.of_string "fixture failure")
+      ~error:(Error.of_string "nix interrupted by sigint")
   in
   Or_error.ok_exn failed;
   let%bind deployments = Nixploy.Store.list store ~limit:10 in
@@ -43,7 +43,7 @@ let run_tests () =
   assert (
     Option.equal String.equal
       (Nixploy.Store.error deployment)
-      (Some "fixture failure"));
+      (Some "nix interrupted by sigint"));
   let%map _ =
     Nixploy.Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:65_536 ~prog:"rm" ~args:[ "-rf"; "--"; directory ] ()

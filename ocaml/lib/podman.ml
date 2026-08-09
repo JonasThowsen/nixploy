@@ -13,13 +13,13 @@ let image_id (image : image) = image.id
 let candidate_name (candidate : candidate) = candidate.name
 let candidate_id (candidate : candidate) = candidate.id
 
-let run ?stdin ?(timeout = podman_timeout) args =
-  Process_runner.run ?stdin ~timeout ~max_output_bytes:max_output ~prog:"podman"
-    ~args ()
+let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
+  Process_runner.run ?stdin ?ignore_termination ~timeout
+    ~max_output_bytes:max_output ~prog:"podman" ~args ()
 
-let run_ok ?stdin ?timeout ?(redact = Fn.id) args =
+let run_ok ?stdin ?ignore_termination ?timeout ?(redact = Fn.id) args =
   let open Deferred.Or_error.Let_syntax in
-  let%bind result = run ?stdin ?timeout args in
+  let%bind result = run ?stdin ?ignore_termination ?timeout args in
   match result.exit_status with
   | Ok () -> Deferred.Or_error.return result
   | Error failure ->
@@ -181,8 +181,9 @@ let labels fields =
   List.concat_map fields ~f:(fun (name, value) ->
       [ "--label"; name ^ "=" ^ value ])
 
-let inspect_container ~connection name =
-  run_ok [ "--connection"; connection; "inspect"; "--type"; "container"; name ]
+let inspect_container ?ignore_termination ~connection name =
+  run_ok ?ignore_termination
+    [ "--connection"; connection; "inspect"; "--type"; "container"; name ]
 
 let label fields name =
   match List.Assoc.find fields ~equal:String.equal name with
@@ -220,6 +221,30 @@ let owned_container output ~project ~target ~resource_key =
   | _ ->
       Or_error.error_string
         "container inspect must contain exactly one container"
+
+let owned_operation output ~project ~target ~resource_key ~operation_id =
+  let open Or_error.Let_syntax in
+  let%bind owned = owned_container output ~project ~target ~resource_key in
+  if not owned then Ok false
+  else
+    let%bind json =
+      Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+    in
+    match json with
+    | `List [ `Assoc container ] -> (
+        match List.Assoc.find container ~equal:String.equal "Config" with
+        | Some (`Assoc config) -> (
+            match List.Assoc.find config ~equal:String.equal "Labels" with
+            | Some (`Assoc labels) ->
+                Ok
+                  (Option.equal String.equal
+                     (label labels "io.nixploy.operation_id")
+                     (Some operation_id))
+            | _ -> Ok false)
+        | _ -> Ok false)
+    | _ ->
+        Or_error.error_string
+          "container inspect must contain exactly one container"
 
 let owned_candidate_collision output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
@@ -334,10 +359,48 @@ let project_id repository =
   Digestif.SHA256.digest_string repository |> Digestif.SHA256.to_hex
   |> fun digest -> String.prefix digest 10
 
+let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
+    ~operation_id ~name =
+  let rec attempt remaining =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind exists =
+      run ~ignore_termination:true
+        [ "--connection"; connection; "container"; "exists"; name ]
+    in
+    match exists.exit_status with
+    | Error (`Exit_non_zero 1) when remaining > 1 ->
+        let%bind.Deferred () = Clock_ns.after (Time_ns.Span.of_ms 200.) in
+        attempt (remaining - 1)
+    | Error (`Exit_non_zero 1) -> Deferred.Or_error.return ()
+    | Error failure ->
+        Deferred.Or_error.errorf
+          "could not inspect ambiguous candidate launch (%s): %s"
+          (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+          (String.strip exists.stderr)
+    | Ok () ->
+        let%bind inspected =
+          inspect_container ~ignore_termination:true ~connection name
+        in
+        let%bind owned =
+          Deferred.return
+            (owned_operation inspected.stdout ~project ~target ~resource_key
+               ~operation_id)
+        in
+        if not owned then
+          Deferred.Or_error.errorf
+            "ambiguous candidate %s is not owned by this operation" name
+        else
+          let%map _ =
+            run_ok ~ignore_termination:true
+              [ "--connection"; connection; "rm"; "-f"; name ]
+          in
+          ()
+  in
+  attempt 10
+
 let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
     ~source ~configuration_digest ~operation_id ~deployed_at ~image ~secrets
     ~secret_mounts =
-  let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key slot in
   let target_name = Configuration.Target.name target |> Target_name.to_string in
   let project_name = Project_name.to_string project in
@@ -367,17 +430,32 @@ let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
   let command =
     Configuration.Run.command run_config |> Option.value ~default:[]
   in
-  let%bind started =
+  let%bind.Deferred started =
     run_ok ~redact:(Secrets.redact secrets)
       ([ "--connection"; connection; "run"; "-d"; "--name"; name ]
       @ secret_args secret_mounts
       @ runtime_args run_config ~port
       @ labels metadata @ [ image.reference ] @ command)
   in
-  let id = String.strip started.stdout in
-  if String.is_empty id then
-    Deferred.Or_error.error_string "Podman did not return a container ID"
-  else Deferred.Or_error.return { name; id }
+  let started =
+    Or_error.bind started ~f:(fun started ->
+        let id = String.strip started.stdout in
+        if String.is_empty id then
+          Or_error.error_string "Podman did not return a container ID"
+        else Or_error.return { name; id })
+  in
+  match started with
+  | Ok candidate -> Deferred.Or_error.return candidate
+  | Error primary -> (
+      let%map.Deferred cleanup =
+        cleanup_ambiguous_start ~connection ~project ~target ~resource_key
+          ~operation_id ~name
+      in
+      match cleanup with
+      | Ok () -> Error primary
+      | Error cleanup ->
+          Error
+            (Error.create_s [%message (primary : Error.t) (cleanup : Error.t)]))
 
 let verify_candidate ~connection ~project ~target ~resource_key ~source
     ~configuration_digest ~operation_id ~(image : image) ~candidate =
@@ -443,6 +521,7 @@ let verify_candidate ~connection ~project ~target ~resource_key ~source
 
 let remove_candidate ~connection ~candidate =
   let%map result =
-    run_ok [ "--connection"; connection; "rm"; "-f"; candidate.name ]
+    run_ok ~ignore_termination:true
+      [ "--connection"; connection; "rm"; "-f"; candidate.name ]
   in
   Or_error.map result ~f:(fun _ -> ())

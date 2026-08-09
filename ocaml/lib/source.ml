@@ -27,7 +27,7 @@ let valid_revision revision =
 let cleanup t =
   let%map _ =
     Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 30.)
-      ~max_output_bytes:65_536 ~prog:"rm"
+      ~max_output_bytes:65_536 ~prog:"rm" ~ignore_termination:true
       ~args:[ "-rf"; "--"; t.workspace ]
       ()
   in

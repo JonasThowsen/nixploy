@@ -43,7 +43,9 @@ let ssh_args target remote_argv =
       String.concat ~sep:" " (List.map remote_argv ~f:shell_quote);
     ]
 
-let run ?stdin ~target ~timeout ~max_output_bytes remote_argv =
-  Process_runner.run ?stdin ~timeout ~max_output_bytes ~prog:"ssh"
+let run ?stdin ?ignore_termination ~target ~timeout ~max_output_bytes
+    remote_argv =
+  Process_runner.run ?stdin ?ignore_termination ~timeout ~max_output_bytes
+    ~prog:"ssh"
     ~args:(ssh_args target remote_argv)
     ()

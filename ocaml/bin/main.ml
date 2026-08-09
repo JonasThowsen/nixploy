@@ -3,6 +3,17 @@ open Core
 
 let value_or_dash = Option.value ~default:"-"
 
+let print_deployment_stage stage message =
+  printf "[%s] %s\n%!" (Nixploy.Deployment.stage_name stage) message;
+  Deferred.unit
+
+let exit_after_signal ~default =
+  match Nixploy.Process_runner.termination_signal () with
+  | None -> default ()
+  | Some signal ->
+      Shutdown.shutdown_with_signal_exn signal;
+      Deferred.never ()
+
 let print_status status =
   let module Target = Nixploy.Configuration.Target in
   printf "Project:  %s\n"
@@ -72,6 +83,7 @@ let deploy_command =
      in
      fun () ->
        let open Deferred.Let_syntax in
+       Nixploy.Process_runner.handle_termination_signals ();
        match Nixploy.Target_name.of_string target with
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
@@ -85,8 +97,9 @@ let deploy_command =
                Shutdown.exit 1
            | Ok store -> (
                let%bind result =
-                 Nixploy.Tracked_deployment.deploy ~store ~working_directory
-                   ~target
+                 Nixploy.Tracked_deployment.deploy
+                   ~on_stage:print_deployment_stage ~store ~working_directory
+                   ~target ()
                in
                match result with
                | Error error ->
@@ -102,11 +115,12 @@ let deploy_command =
                    Option.iter (Nixploy.Store.container_name deployment)
                      ~f:(fun container -> printf "Container: %s\n" container);
                    match Nixploy.Store.state deployment with
-                   | Succeeded -> Deferred.unit
+                   | Succeeded ->
+                       exit_after_signal ~default:(fun () -> Deferred.unit)
                    | Failed ->
                        Option.iter (Nixploy.Store.error deployment)
                          ~f:(fun error -> eprintf "%s\n" error);
-                       Shutdown.exit 1
+                       exit_after_signal ~default:(fun () -> Shutdown.exit 1)
                    | Requested | Running ->
                        eprintf "Deployment ended without a terminal state.\n";
                        Shutdown.exit 1))))

@@ -60,7 +60,8 @@ let deploy state _connection_state query =
           Nixploy.Tracked_deployment.deploy ~store:state.store
             ~working_directory:
               (Managed_application.working_directory application)
-            ~target:(Managed_application.target application))
+            ~target:(Managed_application.target application)
+            ())
       >>| Or_error.join
       >>| Or_error.bind ~f:(fun deployment ->
           match Store.state deployment with

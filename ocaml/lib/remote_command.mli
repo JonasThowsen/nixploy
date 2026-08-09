@@ -5,6 +5,7 @@ val identity_file : Configuration.Target.t -> string option
 
 val run :
   ?stdin:string ->
+  ?ignore_termination:bool ->
   target:Configuration.Target.t ->
   timeout:Time_ns.Span.t ->
   max_output_bytes:int ->
