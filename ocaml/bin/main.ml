@@ -96,34 +96,53 @@ let deploy_command =
                  (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok store -> (
-               let%bind result =
-                 Nixploy.Tracked_deployment.deploy
-                   ~on_stage:print_deployment_stage ~store ~working_directory
-                   ~target ()
+               let%bind preview =
+                 Nixploy.Source.preview_main ~working_directory
                in
-               match result with
+               match preview with
                | Error error ->
-                   eprintf "Deployment tracking failed: %s\n"
+                   eprintf "Could not resolve main: %s\n"
                      (Error.to_string_hum error);
                    Shutdown.exit 1
-               | Ok deployment -> (
-                   printf "\nDeployment %s: %s\n"
-                     (Nixploy.Store.id deployment)
-                     (Nixploy.Store.state deployment |> Nixploy.Store.state_name);
-                   Option.iter (Nixploy.Store.revision deployment)
-                     ~f:(fun revision -> printf "Revision: %s\n" revision);
-                   Option.iter (Nixploy.Store.container_name deployment)
-                     ~f:(fun container -> printf "Container: %s\n" container);
-                   match Nixploy.Store.state deployment with
-                   | Succeeded ->
-                       exit_after_signal ~default:(fun () -> Deferred.unit)
-                   | Failed ->
-                       Option.iter (Nixploy.Store.error deployment)
-                         ~f:(fun error -> eprintf "%s\n" error);
-                       exit_after_signal ~default:(fun () -> Shutdown.exit 1)
-                   | Requested | Running ->
-                       eprintf "Deployment ended without a terminal state.\n";
-                       Shutdown.exit 1))))
+               | Ok commit -> (
+                   printf "Deploying %s  %s\n%!"
+                     (Nixploy.Source.commit_revision commit)
+                     (Nixploy.Source.commit_subject commit);
+                   let%bind result =
+                     Nixploy.Tracked_deployment.deploy
+                       ~on_stage:print_deployment_stage ~store
+                       ~working_directory ~commit ~target ()
+                   in
+                   match result with
+                   | Error error ->
+                       eprintf "Deployment tracking failed: %s\n"
+                         (Error.to_string_hum error);
+                       Shutdown.exit 1
+                   | Ok deployment -> (
+                       printf "\nDeployment %s: %s\n"
+                         (Nixploy.Store.id deployment)
+                         (Nixploy.Store.state deployment
+                         |> Nixploy.Store.state_name);
+                       Option.iter (Nixploy.Store.revision deployment)
+                         ~f:(fun revision -> printf "Revision: %s\n" revision);
+                       Option.iter (Nixploy.Store.container_name deployment)
+                         ~f:(fun container ->
+                           printf "Container: %s\n" container);
+                       match Nixploy.Store.state deployment with
+                       | Succeeded ->
+                           exit_after_signal ~default:(fun () -> Deferred.unit)
+                       | Failed ->
+                           Option.iter (Nixploy.Store.error deployment)
+                             ~f:(fun error -> eprintf "%s\n" error);
+                           exit_after_signal ~default:(fun () ->
+                               Shutdown.exit 1)
+                       | Cancelled ->
+                           exit_after_signal ~default:(fun () ->
+                               Shutdown.exit 130)
+                       | Requested | Running ->
+                           eprintf
+                             "Deployment ended without a terminal state.\n";
+                           Shutdown.exit 1)))))
 
 let command =
   Command.group ~summary:"Deploy and inspect Nix-built applications"

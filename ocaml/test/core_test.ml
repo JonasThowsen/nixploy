@@ -314,3 +314,62 @@ let%test_unit "Podman load parser accepts current output variants" =
     (Nixploy.Podman.For_testing.loaded_reference
        "Loaded image(s): localhost/app:latest\n"
     |> assert_ok)
+
+let%test_unit "Podman runtime stats parse bounded numeric values" =
+  let stats =
+    Nixploy.Podman.For_testing.parse_stats
+      {|[{"CPU":"2.5%","MemUsage":"128.0MiB / 1GiB"}]|}
+    |> assert_ok
+  in
+  [%test_eq: float option] (Some 2.5) stats.cpu_percent;
+  [%test_eq: int64] 134_217_728L stats.memory_used_bytes
+
+let%test_unit "runtime logs preserve timestamps and bound retained lines" =
+  let input =
+    List.init 501 ~f:(fun index ->
+        sprintf "2026-08-09T12:00:00Z line-%03d" index)
+    |> String.concat ~sep:"\n"
+  in
+  let snapshot = Nixploy.Podman.For_testing.bound_logs input in
+  assert snapshot.truncated;
+  [%test_eq: int] 500 (List.length snapshot.lines);
+  let first = List.hd_exn snapshot.lines in
+  [%test_eq: string option] (Some "2026-08-09T12:00:00Z") first.timestamp;
+  [%test_eq: string] "line-001" first.text;
+  let redacted =
+    Nixploy.Podman.For_testing.bound_logs
+      "2026-08-09T12:00:00Z token=super-secret password: hunter2"
+  in
+  [%test_eq: string] "token=[REDACTED] password: [REDACTED]"
+    (List.hd_exn redacted.lines).text;
+  let structured =
+    Nixploy.Podman.For_testing.bound_logs
+      {|{"token":"secret value","authorization":"Bearer abc.def"}|}
+  in
+  [%test_eq: string] {|{"token":"[REDACTED]","authorization":"[REDACTED]"}|}
+    (List.hd_exn structured.lines).text
+
+let%test_unit "remote host metrics parse capacities and CPU delta" =
+  let metrics =
+    Nixploy.Host_metrics.For_testing.parse
+      {|NIXPLOY_CPU1
+cpu 10 10 10 70 0 0 0 0
+NIXPLOY_CPU2
+cpu 30 20 30 120 0 0 0 0
+NIXPLOY_MEMORY
+MemTotal:       1000 kB
+MemAvailable:    250 kB
+NIXPLOY_LOAD
+0.10 0.20 0.30 1/100 123
+NIXPLOY_UPTIME
+3600.50 1200.00
+NIXPLOY_FILESYSTEM
+   1000000 400000 600000
+|}
+    |> assert_ok
+  in
+  [%test_eq: float] 50. (Nixploy.Host_metrics.cpu_percent metrics);
+  [%test_eq: int64] 1_024_000L (Nixploy.Host_metrics.memory_total_bytes metrics);
+  [%test_eq: int64] 768_000L (Nixploy.Host_metrics.memory_used_bytes metrics);
+  [%test_eq: int64] 400_000L
+    (Nixploy.Host_metrics.filesystem_used_bytes metrics)

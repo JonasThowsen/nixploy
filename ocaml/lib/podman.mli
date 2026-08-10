@@ -4,6 +4,10 @@ open Core
 type image
 type candidate
 type secret_mount
+type runtime_container
+type log_line = { timestamp : string option; text : string }
+type log_snapshot = { lines : log_line list; truncated : bool }
+type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
 
 val select_resource_key :
   project:Project_name.t ->
@@ -89,8 +93,33 @@ val image_reference : image -> string
 val image_id : image -> string
 val candidate_name : candidate -> string
 val candidate_id : candidate -> string
+val runtime_container_name : runtime_container -> string
+val runtime_container_id : runtime_container -> string
+val runtime_container_revision : runtime_container -> string option
+val runtime_container_operation_id : runtime_container -> string option
+val runtime_container_started_at : runtime_container -> string option
+
+val find_running_slot :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  slot:Deployment_plan.slot ->
+  runtime_container Deferred.Or_error.t
+
+val read_logs :
+  connection:string ->
+  container:runtime_container ->
+  log_snapshot Deferred.Or_error.t
+
+val read_stats :
+  connection:string ->
+  container:runtime_container ->
+  runtime_stats Deferred.Or_error.t
 
 module For_testing : sig
   val loaded_reference : string -> string Or_error.t
   val resource_keys_of_containers : string -> string list Or_error.t
+  val parse_stats : string -> runtime_stats Or_error.t
+  val bound_logs : string -> log_snapshot
 end

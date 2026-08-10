@@ -1,206 +1,176 @@
 # Control-plane UI direction
 
-## Status
+## Purpose
 
-This document is the design and implementation direction for the nixploy control
-plane. New pages and workflows should follow it unless a deliberate product
-change updates this document first.
+This document defines the design and implementation direction for the OCaml
+Bonsai control plane. The interface exists to help an operator deploy an
+application, understand recent deployments, cancel active work, investigate
+logs, and judge host and application health.
 
-The interface takes practical cues from the Sirkus Agio ERP operator surfaces,
-but is shaped for nixploy's narrower job: understanding runtime state, deploying
-immutable inputs, investigating failures, and making safe operational changes.
-It is not a marketing site, a generic admin dashboard, or a second source of
-application configuration.
+It is a functional operator console, not a consumer landing page, a marketing
+surface, or a generic administration template.
 
 ## Product character
 
-The UI should feel like a calm, compact operator console:
+- **Legible:** State, labels, values, and actions are readable at a glance. Use
+  typography, spacing, borders, and contrast before decorative effects.
+- **Interactive:** Controls respond clearly, retain useful context, and expose
+  progress and errors beside the action that caused them.
+- **Compact:** Prefer useful information density over large headings, empty
+  space, and promotional copy. Density must not reduce touch usability.
+- **Honest:** Distinguish requested, running, succeeded, failed, cancelled,
+  unavailable, and stale state. Show when runtime facts were observed.
+- **Calm:** Reserve strong color and motion for state, focus, and consequential
+  actions. Avoid visual noise during long-running operations.
 
-- **Utility before decoration.** Show current state, evidence, and the next useful
-  action before explanatory or decorative content.
-- **Task-focused rather than all-in-one.** Each primary route owns one operator
-  job. Do not accumulate unrelated controls onto the overview.
-- **Dense but readable.** Desktop can use available width for comparison and
-  scanning; mobile keeps the same capabilities in a clear vertical flow.
-- **Honest about state.** Loading, stale observations, failures, cancellation,
-  partial effects, and unavailable runtime data must be visible.
-- **Safe by construction.** Dangerous actions are visually distinct, explain
-  their exact consequences, and require explicit confirmation.
+## Operator workflow
 
-## Product surface priorities
+The primary surface should answer these questions in order:
 
-Keep the product centered on the recurring operator loop:
+1. Are the host and applications healthy?
+2. What is deployed and what happened recently?
+3. Which commit will the next deployment use?
+4. Is a deployment active, and can it be cancelled?
+5. What do the application logs say?
 
-1. observe runtime and health;
-2. inspect bounded logs and deployment history;
-3. run a flake-declared command when intervention is needed;
-4. deploy or roll back an immutable input;
-5. verify the resulting health and evidence.
+Information architecture may evolve as the product grows, but navigation should
+remain small and use operator language. Do not expose Nix store internals,
+configuration digests, or container implementation details unless they directly
+help explain observed state or a failure.
 
-These capabilities may share focused pages as the product matures; they do not
-each require a dashboard card or primary navigation destination. Host facts,
-build internals, immutable identifiers, audit metadata, and configuration digests
-are supporting evidence. Show them where they help investigation or confirmation,
-not merely because the data exists. Remove low-value summaries and controls when
-a stronger workflow makes them redundant.
+## Responsive behavior
 
-## Information architecture
+Mobile and desktop provide the same information, evidence, and actions. Desktop
+may increase density or place related information side by side; it must not add
+capabilities that disappear on mobile.
 
-The primary navigation is intentionally small:
+### Mobile
 
-| Route | Operator job |
-| --- | --- |
-| `/` | Understand application health and find the shortest path to action |
-| `/machine` | Inspect host CPU, RAM, storage, load, uptime, and runtime capacity |
-| `/applications` | Inspect health, CPU, RAM, I/O, release identity, and bounded logs |
-| `/releases` | Choose a verified release and start a deployment |
-| `/deployments` | Follow progress, investigate failures, and roll back |
+- Design and review at a narrow viewport first.
+- Use a single clear content column and place the current state and primary
+  action near the top.
+- Stack label/value pairs when a row would become cramped.
+- Convert wide deployment and metrics tables into readable records rather than
+  relying on page-level horizontal scrolling.
+- Keep interactive targets at least approximately 44px and separate destructive
+  actions from routine controls.
+- Keep filters, log search, refresh, follow, and cancellation reachable without
+  hover or precision pointing.
+- Let logs and long identifiers scroll or wrap inside their own bounded region.
+  They must never widen the page.
 
-Releases and deployments have stable detail URLs. Application selection is also
-linkable through its runtime identity. New entities that need to be refreshed or
-revisited should receive stable URLs rather than being available only through
-transient modal state.
+### Desktop
 
-The primary surface uses application language. Nix store paths, hashes, image
-identities, configuration digests, and container internals belong in collapsed
-technical evidence. Until CI registers releases automatically, the host-local
-source form remains only under the explicitly advanced release-import boundary.
-
-`/compatibility` preserves the legacy workflow while it remains necessary, but
-it is not part of primary navigation and must not shape new product design.
-
-The overview is a status and routing page, not a compressed copy of every other
-page. It may show concise counts, urgent failures, and common next actions, then
-link to the owning workflow.
-
-## Responsive application shell
-
-### Mobile and narrow viewports
-
-Below the Tailwind `lg` breakpoint:
-
-- show a compact sticky header with the nixploy identity, current section, and
-  one touch-sized hamburger button;
-- open navigation as a full-viewport menu with large route targets;
-- keep theme and operator controls in that menu rather than crowding the header;
-- support close-button, route-selection, and Escape-key dismissal;
-- allow the full-screen menu itself to scroll on short viewports;
-- do **not** set persistent overflow classes or inline styles on `<body>` when
-  opening the menu. LiveView navigation can replace the view before cleanup and
-  leave the destination page scroll-locked.
-
-Do not restore horizontally scrolling primary tabs. They hide destinations,
-compete with browser chrome, and make the active section harder to understand.
-
-### Laptop and desktop
-
-At `lg` and wider:
-
-- use the persistent 16rem left side navigation;
-- keep the active destination obvious with `aria-current="page"` and strong
-  contrast;
-- place operator identity, theme, and session controls at the bottom of the
-  sidebar;
-- offset the content column from the fixed sidebar and constrain its readable
-  maximum width;
-- add density or side-by-side comparison where useful, but never add a desktop-
-  only capability.
-
-The shared shell lives in `lib/nixploy_web/components/layouts.ex`. Extend that
-shell rather than creating page-specific navigation chrome.
-
-## Page composition
-
-A normal utility page should use this hierarchy:
-
-1. A compact page header: contextual kicker, direct title, one-sentence purpose,
-   and at most the primary page-level action.
-2. A small status summary only when it helps the operator decide what to do.
-3. One or more bounded panels organized around the route's task.
-4. Stable links to deeper evidence or detail pages.
-5. Explicit empty, loading, error, and stale states in the location where data
-   would otherwise appear.
-
-Prefer progressive disclosure. Keep common state and actions visible; put long
-identifiers, command diagnostics, logs, audit evidence, and less-common controls
-in focused detail areas without hiding failures.
-
-Avoid:
-
-- oversized hero sections or marketing copy;
-- decorative charts without an operational decision attached;
-- a grid of equally prominent cards when only one item needs attention;
-- excessive shadows, gradients, glass effects, rounded pills, and accent colors;
-- editable forms that duplicate flake-owned project configuration;
-- hover-only controls or icon-only actions without accessible labels;
-- modals as the only way to revisit operational evidence.
+- Use available width for scanning deployments, comparing application resource
+  use, and keeping controls near their result.
+- Constrain prose and error text to readable measures even when data panels are
+  wide.
+- Prefer aligned rows and columns when they improve comparison, but preserve the
+  same reading order as mobile.
+- Do not turn available space into oversized headers, empty hero regions, or a
+  grid of equally prominent cards.
 
 ## Visual language
 
-Use the existing Tailwind and daisyUI theme rather than introducing a parallel
-component or token system.
+The current industrial operator-console direction is appropriate: strong
+typographic hierarchy, restrained neutral surfaces, compact borders, and a small
+set of semantic state colors.
 
-- Neutral background and panel surfaces carry most of the interface.
-- The primary orange accent marks context, links, focus, and selected actions; it
-  is not general decoration.
-- Semantic success, warning, and error colors communicate observed state.
-- Sans-serif text carries labels and prose. Monospace is reserved for immutable
-  identities, image references, hashes, runtime values, and compact uppercase
-  kickers.
-- Borders and spacing establish hierarchy before shadows do.
-- Corners remain compact and controls remain practical rather than playful.
+- Use the accent color for focus, links, selected state, and the primary action,
+  not as general decoration.
+- Use success, warning, failure, active, and cancelled colors consistently and
+  never as the sole carrier of meaning.
+- Reserve monospace for commits, timestamps, log content, measurements, and
+  other machine-originated values.
+- Keep corners, shadows, gradients, and animation restrained.
+- Avoid glass effects, decorative charts, oversized status numerals, and
+  marketing-style slogans.
+- Prefer real data labels over unexplained icons. Icon-only controls require an
+  accessible name and should be rare.
 
-Reusable `np-*` primitives are defined in `assets/css/app.css`:
+## Data presentation
 
-- `np-page-stack`, `np-page-header`, `np-kicker`, `np-page-title`, and
-  `np-page-description` establish page hierarchy;
-- `np-panel` and its header classes group a bounded workflow;
-- `np-stat*` presents compact decision-relevant status;
-- `np-action-*` presents clear next steps;
-- `np-data-cell` and `np-field-label` present operational facts;
-- `np-metric`, `np-status-dot`, and `np-log-view` present live application state;
-- `np-technical-details` keeps exact evidence available without leading with it;
-- `np-empty` provides a consistent empty state.
+### Deployments
 
-Extend these primitives when a pattern repeats. Keep one-off layout decisions in
-HEEx utility classes instead of turning every arrangement into a component.
+Recent deployment state must be scannable without opening every item. Lead with
+application, state, commit subject and short SHA, time, duration, and stage.
+Failure text belongs with the failed item and may expand for detail. The full SHA
+remains copyable without dominating the layout.
 
-## Interaction and LiveView behavior
+### Commit confirmation
 
-- Controls must have a minimum practical touch target of roughly 44px.
-- Keyboard focus, semantic landmarks, a skip link, labels, and `aria-current`
-  are part of the implementation, not later polish.
-- Prefer LiveView navigation and `Phoenix.LiveView.JS` for small UI transitions.
-  Add a custom JavaScript hook only when server-rendered components and JS
-  commands cannot express the behavior safely.
-- Never leave global browser state behind across LiveView navigation. Any global
-  class, listener, or style needs navigation-safe cleanup and a regression test.
-- Keep the page useful while commands are slow. Disable duplicate submissions,
-  show progress near the initiating action, and retain durable operation links.
-- Do not infer success from an optimistic animation. Render persisted state and
-  independently observed runtime evidence.
-- Keep logs and command output bounded. Long text and identifiers must wrap or
-  scroll inside their own region without causing page-level horizontal overflow.
+Show the human-readable subject and short SHA first, with full SHA and commit
+time available in the same confirmation surface. Make it unambiguous that this
+is the exact commit the action will deploy. Confirmation and cancellation must
+remain practical with touch and keyboard input.
+
+### Logs
+
+The log viewer is an investigation tool rather than a decorative terminal:
+
+- search remains visible while reading results;
+- match count and next/previous controls are explicit;
+- matched text and the active match are distinguishable without color alone;
+- follow and paused states are obvious;
+- new output must not unexpectedly steal scroll position while paused;
+- loading, empty, truncated, unavailable, and stale states are visible;
+- long lines scroll within the viewer, never at page level.
+
+### Metrics
+
+Metrics should support comparison and diagnosis. Always pair percentages with
+their useful capacity context, such as memory used and total memory. State when
+the sample was observed and which deployment target supplied it. Never present
+the control-plane machine as the application host unless it actually is the
+configured target. Charts are justified only when a trend changes an operator
+decision; the first implementation should favor clear current values.
+
+## Interaction behavior
+
+- Every action has visible hover, focus, active, disabled, pending, success, and
+  error behavior where applicable.
+- Keyboard focus order follows the visual reading order and remains visible.
+- Use semantic headings, landmarks, buttons, labels, and live regions before
+  adding custom ARIA behavior.
+- Polling must not reset selection, search text, scroll position, or expanded
+  details.
+- Disable duplicate mutations while preserving the operation's progress.
+- Cancellation requires a concise confirmation that names the active deployment
+  and explains that cleanup may continue briefly.
+- Never infer success from client state. Render persisted operation state and
+  independently observed runtime facts.
+- Avoid animation that delays access or obscures changing operational data.
 - Never render decrypted credentials or secret values.
 
-## Implementation checklist
+## Bonsai implementation
 
-For every new or materially changed operator workflow:
+- Keep state close to the component that owns the interaction.
+- Separate protocol/domain values from their presentation instead of encoding
+  behavior in CSS class strings or display text.
+- Extract a component when it has a coherent interaction or is genuinely reused,
+  not merely to shorten a file.
+- Preserve user state across RPC polling and make stale responses explicit.
+- Model loading, successful, failed, and disconnected RPC states deliberately.
+- Keep formatting of commits, times, durations, byte values, and percentages in
+  focused, testable functions.
+- Prefer CSS layout and semantic HTML over browser-side measurement or imperative
+  DOM manipulation.
 
-- [ ] It has one clear operator job and belongs on the correct primary route.
-- [ ] It works first at a narrow mobile viewport without horizontal page scroll.
-- [ ] It remains fully usable with touch and keyboard, without hover.
-- [ ] Laptop layout uses the shared sidebar and adds density only where useful.
-- [ ] Primary state, failure, and next action are easy to find.
-- [ ] Loading, empty, stale, unavailable, and error states are represented.
-- [ ] Long identifiers, logs, and evidence cannot break the viewport.
-- [ ] Destructive effects are explicit and confirmed.
-- [ ] The route or detail state can be linked and revisited when appropriate.
-- [ ] LiveView navigation cannot leave global scroll, focus, or overlay state
-      behind.
-- [ ] Stable selectors and tests cover navigation, critical actions, and the
-      narrow-layout structure.
-- [ ] No flake-owned configuration or decrypted secret has moved into the UI.
+## Review checklist
 
-Review changes in a real narrow browser as well as desktop. Passing a responsive
-CSS build alone is not evidence that an operator workflow is usable.
+For every materially changed workflow:
+
+- [ ] It has one clear operator purpose.
+- [ ] It works at a narrow mobile viewport without page-level horizontal scroll.
+- [ ] It remains fully usable with touch and keyboard and without hover.
+- [ ] Desktop adds useful density without adding exclusive capabilities.
+- [ ] State, failure, stale data, and the next useful action are easy to find.
+- [ ] Loading, empty, unavailable, disconnected, and error states are represented.
+- [ ] Polling preserves local interaction state.
+- [ ] Logs and long machine values stay within their bounded region.
+- [ ] Focus indicators, labels, contrast, and semantic structure are accessible.
+- [ ] Critical interactions and responsive behavior have focused tests.
+- [ ] The packaged UI was exercised in a real narrow and desktop browser.
+
+Passing a CSS build or resizing a desktop layout is not evidence that a mobile
+operator workflow is complete.

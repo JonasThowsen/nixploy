@@ -22,6 +22,7 @@ val deploy :
   ?on_stage:(stage -> string -> unit Deferred.t) ->
   operation_id:string ->
   working_directory:string ->
+  commit:Source.commit ->
   target:Target_name.t ->
   unit ->
   t Deferred.Or_error.t
@@ -35,4 +36,5 @@ val container_name : t -> string
 val container_id : t -> string
 val slot : t -> Deployment_plan.slot
 val port : t -> int
+val warning : t -> string option
 val stage_name : stage -> string

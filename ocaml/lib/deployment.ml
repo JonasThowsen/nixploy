@@ -27,6 +27,7 @@ type t = {
   container_id : string;
   slot : Deployment_plan.slot;
   port : int;
+  warning : string option;
 }
 
 let operation_id t = t.operation_id
@@ -38,6 +39,7 @@ let container_name t = t.container_name
 let container_id t = t.container_id
 let slot t = t.slot
 let port t = t.port
+let warning t = t.warning
 
 let stage_name = function
   | Preparing_source -> "preparing-source"
@@ -68,27 +70,35 @@ let cleanup_candidate ~connection candidate primary =
   let%map cleanup = Podman.remove_candidate ~connection ~candidate in
   match cleanup with
   | Ok () -> Error primary
-  | Error cleanup_error -> Error (combine_failure primary cleanup_error)
+  | Error cleanup_error ->
+      Cancellation.mark_cleanup_failed ();
+      Error (combine_failure primary cleanup_error)
 
 let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
   let open Deferred.Let_syntax in
   let%bind restored = Caddy.restore caddy ~previous in
-  let%bind removed = Podman.remove_candidate ~connection ~candidate in
-  let error =
-    match (restored, removed) with
-    | Ok (), Ok () -> primary
-    | Error restoration, Ok () -> combine_failure primary restoration
-    | Ok (), Error cleanup -> combine_failure primary cleanup
-    | Error restoration, Error cleanup ->
-        combine_failure (combine_failure primary restoration) cleanup
-  in
-  Deferred.return (Error error)
+  match restored with
+  | Error restoration ->
+      Cancellation.mark_cleanup_failed ();
+      Deferred.return (Error (combine_failure primary restoration))
+  | Ok () ->
+      let%map removed = Podman.remove_candidate ~connection ~candidate in
+      let error =
+        match removed with
+        | Ok () -> primary
+        | Error cleanup ->
+            Cancellation.mark_cleanup_failed ();
+            combine_failure primary cleanup
+      in
+      Error error
 
-let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
+let deploy ?(on_stage = no_stage) ~operation_id ~working_directory ~commit
     ~target:target_name () =
   let open Deferred.Let_syntax in
-  let%bind () = on_stage Preparing_source "Resolving the exact head of main" in
-  let%bind prepared = Source.prepare ~working_directory in
+  let%bind () =
+    on_stage Preparing_source "Materializing the confirmed Git commit"
+  in
+  let%bind prepared = Source.prepare ~working_directory ~commit in
   match prepared with
   | Error _ as error -> Deferred.return error
   | Ok source ->
@@ -262,38 +272,59 @@ let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
                             in
                             match (ingress_valid, candidate_valid) with
                             | true, Ok () -> (
-                                let%bind retired =
-                                  match previous_candidate with
-                                  | None -> Deferred.Or_error.return ()
-                                  | Some previous_candidate -> (
-                                      let%bind () =
-                                        on_stage Retiring_previous
-                                          "Retiring the previous active slot"
-                                      in
-                                      let%bind observed =
-                                        Caddy.inspect ~ignore_termination:true
-                                          caddy
-                                      in
-                                      match observed with
-                                      | Ok (Caddy.Existing { active_port })
-                                        when Int.equal active_port
-                                               candidate_port ->
-                                          Podman.remove_candidate ~connection
-                                            ~candidate:previous_candidate
-                                      | Error error ->
-                                          Deferred.return (Error error)
-                                      | _ ->
-                                          Deferred.Or_error.error_string
-                                            "Caddy route changed before \
-                                             previous slot retirement")
+                                let%bind cancellation =
+                                  match Cancellation.commit_current () with
+                                  | Continue -> Deferred.Or_error.return ()
+                                  | Cancel ->
+                                      restore_and_cleanup ~caddy ~previous
+                                        ~connection ~candidate
+                                        (Error.of_string
+                                           "deployment cancelled before \
+                                            finalization")
                                 in
-                                match retired with
+                                match cancellation with
                                 | Error error -> Deferred.return (Error error)
                                 | Ok () ->
-                                    let%bind () =
-                                      on_stage Succeeded
-                                        "Deployment independently verified"
+                                    let%bind retired =
+                                      match previous_candidate with
+                                      | None -> Deferred.Or_error.return ()
+                                      | Some previous_candidate -> (
+                                          let%bind () =
+                                            on_stage Retiring_previous
+                                              "Retiring the previous active \
+                                               slot"
+                                          in
+                                          let%bind observed =
+                                            Caddy.inspect
+                                              ~ignore_termination:true caddy
+                                          in
+                                          match observed with
+                                          | Ok (Caddy.Existing { active_port })
+                                            when Int.equal active_port
+                                                   candidate_port ->
+                                              Podman.remove_candidate
+                                                ~connection
+                                                ~candidate:previous_candidate
+                                          | Error error ->
+                                              Deferred.return (Error error)
+                                          | _ ->
+                                              Deferred.Or_error.error_string
+                                                "Caddy route changed before \
+                                                 previous slot retirement")
                                     in
+                                    let warning =
+                                      Result.error retired
+                                      |> Option.map ~f:(fun error ->
+                                          "Deployment verified, but previous \
+                                           slot retirement failed: "
+                                          ^ Error.to_string_hum error)
+                                    in
+                                    let message =
+                                      Option.value warning
+                                        ~default:
+                                          "Deployment independently verified"
+                                    in
+                                    let%bind () = on_stage Succeeded message in
                                     Deferred.Or_error.return
                                       {
                                         operation_id;
@@ -307,6 +338,7 @@ let deploy ?(on_stage = no_stage) ~operation_id ~working_directory
                                           Podman.candidate_id candidate;
                                         slot = candidate_slot;
                                         port = candidate_port;
+                                        warning;
                                       })
                             | _ ->
                                 let failure =

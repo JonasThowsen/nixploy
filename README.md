@@ -163,21 +163,34 @@ Build the image manually:
 nix build .#docker -o result-nixploy-image
 ```
 
-Run tests for the current CLI:
+Run tests for the current OCaml CLI and control plane:
 
 ```bash
-dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
+nix develop . -c dune runtest --root ocaml
 ```
 
-## Control plane rewrite development
+## OCaml control plane
 
-The Elixir/Phoenix control plane is being built alongside the current C# CLI so
-that existing deployment behavior remains available during the rewrite. See
-[`ROADMAP.md`](ROADMAP.md) for the current local-first delivery order,
-incremental Ash migration, and the later AshAI/AshLua MCP composition model. See
-[`UI_DIRECTION.md`](UI_DIRECTION.md) for the canonical operator-interface
-structure, responsive shell, visual language, interaction rules, and review
-checklist.
+The default `nixploy` CLI and the Bonsai browser control plane are implemented in
+OCaml and share the SQLite-backed tracked deployment path. See
+[`ocaml/README.md`](ocaml/README.md) for implementation details,
+[`ROADMAP.md`](ROADMAP.md) for the deliberately narrow product backlog, and
+[`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive operator-interface
+requirements.
+
+Build and test the packaged implementation through Nix:
+
+```bash
+nix build .#nixploy
+nix develop . -c dune runtest --root ocaml
+```
+
+## Historical Phoenix implementation
+
+The Phoenix implementation remains in the repository as architectural history
+and for the legacy compatibility path. It is not the current production control
+plane or the source of future product scope. The development notes below apply
+only to that implementation.
 
 Enter the reproducible development environment and initialize Phoenix:
 

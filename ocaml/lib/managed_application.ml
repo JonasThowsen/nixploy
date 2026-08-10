@@ -5,6 +5,7 @@ type t = {
   project : Project_name.t;
   target : Target_name.t;
   repository : string;
+  repository_identity : string;
   subdirectory : string;
 }
 
@@ -12,6 +13,7 @@ let key t = t.key
 let project t = t.project
 let target t = t.target
 let repository t = t.repository
+let repository_identity t = t.repository_identity
 
 let working_directory t =
   if String.equal t.subdirectory "." then t.repository
@@ -56,6 +58,9 @@ let parse (key, json) =
           required_string fields "target" >>= Target_name.of_string
         in
         let%bind repository = required_string fields "repository" in
+        let%bind repository_identity =
+          optional_string fields "repositoryIdentity" ~default:repository
+        in
         let%bind subdirectory =
           optional_string fields "subdirectory" ~default:"."
         in
@@ -80,7 +85,15 @@ let parse (key, json) =
           let subdirectory =
             if String.is_empty subdirectory then "." else subdirectory
           in
-          Ok { key; project; target; repository; subdirectory }
+          Ok
+            {
+              key;
+              project;
+              target;
+              repository;
+              repository_identity;
+              subdirectory;
+            }
     | _ -> Or_error.error_string "managed application must be an object"
 
 let all_of_json input =

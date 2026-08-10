@@ -117,7 +117,7 @@
                 js_of_ocaml-compiler_5_9
                 ocaml-embed-file
               ]
-              ++ [ pkgs.makeWrapper ];
+              ++ [ pkgs.git pkgs.makeWrapper ];
 
             propagatedBuildInputs = with ocamlPackages; [
               async

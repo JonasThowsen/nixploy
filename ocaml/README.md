@@ -50,8 +50,9 @@ placing values in argv or retained errors.
 
 This path has deployed Jomat production in both directions across its blue and
 green slots. The runs adopted its established legacy resource identity, ran two
-secret-backed pre-start commands, kept the previous slot available for rollback,
-switched the exact Caddy route, and preserved public health throughout.
+secret-backed pre-start commands, switched the exact Caddy route, independently
+verified the result, retired the previous slot, and preserved public health
+throughout.
 
 The Bonsai control-plane tracer is served by the second packaged executable:
 
@@ -64,6 +65,13 @@ It binds to loopback, reads the NixOS-owned
 deployment for each application, and sends deploy requests through the same
 `Tracked_deployment.deploy` path as the CLI. CLI and web mutations share a
 cross-process target lease rooted beside the SQLite state database.
+
+The operator surface now previews and confirms an exact Git commit, lists recent
+deployments, cancels active deployments cooperatively, searches and follows
+bounded logs from the positively identified active container, and reports remote
+host health plus per-application resource usage. These workflows use separate
+polling state so confirmation, filters, and log search remain stable while
+runtime observations refresh.
 
 Build and test through the repository flake:
 

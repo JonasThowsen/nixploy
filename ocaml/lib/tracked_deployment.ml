@@ -3,11 +3,16 @@ open Core
 
 let no_stage _ _ = Deferred.unit
 
-let deploy ?(on_stage = no_stage) ~store ~working_directory ~target () =
+let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
+    ~store ~working_directory ~commit ~target () =
   let working_directory = Filename_unix.realpath working_directory in
+  let cancellation = Cancellation.current () in
   Store.with_lease store ~working_directory ~target (fun () ->
       let open Deferred.Or_error.Let_syntax in
-      let%bind operation = Store.request store ~working_directory ~target in
+      let%bind operation =
+        Store.request store ~application_key ~working_directory ~target ~commit
+      in
+      on_requested operation;
       let on_stage stage message =
         let%bind.Deferred recorded =
           Store.record_stage store ~id:(Store.id operation) ~stage ~message
@@ -19,14 +24,23 @@ let deploy ?(on_stage = no_stage) ~store ~working_directory ~target () =
       let%bind.Deferred execution =
         Monitor.try_with_or_error (fun () ->
             Deployment.deploy ~on_stage ~operation_id:(Store.id operation)
-              ~working_directory ~target ())
+              ~working_directory ~commit ~target ())
       in
       let result = Or_error.join execution in
       let%bind () =
         match result with
         | Ok deployment ->
             Store.succeed store ~id:(Store.id operation) ~result:deployment
-        | Error error -> Store.fail store ~id:(Store.id operation) ~error
+        | Error error -> (
+            match cancellation with
+            | Some token
+              when Cancellation.was_acknowledged token
+                   && not (Cancellation.cleanup_failed token) ->
+                let%bind _ =
+                  Store.request_cancellation store ~id:(Store.id operation)
+                in
+                Store.cancel store ~id:(Store.id operation)
+            | _ -> Store.fail store ~id:(Store.id operation) ~error)
       in
       let%bind found = Store.find store ~id:(Store.id operation) in
       match found with

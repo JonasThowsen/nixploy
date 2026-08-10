@@ -73,6 +73,48 @@ let run_tests () =
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-timeout" ] ()
   in
   assert (Result.is_error timed_out);
+  let scoped_marker =
+    Filename_unix.temp_file "nixploy-scoped-cancel-" ".ready"
+  in
+  Core_unix.unlink scoped_marker;
+  let cancellation = Nixploy.Cancellation.create () in
+  let scoped =
+    Nixploy.Cancellation.within cancellation (fun () ->
+        Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
+          ~max_output_bytes:1024 ~prog:executable
+          ~args:[ "child-cancel"; scoped_marker ]
+          ())
+  in
+  let%bind () = wait_for_file scoped_marker 100 in
+  let scoped_descendant = In_channel.read_all scoped_marker |> Int.of_string in
+  assert (
+    [%equal: Nixploy.Cancellation.request]
+      (Nixploy.Cancellation.request cancellation)
+      Accepted);
+  let%bind scoped = scoped in
+  (match scoped with
+  | Ok _ -> failwith "scoped cancellation completed successfully"
+  | Error error ->
+      assert (
+        String.is_substring (Error.to_string_hum error) ~substring:"cancelled"));
+  assert (Nixploy.Cancellation.was_acknowledged cancellation);
+  let%bind () = wait_for_process_exit scoped_descendant 100 in
+  let%bind unaffected =
+    Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
+      ~max_output_bytes:1024 ~prog:executable ~args:[ "child-success" ] ()
+  in
+  assert (Result.is_ok unaffected);
+  Core_unix.unlink scoped_marker;
+  let committed = Nixploy.Cancellation.create () in
+  assert (
+    [%equal: Nixploy.Cancellation.commit]
+      (Nixploy.Cancellation.within committed (fun () ->
+           Nixploy.Cancellation.commit_current ()))
+      Continue);
+  assert (
+    [%equal: Nixploy.Cancellation.request]
+      (Nixploy.Cancellation.request committed)
+      Too_late);
   let marker = Filename_unix.temp_file "nixploy-cancel-test-" ".ready" in
   Core_unix.unlink marker;
   Nixploy.Process_runner.handle_termination_signals ();

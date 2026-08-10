@@ -8,5 +8,6 @@ val key : t -> string
 val project : t -> Project_name.t
 val target : t -> Target_name.t
 val repository : t -> string
+val repository_identity : t -> string
 val working_directory : t -> string
 val find : t list -> string -> t Or_error.t

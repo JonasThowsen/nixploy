@@ -1,9 +1,9 @@
 # nixploy Control Plane Rewrite Plan
 
-> **Current priorities:** This document records the rewrite architecture and its
-> original delivery plan. [`ROADMAP.md`](ROADMAP.md) now defines the local-first
-> product direction, tracer order, mobile UI expectations, incremental Ash
-> migration, and AshAI/AshLua MCP path.
+> **Historical document:** This records the original rewrite architecture and
+> delivery plan. It is not current product scope. [`ROADMAP.md`](ROADMAP.md)
+> contains the deliberately narrow OCaml control-plane backlog, and
+> [`UI_DIRECTION.md`](UI_DIRECTION.md) defines the operator interface.
 
 ## Objective
 

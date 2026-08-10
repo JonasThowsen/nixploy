@@ -8,11 +8,16 @@ type t = {
   repository : string;
 }
 
+type commit = { revision : string; subject : string; timestamp_ms : int64 }
+
 let git_timeout = Time_ns.Span.of_min 2.
 let max_git_output = 262_144
-let path t = t.path
-let revision t = t.revision
-let repository t = t.repository
+let path (source : t) = source.path
+let revision (source : t) = source.revision
+let repository (source : t) = source.repository
+let commit_revision (commit : commit) = commit.revision
+let commit_subject (commit : commit) = commit.subject
+let commit_timestamp_ms (commit : commit) = commit.timestamp_ms
 
 let git ?working_directory args =
   Process_runner.run_stdout ?working_directory ~timeout:git_timeout
@@ -24,6 +29,56 @@ let valid_revision revision =
       Char.is_digit character
       || (Char.compare character 'a' >= 0 && Char.compare character 'f' <= 0))
 
+let parse_commit output =
+  match String.rstrip output |> String.split ~on:'\000' with
+  | [ revision; subject; timestamp ] when valid_revision revision ->
+      let open Or_error.Let_syntax in
+      let%bind timestamp_seconds =
+        Or_error.try_with (fun () -> Int64.of_string timestamp)
+      in
+      let%bind timestamp_ms =
+        Or_error.try_with (fun () -> Int64.(timestamp_seconds * 1_000L))
+      in
+      if String.length subject > 500 then
+        Or_error.error_string "Git commit subject exceeds 500 bytes"
+      else Ok { revision; subject; timestamp_ms }
+  | _ -> Or_error.error_string "Git did not return valid commit metadata"
+
+let describe ~working_directory revision =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind output =
+    git ~working_directory
+      [ "show"; "--no-patch"; "--format=%H%x00%s%x00%ct"; revision; "--" ]
+  in
+  Deferred.return (parse_commit output)
+
+let preview_main ~working_directory =
+  match
+    Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+  with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory ->
+      describe ~working_directory "refs/heads/main^{commit}"
+
+let find_commit ~working_directory ~revision =
+  if not (valid_revision revision) then
+    Deferred.Or_error.error_string "deployment revision must be a full SHA"
+  else
+    match
+      Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+    with
+    | Error error -> Deferred.return (Error error)
+    | Ok working_directory -> describe ~working_directory revision
+
+module For_testing = struct
+  let commit ~revision ~subject ~timestamp_ms =
+    if not (valid_revision revision) then
+      Or_error.error_string "deployment revision must be a full SHA"
+    else if String.length subject > 500 then
+      Or_error.error_string "Git commit subject exceeds 500 bytes"
+    else Ok { revision; subject; timestamp_ms }
+end
+
 let cleanup t =
   let%map _ =
     Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 30.)
@@ -33,26 +88,43 @@ let cleanup t =
   in
   ()
 
-let prepare ~working_directory =
+let prepare ~working_directory ~commit =
   let open Deferred.Or_error.Let_syntax in
-  let working_directory = Filename_unix.realpath working_directory in
-  let%bind revision =
-    git ~working_directory
-      [ "rev-parse"; "--verify"; "refs/heads/main^{commit}" ]
+  let%bind working_directory =
+    Deferred.return
+      (Or_error.try_with (fun () -> Filename_unix.realpath working_directory))
   in
-  let revision = String.strip revision in
-  let%bind () =
-    if valid_revision revision then Deferred.Or_error.return ()
+  let revision = commit.revision in
+  let%bind repository_root =
+    git ~working_directory [ "rev-parse"; "--show-toplevel" ]
+  in
+  let%bind repository_root =
+    Deferred.return
+      (Or_error.try_with (fun () ->
+           String.strip repository_root |> Filename_unix.realpath))
+  in
+  let%bind subdirectory =
+    if String.equal working_directory repository_root then
+      Deferred.Or_error.return "."
     else
-      Deferred.Or_error.error_string
-        "refs/heads/main did not resolve to a full Git revision"
+      String.chop_prefix working_directory ~prefix:(repository_root ^ "/")
+      |> Option.value_map
+           ~default:
+             (Deferred.Or_error.error_string
+                "working directory is outside the Git repository")
+           ~f:Deferred.Or_error.return
   in
   let%bind repository =
-    git ~working_directory [ "config"; "--get"; "remote.origin.url" ]
+    git ~working_directory:repository_root
+      [ "config"; "--get"; "remote.origin.url" ]
   in
   let repository = String.strip repository in
   let workspace = Filename_unix.temp_dir "nixploy-" "" in
-  let source_path = Filename.concat workspace "source" in
+  let source_root = Filename.concat workspace "source" in
+  let source_path =
+    if String.equal subdirectory "." then source_root
+    else Filename.concat source_root subdirectory
+  in
   let provisional = { workspace; path = source_path; revision; repository } in
   let result =
     let%bind _ =
@@ -63,22 +135,22 @@ let prepare ~working_directory =
           "--local";
           "--no-hardlinks";
           "--";
-          working_directory;
-          source_path;
+          repository_root;
+          source_root;
         ]
     in
     let%bind _ =
-      git ~working_directory:source_path [ "checkout"; "--detach"; revision ]
+      git ~working_directory:source_root [ "checkout"; "--detach"; revision ]
     in
     let%bind dirty =
-      git ~working_directory:source_path [ "status"; "--porcelain" ]
+      git ~working_directory:source_root [ "status"; "--porcelain" ]
     in
     let%bind () =
       if String.is_empty (String.strip dirty) then Deferred.Or_error.return ()
       else Deferred.Or_error.error_string "materialized main checkout is dirty"
     in
     let%bind gitlinks =
-      git ~working_directory:source_path [ "ls-files"; "--stage" ]
+      git ~working_directory:source_root [ "ls-files"; "--stage" ]
     in
     let%bind () =
       if

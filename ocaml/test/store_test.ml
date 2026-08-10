@@ -1,11 +1,59 @@
 open Async
 open Core
 
+let create_v1_database path =
+  let db = Sqlite3.db_open path in
+  let sql =
+    {|
+      CREATE TABLE deployments (
+        id TEXT PRIMARY KEY,
+        working_directory TEXT NOT NULL,
+        target TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('requested', 'running', 'succeeded', 'failed')),
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        revision TEXT,
+        container_name TEXT,
+        error TEXT,
+        requested_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE deployment_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        inserted_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX deployments_recent ON deployments(requested_at_ms DESC);
+      CREATE INDEX deployment_events_operation ON deployment_events(deployment_id, id);
+      INSERT INTO deployments VALUES (
+        'legacy-operation', '/tmp/legacy', 'production', 'succeeded',
+        'succeeded', 'verified',
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'legacy-blue', NULL,
+        1000, 2000
+      );
+      INSERT INTO deployment_events
+        (deployment_id, stage, message, inserted_at_ms)
+      VALUES ('legacy-operation', 'succeeded', 'verified', 2000);
+      PRAGMA user_version = 1;
+    |}
+  in
+  let result = Sqlite3.exec db sql in
+  if not (phys_equal result Sqlite3.Rc.OK) then failwith (Sqlite3.errmsg db);
+  assert (Sqlite3.db_close db)
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-store-test-" "" in
   let path = Filename.concat directory "state.db" in
   let target = Nixploy.Target_name.of_string "production" |> Or_error.ok_exn in
+  let commit =
+    Nixploy.Source.For_testing.commit
+      ~revision:"0123456789abcdef0123456789abcdef01234567"
+      ~subject:"Test deployment" ~timestamp_ms:1_700_000_000_000L
+    |> Or_error.ok_exn
+  in
   let%bind opened = Nixploy.Store.open_ ~path in
   let store = Or_error.ok_exn opened in
   let%bind lease_test =
@@ -20,7 +68,8 @@ let run_tests () =
   in
   Or_error.ok_exn lease_test;
   let%bind requested =
-    Nixploy.Store.request store ~working_directory:"/tmp/project" ~target
+    Nixploy.Store.request store ~application_key:(Some "test")
+      ~working_directory:"/tmp/project" ~target ~commit
   in
   let requested = Or_error.ok_exn requested in
   assert (
@@ -44,6 +93,51 @@ let run_tests () =
     Option.equal String.equal
       (Nixploy.Store.error deployment)
       (Some "nix interrupted by sigint"));
+  assert (
+    Option.equal String.equal
+      (Nixploy.Store.revision deployment)
+      (Some "0123456789abcdef0123456789abcdef01234567"));
+  assert (String.equal (Nixploy.Store.stage deployment) "building");
+  assert (Option.is_some (Nixploy.Store.started_at_ms deployment));
+  assert (Option.is_some (Nixploy.Store.finished_at_ms deployment));
+  let%bind requested_cancel =
+    Nixploy.Store.request store ~application_key:(Some "test")
+      ~working_directory:"/tmp/project" ~target ~commit
+  in
+  let requested_cancel = Or_error.ok_exn requested_cancel in
+  let%bind staged_cancel =
+    Nixploy.Store.record_stage store
+      ~id:(Nixploy.Store.id requested_cancel)
+      ~stage:Nixploy.Deployment.Building ~message:"Building"
+  in
+  Or_error.ok_exn staged_cancel;
+  let%bind cancellation =
+    Nixploy.Store.request_cancellation store
+      ~id:(Nixploy.Store.id requested_cancel)
+  in
+  Or_error.ok_exn cancellation;
+  let%bind cancelled =
+    Nixploy.Store.cancel store ~id:(Nixploy.Store.id requested_cancel)
+  in
+  Or_error.ok_exn cancelled;
+  let%bind cancelled =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id requested_cancel)
+  in
+  let cancelled = Or_error.ok_exn cancelled |> Option.value_exn in
+  assert (
+    [%equal: Nixploy.Store.state] (Nixploy.Store.state cancelled) Cancelled);
+  assert (Option.is_some (Nixploy.Store.cancel_requested_at_ms cancelled));
+  let migration_path = Filename.concat directory "legacy.db" in
+  create_v1_database migration_path;
+  let%bind migrated_store = Nixploy.Store.open_ ~path:migration_path in
+  let migrated_store = Or_error.ok_exn migrated_store in
+  let%bind migrated =
+    Nixploy.Store.find migrated_store ~id:"legacy-operation"
+  in
+  let migrated = Or_error.ok_exn migrated |> Option.value_exn in
+  assert ([%equal: Nixploy.Store.state] (Nixploy.Store.state migrated) Succeeded);
+  assert (Option.is_some (Nixploy.Store.started_at_ms migrated));
+  assert (Option.is_some (Nixploy.Store.finished_at_ms migrated));
   let%map _ =
     Nixploy.Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:65_536 ~prog:"rm" ~args:[ "-rf"; "--"; directory ] ()

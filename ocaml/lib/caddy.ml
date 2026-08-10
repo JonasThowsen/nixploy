@@ -346,3 +346,36 @@ let health_check t ~port =
           (String.strip result.stderr)
   in
   attempt 20
+
+let observe_health t ~port =
+  let url =
+    sprintf "http://127.0.0.1:%d%s" port (Configuration.Web.health_path t.web)
+  in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Remote_command.run ~target:t.target ~timeout:(Time_ns.Span.of_sec 5.)
+      ~max_output_bytes:4_096
+      [
+        "curl";
+        "-sS";
+        "--output";
+        "/dev/null";
+        "--write-out";
+        "%{http_code}";
+        "--max-time";
+        "3";
+        url;
+      ]
+  in
+  match result.exit_status with
+  | Error failure ->
+      Deferred.Or_error.errorf "application health probe failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr)
+  | Ok () ->
+      let%map status =
+        Deferred.return
+          (Or_error.try_with (fun () ->
+               String.strip result.stdout |> Int.of_string))
+      in
+      status >= 200 && status < 300

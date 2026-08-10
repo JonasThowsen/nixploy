@@ -17,6 +17,7 @@ val switch :
 
 val restore : t -> previous:route -> unit Deferred.Or_error.t
 val health_check : t -> port:int -> unit Deferred.Or_error.t
+val observe_health : t -> port:int -> bool Deferred.Or_error.t
 
 module For_testing : sig
   val upstream_port_of_json : string -> int Or_error.t

@@ -5,6 +5,18 @@ type image = { reference : string; id : string }
 type candidate = { name : string; id : string }
 type secret_mount = { source : string; target : string }
 
+type runtime_container = {
+  name : string;
+  id : string;
+  revision : string option;
+  operation_id : string option;
+  started_at : string option;
+}
+
+type log_line = { timestamp : string option; text : string }
+type log_snapshot = { lines : log_line list; truncated : bool }
+type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
+
 let podman_timeout = Time_ns.Span.of_min 5.
 let build_timeout = Time_ns.Span.of_hr 1.
 let max_output = 1_048_576
@@ -12,6 +24,11 @@ let image_reference (image : image) = image.reference
 let image_id (image : image) = image.id
 let candidate_name (candidate : candidate) = candidate.name
 let candidate_id (candidate : candidate) = candidate.id
+let runtime_container_name container = container.name
+let runtime_container_id container = container.id
+let runtime_container_revision container = container.revision
+let runtime_container_operation_id container = container.operation_id
+let runtime_container_started_at container = container.started_at
 
 let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
   Process_runner.run ?stdin ?ignore_termination ~timeout
@@ -154,7 +171,11 @@ let add_connection ~target ~name ~identity =
 let ensure_connection ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
   let name = Resource_key.to_string resource_key in
-  let identity = Remote_command.identity_file target in
+  let identity =
+    match Sys.getenv "SSH_AUTH_SOCK" with
+    | Some socket when not (String.is_empty (String.strip socket)) -> None
+    | _ -> Remote_command.identity_file target
+  in
   let%bind connections = list_connections () in
   let%bind () =
     match Podman_connection.find_by_name connections name with
@@ -188,11 +209,6 @@ let loaded_reference output =
   | Some reference when not (String.is_empty reference) -> Ok reference
   | _ ->
       Or_error.error_string "Podman did not report the loaded image reference"
-
-module For_testing = struct
-  let loaded_reference = loaded_reference
-  let resource_keys_of_containers = resource_keys_of_containers
-end
 
 let image_id_of_inspect output =
   let open Or_error.Let_syntax in
@@ -571,11 +587,13 @@ let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
       match cleanup with
       | Ok () -> Error primary
       | Error cleanup ->
+          Cancellation.mark_cleanup_failed ();
           Error
             (Error.create_s [%message (primary : Error.t) (cleanup : Error.t)]))
 
 let verify_candidate ~connection ~project ~target ~resource_key ~source
-    ~configuration_digest ~operation_id ~(image : image) ~candidate =
+    ~configuration_digest ~operation_id ~(image : image)
+    ~(candidate : candidate) =
   let open Deferred.Or_error.Let_syntax in
   let%bind inspected = inspect_container ~connection candidate.name in
   let%bind json =
@@ -636,7 +654,7 @@ let verify_candidate ~connection ~project ~target ~resource_key ~source
       Deferred.Or_error.error_string
         "candidate inspect must contain exactly one container"
 
-let remove_candidate ~connection ~candidate =
+let remove_candidate ~connection ~(candidate : candidate) =
   let%bind.Deferred removed =
     run_ok ~ignore_termination:true
       [ "--connection"; connection; "rm"; "-f"; candidate.id ]
@@ -651,3 +669,311 @@ let remove_candidate ~connection ~candidate =
       match exists with
       | Ok { exit_status = Error (`Exit_non_zero 1); _ } -> Ok ()
       | _ -> Error removal_error)
+
+let runtime_container_of_inspect output ~project ~target ~resource_key
+    ~expected_name =
+  let open Or_error.Let_syntax in
+  let%bind owned = owned_container output ~project ~target ~resource_key in
+  if not owned then
+    Or_error.error_string "active container is not owned by this application"
+  else
+    let%bind json =
+      Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+    in
+    match json with
+    | `List [ `Assoc container ] ->
+        let string_field fields name =
+          match List.Assoc.find fields ~equal:String.equal name with
+          | Some (`String value) when not (String.is_empty value) -> Some value
+          | _ -> None
+        in
+        let name =
+          string_field container "Name"
+          |> Option.map ~f:(String.chop_prefix_if_exists ~prefix:"/")
+        in
+        let id = string_field container "Id" in
+        let%bind state =
+          match List.Assoc.find container ~equal:String.equal "State" with
+          | Some (`Assoc state) -> Ok state
+          | _ -> Or_error.error_string "active container state is missing"
+        in
+        let%bind () =
+          match List.Assoc.find state ~equal:String.equal "Running" with
+          | Some (`Bool true) -> Ok ()
+          | _ -> Or_error.error_string "active container is not running"
+        in
+        let%bind labels =
+          match List.Assoc.find container ~equal:String.equal "Config" with
+          | Some (`Assoc config) -> (
+              match List.Assoc.find config ~equal:String.equal "Labels" with
+              | Some (`Assoc labels) -> Ok labels
+              | _ -> Or_error.error_string "active container labels are missing"
+              )
+          | _ -> Or_error.error_string "active container config is missing"
+        in
+        let revision = label labels "io.nixploy.revision" in
+        let operation_id = label labels "io.nixploy.operation_id" in
+        let%bind id =
+          Option.value_map id
+            ~default:(Or_error.error_string "active container ID is missing")
+            ~f:Or_error.return
+        in
+        let%bind name =
+          match name with
+          | Some name when String.equal name expected_name -> Ok name
+          | _ -> Or_error.error_string "active container name does not match"
+        in
+        if Option.is_none revision || Option.is_none operation_id then
+          Or_error.error_string
+            "active container immutable identity is incomplete"
+        else
+          Ok
+            {
+              name;
+              id;
+              revision;
+              operation_id;
+              started_at = string_field state "StartedAt";
+            }
+    | _ ->
+        Or_error.error_string
+          "active container inspect must contain one container"
+
+let find_running_slot ~connection ~project ~target ~resource_key ~slot =
+  let open Deferred.Or_error.Let_syntax in
+  let name = Deployment_plan.container_name ~resource_key slot in
+  let%bind inspected = inspect_container ~connection name in
+  Deferred.return
+    (runtime_container_of_inspect inspected.stdout ~project ~target
+       ~resource_key ~expected_name:name)
+
+let parse_log_line line =
+  match String.lsplit2 line ~on:' ' with
+  | Some (timestamp, text)
+    when String.mem timestamp 'T' && String.is_suffix timestamp ~suffix:"Z" ->
+      { timestamp = Some timestamp; text }
+  | _ -> { timestamp = None; text = line }
+
+let redact_log_line line =
+  let keys =
+    [
+      "authorization";
+      "database_url";
+      "api_key";
+      "api-key";
+      "password";
+      "passwd";
+      "token";
+      "secret";
+      "cookie";
+    ]
+  in
+  let is_space character = Char.is_whitespace character in
+  let is_value_end character =
+    is_space character || Char.equal character ',' || Char.equal character ';'
+  in
+  let rec redact line position =
+    let lowercase = String.lowercase line in
+    let found =
+      List.filter_map keys ~f:(fun key ->
+          String.substr_index lowercase ~pos:position ~pattern:key
+          |> Option.map ~f:(fun index -> (index, key)))
+      |> List.min_elt ~compare:(fun (left, _) (right, _) ->
+          Int.compare left right)
+    in
+    match found with
+    | None -> line
+    | Some (index, key) ->
+        let after_key = index + String.length key in
+        let rec skip_spaces cursor =
+          if cursor < String.length line && is_space line.[cursor] then
+            skip_spaces (cursor + 1)
+          else cursor
+        in
+        let after_key =
+          if after_key < String.length line && Char.equal line.[after_key] '"'
+          then after_key + 1
+          else after_key
+        in
+        let separator = skip_spaces after_key in
+        if
+          separator >= String.length line
+          || not
+               (Char.equal line.[separator] ':'
+               || Char.equal line.[separator] '=')
+        then redact line after_key
+        else
+          let value_start = skip_spaces (separator + 1) in
+          let quoted =
+            value_start < String.length line
+            && (Char.equal line.[value_start] '"'
+               || Char.equal line.[value_start] '\'')
+          in
+          let secret_start = if quoted then value_start + 1 else value_start in
+          let rec value_end cursor =
+            if cursor >= String.length line then cursor
+            else if quoted && Char.equal line.[cursor] line.[value_start] then
+              cursor
+            else if
+              (not quoted)
+              &&
+              if String.equal key "authorization" || String.equal key "cookie"
+              then Char.equal line.[cursor] ',' || Char.equal line.[cursor] ';'
+              else is_value_end line.[cursor]
+            then cursor
+            else value_end (cursor + 1)
+          in
+          let value_end = value_end secret_start in
+          if Int.equal secret_start value_end then redact line value_end
+          else
+            let replacement = "[REDACTED]" in
+            let line =
+              String.prefix line secret_start
+              ^ replacement
+              ^ String.drop_prefix line value_end
+            in
+            redact line (secret_start + String.length replacement)
+  in
+  redact line 0
+
+let bound_logs output =
+  let max_bytes = 65_536 in
+  let max_lines = 500 in
+  let input = String.rstrip output |> String.split_lines in
+  let rec take lines bytes count kept truncated =
+    match lines with
+    | [] ->
+        {
+          lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
+          truncated;
+        }
+    | line :: rest ->
+        let line_bytes = String.length line + 1 in
+        if count >= max_lines || bytes + line_bytes > max_bytes then
+          {
+            lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
+            truncated = true;
+          }
+        else take rest (bytes + line_bytes) (count + 1) (line :: kept) truncated
+  in
+  take (List.rev input) 0 0 [] false
+
+let read_logs ~connection ~container =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Process_runner.run ~timeout:(Time_ns.Span.of_sec 30.)
+      ~max_output_bytes:262_144 ~prog:"podman"
+      ~args:
+        [
+          "--connection";
+          connection;
+          "logs";
+          "--tail";
+          "500";
+          "--timestamps";
+          container.id;
+        ]
+      ()
+  in
+  match result.exit_status with
+  | Error failure ->
+      Deferred.Or_error.errorf "Podman logs failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr)
+  | Ok () ->
+      let output =
+        if String.is_empty result.stderr then result.stdout
+        else result.stdout ^ "\n" ^ result.stderr
+      in
+      Deferred.Or_error.return (bound_logs output)
+
+let numeric_string fields names =
+  List.find_map names ~f:(fun name ->
+      match List.Assoc.find fields ~equal:String.Caseless.equal name with
+      | Some (`String value) -> Some value
+      | Some (`Float value) -> Some (Float.to_string value)
+      | Some (`Int value) -> Some (Int.to_string value)
+      | _ -> None)
+
+let parse_percent value =
+  let value = String.strip value in
+  if String.equal value "--" then None
+  else
+    String.chop_suffix_if_exists value ~suffix:"%"
+    |> Float.of_string |> Option.some
+
+let bytes_of_human value =
+  let value = String.strip value in
+  let index =
+    String.findi value ~f:(fun _ character ->
+        not (Char.is_digit character || Char.equal character '.'))
+    |> Option.value_map ~default:(String.length value) ~f:fst
+  in
+  let number = String.prefix value index |> Float.of_string in
+  let unit =
+    String.drop_prefix value index |> String.strip |> String.lowercase
+  in
+  let multiplier =
+    match unit with
+    | "" | "b" -> 1.
+    | "kb" -> 1_000.
+    | "kib" -> 1_024.
+    | "mb" -> 1_000_000.
+    | "mib" -> 1_048_576.
+    | "gb" -> 1_000_000_000.
+    | "gib" -> 1_073_741_824.
+    | unit -> failwithf "unsupported memory unit %s" unit ()
+  in
+  Float.iround_nearest_exn (number *. multiplier) |> Int64.of_int
+
+let parse_stats output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  let%bind fields =
+    match json with
+    | `Assoc fields -> Ok fields
+    | `List [ `Assoc fields ] -> Ok fields
+    | _ -> Or_error.error_string "Podman stats must contain one object"
+  in
+  let%bind cpu =
+    numeric_string fields [ "cpu_percent"; "CPU"; "CPUPerc"; "cpu" ]
+    |> Option.value_map
+         ~default:(Or_error.error_string "Podman stats CPU is missing")
+         ~f:(fun value -> Or_error.try_with (fun () -> parse_percent value))
+  in
+  let%bind memory =
+    numeric_string fields [ "mem_usage"; "MemUsage"; "memUsage" ]
+    |> Option.value_map
+         ~default:(Or_error.error_string "Podman stats memory is missing")
+         ~f:(fun value ->
+           Or_error.try_with (fun () ->
+               String.lsplit2 value ~on:'/'
+               |> Option.value_map ~default:value ~f:fst
+               |> bytes_of_human))
+  in
+  Ok { cpu_percent = cpu; memory_used_bytes = memory }
+
+let read_stats ~connection ~container =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    run_ok ~timeout:(Time_ns.Span.of_sec 30.)
+      [
+        "--connection";
+        connection;
+        "stats";
+        "--no-stream";
+        "--format";
+        "json";
+        container.id;
+      ]
+  in
+  Deferred.return (parse_stats result.stdout)
+
+module For_testing = struct
+  let loaded_reference = loaded_reference
+  let resource_keys_of_containers = resource_keys_of_containers
+  let parse_stats = parse_stats
+  let bound_logs = bound_logs
+end
