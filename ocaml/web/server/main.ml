@@ -168,7 +168,12 @@ let deploy state _connection_state query =
                   ~application_key:(Managed_application.key application)
                   ~expected_project:
                     (Deployment_start.expected_project application)
-                  state.application ~working_directory ~commit
+                  state.application ~working_directory
+                  ~source:
+                    (Nixploy.Application.immutable_source
+                       ~repository_identity:
+                         (Managed_application.repository_identity application)
+                       commit)
                   ~target:(Managed_application.target application)
                   ())
           in
@@ -198,9 +203,10 @@ let deploy state _connection_state query =
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
-    ~prune:(fun ~expected_project ~working_directory ~target ->
-      Nixploy.Application.prune ~expected_project state.application
-        ~working_directory ~target)
+    ~prune:(fun
+        ~expected_project ~repository_identity ~working_directory ~target ->
+      Nixploy.Application.prune ~expected_project ~repository_identity
+        state.application ~working_directory ~target)
     ~on_started:(fun ~application_key ->
       Hashtbl.remove state.runtime_cache application_key)
     query

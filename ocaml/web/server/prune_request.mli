@@ -4,6 +4,7 @@ val handle :
   applications:Nixploy.Managed_application.t list ->
   prune:
     (expected_project:Nixploy.Project_name.t ->
+    repository_identity:string ->
     working_directory:string ->
     target:Nixploy.Target_name.t ->
     Nixploy.Application.prune_result Deferred.Or_error.t) ->

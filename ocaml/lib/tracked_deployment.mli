@@ -7,7 +7,7 @@ val deploy :
   ?expected_project:Project_name.t ->
   store:Store.t ->
   working_directory:string ->
-  commit:Source.commit ->
+  source:Source.selection ->
   target:Target_name.t ->
   unit ->
   Store.deployment Deferred.Or_error.t
@@ -19,7 +19,7 @@ val deploy_within_lease :
   ?expected_project:Project_name.t ->
   store:Store.t ->
   working_directory:string ->
-  commit:Source.commit ->
+  source:Source.selection ->
   target:Target_name.t ->
   unit ->
   Store.deployment Deferred.Or_error.t

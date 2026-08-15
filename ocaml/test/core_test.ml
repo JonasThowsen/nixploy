@@ -18,7 +18,9 @@ let%test_unit "resource identity matches the deployed host contract" =
   List.iter cases ~f:(fun (project, target, expected) ->
       let project = Nixploy.Project_name.of_string project |> assert_ok in
       let target = Nixploy.Target_name.of_string target |> assert_ok in
-      let actual = Nixploy.Resource_key.derive ~project ~target |> assert_ok in
+      let actual =
+        Nixploy.Resource_key.derive_current ~project ~target |> assert_ok
+      in
       [%test_eq: string] expected (Nixploy.Resource_key.to_string actual))
 
 let%test_unit "resource identity bounds both readable parts" =
@@ -29,12 +31,27 @@ let%test_unit "resource identity bounds both readable parts" =
     Nixploy.Target_name.of_string (String.make 80 'B') |> assert_ok
   in
   let key =
-    Nixploy.Resource_key.derive ~project ~target
+    Nixploy.Resource_key.derive_current ~project ~target
     |> assert_ok |> Nixploy.Resource_key.to_string
   in
   let expected = "nixploy-" ^ String.make 48 'a' ^ "-" in
   assert (String.is_prefix key ~prefix:expected);
   assert (String.is_suffix key ~suffix:("-" ^ String.make 48 'b'))
+
+let%test_unit "canonical resource identity separates repositories" =
+  let project = Nixploy.Project_name.of_string "shared" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let first =
+    Nixploy.Resource_key.derive ~project ~target
+      ~repository_identity:"git@example.invalid:first.git"
+    |> assert_ok
+  in
+  let second =
+    Nixploy.Resource_key.derive ~project ~target
+      ~repository_identity:"git@example.invalid:second.git"
+    |> assert_ok
+  in
+  assert (not (Nixploy.Resource_key.equal first second))
 
 let%test_unit "legacy resource identity adopts the deployed repository key" =
   let project = Nixploy.Project_name.of_string "jomat" |> assert_ok in
@@ -114,6 +131,55 @@ let%test_unit "configuration reads the current flake schema" =
   [%test_eq: string] "example.internal"
     (Nixploy.Configuration.Target.host target);
   [%test_eq: int] 2222 (Nixploy.Configuration.Target.port target)
+
+let%test_unit "configuration preserves empty environment and argv values" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{
+        "__schema":"v0.3",
+        "project":"sample",
+        "targets":{"worker":{"image":"image","ip":"host","run":{
+          "command":["/app/worker",""],
+          "environment":{"EMPTY":""},
+          "preStart":[["/app/prepare",""]]
+        }}}
+      }|}
+    |> assert_ok
+  in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
+  let run = Nixploy.Configuration.Target.run target in
+  [%test_eq: string list option]
+    (Some [ "/app/worker"; "" ])
+    (Nixploy.Configuration.Run.command run);
+  [%test_eq: (string * string) list]
+    [ ("EMPTY", "") ]
+    (Nixploy.Configuration.Run.environment run);
+  [%test_eq: string list list]
+    [ [ "/app/prepare"; "" ] ]
+    (Nixploy.Configuration.Run.pre_start run);
+  let argv =
+    Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
+      ~name:"owned" ~run ~port:None ~secret_args:[] ~labels:[]
+      ~image_reference:"image"
+  in
+  [%test_eq: string list]
+    [
+      "--connection";
+      "connection";
+      "run";
+      "-d";
+      "--name";
+      "owned";
+      "-e";
+      "EMPTY=";
+      "image";
+      "/app/worker";
+      "";
+    ]
+    argv
 
 let%test_unit "deployment configuration renders the selected slot port" =
   let configuration =
@@ -204,6 +270,33 @@ let%test_unit "workload accepts current deployment labels" =
   [%test_eq: string option] (Some "0123456789abcdef0123456789abcdef01234567")
     (Nixploy.Workload.revision workload)
 
+let%test_unit "status workload readback rejects another repository" =
+  let project = Nixploy.Project_name.of_string "shared" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let repository_identity = "git@example.invalid:requested.git" in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target ~repository_identity
+    |> assert_ok
+  in
+  let name = Nixploy.Resource_key.to_string resource_key in
+  let json repository =
+    sprintf
+      {|[{"Names":["%s"],"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"%s"}}]|}
+      name name repository
+  in
+  let requested =
+    Nixploy.Workload.all_owned_of_json ~ownership:`Modern ~project ~target
+      ~resource_key ~repository_identity ~expected_names:[ name ]
+      (json repository_identity)
+    |> assert_ok
+  in
+  [%test_eq: int] 1 (List.length requested);
+  assert (
+    Result.is_error
+      (Nixploy.Workload.all_owned_of_json ~ownership:`Modern ~project ~target
+         ~resource_key ~repository_identity ~expected_names:[ name ]
+         (json "git@example.invalid:other.git")))
+
 let%test_unit "connection resolution uses the target SSH endpoint, not its name"
     =
   let configuration =
@@ -245,6 +338,36 @@ let%test_unit "connection resolution uses the target SSH endpoint, not its name"
     not
       (Nixploy.Podman_connection.matches_identity connection
          (Some "/run/credentials/current/key")))
+
+let%test_unit
+    "relative secret paths cannot traverse or follow symlinks outside source" =
+  let root = Filename_unix.temp_dir "nixploy-secrets-root-" "" in
+  let inside = Filename.concat root "inside.env" in
+  Out_channel.write_all inside ~data:"VALUE=inside\n";
+  let outside = Filename_unix.temp_file "nixploy-secrets-outside-" ".env" in
+  Out_channel.write_all outside ~data:"VALUE=outside\n";
+  let escape = Filename.concat root "escape.env" in
+  Caml_unix.symlink outside escape;
+  [%test_eq: string]
+    (Filename_unix.realpath inside)
+    (Nixploy.Secrets.For_testing.resolve_reference ~source_root:root
+       "inside.env"
+    |> assert_ok);
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.resolve_reference ~source_root:root
+         "../outside.env"));
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.resolve_reference ~source_root:root
+         "escape.env"));
+  [%test_eq: string] outside
+    (Nixploy.Secrets.For_testing.resolve_reference ~source_root:root outside
+    |> assert_ok);
+  Core_unix.unlink escape;
+  Core_unix.unlink inside;
+  Core_unix.unlink outside;
+  Core_unix.rmdir root
 
 let%test_unit "remote workload discovery deduplicates resource identities" =
   let keys =
@@ -325,7 +448,9 @@ let%test_unit "non-web targets select exact single-container placement" =
     (Nixploy.Deployment_plan.placement plan);
   let project = Nixploy.Configuration.project configuration in
   let resource_key =
-    Nixploy.Resource_key.derive ~project ~target:target_name |> assert_ok
+    Nixploy.Resource_key.derive ~project ~target:target_name
+      ~repository_identity:"git@example.invalid:sample.git"
+    |> assert_ok
   in
   [%test_eq: string]
     (Nixploy.Resource_key.to_string resource_key)
@@ -344,7 +469,9 @@ let%test_unit "modern ownership labels override contradictory legacy labels" =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
   let resource_key =
-    Nixploy.Resource_key.derive ~project ~target:target_name |> assert_ok
+    Nixploy.Resource_key.derive ~project ~target:target_name
+      ~repository_identity:"git@example.invalid:sample.git"
+    |> assert_ok
   in
   let owned labels =
     Nixploy.Podman.For_testing.owned_candidate_collision

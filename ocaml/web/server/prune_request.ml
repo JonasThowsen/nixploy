@@ -20,6 +20,11 @@ let handle ~applications ~prune ~on_started query =
       let working_directory = canonical_working_directory application in
       let target = Nixploy.Managed_application.target application in
       let expected_project = Nixploy.Managed_application.project application in
+      let repository_identity =
+        Nixploy.Managed_application.repository_identity application
+      in
       on_started ~application_key;
-      let%map result = prune ~expected_project ~working_directory ~target in
+      let%map result =
+        prune ~expected_project ~repository_identity ~working_directory ~target
+      in
       Or_error.map result ~f:Prune_response.of_application

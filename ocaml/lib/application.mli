@@ -3,6 +3,7 @@ open Core
 
 type t
 type commit
+type source
 type deployment
 type prune_result
 
@@ -23,6 +24,12 @@ val preview_main_commit :
 val resolve_commit :
   t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t
 
+val local_source : t -> working_directory:string -> source Deferred.Or_error.t
+val immutable_source : ?repository_identity:string -> commit -> source
+val source_revision : source -> string
+val source_subject : source -> string
+val source_is_local : source -> bool
+
 val deploy :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(deployment -> unit) ->
@@ -30,13 +37,14 @@ val deploy :
   ?expected_project:Project_name.t ->
   t ->
   working_directory:string ->
-  commit:commit ->
+  source:source ->
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
 
 val prune :
   ?expected_project:Project_name.t ->
+  ?repository_identity:string ->
   t ->
   working_directory:string ->
   target:Target_name.t ->
@@ -78,12 +86,13 @@ module For_testing : sig
       application_key:string option ->
       expected_project:Project_name.t option ->
       working_directory:string ->
-      commit:commit ->
+      source:source ->
       target:Target_name.t ->
       unit ->
       deployment Deferred.Or_error.t) ->
     prune:
       (expected_project:Project_name.t option ->
+      repository_identity:string option ->
       working_directory:string ->
       target:Target_name.t ->
       prune_result Deferred.Or_error.t) ->
@@ -100,6 +109,8 @@ module For_testing : sig
 
   val commit :
     revision:string -> subject:string -> timestamp_ms:int64 -> commit Or_error.t
+
+  val local_source : working_directory:string -> commit -> source
 
   val deployment :
     ?revision:string ->

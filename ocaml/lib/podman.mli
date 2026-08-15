@@ -13,9 +13,11 @@ type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
 val select_resource_key :
   project:Project_name.t ->
   target:Configuration.Target.t ->
-  canonical:Resource_key.t ->
-  legacy:Resource_key.t ->
+  repository_identity:string ->
+  candidates:Resource_key.t list ->
   Resource_key.t Deferred.Or_error.t
+(** Selects the canonical key or safely adopts one recognized prior identity.
+    Contradictory, foreign, and ambiguous ownership fails closed. *)
 
 val ensure_connection :
   target:Configuration.Target.t ->

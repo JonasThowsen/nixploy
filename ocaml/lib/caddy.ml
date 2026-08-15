@@ -8,7 +8,7 @@ type t = {
   proxy_id : string;
 }
 
-type route = Missing | Existing of { active_port : int }
+type route = Missing | Existing of { active_port : int; domain : string }
 type deletion = { caddy : t; observed : route }
 type response = { status : int; body : string }
 
@@ -92,17 +92,16 @@ let validate_route t body =
       let%bind matcher =
         expect_single_list ~field:"route match" (assoc_member route "match")
       in
-      let%bind () =
+      let%bind domain =
         match matcher with
         | `Assoc matcher -> (
             match assoc_member matcher "host" with
             | Some (`List [ `String domain ])
-              when String.Caseless.equal domain (Configuration.Web.domain t.web)
-              ->
-                Ok ()
+              when not (String.is_empty (String.strip domain)) ->
+                Ok domain
             | _ ->
                 Or_error.error_string
-                  "Caddy route domain does not match the flake")
+                  "Caddy route host matcher must contain one non-empty domain")
         | _ -> Or_error.error_string "Caddy route matcher is malformed"
       in
       let%bind subroute =
@@ -139,7 +138,7 @@ let validate_route t body =
           if
             String.equal proxy_id t.proxy_id
             && String.equal handler "reverse_proxy"
-          then Ok ()
+          then Ok domain
           else
             Or_error.error_string "Caddy proxy identity does not match nixploy"
       | _ -> Or_error.error_string "Caddy proxy is malformed")
@@ -184,9 +183,9 @@ let inspect_internal ?ignore_termination t =
   match response.status with
   | 404 -> Deferred.Or_error.return Missing
   | 200 ->
-      let%bind () = Deferred.return (validate_route t response.body) in
+      let%bind domain = Deferred.return (validate_route t response.body) in
       let%map active_port = read_active_port ?ignore_termination t in
-      Existing { active_port }
+      Existing { active_port; domain }
   | status ->
       Deferred.Or_error.errorf "Caddy route read returned HTTP %d" status
 
@@ -213,20 +212,11 @@ let ensure_server t =
   | status ->
       Deferred.Or_error.errorf "Caddy server read returned HTTP %d" status
 
-let upstream_body port =
-  `List [ `Assoc [ ("dial", `String (sprintf "127.0.0.1:%d" port)) ] ]
-  |> Yojson.Safe.to_string
-
-let route_body t port =
+let route_body t ~domain port =
   `Assoc
     [
       ("@id", `String t.route_id);
-      ( "match",
-        `List
-          [
-            `Assoc
-              [ ("host", `List [ `String (Configuration.Web.domain t.web) ]) ];
-          ] );
+      ("match", `List [ `Assoc [ ("host", `List [ `String domain ]) ] ]);
       ( "handle",
         `List
           [
@@ -272,13 +262,18 @@ let switch t ~previous ~candidate_port =
     match previous with
     | Existing _ ->
         request
-          ~body:(upstream_body candidate_port)
-          t ~meth:"PATCH"
-          ~path:("/id/" ^ t.proxy_id ^ "/upstreams")
+          ~body:
+            (route_body t
+               ~domain:(Configuration.Web.domain t.web)
+               candidate_port)
+          t ~meth:"PATCH" ~path:("/id/" ^ t.route_id)
     | Missing ->
         let%bind () = ensure_server t in
         request
-          ~body:(route_body t candidate_port)
+          ~body:
+            (route_body t
+               ~domain:(Configuration.Web.domain t.web)
+               candidate_port)
           t ~meth:"POST" ~path:"/config/apps/http/servers/nixploy/routes"
   in
   if response.status >= 200 && response.status < 300 then
@@ -312,12 +307,11 @@ let restore t ~previous =
     | Missing ->
         let%map _ = delete_route ~ignore_termination:true t in
         ()
-    | Existing { active_port } ->
+    | Existing { active_port; domain } ->
         let%bind response =
           request ~ignore_termination:true
-            ~body:(upstream_body active_port)
-            t ~meth:"PATCH"
-            ~path:("/id/" ^ t.proxy_id ^ "/upstreams")
+            ~body:(route_body t ~domain active_port)
+            t ~meth:"PATCH" ~path:("/id/" ^ t.route_id)
         in
         if response.status >= 200 && response.status < 300 then
           Deferred.Or_error.return ()
@@ -329,7 +323,8 @@ let restore t ~previous =
   match (previous, observed) with
   | Missing, Missing -> Deferred.Or_error.return ()
   | Existing expected, Existing observed
-    when Int.equal expected.active_port observed.active_port ->
+    when Int.equal expected.active_port observed.active_port
+         && String.Caseless.equal expected.domain observed.domain ->
       Deferred.Or_error.return ()
   | _ ->
       Deferred.Or_error.error_string "Caddy restoration could not be verified"

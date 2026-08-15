@@ -20,7 +20,8 @@ let containers_removed t = t.containers_removed
 let secrets_removed t = t.secrets_removed
 let route t = t.route
 
-let prune ?expected_project ~working_directory ~target:target_name () =
+let prune ?expected_project ?repository_identity ~working_directory
+    ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind configuration = Nix_configuration.load ~working_directory in
   let project = Configuration.project configuration in
@@ -37,16 +38,17 @@ let prune ?expected_project ~working_directory ~target:target_name () =
   let%bind target =
     Deferred.return (Configuration.find_target configuration target_name)
   in
-  let%bind canonical =
-    Deferred.return (Resource_key.derive ~project ~target:target_name)
+  let%bind repository_identity =
+    match repository_identity with
+    | Some repository_identity -> Deferred.Or_error.return repository_identity
+    | None -> Source.repository_identity ~working_directory
   in
-  let%bind repository = Source.repository_identity ~working_directory in
-  let%bind legacy =
+  let%bind candidates =
     Deferred.return
-      (Resource_key.derive_legacy ~project ~target:target_name ~repository)
+      (Resource_key.candidates ~project ~target:target_name ~repository_identity)
   in
   let%bind resource_key =
-    Podman.select_resource_key ~project ~target ~canonical ~legacy
+    Podman.select_resource_key ~project ~target ~repository_identity ~candidates
   in
   let%bind connection = Podman.ensure_connection ~target ~resource_key in
   let%bind podman_preflight =

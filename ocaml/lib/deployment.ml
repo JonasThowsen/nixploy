@@ -91,12 +91,17 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       Error error
 
 let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
-    ~working_directory ~commit ~target:target_name () =
+    ~working_directory ~source:source_selection ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
-    record_stage Preparing_source "Materializing the confirmed Git commit"
+    record_stage Preparing_source
+      (if Source.selection_is_local source_selection then
+         "Using the current local flake source"
+       else "Materializing the confirmed Git commit")
   in
-  let%bind source = Source.prepare ~working_directory ~commit in
+  let%bind source =
+    Source.prepare ~working_directory ~selection:source_selection
+  in
   Monitor.protect
     ~finally:(fun () -> Source.cleanup source)
     (fun () ->
@@ -122,17 +127,15 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
       let%bind target =
         Deferred.return (Configuration.find_target configuration target_name)
       in
-      let%bind canonical_resource_key =
-        Deferred.return (Resource_key.derive ~project ~target:target_name)
-      in
-      let%bind legacy_resource_key =
+      let repository_identity = Source.repository source in
+      let%bind candidates =
         Deferred.return
-          (Resource_key.derive_legacy ~project ~target:target_name
-             ~repository:(Source.repository source))
+          (Resource_key.candidates ~project ~target:target_name
+             ~repository_identity)
       in
       let%bind resource_key =
-        Podman.select_resource_key ~project ~target
-          ~canonical:canonical_resource_key ~legacy:legacy_resource_key
+        Podman.select_resource_key ~project ~target ~repository_identity
+          ~candidates
       in
       let configuration_digest =
         Nix_configuration.json evaluated
@@ -147,7 +150,9 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
         Podman.build_and_load ~connection ~source
           ~image_output:(Configuration.Target.image target)
       in
-      let%bind secrets = Secrets.load ~target in
+      let%bind secrets =
+        Secrets.load ~source_root:(Source.path source) ~target
+      in
       let%bind secret_mounts =
         Podman.install_secrets ~connection ~resource_key ~secrets
       in
@@ -235,7 +240,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
           let active_port =
             match previous with
             | Caddy.Missing -> None
-            | Existing { active_port } -> Some active_port
+            | Existing { active_port; _ } -> Some active_port
           in
           let%bind plan =
             Deferred.return (Deployment_plan.create ~target_kind ~active_port)
@@ -305,8 +310,10 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
             let%bind observed = Caddy.inspect caddy in
             let%bind () =
               match observed with
-              | Caddy.Existing { active_port }
-                when Int.equal active_port candidate_port ->
+              | Caddy.Existing { active_port; domain }
+                when Int.equal active_port candidate_port
+                     && String.Caseless.equal domain
+                          (Configuration.Web.domain web) ->
                   Deferred.Or_error.return ()
               | _ ->
                   Deferred.Or_error.error_string
@@ -339,8 +346,10 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
                     Caddy.inspect ~ignore_termination:true caddy
                   in
                   match observed with
-                  | Ok (Caddy.Existing { active_port })
-                    when Int.equal active_port candidate_port ->
+                  | Ok (Caddy.Existing { active_port; domain })
+                    when Int.equal active_port candidate_port
+                         && String.Caseless.equal domain
+                              (Configuration.Web.domain web) ->
                       Podman.remove_candidate ~connection
                         ~candidate:previous_candidate
                   | Error error -> Deferred.return (Error error)

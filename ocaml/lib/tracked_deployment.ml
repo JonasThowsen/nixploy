@@ -4,12 +4,13 @@ open Core
 let no_stage _ _ = Deferred.unit
 
 let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project ~store ~working_directory ~commit ~target
+    ?application_key ?expected_project ~store ~working_directory ~source ~target
     () =
   let cancellation = Cancellation.current () in
   let open Deferred.Or_error.Let_syntax in
   let%bind operation =
-    Store.request store ~application_key ~working_directory ~target ~commit
+    Store.request store ~application_key ~working_directory ~target
+      ~commit:(Source.selection_commit source)
   in
   on_requested operation;
   let record_stage stage message =
@@ -23,7 +24,7 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
   let%bind.Deferred execution =
     Monitor.try_with_or_error (fun () ->
         Deployment.deploy ~record_stage ?expected_project
-          ~operation_id:(Store.id operation) ~working_directory ~commit ~target
+          ~operation_id:(Store.id operation) ~working_directory ~source ~target
           ())
   in
   let result = Or_error.join execution in
@@ -48,8 +49,8 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
   | None -> Deferred.Or_error.error_string "tracked deployment disappeared"
 
 let deploy ?on_stage ?on_requested ?application_key ?expected_project ~store
-    ~working_directory ~commit ~target () =
+    ~working_directory ~source ~target () =
   let working_directory = Filename_unix.realpath working_directory in
   Store.with_lease store ~working_directory ~target (fun () ->
       deploy_within_lease ?on_stage ?on_requested ?application_key
-        ?expected_project ~store ~working_directory ~commit ~target ())
+        ?expected_project ~store ~working_directory ~source ~target ())

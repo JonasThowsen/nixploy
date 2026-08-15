@@ -11,7 +11,7 @@ let run_tests () =
   let directory = Filename_unix.temp_dir "nixploy-prune-request-test-" "" in
   let applications =
     sprintf
-      {|{"example":{"project":"example","target":"production","repository":"%s"}}|}
+      {|{"example":{"project":"example","target":"production","repository":"%s","repositoryIdentity":"owner/example"}}|}
       directory
     |> Nixploy.Managed_application.all_of_json |> assert_ok
   in
@@ -19,7 +19,9 @@ let run_tests () =
   let project = Nixploy.Managed_application.project application in
   let target = Nixploy.Managed_application.target application in
   let resource_key =
-    Nixploy.Resource_key.derive ~project ~target |> assert_ok
+    Nixploy.Resource_key.derive ~project ~target
+      ~repository_identity:"git@example.invalid:example.git"
+    |> assert_ok
   in
   let application_result =
     Nixploy.Application.For_testing.prune_result ~project ~target ~resource_key
@@ -28,8 +30,10 @@ let run_tests () =
   in
   let prune_calls = ref [] in
   let invalidated = ref [] in
-  let prune ~expected_project ~working_directory ~target =
-    prune_calls := (expected_project, working_directory, target) :: !prune_calls;
+  let prune ~expected_project ~repository_identity ~working_directory ~target =
+    prune_calls :=
+      (expected_project, repository_identity, working_directory, target)
+      :: !prune_calls;
     Deferred.Or_error.return application_result
   in
   let on_started ~application_key =
@@ -46,10 +50,13 @@ let run_tests () =
   assert (Int.equal success.secrets_removed 1);
   assert ([%equal: Protocol.Prune_result.Route.t] success.route Missing);
   [%test_eq: string list] [ "example" ] !invalidated;
-  [%test_eq: (Nixploy.Project_name.t * string * Nixploy.Target_name.t) list]
-    [ (project, directory, target) ]
+  [%test_eq:
+    (Nixploy.Project_name.t * string * string * Nixploy.Target_name.t) list]
+    [ (project, "owner/example", directory, target) ]
     !prune_calls;
-  let failed_prune ~expected_project ~working_directory:_ ~target:_ =
+  let failed_prune ~expected_project ~repository_identity ~working_directory:_
+      ~target:_ =
+    assert (String.equal repository_identity "owner/example");
     assert (Nixploy.Project_name.equal expected_project project);
     Deferred.Or_error.error_string "partial cleanup failed"
   in

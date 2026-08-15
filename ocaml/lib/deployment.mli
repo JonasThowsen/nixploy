@@ -23,7 +23,7 @@ val deploy :
   ?expected_project:Project_name.t ->
   operation_id:string ->
   working_directory:string ->
-  commit:Source.commit ->
+  source:Source.selection ->
   target:Target_name.t ->
   unit ->
   t Deferred.Or_error.t

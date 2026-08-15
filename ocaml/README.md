@@ -41,10 +41,18 @@ The native deployment tracer adds:
 nixploy deploy --target production
 ```
 
-It resolves the exact local `refs/heads/main`, builds and loads an immutable
-Nix image, starts the inactive Podman slot, switches the owned Caddy route, and
-independently verifies the result. Every stage and terminal outcome is recorded
-in SQLite. Secret references are decrypted with SOPS, installed into remote
+The CLI evaluates and builds the current local flake path, including the current
+branch and intentional working-tree changes, matching the pragmatic original
+CLI workflow. The web control plane instead requires an explicitly previewed
+full commit and materializes that exact immutable revision. Both selections are
+typed caller policies passed through `Application` to the same deployment
+engine. The local HEAD or immutable commit remains recorded as useful revision
+metadata.
+
+The engine builds and loads the image, starts the inactive Podman slot, switches
+the owned Caddy route, and independently verifies the result. Every stage and
+terminal outcome is recorded in SQLite. Relative secret references are resolved
+against the evaluated source root, decrypted with SOPS, installed into remote
 Podman through stdin, and mounted as container environment secrets without
 placing values in argv or retained errors.
 
@@ -55,8 +63,9 @@ verified the result, retired the previous slot, and preserved public health
 throughout.
 
 Scoped cleanup is available through `nixploy prune --target TARGET`. It evaluates
-the selected local flake through `Application`, adopts the same canonical or
-legacy resource identity as deployment, verifies exact container ownership,
+the selected local flake through `Application`, derives the same
+repository-bound canonical identity and safe OCaml/C# migration candidates as
+deployment, verifies exact container ownership,
 removes only resource-prefixed Podman secrets, and deletes the exact Caddy route
 for web targets. Non-web prune never contacts Caddy.
 

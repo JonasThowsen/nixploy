@@ -51,28 +51,48 @@ let list_connections () =
   in
   Deferred.return (Podman_connection.all_of_json result.stdout)
 
-let resource_keys_of_containers output =
+type remote_ownership = {
+  remote_resource_key : string;
+  remote_repository : string option;
+}
+
+let remote_ownerships_of_containers output =
   let open Or_error.Let_syntax in
   let%bind json =
     Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  let label labels name =
+    match List.Assoc.find labels ~equal:String.equal name with
+    | Some (`String value) when not (String.is_empty value) -> Some value
+    | _ -> None
   in
   match json with
   | `List containers ->
       List.filter_map containers ~f:(function
         | `Assoc container -> (
             match List.Assoc.find container ~equal:String.equal "Labels" with
-            | Some (`Assoc labels) -> (
-                match
-                  List.Assoc.find labels ~equal:String.equal
-                    "io.nixploy.resource_key"
-                with
-                | Some (`String key) when not (String.is_empty key) -> Some key
-                | _ -> None)
+            | Some (`Assoc labels) ->
+                label labels "io.nixploy.resource_key"
+                |> Option.map ~f:(fun remote_resource_key ->
+                    {
+                      remote_resource_key;
+                      remote_repository =
+                        Option.first_some
+                          (label labels "io.nixploy.repository_identity")
+                          (Option.first_some
+                             (label labels "io.nixploy.repository")
+                             (label labels "nixploy.repository"));
+                    })
             | _ -> None)
         | _ -> None)
-      |> List.dedup_and_sort ~compare:String.compare
       |> Or_error.return
   | _ -> Or_error.error_string "remote Podman list must be a JSON array"
+
+let resource_keys_of_containers output =
+  let open Or_error.Let_syntax in
+  let%map ownerships = remote_ownerships_of_containers output in
+  List.map ownerships ~f:(fun ownership -> ownership.remote_resource_key)
+  |> List.dedup_and_sort ~compare:String.compare
 
 let discover_remote_resource_keys ~project ~target =
   let open Deferred.Or_error.Let_syntax in
@@ -95,41 +115,86 @@ let discover_remote_resource_keys ~project ~target =
       ]
   in
   match result.exit_status with
-  | Ok () -> Deferred.return (resource_keys_of_containers result.stdout)
+  | Ok () -> Deferred.return (remote_ownerships_of_containers result.stdout)
   | Error failure ->
       Deferred.Or_error.errorf "remote Podman discovery failed (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip result.stderr)
 
-let select_resource_key ~project ~target ~canonical ~legacy =
+let select_resource_key ~project ~target ~repository_identity ~candidates =
   let open Deferred.Or_error.Let_syntax in
-  let%bind remote_keys = discover_remote_resource_keys ~project ~target in
-  let remote_matches key =
-    List.mem remote_keys (Resource_key.to_string key) ~equal:String.equal
+  let candidates =
+    List.fold candidates ~init:[] ~f:(fun keys key ->
+        if List.mem keys key ~equal:Resource_key.equal then keys
+        else key :: keys)
+    |> List.rev
   in
-  match (remote_matches canonical, remote_matches legacy) with
-  | true, true when not (Resource_key.equal canonical legacy) ->
+  let canonical =
+    match candidates with
+    | canonical :: _ -> canonical
+    | [] -> raise_s [%message "resource key candidates must not be empty"]
+  in
+  let%bind remote_ownerships = discover_remote_resource_keys ~project ~target in
+  let missing_repository =
+    List.exists remote_ownerships ~f:(fun ownership ->
+        Option.is_none ownership.remote_repository)
+  in
+  if missing_repository then
+    Deferred.Or_error.error_string
+      "remote workload lacks repository ownership metadata"
+  else
+    let requested_ownerships =
+      List.filter remote_ownerships ~f:(fun ownership ->
+          Option.equal String.equal ownership.remote_repository
+            (Some repository_identity))
+    in
+    let recognize ownership =
+      List.find candidates ~f:(fun key ->
+          String.equal
+            (Resource_key.to_string key)
+            ownership.remote_resource_key)
+      |> Option.map ~f:(fun key -> (key, ownership))
+    in
+    let unexpected =
+      List.exists requested_ownerships ~f:(fun ownership ->
+          Option.is_none (recognize ownership))
+    in
+    if unexpected then
       Deferred.Or_error.error_string
-        "both canonical and legacy workloads exist for this target"
-  | true, _ -> Deferred.Or_error.return canonical
-  | false, true -> Deferred.Or_error.return legacy
-  | false, false when not (List.is_empty remote_keys) ->
-      Deferred.Or_error.error_string
-        "remote workloads use an unexpected resource identity"
-  | false, false -> (
-      let%bind connections = list_connections () in
-      let matching key =
-        Podman_connection.find_by_name connections (Resource_key.to_string key)
-        |> Option.exists ~f:(fun connection ->
-            Podman_connection.matches_target connection target)
+        "remote workloads owned by this repository use an unexpected resource \
+         identity"
+    else
+      let recognized = List.filter_map requested_ownerships ~f:recognize in
+      let recognized_keys =
+        List.map recognized ~f:fst
+        |> List.dedup_and_sort ~compare:Resource_key.compare
       in
-      match (matching canonical, matching legacy) with
-      | true, true when not (Resource_key.equal canonical legacy) ->
+      match recognized_keys with
+      | _ :: _ :: _ ->
           Deferred.Or_error.error_string
-            "both canonical and legacy Podman connections exist for this target"
-      | true, _ -> Deferred.Or_error.return canonical
-      | false, true -> Deferred.Or_error.return legacy
-      | false, false -> Deferred.Or_error.return canonical)
+            "multiple recognized workload identities exist for this repository \
+             and target"
+      | [ selected ] -> Deferred.Or_error.return selected
+      | [] -> (
+          let%bind connections = list_connections () in
+          let safe_connection_candidates =
+            List.filter candidates ~f:(fun key ->
+                not
+                  (Resource_key.equal key
+                     (List.nth candidates 1 |> Option.value ~default:canonical)))
+          in
+          let matching =
+            List.filter safe_connection_candidates ~f:(fun key ->
+                Podman_connection.find_by_name connections
+                  (Resource_key.to_string key)
+                |> Option.is_some)
+          in
+          match matching with
+          | _ :: _ :: _ ->
+              Deferred.Or_error.error_string
+                "multiple recognized Podman connections exist for this target"
+          | [ selected ] -> Deferred.Or_error.return selected
+          | [] -> Deferred.Or_error.return canonical)
 
 let verify_ssh target =
   let open Deferred.Or_error.Let_syntax in
@@ -143,6 +208,10 @@ let verify_ssh target =
       Deferred.Or_error.errorf "SSH preflight failed (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip preflight.stderr)
+
+let remove_connection ~name =
+  let%map result = run_ok [ "system"; "connection"; "remove"; name ] in
+  Or_error.map result ~f:(fun _ -> ())
 
 let add_connection ~target ~name ~identity =
   let identity_args =
@@ -183,12 +252,10 @@ let ensure_connection ~target ~resource_key =
       when Podman_connection.matches_target connection target
            && Podman_connection.matches_identity connection identity ->
         Deferred.Or_error.return ()
-    | Some connection when Podman_connection.matches_target connection target ->
-        let%bind () = verify_ssh target in
-        add_connection ~target ~name ~identity
     | Some _ ->
-        Deferred.Or_error.errorf
-          "Podman connection %s exists but does not match the flake target" name
+        let%bind () = verify_ssh target in
+        let%bind () = remove_connection ~name in
+        add_connection ~target ~name ~identity
     | None ->
         let%bind () = verify_ssh target in
         add_connection ~target ~name ~identity
@@ -234,7 +301,7 @@ let build_and_load ~connection ~source ~image_output =
           "build";
           "--no-update-lock-file";
           "--no-write-lock-file";
-          ".#" ^ image_output;
+          "path:.#" ^ image_output;
           "--print-out-paths";
           "--no-link";
         ]
@@ -726,6 +793,7 @@ let start_candidate ~connection ~project ~target ~resource_key ~placement
       ("io.nixploy.project", project_name);
       ("io.nixploy.target", target_name);
       ("io.nixploy.repository", repository);
+      ("io.nixploy.repository_identity", repository);
       ("io.nixploy.revision", Source.revision source);
       ("io.nixploy.deployed_at", deployed_at);
       ("io.nixploy.configuration_digest", configuration_digest);

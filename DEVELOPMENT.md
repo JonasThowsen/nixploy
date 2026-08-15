@@ -11,7 +11,7 @@ The original user-facing C# CLI on `main` is the capability reference for the OC
 - `deploy` and `prune`;
 - web and non-web targets;
 - flake configuration for images, runtime argv, environment, network, ports, pre-start commands, secrets, SSH, and Caddy;
-- stable ownership of Podman connections, containers, secrets, and Caddy routes.
+- stable ownership of Podman connections, containers, secrets, and Caddy routes, with canonical identities bound to repository identity as well as project and target.
 
 Parity does not mean copying old bugs. The OCaml implementation should retain explicit failures, bounded diagnostics, exact managed-resource verification, immutable revision support, safe cancellation, and verified compensation.
 
@@ -34,7 +34,7 @@ The application API represents source selection explicitly:
 - the CLI may deploy the current local flake, matching the pragmatic C# workflow;
 - the web UI deploys an explicitly previewed Git revision from an allowlisted repository.
 
-Both policies resolve to the same prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Source selection is a caller policy; deployment semantics are shared.
+Both policies resolve to the same prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation retains the canonical local flake path without cloning; immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
 
 ## Architecture
 

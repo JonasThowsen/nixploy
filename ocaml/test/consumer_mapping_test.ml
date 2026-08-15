@@ -39,7 +39,9 @@ let () =
       project);
   let target = Nixploy.Target_name.of_string "production" |> Or_error.ok_exn in
   let resource_key =
-    Nixploy.Resource_key.derive ~project ~target |> Or_error.ok_exn
+    Nixploy.Resource_key.derive ~project ~target
+      ~repository_identity:"git@example.invalid:example.git"
+    |> Or_error.ok_exn
   in
   let prune route =
     Application.For_testing.prune_result ~project ~target ~resource_key

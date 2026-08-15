@@ -25,7 +25,14 @@ let resolve ?commit ?operation_id application =
     | Some commit -> Deferred.Or_error.return commit
     | None -> Source.preview_main ~working_directory
   in
-  let%bind source = Source.prepare ~working_directory ~commit in
+  let%bind source =
+    Source.prepare ~working_directory
+      ~selection:
+        (Source.immutable
+           ~repository_identity:
+             (Managed_application.repository_identity application)
+           commit)
+  in
   Monitor.protect
     ~finally:(fun () -> Source.cleanup source)
     (fun () ->
@@ -49,19 +56,16 @@ let resolve ?commit ?operation_id application =
       let%bind web =
         Deferred.return (Configuration.Target.require_web target)
       in
-      let%bind canonical =
+      let repository_identity = Source.repository source in
+      let%bind candidates =
         Deferred.return
-          (Resource_key.derive ~project
-             ~target:(Managed_application.target application))
-      in
-      let%bind legacy =
-        Deferred.return
-          (Resource_key.derive_legacy ~project
+          (Resource_key.candidates ~project
              ~target:(Managed_application.target application)
-             ~repository:(Source.repository source))
+             ~repository_identity)
       in
       let%bind resource_key =
-        Podman.select_resource_key ~project ~target ~canonical ~legacy
+        Podman.select_resource_key ~project ~target ~repository_identity
+          ~candidates
       in
       let%bind connection = Podman.ensure_connection ~target ~resource_key in
       let caddy = Caddy.create ~target ~resource_key ~web in
@@ -71,7 +75,7 @@ let resolve ?commit ?operation_id application =
         | Caddy.Missing ->
             Deferred.Or_error.error_string
               "application has no positively identified active Caddy route"
-        | Existing { active_port } -> Deferred.Or_error.return active_port
+        | Existing { active_port; _ } -> Deferred.Or_error.return active_port
       in
       let%bind plan =
         Deferred.return

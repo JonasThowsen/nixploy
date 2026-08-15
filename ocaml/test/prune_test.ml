@@ -53,8 +53,21 @@ let run_tests () =
   in
   let project = Nixploy.Project_name.of_string "sample" |> assert_ok in
   let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.of_json
+      {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deployer","port":2222}}}|}
+    |> assert_ok
+    |> fun configuration ->
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
   let canonical =
-    Nixploy.Resource_key.derive ~project ~target:target_name |> assert_ok
+    Nixploy.Resource_key.derive ~project ~target:target_name
+      ~repository_identity:"git@example.invalid:sample.git"
+    |> assert_ok
+  in
+  let current =
+    Nixploy.Resource_key.derive_current ~project ~target:target_name
+    |> assert_ok
   in
   let legacy =
     Nixploy.Resource_key.derive_legacy ~project ~target:target_name
@@ -62,6 +75,7 @@ let run_tests () =
     |> assert_ok
   in
   let canonical_key = Nixploy.Resource_key.to_string canonical in
+  let current_key = Nixploy.Resource_key.to_string current in
   let legacy_key = Nixploy.Resource_key.to_string legacy in
   install_executable bin "nix"
     {|#!/bin/sh
@@ -69,7 +83,7 @@ set -eu
 printf 'nix' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
-if [ "$*" != "eval --json --no-write-lock-file .#nixploy" ]; then
+if [ "$*" != "eval --json --no-write-lock-file path:.#nixploy" ]; then
   echo "unexpected nix command: $*" >&2
   exit 97
 fi
@@ -95,7 +109,7 @@ remote=${11}
 case "$remote" in
   *"'podman' 'ps'"*)
     if [ -n "${NIXPLOY_TEST_REMOTE_RESOURCE:-}" ]; then
-      printf '[{"Labels":{"io.nixploy.resource_key":"%s"}}]\n' "$NIXPLOY_TEST_REMOTE_RESOURCE"
+      printf '[{"Labels":{"io.nixploy.resource_key":"%s","io.nixploy.repository":"%s"}}]\n' "$NIXPLOY_TEST_REMOTE_RESOURCE" "${NIXPLOY_TEST_REMOTE_REPOSITORY:-git@example.invalid:sample.git}"
     else
       printf '[]\n'
     fi
@@ -110,7 +124,7 @@ case "$remote" in
     elif [ "${NIXPLOY_TEST_CADDY_MISSING:-}" = "1" ] || [ -f "$NIXPLOY_TEST_REMOTE_STATE/route-deleted" ]; then
       printf '\n404'
     else
-      printf '{"@id":"nixploy-route-%s","match":[{"host":["worker.example.invalid"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"nixploy-proxy-%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:8080"}]}]}]}],"terminal":true}\n200' "$NIXPLOY_TEST_KEY" "$NIXPLOY_TEST_KEY"
+      printf '{"@id":"nixploy-route-%s","match":[{"host":["%s"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"nixploy-proxy-%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:8080"}]}]}]}],"terminal":true}\n200' "$NIXPLOY_TEST_KEY" "${NIXPLOY_TEST_ROUTE_DOMAIN:-worker.example.invalid}" "$NIXPLOY_TEST_KEY"
     fi
     ;;
   *"'-X' 'DELETE'"*"/id/nixploy-route-$NIXPLOY_TEST_KEY"*)
@@ -136,10 +150,22 @@ case "$*" in
   "system connection list --format json")
     if [ "${NIXPLOY_TEST_WRONG_CONNECTION:-}" = "1" ]; then
       printf '[{"Name":"%s","URI":"ssh://deployer@wrong.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_KEY"
+    elif [ "${NIXPLOY_TEST_CHANGED_IDENTITY:-}" = "1" ]; then
+      printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock","Identity":"/retired/key"}]\n' "$NIXPLOY_TEST_KEY"
     elif [ "${NIXPLOY_TEST_LEGACY_CONNECTION:-}" = "1" ]; then
       printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_LEGACY_KEY"
+    elif [ "${NIXPLOY_TEST_CURRENT_CONNECTION:-}" = "1" ]; then
+      printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_CURRENT_KEY"
     else
       printf '[]\n'
+    fi
+    exit 0
+    ;;
+  system\ connection\ remove\ *)
+    [ "$*" = "system connection remove $NIXPLOY_TEST_KEY" ]
+    if [ "${NIXPLOY_TEST_FAIL_CONNECTION_REMOVE:-}" = "1" ]; then
+      echo 'connection removal failed' >&2
+      exit 45
     fi
     exit 0
     ;;
@@ -213,11 +239,17 @@ exit 99
       "NIXPLOY_TEST_TRACE";
       "NIXPLOY_TEST_KEY";
       "NIXPLOY_TEST_LEGACY_KEY";
+      "NIXPLOY_TEST_CURRENT_KEY";
       "NIXPLOY_TEST_REMOTE_STATE";
       "NIXPLOY_TEST_WEB";
       "NIXPLOY_TEST_REMOTE_RESOURCE";
+      "NIXPLOY_TEST_REMOTE_REPOSITORY";
       "NIXPLOY_TEST_LEGACY_CONNECTION";
+      "NIXPLOY_TEST_CURRENT_CONNECTION";
       "NIXPLOY_TEST_WRONG_CONNECTION";
+      "NIXPLOY_TEST_CHANGED_IDENTITY";
+      "NIXPLOY_TEST_FAIL_CONNECTION_REMOVE";
+      "NIXPLOY_TEST_ROUTE_DOMAIN";
       "NIXPLOY_TEST_UNOWNED_BLUE";
       "NIXPLOY_TEST_FAIL_SECRET_LIST";
       "NIXPLOY_TEST_CADDY_MISSING";
@@ -235,7 +267,8 @@ exit 99
   Caml_unix.putenv "NIXPLOY_TEST_TRACE" trace;
   Caml_unix.putenv "NIXPLOY_TEST_REMOTE_STATE" remote_state;
   Caml_unix.putenv "NIXPLOY_TEST_LEGACY_KEY" legacy_key;
-  let scenario_names = List.drop environment_names 6 in
+  Caml_unix.putenv "NIXPLOY_TEST_CURRENT_KEY" current_key;
+  let scenario_names = List.drop environment_names 7 in
   let clear_scenario key =
     List.iter scenario_names ~f:Core_unix.unsetenv;
     Caml_unix.putenv "NIXPLOY_TEST_KEY" key;
@@ -285,6 +318,23 @@ exit 99
       assert (
         [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
           Unknown);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" canonical_key;
+      let other_repository = "git@example.invalid:other.git" in
+      let other_candidates =
+        Nixploy.Resource_key.candidates ~project ~target:target_name
+          ~repository_identity:other_repository
+        |> assert_ok
+      in
+      let%bind selected_for_other_repository =
+        Nixploy.Podman.select_resource_key ~project ~target
+          ~repository_identity:other_repository ~candidates:other_candidates
+      in
+      [%test_eq: string]
+        (List.hd_exn other_candidates |> Nixploy.Resource_key.to_string)
+        (assert_ok selected_for_other_repository
+        |> Nixploy.Resource_key.to_string);
 
       clear_scenario canonical_key;
       let%bind non_web = prune () in
@@ -365,6 +415,18 @@ exit 99
         (Nixploy.Application.prune_route_state missing);
 
       clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_ROUTE_DOMAIN" "retired.example.invalid";
+      let%bind changed_domain = prune () in
+      let changed_domain = assert_ok changed_domain in
+      [%test_eq: Nixploy.Application.prune_route_state] Removed
+        (Nixploy.Application.prune_route_state changed_domain);
+      let lines = In_channel.read_lines trace in
+      let route_get = index_of lines "'-X' 'GET'" in
+      let route_delete = index_of lines "'-X' 'DELETE'" in
+      assert (route_get < route_delete);
+
+      clear_scenario canonical_key;
       Caml_unix.putenv "NIXPLOY_TEST_UNOWNED_BLUE" "1";
       let%bind unowned = prune () in
       expect_error_containing unowned "not owned";
@@ -375,13 +437,38 @@ exit 99
       clear_scenario canonical_key;
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
       Caml_unix.putenv "NIXPLOY_TEST_WRONG_CONNECTION" "1";
-      let%bind wrong_connection = prune () in
-      expect_error_containing wrong_connection
-        "exists but does not match the flake target";
+      let%bind changed_connection = prune () in
+      ignore (assert_ok changed_connection : Nixploy.Application.prune_result);
       let lines = In_channel.read_lines trace in
-      assert (count lines "curl" = 0);
-      assert (count lines "|rm|-f|" = 0);
-      assert (count lines "|secret|rm|" = 0);
+      let ssh_preflight = index_of lines "|'true'" in
+      let removed = index_of lines "|system|connection|remove|" in
+      let added = index_of lines "|system|connection|add|" in
+      let verified =
+        index_of lines ("|--connection|" ^ canonical_key ^ "|info")
+      in
+      let first_resource_use = index_of lines "|container|exists|" in
+      assert (
+        ssh_preflight < removed && removed < added && added < verified
+        && verified < first_resource_use);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_CHANGED_IDENTITY" "1";
+      let%bind changed_identity = prune () in
+      ignore (assert_ok changed_identity : Nixploy.Application.prune_result);
+      let lines = In_channel.read_lines trace in
+      assert (count lines "|system|connection|remove|" = 1);
+      assert (count lines "|system|connection|add|" = 1);
+      assert (count lines ("|--connection|" ^ canonical_key ^ "|info") = 1);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_WRONG_CONNECTION" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_CONNECTION_REMOVE" "1";
+      let%bind removal_failure = prune () in
+      expect_error_containing removal_failure "connection removal failed";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "|system|connection|remove|" = 1);
+      assert (count lines "|system|connection|add|" = 0);
+      assert (count lines "|container|exists|" = 0);
 
       clear_scenario canonical_key;
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
@@ -430,6 +517,33 @@ exit 99
         ("could not remove owned secret " ^ canonical_key ^ "-db");
       let%bind secret_rerun = prune () in
       ignore (assert_ok secret_rerun : Nixploy.Application.prune_result);
+
+      clear_scenario current_key;
+      Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" current_key;
+      let%bind adopted_current = prune () in
+      let adopted_current = assert_ok adopted_current in
+      [%test_eq: string] current_key
+        (Nixploy.Application.prune_resource_key adopted_current
+        |> Nixploy.Resource_key.to_string);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" legacy_key;
+      Caml_unix.putenv "NIXPLOY_TEST_REMOTE_REPOSITORY"
+        "git@example.invalid:foreign.git";
+      let%bind unrelated_repository = prune () in
+      [%test_eq: string] canonical_key
+        (assert_ok unrelated_repository
+        |> Nixploy.Application.prune_resource_key
+        |> Nixploy.Resource_key.to_string);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" "unexpected-resource";
+      let%bind unexpected_owned = prune () in
+      expect_error_containing unexpected_owned
+        "owned by this repository use an unexpected resource identity";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "|container|exists|" = 0);
+      assert (count lines "|secret|rm|" = 0);
 
       clear_scenario legacy_key;
       Caml_unix.putenv "NIXPLOY_TEST_LEGACY_CONNECTION" "1";

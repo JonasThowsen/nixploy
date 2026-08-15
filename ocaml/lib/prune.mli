@@ -7,6 +7,7 @@ type t
 
 val prune :
   ?expected_project:Project_name.t ->
+  ?repository_identity:string ->
   working_directory:string ->
   target:Target_name.t ->
   unit ->

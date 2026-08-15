@@ -2,6 +2,7 @@ open Async
 open Core
 
 type commit = Source.commit
+type source = Source.selection
 type prune_result = Prune.t
 
 type prune_route_state = Not_configured | Missing | Removed
@@ -37,12 +38,13 @@ type t = {
     application_key:string option ->
     expected_project:Project_name.t option ->
     working_directory:string ->
-    commit:commit ->
+    source:source ->
     target:Target_name.t ->
     unit ->
     deployment Deferred.Or_error.t;
   prune :
     expected_project:Project_name.t option ->
+    repository_identity:string option ->
     working_directory:string ->
     target:Target_name.t ->
     prune_result Deferred.Or_error.t;
@@ -61,12 +63,12 @@ let deployment_of_store deployment =
 
 let create ~store () =
   let deploy ~on_stage ~on_requested ~application_key ~expected_project
-      ~working_directory ~commit ~target () =
+      ~working_directory ~source ~target () =
     let open Deferred.Or_error.Let_syntax in
     Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
-      ?application_key ?expected_project ~store ~working_directory ~commit
+      ?application_key ?expected_project ~store ~working_directory ~source
       ~target ()
     >>| deployment_of_store
   in
@@ -76,8 +78,9 @@ let create ~store () =
     find_commit = Source.find_commit;
     deploy;
     prune =
-      (fun ~expected_project ~working_directory ~target ->
-        Prune.prune ?expected_project ~working_directory ~target ());
+      (fun ~expected_project ~repository_identity ~working_directory ~target ->
+        Prune.prune ?expected_project ?repository_identity ~working_directory
+          ~target ());
   }
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
@@ -85,11 +88,22 @@ let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 let resolve_commit t ~working_directory ~revision =
   t.find_commit ~working_directory ~revision
 
+let local_source _t ~working_directory = Source.local ~working_directory
+let immutable_source = Source.immutable
+
+let source_revision source =
+  Source.selection_commit source |> Source.commit_revision
+
+let source_subject source =
+  Source.selection_commit source |> Source.commit_subject
+
+let source_is_local = Source.selection_is_local
+
 let canonical_working_directory working_directory =
   Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
 
 let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
-    ?expected_project t ~working_directory ~commit ~target () =
+    ?expected_project t ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -100,7 +114,7 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
           in
           let%bind deployment =
             t.deploy ~on_stage ~on_requested ~application_key ~expected_project
-              ~working_directory ~commit ~target ()
+              ~working_directory ~source ~target ()
           in
           let%map () =
             match deployment.state with
@@ -112,7 +126,7 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
           in
           deployment)
 
-let prune ?expected_project t ~working_directory ~target =
+let prune ?expected_project ?repository_identity t ~working_directory ~target =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -122,7 +136,8 @@ let prune ?expected_project t ~working_directory ~target =
             Store.set_resource_state t.store ~working_directory ~target Unknown
           in
           let%bind result =
-            t.prune ~expected_project ~working_directory ~target
+            t.prune ~expected_project ~repository_identity ~working_directory
+              ~target
           in
           let%map () =
             Store.set_resource_state t.store ~working_directory ~target Absent
@@ -173,6 +188,9 @@ module For_testing = struct
       ~secrets_removed ~route
 
   let commit = Source.For_testing.commit
+
+  let local_source ~working_directory commit =
+    Source.For_testing.local ~working_directory commit
 
   let deployment ?revision ?container_name ?error ~id ~state () =
     { id; state; revision; container_name; error }

@@ -55,11 +55,40 @@ let run_tests () =
   let%bind latest = Nixploy.Source.preview_main ~working_directory:directory in
   let latest = Or_error.ok_exn latest in
   assert (not (String.equal revision_a (Nixploy.Source.commit_revision latest)));
+  write (Filename.concat directory "release.txt") "working-tree-change\n";
+  let%bind local_selection =
+    Nixploy.Source.local ~working_directory:directory
+  in
+  let local_selection = Or_error.ok_exn local_selection in
+  assert (Nixploy.Source.selection_is_local local_selection);
+  let%bind local =
+    Nixploy.Source.prepare ~working_directory:directory
+      ~selection:local_selection
+  in
+  let local = Or_error.ok_exn local in
+  assert (Nixploy.Source.is_local local);
+  assert (
+    String.equal (Nixploy.Source.path local) (Filename_unix.realpath directory));
+  assert (
+    String.equal
+      (In_channel.read_all
+         (Filename.concat (Nixploy.Source.path local) "release.txt"))
+      "working-tree-change\n");
+  let%bind () = Nixploy.Source.cleanup local in
+  assert (Sys_unix.file_exists_exn directory);
+  let%bind mismatched =
+    Nixploy.Source.prepare ~working_directory:application_directory
+      ~selection:local_selection
+  in
+  assert (Result.is_error mismatched);
   let%bind prepared =
-    Nixploy.Source.prepare ~working_directory:directory ~commit:preview
+    Nixploy.Source.prepare ~working_directory:directory
+      ~selection:
+        (Nixploy.Source.immutable ~repository_identity:"owner/test" preview)
   in
   let prepared = Or_error.ok_exn prepared in
   assert (String.equal revision_a (Nixploy.Source.revision prepared));
+  assert (String.equal "owner/test" (Nixploy.Source.repository prepared));
   assert (
     String.equal
       (In_channel.read_all
@@ -78,7 +107,7 @@ let run_tests () =
       (Filename_unix.realpath application_directory));
   let%bind nested =
     Nixploy.Source.prepare ~working_directory:application_directory
-      ~commit:preview
+      ~selection:(Nixploy.Source.immutable preview)
   in
   let nested = Or_error.ok_exn nested in
   assert (

@@ -89,6 +89,13 @@
   (pps ppx_jane)))
 
 (test
+ (name status_test)
+ (modules status_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name source_test)
  (modules source_test)
  (libraries nixploy core core_unix.command_unix async)

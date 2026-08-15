@@ -2,19 +2,25 @@ open Async
 open Core
 
 type t = {
-  workspace : string;
+  workspace : string option;
   path : string;
   revision : string;
   repository : string;
+  is_local : bool;
 }
 
 type commit = { revision : string; subject : string; timestamp_ms : int64 }
+
+type selection =
+  | Local of { commit : commit; working_directory : string }
+  | Immutable of { commit : commit; repository_identity : string option }
 
 let git_timeout = Time_ns.Span.of_min 2.
 let max_git_output = 262_144
 let path (source : t) = source.path
 let revision (source : t) = source.revision
 let repository (source : t) = source.repository
+let is_local (source : t) = source.is_local
 let commit_revision (commit : commit) = commit.revision
 let commit_subject (commit : commit) = commit.subject
 let commit_timestamp_ms (commit : commit) = commit.timestamp_ms
@@ -79,6 +85,22 @@ let preview_main ~working_directory =
   | Ok working_directory ->
       describe ~working_directory "refs/heads/main^{commit}"
 
+let local ~working_directory =
+  match canonical_directory working_directory with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory ->
+      describe ~working_directory "HEAD^{commit}"
+      >>| Or_error.map ~f:(fun commit -> Local { commit; working_directory })
+
+let immutable ?repository_identity commit =
+  Immutable { commit; repository_identity }
+
+let selection_commit = function
+  | Local { commit; _ } -> commit
+  | Immutable { commit; _ } -> commit
+
+let selection_is_local = function Local _ -> true | Immutable _ -> false
+
 let find_commit ~working_directory ~revision =
   if not (valid_revision revision) then
     Deferred.Or_error.error_string "deployment revision must be a full SHA"
@@ -94,18 +116,22 @@ module For_testing = struct
     else if String.length subject > 500 then
       Or_error.error_string "Git commit subject exceeds 500 bytes"
     else Ok { revision; subject; timestamp_ms }
+
+  let local ~working_directory commit = Local { commit; working_directory }
 end
 
 let cleanup t =
-  let%map _ =
-    Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 30.)
-      ~max_output_bytes:65_536 ~prog:"rm" ~ignore_termination:true
-      ~args:[ "-rf"; "--"; t.workspace ]
+  match t.workspace with
+  | None -> Deferred.unit
+  | Some workspace ->
+      let%map _ =
+        Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 30.)
+          ~max_output_bytes:65_536 ~prog:"rm" ~ignore_termination:true
+          ~args:[ "-rf"; "--"; workspace ] ()
+      in
       ()
-  in
-  ()
 
-let prepare ~working_directory ~commit =
+let prepare_immutable ~working_directory ~commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =
     Deferred.return (canonical_directory working_directory)
@@ -137,8 +163,16 @@ let prepare ~working_directory ~commit =
     if String.equal subdirectory "." then source_root
     else Filename.concat source_root subdirectory
   in
-  let provisional = { workspace; path = source_path; revision; repository } in
-  let result =
+  let provisional =
+    {
+      workspace = Some workspace;
+      path = source_path;
+      revision;
+      repository;
+      is_local = false;
+    }
+  in
+  let prepare () =
     let%bind _ =
       git
         [
@@ -182,8 +216,42 @@ let prepare ~working_directory ~commit =
     in
     Deferred.Or_error.return provisional
   in
-  match%bind.Deferred result with
+  let%bind.Deferred result = Monitor.try_with_or_error prepare in
+  match Or_error.join result with
   | Ok source -> Deferred.Or_error.return source
   | Error error ->
       let%map.Deferred () = cleanup provisional in
       Error error
+
+let prepare ~working_directory ~selection =
+  match selection with
+  | Immutable { commit; repository_identity } ->
+      let open Deferred.Or_error.Let_syntax in
+      let%map prepared = prepare_immutable ~working_directory ~commit in
+      Option.value_map repository_identity ~default:prepared
+        ~f:(fun repository -> { prepared with repository })
+  | Local { commit; working_directory = selected_directory } ->
+      let open Deferred.Or_error.Let_syntax in
+      let%bind path = Deferred.return (canonical_directory working_directory) in
+      let%bind () =
+        if String.equal path selected_directory then Deferred.Or_error.return ()
+        else
+          Deferred.Or_error.error_string
+            "local source selection does not match the deployment directory"
+      in
+      let%bind repository = repository_identity ~working_directory:path in
+      let%bind () =
+        if Sys_unix.file_exists_exn (Filename.concat path "flake.nix") then
+          Deferred.Or_error.return ()
+        else
+          Deferred.Or_error.error_string
+            "local source does not contain flake.nix"
+      in
+      Deferred.Or_error.return
+        {
+          workspace = None;
+          path;
+          revision = commit.revision;
+          repository;
+          is_local = true;
+        }

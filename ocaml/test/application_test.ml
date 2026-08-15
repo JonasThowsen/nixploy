@@ -34,7 +34,9 @@ let run_tests () =
   let project = Nixploy.Project_name.of_string "example" |> assert_ok in
   let prune_target = Nixploy.Target_name.of_string "production" |> assert_ok in
   let prune_resource =
-    Nixploy.Resource_key.derive ~project ~target:prune_target |> assert_ok
+    Nixploy.Resource_key.derive ~project ~target:prune_target
+      ~repository_identity:"git@example.invalid:example.git"
+    |> assert_ok
   in
   let prune_result =
     Nixploy.Application.For_testing.prune_result ~project ~target:prune_target
@@ -56,11 +58,11 @@ let run_tests () =
           ~application_key
           ~expected_project
           ~working_directory
-          ~commit
+          ~source
           ~target:_
           ()
         ->
-        let revision = Nixploy.Application.commit_revision commit in
+        let revision = Nixploy.Application.source_revision source in
         Option.iter !deployment_started ~f:(fun started ->
             Ivar.fill_if_empty started ());
         let%bind () =
@@ -75,15 +77,22 @@ let run_tests () =
                 ~state:!deployment_state ~revision ()
             in
             deployed :=
-              (application_key, expected_project, working_directory, revision)
+              ( application_key,
+                expected_project,
+                working_directory,
+                revision,
+                Nixploy.Application.source_is_local source )
               :: !deployed;
             let%map () =
               on_stage Nixploy.Deployment.Preparing_source revision
             in
             on_requested deployment;
             Ok deployment)
-      ~prune:(fun ~expected_project ~working_directory ~target ->
-        pruned := (expected_project, working_directory, target) :: !pruned;
+      ~prune:(fun
+          ~expected_project ~repository_identity ~working_directory ~target ->
+        pruned :=
+          (expected_project, repository_identity, working_directory, target)
+          :: !pruned;
         match !prune_error with
         | None -> Deferred.Or_error.return prune_result
         | Some error -> Deferred.return (Error error))
@@ -105,9 +114,13 @@ let run_tests () =
   let preview = assert_ok preview in
   assert (
     String.equal main_revision (Nixploy.Application.commit_revision preview));
+  let local_source =
+    Nixploy.Application.For_testing.local_source ~working_directory:directory
+      preview
+  in
   let%bind cli_result =
     Nixploy.Application.deploy ~on_stage ~on_requested application
-      ~working_directory:directory ~commit:preview ~target ()
+      ~working_directory:directory ~source:local_source ~target ()
   in
   let cli_deployment = assert_ok cli_result in
   assert (
@@ -125,7 +138,9 @@ let run_tests () =
   let%bind rpc_result =
     Nixploy.Application.deploy ~on_stage ~on_requested
       ~application_key:"example" ~expected_project:project application
-      ~working_directory:directory ~commit:resolved ~target ()
+      ~working_directory:directory
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
   in
   let rpc_deployment = assert_ok rpc_result in
   assert (
@@ -133,10 +148,11 @@ let run_tests () =
       (Nixploy.Application.deployment_revision rpc_deployment
       |> Option.value_exn));
   [%test_eq:
-    (string option * Nixploy.Project_name.t option * string * string) list]
+    (string option * Nixploy.Project_name.t option * string * string * bool)
+    list]
     [
-      (None, None, directory, main_revision);
-      (Some "example", Some project, directory, selected_revision);
+      (None, None, directory, main_revision, true);
+      (Some "example", Some project, directory, selected_revision, false);
     ]
     (List.rev !deployed);
   [%test_eq: (Nixploy.Deployment.stage * string) list]
@@ -164,7 +180,8 @@ let run_tests () =
   in
   ignore (assert_ok interrupted : Nixploy.Store.deployment);
   let%bind prune =
-    Nixploy.Application.prune application ~working_directory:directory ~target
+    Nixploy.Application.prune ~repository_identity:"owner/example" application
+      ~working_directory:directory ~target
   in
   let prune = assert_ok prune in
   [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
@@ -198,7 +215,8 @@ let run_tests () =
   deployment_state := Failed;
   let%bind failed_deployment =
     Nixploy.Application.deploy application ~working_directory:directory
-      ~commit:resolved ~target ()
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
   in
   assert (
     [%equal: Nixploy.Application.deployment_state]
@@ -214,7 +232,8 @@ let run_tests () =
   deployment_state := Cancelled;
   let%bind cancelled_deployment =
     Nixploy.Application.deploy application ~working_directory:directory
-      ~commit:resolved ~target ()
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
   in
   assert (
     [%equal: Nixploy.Application.deployment_state]
@@ -236,7 +255,8 @@ let run_tests () =
   deployment_gate := Some release_deploy;
   let waiting_deploy =
     Nixploy.Application.deploy application ~working_directory:directory
-      ~commit:resolved ~target ()
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
   in
   let%bind () = Ivar.read deploy_started in
   let prunes_before_wait = List.length !pruned in
@@ -260,11 +280,15 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Absent);
   [%test_eq:
-    (Nixploy.Project_name.t option * string * Nixploy.Target_name.t) list]
+    (Nixploy.Project_name.t option
+    * string option
+    * string
+    * Nixploy.Target_name.t)
+    list]
     [
-      (None, directory, target);
-      (None, directory, target);
-      (None, directory, target);
+      (None, Some "owner/example", directory, target);
+      (None, None, directory, target);
+      (None, None, directory, target);
     ]
     (List.rev !pruned);
   Deferred.unit

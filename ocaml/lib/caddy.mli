@@ -3,7 +3,7 @@ open Core
 
 type t
 type deletion
-type route = Missing | Existing of { active_port : int }
+type route = Missing | Existing of { active_port : int; domain : string }
 
 val create :
   target:Configuration.Target.t ->

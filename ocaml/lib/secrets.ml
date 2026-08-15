@@ -141,7 +141,28 @@ let decryption_env () =
                     ("SOPS_AGE_SSH_PRIVATE_KEY_FILE", None);
                   ]))
 
-let load ~target =
+let resolve_reference ~source_root path =
+  if Filename.is_absolute path then Ok path
+  else if String.split path ~on:'/' |> List.exists ~f:(String.equal "..") then
+    Or_error.error_string "relative secret path must not contain .."
+  else
+    Or_error.try_with (fun () ->
+        let canonical_root = Filename_unix.realpath source_root in
+        let resolved =
+          Filename.concat canonical_root path |> Filename_unix.realpath
+        in
+        let beneath_root =
+          String.equal canonical_root "/"
+          || String.equal resolved canonical_root
+          || String.is_prefix resolved ~prefix:(canonical_root ^ "/")
+        in
+        if beneath_root then resolved
+        else
+          failwith
+            "relative secret path resolves outside the canonical source root")
+    |> Or_error.tag ~tag:"invalid relative secret path"
+
+let load ~source_root ~target =
   let references =
     Configuration.Target.secret_references target
     |> List.sort ~compare:(fun (left, _) (right, _) ->
@@ -150,6 +171,12 @@ let load ~target =
   if List.is_empty references then Deferred.Or_error.return []
   else
     let open Deferred.Or_error.Let_syntax in
+    let%bind references =
+      List.map references ~f:(fun (label, path) ->
+          resolve_reference ~source_root path
+          |> Or_error.map ~f:(fun path -> (label, path)))
+      |> Or_error.all |> Deferred.return
+    in
     let%bind env = decryption_env () in
     let rec decrypt loaded = function
       | [] -> Deferred.Or_error.return (List.rev loaded)
@@ -193,4 +220,5 @@ let load ~target =
 
 module For_testing = struct
   let parse_dotenv = parse_dotenv
+  let resolve_reference = resolve_reference
 end

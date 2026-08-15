@@ -57,7 +57,10 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$1" in
   eval)
-    if [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
+    if [ "${NIXPLOY_TEST_SECRETS:-}" = "1" ]; then
+      secret_path=${NIXPLOY_TEST_SECRET_PATH:-config/secrets.env}
+      printf '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker",""]},"secrets":{"app":"%s"}}}}\n' "$secret_path"
+    elif [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
       cat <<'JSON'
 {"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
 JSON
@@ -70,6 +73,17 @@ JSON
   build) printf '/nix/store/nixploy-fake-image\n' ;;
   *) echo "unexpected nix command" >&2; exit 97 ;;
 esac
+|};
+  install_executable bin "sops"
+    {|#!/bin/sh
+set -eu
+printf 'sops' >> "$NIXPLOY_TEST_TRACE"
+printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
+printf '\n' >> "$NIXPLOY_TEST_TRACE"
+last=""
+for argument in "$@"; do last="$argument"; done
+[ "$last" = "$NIXPLOY_TEST_EXPECTED_SECRET" ]
+printf 'EMPTY=\n'
 |};
   install_executable bin "ssh"
     {|#!/bin/sh
@@ -85,8 +99,17 @@ case "$last" in
   *"'curl' '-fsS' '--max-time' '2'"*) : ;;
   *"'-X' 'GET'"*"/config/apps/http/servers/nixploy"*) printf '\n200' ;;
   *"'-X' 'POST'"*"/config/apps/http/servers/nixploy/routes"*)
-    cat >/dev/null
-    printf '8080\n' > "$NIXPLOY_TEST_ROUTE_STATE"
+    body=$(cat)
+    printf '%s' "$body" | grep -q '"host":\["worker.example.invalid"\]'
+    printf '8080\nworker.example.invalid\n' > "$NIXPLOY_TEST_ROUTE_STATE"
+    printf '\n200'
+    ;;
+  *"'-X' 'PATCH'"*"/id/nixploy-route-"*)
+    body=$(cat)
+    port=$(printf '%s' "$body" | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p')
+    domain=$(printf '%s' "$body" | sed -n 's/.*"host":\["\([^"]*\)"\].*/\1/p')
+    [ -n "$port" ] && [ -n "$domain" ]
+    printf '%s\n%s\n' "$port" "$domain" > "$NIXPLOY_TEST_ROUTE_STATE"
     printf '\n200'
     ;;
   *"'-X' 'DELETE'"*"/id/nixploy-route-"*)
@@ -99,11 +122,14 @@ case "$last" in
     else
       route_id=$(printf '%s' "$last" | sed -n 's#.*http://127.0.0.1:2019/id/\([^/ ]*\).*#\1#p' | tr -d "'")
       proxy_id=$(printf '%s' "$route_id" | sed 's/nixploy-route-/nixploy-proxy-/')
-      printf '{"@id":"%s","match":[{"host":["worker.example.invalid"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:8080"}]}]}]}],"terminal":true}\n200' "$route_id" "$proxy_id"
+      port=$(sed -n '1p' "$NIXPLOY_TEST_ROUTE_STATE")
+      domain=$(sed -n '2p' "$NIXPLOY_TEST_ROUTE_STATE")
+      printf '{"@id":"%s","match":[{"host":["%s"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:%s"}]}]}]}],"terminal":true}\n200' "$route_id" "$domain" "$proxy_id" "$port"
     fi
     ;;
   *"'-X' 'GET'"*"/id/nixploy-proxy-"*"/upstreams"*)
-    printf '[{"dial":"127.0.0.1:8080"}]\n200'
+    port=$(sed -n '1p' "$NIXPLOY_TEST_ROUTE_STATE")
+    printf '[{"dial":"127.0.0.1:%s"}]\n200' "$port"
     ;;
   *) echo "unexpected ssh command: $last" >&2; exit 98 ;;
 esac
@@ -116,6 +142,8 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$*" in
   "system connection list --format json") printf '[]\n'; exit 0 ;;
+  *" secret rm "*) exit 1 ;;
+  *" secret create "*) cat >/dev/null; exit 0 ;;
   system\ connection\ add\ *) exit 0 ;;
   *" info") exit 0 ;;
   *" load -i /nix/store/nixploy-fake-image") printf 'Loaded image: loaded@sha256:immutable\n'; exit 0 ;;
@@ -130,6 +158,9 @@ if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
 fi
 if [ "${3:-}" = "container" ] && [ "${4:-}" = "exists" ]; then
   if [ -f "$NIXPLOY_TEST_STATE" ]; then exit 0; fi
+  if [ "${NIXPLOY_TEST_EXISTING_WEB:-}" = "1" ]; then
+    case "${5:-}" in *-blue) exit 0 ;; *) exit 1 ;; esac
+  fi
   if [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then exit 1; fi
   exit 0
 fi
@@ -143,7 +174,9 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
   elif [ "${NIXPLOY_TEST_UNOWNED:-}" = "1" ]; then
     printf '[{"Id":"foreign-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"conflicting-modern-resource","nixploy.project":"sample","nixploy.target":"worker"}}}]\n' "$name"
   else
-    printf '[{"Id":"old-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s"}}}]\n' "$name" "$name"
+    resource=${name%-blue}
+    resource=${resource%-green}
+    printf '[{"Id":"old-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s"}}}]\n' "$name" "$resource"
   fi
   exit 0
 fi
@@ -184,6 +217,10 @@ exit 99
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
+      "NIXPLOY_TEST_EXISTING_WEB";
+      "NIXPLOY_TEST_SECRETS";
+      "NIXPLOY_TEST_SECRET_PATH";
+      "NIXPLOY_TEST_EXPECTED_SECRET";
     ]
   in
   let old_environment =
@@ -200,6 +237,10 @@ exit 99
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
+        "NIXPLOY_TEST_EXISTING_WEB";
+        "NIXPLOY_TEST_SECRETS";
+        "NIXPLOY_TEST_SECRET_PATH";
+        "NIXPLOY_TEST_EXPECTED_SECRET";
       ]
       ~f:Core_unix.unsetenv;
     List.iter [ state; route_state ] ~f:(fun path ->
@@ -239,7 +280,9 @@ exit 99
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
       let deploy ?record_stage ?expected_project operation_id =
         Nixploy.Deployment.deploy ?record_stage ?expected_project ~operation_id
-          ~working_directory:repository ~commit ~target ()
+          ~working_directory:repository
+          ~source:(Nixploy.Source.immutable commit)
+          ~target ()
       in
       let application_store_path = Filename.concat root "application.sqlite" in
       let%bind application_store =
@@ -262,7 +305,8 @@ exit 99
         assert_ok marked_present;
         let%bind deployment =
           Nixploy.Application.deploy application ~working_directory:repository
-            ~commit:application_commit ~target ()
+            ~source:(Nixploy.Application.immutable_source application_commit)
+            ~target ()
         in
         let deployment = assert_ok deployment in
         assert (
@@ -301,7 +345,9 @@ exit 99
       assert_ok marked_present;
       let%bind rejected_application =
         Nixploy.Application.deploy ~expected_project:wrong_project application
-          ~working_directory:repository ~commit:application_commit ~target ()
+          ~working_directory:repository
+          ~source:(Nixploy.Application.immutable_source application_commit)
+          ~target ()
       in
       let rejected_application = assert_ok rejected_application in
       assert (
@@ -401,6 +447,69 @@ exit 99
         ]
         (List.rev !stages);
 
+      let secret_directory = Filename.concat repository "config" in
+      Core_unix.mkdir secret_directory;
+      write (Filename.concat secret_directory "secrets.env") "encrypted\n";
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET"
+        (Filename.concat repository "config/secrets.env");
+      let%bind local_source =
+        Nixploy.Source.local ~working_directory:repository
+      in
+      let local_source = assert_ok local_source in
+      let%bind local_deployment =
+        Nixploy.Deployment.deploy ~operation_id:"operation-local"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      ignore (assert_ok local_deployment : Nixploy.Deployment.t);
+      let lines = In_channel.read_lines trace in
+      assert (
+        List.exists lines
+          ~f:
+            (String.equal "nix|eval|--json|--no-write-lock-file|path:.#nixploy"));
+      assert (
+        List.exists lines
+          ~f:(String.is_substring ~substring:"|path:.#workerImage|"));
+      [%test_eq: string]
+        ("sops|--decrypt|--input-type|dotenv|--output-type|dotenv|"
+        ^ Filename.concat repository "config/secrets.env")
+        (List.find_exn lines ~f:(String.is_prefix ~prefix:"sops|"));
+      let runtime =
+        List.find_exn lines
+          ~f:(String.is_substring ~substring:"|run|-d|--name|")
+      in
+      assert (
+        String.is_suffix runtime ~suffix:"|loaded@sha256:immutable|/app/worker|");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "../outside.env";
+      let%bind traversal =
+        Nixploy.Deployment.deploy ~operation_id:"operation-secret-traversal"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      expect_error_containing traversal "relative secret path";
+      [%test_eq: int] 0
+        (In_channel.read_lines trace
+        |> List.count ~f:(String.is_prefix ~prefix:"sops|"));
+
+      let outside_secret = Filename.concat root "outside.env" in
+      write outside_secret "encrypted\n";
+      let escaping_link = Filename.concat secret_directory "escape.env" in
+      Caml_unix.symlink outside_secret escaping_link;
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "config/escape.env";
+      let%bind symlink_escape =
+        Nixploy.Deployment.deploy ~operation_id:"operation-secret-symlink"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      expect_error_containing symlink_escape "relative secret path";
+      [%test_eq: int] 0
+        (In_channel.read_lines trace
+        |> List.count ~f:(String.is_prefix ~prefix:"sops|"));
+
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
       let%bind failed_pre_start = deploy "operation-pre-start" in
@@ -465,7 +574,9 @@ exit 99
       in
       let%bind observer_result =
         Nixploy.Tracked_deployment.deploy ~on_stage ~store:observer_store
-          ~working_directory:repository ~commit ~target ()
+          ~working_directory:repository
+          ~source:(Nixploy.Source.immutable commit)
+          ~target ()
       in
       let observer_result = assert_ok observer_result in
       assert (!observer_calls > 0);
@@ -486,7 +597,9 @@ exit 99
       in
       let%bind persisted_stage_failure =
         Nixploy.Tracked_deployment.deploy ~on_stage ~store:failing_store
-          ~working_directory:repository ~commit ~target ()
+          ~working_directory:repository
+          ~source:(Nixploy.Source.immutable commit)
+          ~target ()
       in
       expect_error persisted_stage_failure;
       let lines = In_channel.read_lines trace in
@@ -495,6 +608,53 @@ exit 99
         String.is_substring (List.last_exn lines)
           ~substring:"|rm|-f|candidate-id");
       Core_unix.rmdir failing_store_path;
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      write route_state "8080\nretired.example.invalid\n";
+      let%bind updated_domain = deploy "operation-domain-update" in
+      ignore (assert_ok updated_domain : Nixploy.Deployment.t);
+      let lines = In_channel.read_lines trace in
+      let route_read =
+        index_of lines (String.is_substring ~substring:"'-X' 'GET'")
+      in
+      let route_update =
+        index_of lines (String.is_substring ~substring:"'-X' 'PATCH'")
+      in
+      assert (route_read < route_update);
+      [%test_eq: string list]
+        [ "8081"; "worker.example.invalid" ]
+        (In_channel.read_lines route_state);
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      write route_state "8080\nretired.example.invalid\n";
+      let record_stage stage _message =
+        if Nixploy.Deployment.equal_stage stage Succeeded then
+          Deferred.Or_error.error_string "terminal stage persistence failed"
+        else Deferred.Or_error.return ()
+      in
+      let%bind restored_domain =
+        deploy ~record_stage "operation-domain-compensation"
+      in
+      expect_error restored_domain;
+      [%test_eq: string list]
+        [ "8080"; "retired.example.invalid" ]
+        (In_channel.read_lines route_state);
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 2 (count lines "'-X' 'PATCH'");
+      let updates =
+        List.filter_mapi lines ~f:(fun index line ->
+            if String.is_substring line ~substring:"'-X' 'PATCH'" then
+              Some index
+            else None)
+      in
+      let cleanup_candidate =
+        index_of lines (String.is_substring ~substring:"|rm|-f|candidate-id")
+      in
+      assert (List.nth_exn updates 1 < cleanup_candidate);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

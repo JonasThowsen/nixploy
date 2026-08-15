@@ -13,7 +13,7 @@ let load_evaluated ~working_directory =
   let%bind json =
     Process_runner.run_stdout ~working_directory ~timeout:evaluation_timeout
       ~max_output_bytes:max_configuration_bytes ~prog:"nix"
-      ~args:[ "eval"; "--json"; "--no-write-lock-file"; ".#nixploy" ]
+      ~args:[ "eval"; "--json"; "--no-write-lock-file"; "path:.#nixploy" ]
       ()
   in
   let%map configuration = Deferred.return (Configuration.of_json json) in

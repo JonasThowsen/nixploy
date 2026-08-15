@@ -128,15 +128,14 @@ let prune_command =
                    exit_after_signal ~default:(fun () -> Shutdown.exit 1))))
 
 let deploy_command =
-  Async.Command.async
-    ~summary:"Deploy the exact head of main to one flake target"
+  Async.Command.async ~summary:"Deploy the current local flake to one target"
     (let%map_open.Command target =
        flag "--target" (required string) ~aliases:[ "-t" ]
          ~doc:"TARGET target declared by .#nixploy"
      and working_directory =
        flag "--directory"
          (optional_with_default "." string)
-         ~aliases:[ "-C" ] ~doc:"DIRECTORY project Git repository"
+         ~aliases:[ "-C" ] ~doc:"DIRECTORY current local project flake"
      and state_db =
        flag "--state-db"
          (optional_with_default (Nixploy.State_path.default ()) string)
@@ -158,22 +157,21 @@ let deploy_command =
                Shutdown.exit 1
            | Ok store -> (
                let application = Nixploy.Application.create ~store () in
-               let%bind preview =
-                 Nixploy.Application.preview_main_commit application
-                   ~working_directory
+               let%bind selected =
+                 Nixploy.Application.local_source application ~working_directory
                in
-               match preview with
+               match selected with
                | Error error ->
-                   eprintf "Could not resolve main: %s\n"
+                   eprintf "Could not resolve local source: %s\n"
                      (Error.to_string_hum error);
                    Shutdown.exit 1
-               | Ok commit -> (
-                   printf "Deploying %s  %s\n%!"
-                     (Nixploy.Application.commit_revision commit)
-                     (Nixploy.Application.commit_subject commit);
+               | Ok source -> (
+                   printf "Deploying local source at %s  %s\n%!"
+                     (Nixploy.Application.source_revision source)
+                     (Nixploy.Application.source_subject source);
                    let%bind result =
                      Nixploy.Application.deploy ~on_stage:print_deployment_stage
-                       application ~working_directory ~commit ~target ()
+                       application ~working_directory ~source ~target ()
                    in
                    match result with
                    | Error error ->

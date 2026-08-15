@@ -9,6 +9,10 @@ let non_empty_string ~field = function
       Ok value
   | _ -> Or_error.errorf "%s must be a non-empty string without NUL bytes" field
 
+let string_without_nul ~field = function
+  | `String value when not (contains_nul value) -> Ok value
+  | _ -> Or_error.errorf "%s must be a string without NUL bytes" field
+
 let required fields name parse =
   match List.Assoc.find fields ~equal:String.equal name with
   | Some value -> parse ~field:name value
@@ -33,17 +37,20 @@ let nullable_string ~field = function
   | `Null -> Ok None
   | json -> Or_error.map (non_empty_string ~field json) ~f:Option.some
 
-let string_list ~field = function
+let string_list parse ~field = function
   | `List values ->
       Or_error.all
         (List.mapi values ~f:(fun index value ->
-             non_empty_string ~field:(sprintf "%s[%d]" field index) value))
+             parse ~field:(sprintf "%s[%d]" field index) value))
   | _ -> Or_error.errorf "%s must be a list of strings" field
+
+let non_empty_string_list = string_list non_empty_string
+let argv = string_list string_without_nul
 
 let nullable_argv ~field = function
   | `Null -> Ok None
   | `List [] -> Or_error.errorf "%s must not be empty when specified" field
-  | json -> Or_error.map (string_list ~field json) ~f:Option.some
+  | json -> Or_error.map (argv ~field json) ~f:Option.some
 
 module Run = struct
   type t = {
@@ -86,7 +93,7 @@ module Run = struct
                  non_empty_string ~field:(field ^ " key") (`String name)
                in
                let%map value =
-                 non_empty_string ~field:(field ^ "." ^ name) value
+                 string_without_nul ~field:(field ^ "." ^ name) value
                in
                (name, value)))
     | _ -> Or_error.errorf "%s must be an object of strings" field
@@ -98,7 +105,7 @@ module Run = struct
                match command with
                | `List [] ->
                    Or_error.errorf "%s[%d] must not be empty" field index
-               | json -> string_list ~field:(sprintf "%s[%d]" field index) json))
+               | json -> argv ~field:(sprintf "%s[%d]" field index) json))
     | _ -> Or_error.errorf "%s must be a list of argv lists" field
 
   let of_json ~field = function
@@ -109,7 +116,7 @@ module Run = struct
           optional fields "environment" environment_value ~default:[]
         and pre_start = optional fields "preStart" pre_start_value ~default:[]
         and network = optional fields "network" nullable_string ~default:None
-        and ports = optional fields "ports" string_list ~default:[] in
+        and ports = optional fields "ports" non_empty_string_list ~default:[] in
         { command; environment; pre_start; network; ports }
     | _ -> Or_error.errorf "%s must be an object" field
 end
