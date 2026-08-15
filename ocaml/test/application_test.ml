@@ -30,37 +30,51 @@ let run_tests () =
         assert (String.equal revision selected_revision);
         Deferred.Or_error.return selected_commit)
       ~deploy:(fun
-          ~on_stage:_
-          ~on_requested:_
+          ~on_stage
+          ~on_requested
           ~application_key
           ~working_directory
           ~commit
           ~target:_
           ()
         ->
-        deployed :=
-          ( application_key,
-            working_directory,
-            Nixploy.Application.commit_revision commit )
-          :: !deployed;
-        Deferred.Or_error.error_string "fake deployment stopped")
+        let revision = Nixploy.Application.commit_revision commit in
+        let deployment =
+          Nixploy.Application.For_testing.deployment
+            ~id:("deployment-" ^ String.prefix revision 1)
+            ~state:Succeeded ~revision ()
+        in
+        deployed := (application_key, working_directory, revision) :: !deployed;
+        let%map () = on_stage Nixploy.Deployment.Preparing_source revision in
+        on_requested deployment;
+        Ok deployment)
   in
   let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let stages = ref [] in
+  let requested = ref [] in
+  let on_stage stage message =
+    stages := (stage, message) :: !stages;
+    Deferred.unit
+  in
+  let on_requested deployment =
+    requested := Nixploy.Application.deployment_id deployment :: !requested
+  in
   let%bind preview =
-    Nixploy.Application.preview_commit application
+    Nixploy.Application.preview_main_commit application
       ~working_directory:"/srv/example"
   in
   let preview = assert_ok preview in
   assert (
     String.equal main_revision (Nixploy.Application.commit_revision preview));
   let%bind cli_result =
-    Nixploy.Application.deploy application ~working_directory:"/srv/example"
-      ~commit:preview ~target ()
+    Nixploy.Application.deploy ~on_stage ~on_requested application
+      ~working_directory:"/srv/example" ~commit:preview ~target ()
   in
-  assert (Result.is_error cli_result);
-  [%test_eq: (string option * string * string) list]
-    [ (None, "/srv/example", main_revision) ]
-    (List.rev !deployed);
+  let cli_deployment = assert_ok cli_result in
+  assert (
+    String.equal main_revision
+      (Nixploy.Application.deployment_revision cli_deployment
+      |> Option.value_exn));
   let%bind resolved =
     Nixploy.Application.resolve_commit application
       ~working_directory:"/srv/example" ~revision:selected_revision
@@ -70,16 +84,27 @@ let run_tests () =
     String.equal selected_revision
       (Nixploy.Application.commit_revision resolved));
   let%map rpc_result =
-    Nixploy.Application.deploy ~application_key:"example" application
-      ~working_directory:"/srv/example" ~commit:resolved ~target ()
+    Nixploy.Application.deploy ~on_stage ~on_requested
+      ~application_key:"example" application ~working_directory:"/srv/example"
+      ~commit:resolved ~target ()
   in
-  assert (Result.is_error rpc_result);
+  let rpc_deployment = assert_ok rpc_result in
+  assert (
+    String.equal selected_revision
+      (Nixploy.Application.deployment_revision rpc_deployment
+      |> Option.value_exn));
   [%test_eq: (string option * string * string) list]
     [
       (None, "/srv/example", main_revision);
       (Some "example", "/srv/example", selected_revision);
     ]
-    (List.rev !deployed)
+    (List.rev !deployed);
+  [%test_eq: (Nixploy.Deployment.stage * string) list]
+    [ (Preparing_source, main_revision); (Preparing_source, selected_revision) ]
+    (List.rev !stages);
+  [%test_eq: string list]
+    [ "deployment-a"; "deployment-b" ]
+    (List.rev !requested)
 
 let () =
   don't_wait_for

@@ -1,5 +1,6 @@
 open Async
 open Core
+module Deployment_output = Nixploy_cli_mapping.Deployment_output
 
 let value_or_dash = Option.value ~default:"-"
 
@@ -98,7 +99,7 @@ let deploy_command =
            | Ok store -> (
                let application = Nixploy.Application.create ~store in
                let%bind preview =
-                 Nixploy.Application.preview_commit application
+                 Nixploy.Application.preview_main_commit application
                    ~working_directory
                in
                match preview with
@@ -120,27 +121,29 @@ let deploy_command =
                          (Error.to_string_hum error);
                        Shutdown.exit 1
                    | Ok deployment -> (
+                       let output =
+                         Deployment_output.of_deployment deployment
+                       in
                        printf "\nDeployment %s: %s\n"
-                         (Nixploy.Store.id deployment)
-                         (Nixploy.Store.state deployment
-                         |> Nixploy.Store.state_name);
-                       Option.iter (Nixploy.Store.revision deployment)
+                         (Deployment_output.id output)
+                         (Deployment_output.state_name output);
+                       Option.iter (Deployment_output.revision output)
                          ~f:(fun revision -> printf "Revision: %s\n" revision);
-                       Option.iter (Nixploy.Store.container_name deployment)
+                       Option.iter (Deployment_output.container_name output)
                          ~f:(fun container ->
                            printf "Container: %s\n" container);
-                       match Nixploy.Store.state deployment with
+                       match Deployment_output.terminal_state output with
                        | Succeeded ->
                            exit_after_signal ~default:(fun () -> Deferred.unit)
-                       | Failed ->
-                           Option.iter (Nixploy.Store.error deployment)
-                             ~f:(fun error -> eprintf "%s\n" error);
+                       | Failed error ->
+                           Option.iter error ~f:(fun error ->
+                               eprintf "%s\n" error);
                            exit_after_signal ~default:(fun () ->
                                Shutdown.exit 1)
                        | Cancelled ->
                            exit_after_signal ~default:(fun () ->
                                Shutdown.exit 130)
-                       | Requested | Running ->
+                       | Incomplete ->
                            eprintf
                              "Deployment ended without a terminal state.\n";
                            Shutdown.exit 1)))))

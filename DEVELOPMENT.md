@@ -104,7 +104,7 @@ Each milestone is a production tracer with an observable acceptance criterion.
 
 Move existing source preview and tracked web deployment behind `Application`. CLI and RPC must call that facade without changing deployed behavior.
 
-**Acceptance:** an application-service test substitutes fake capabilities, and both CLI and RPC mapping tests preserve the exact selected revision.
+**Acceptance:** an application-service test substitutes fake capabilities and proves that the CLI main-preview policy and RPC explicit-revision policy pass the exact selected commit and callbacks. Focused consumer mapping tests cover CLI deployment output/terminal-state mapping and RPC operation-id extraction.
 
 ### 2. Non-web parity
 

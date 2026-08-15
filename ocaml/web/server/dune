@@ -1,6 +1,12 @@
+(library
+ (name nixploy_rpc_mapping)
+ (modules deployment_start)
+ (libraries nixploy))
+
 (executable
  (name main)
  (public_name nixploy-web)
+ (modules main embedded_files)
  (libraries
   async
   async_rpc_websocket
@@ -8,6 +14,7 @@
   core
   core_unix.command_unix
   nixploy
+  nixploy_rpc_mapping
   protocol)
  (preprocess
   (pps ppx_jane)))

@@ -2,6 +2,7 @@ open! Core
 open! Async
 module Managed_application = Nixploy.Managed_application
 module Store = Nixploy.Store
+module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 
 type cached_runtime = {
   mutable expires_at : Time_ns.t;
@@ -137,7 +138,7 @@ let preview_deployment state _connection_state query =
   | Error _ as error -> Deferred.return error
   | Ok application ->
       let%map preview =
-        Nixploy.Application.preview_commit state.application
+        Nixploy.Application.preview_main_commit state.application
           ~working_directory:(Managed_application.working_directory application)
       in
       Or_error.map preview ~f:(fun commit ->
@@ -171,9 +172,12 @@ let deploy state _connection_state query =
             Nixploy.Cancellation.within cancellation (fun () ->
                 Nixploy.Application.deploy
                   ~on_requested:(fun operation ->
-                    Hashtbl.set state.active ~key:(Store.id operation)
+                    let operation_id =
+                      Deployment_start.operation_id operation
+                    in
+                    Hashtbl.set state.active ~key:operation_id
                       ~data:cancellation;
-                    Ivar.fill_if_empty started (Store.id operation))
+                    Ivar.fill_if_empty started operation_id)
                   ~application_key:(Managed_application.key application)
                   state.application ~working_directory ~commit
                   ~target:(Managed_application.target application)
@@ -200,7 +204,7 @@ let deploy state _connection_state query =
               Deferred.choice (Ivar.read started) Or_error.return;
               Deferred.choice execution (function
                 | Error error -> Error error
-                | Ok deployment -> Ok (Store.id deployment));
+                | Ok deployment -> Ok (Deployment_start.operation_id deployment));
             ])
 
 let cancel_deployment state _connection_state query =
