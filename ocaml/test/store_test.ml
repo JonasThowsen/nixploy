@@ -83,6 +83,26 @@ let create_v2_database path =
   if not (phys_equal result Sqlite3.Rc.OK) then failwith (Sqlite3.errmsg db);
   assert (Sqlite3.db_close db)
 
+let force_succeeded path deployment ~requested_at_ms =
+  let db = Sqlite3.db_open path in
+  let statement =
+    Sqlite3.prepare db
+      "UPDATE deployments SET state = 'succeeded', stage = 'succeeded', \
+       requested_at_ms = ?, updated_at_ms = ? WHERE id = ?"
+  in
+  let result =
+    Sqlite3.bind_values statement
+      [
+        Sqlite3.Data.INT requested_at_ms;
+        Sqlite3.Data.INT requested_at_ms;
+        Sqlite3.Data.TEXT (Nixploy.Store.id deployment);
+      ]
+  in
+  assert (phys_equal result Sqlite3.Rc.OK);
+  assert (phys_equal (Sqlite3.step statement) Sqlite3.Rc.DONE);
+  ignore (Sqlite3.finalize statement : Sqlite3.Rc.t);
+  assert (Sqlite3.db_close db)
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-store-test-" "" in
@@ -192,6 +212,38 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Store.state] (Nixploy.Store.state cancelled) Cancelled);
   assert (Option.is_some (Nixploy.Store.cancel_requested_at_ms cancelled));
+  let%bind exact_success =
+    Nixploy.Store.request store ~application_key:(Some "managed")
+      ~working_directory:"/tmp/exact" ~target ~commit
+  in
+  let exact_success = Or_error.ok_exn exact_success in
+  force_succeeded path exact_success ~requested_at_ms:10L;
+  let%bind later_failures =
+    Deferred.List.map (List.init 30 ~f:Fn.id) ~how:`Sequential ~f:(fun index ->
+        let%bind requested =
+          Nixploy.Store.request store ~application_key:(Some "managed")
+            ~working_directory:"/tmp/exact" ~target ~commit
+        in
+        let requested = Or_error.ok_exn requested in
+        Nixploy.Store.fail store
+          ~id:(Nixploy.Store.id requested)
+          ~error:(Error.of_string (sprintf "failure %d" index)))
+  in
+  List.iter later_failures ~f:Or_error.ok_exn;
+  let%bind unkeyed_success =
+    Nixploy.Store.request store ~application_key:None
+      ~working_directory:"/tmp/exact" ~target ~commit
+  in
+  let unkeyed_success = Or_error.ok_exn unkeyed_success in
+  force_succeeded path unkeyed_success ~requested_at_ms:9_000_000_000_000L;
+  let%bind latest_exact =
+    Nixploy.Store.latest_successful_for_application store
+      ~application_key:"managed" ~working_directory:"/tmp/exact" ~target
+  in
+  let latest_exact = Or_error.ok_exn latest_exact |> Option.value_exn in
+  [%test_eq: string]
+    (Nixploy.Store.id exact_success)
+    (Nixploy.Store.id latest_exact);
   let migration_path = Filename.concat directory "legacy.db" in
   create_v1_database migration_path;
   let%bind migrated_store = Nixploy.Store.open_ ~path:migration_path in

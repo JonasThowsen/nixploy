@@ -121,6 +121,12 @@ let run_tests () =
           Nixploy.Cancellation.current () |> Option.value_exn
         in
         let%bind.Deferred () = Nixploy.Cancellation.requested cancellation in
+        let%bind persisted =
+          Nixploy.Store.find store ~id:(Nixploy.Store.id stored)
+        in
+        assert (
+          Option.bind persisted ~f:Nixploy.Store.cancel_requested_at_ms
+          |> Option.is_some);
         assert (Nixploy.Cancellation.acknowledge_current ());
         let%bind () =
           Nixploy.Store.cancel store ~id:(Nixploy.Store.id stored)
@@ -244,6 +250,43 @@ let run_tests () =
     Nixploy.Application.deployment_history restarted ~scope ~limit:101
   in
   assert (Result.is_error invalid_limit);
+  let calls = ref [] in
+  let persisted_error = ref None in
+  let%bind reconciled =
+    Nixploy.Tracked_deployment.For_testing.terminalize_cancelled
+      ~request_marker:(fun () ->
+        calls := "marker" :: !calls;
+        Deferred.Or_error.error_string "marker unavailable")
+      ~cancel:(fun () ->
+        calls := "cancel" :: !calls;
+        Deferred.Or_error.error_string "cancel write unavailable")
+      ~fail:(fun error ->
+        calls := "fail" :: !calls;
+        persisted_error := Some (Error.to_string_hum error);
+        Deferred.Or_error.return ())
+      ~find_state:(fun () -> Deferred.Or_error.return None)
+      ~execution_error:(Error.of_string "execution cancelled")
+  in
+  assert_ok reconciled;
+  [%test_eq: string list] [ "marker"; "cancel"; "fail" ] (List.rev !calls);
+  let persisted_error = Option.value_exn !persisted_error in
+  assert (String.is_substring persisted_error ~substring:"marker unavailable");
+  assert (
+    String.is_substring persisted_error ~substring:"cancel write unavailable");
+  let%bind unpersisted =
+    Nixploy.Tracked_deployment.For_testing.terminalize_cancelled
+      ~request_marker:(fun () -> Deferred.Or_error.return ())
+      ~cancel:(fun () -> Deferred.Or_error.error_string "cancel failed")
+      ~fail:(fun _ -> Deferred.Or_error.error_string "failure write failed")
+      ~find_state:(fun () ->
+        Deferred.Or_error.return (Some Nixploy.Store.Running))
+      ~execution_error:(Error.of_string "execution cancelled")
+  in
+  assert (Result.is_error unpersisted);
+  let error =
+    Result.error unpersisted |> Option.value_exn |> Error.to_string_hum
+  in
+  assert (String.is_substring error ~substring:"terminal failure persistence");
   Deferred.unit
 
 let () =

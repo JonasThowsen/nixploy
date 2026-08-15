@@ -3,6 +3,43 @@ open Core
 
 let no_stage _ _ = Deferred.unit
 
+let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
+    ~execution_error =
+  let open Deferred.Let_syntax in
+  let%bind marker = request_marker () in
+  let%bind cancelled = cancel () in
+  match cancelled with
+  | Ok () -> Deferred.Or_error.return ()
+  | Error cancellation_error -> (
+      let tracking_error =
+        let marker_error =
+          match marker with
+          | Ok () -> ""
+          | Error error ->
+              sprintf "; cancellation marker failed: %s"
+                (Error.to_string_hum error)
+        in
+        Error.of_string
+          (sprintf
+             "deployment cancellation failed to reach its cancelled terminal \
+              state (execution: %s%s; terminalization: %s)"
+             (Error.to_string_hum execution_error)
+             marker_error
+             (Error.to_string_hum cancellation_error))
+      in
+      let%bind failed = fail tracking_error in
+      match failed with
+      | Ok () -> Deferred.Or_error.return ()
+      | Error failure_error ->
+          let%map found = find_state () in
+          Or_error.bind found ~f:(function
+            | Some (Store.Succeeded | Failed | Cancelled) -> Ok ()
+            | Some (Requested | Running) | None ->
+                Or_error.errorf
+                  "%s; terminal failure persistence also failed: %s"
+                  (Error.to_string_hum tracking_error)
+                  (Error.to_string_hum failure_error)))
+
 let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
     ?application_key ?expected_project ~store ~working_directory ~source ~target
     () =
@@ -28,6 +65,17 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
           ())
   in
   let result = Or_error.join execution in
+  let terminalize execution_error =
+    let id = Store.id operation in
+    terminalize_cancelled
+      ~request_marker:(fun () -> Store.request_cancellation store ~id)
+      ~cancel:(fun () -> Store.cancel store ~id)
+      ~fail:(fun error -> Store.fail store ~id ~error)
+      ~find_state:(fun () ->
+        let%map found = Store.find store ~id in
+        Option.map found ~f:Store.state)
+      ~execution_error
+  in
   let%bind () =
     match result with
     | Ok deployment ->
@@ -37,16 +85,17 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
         | Some token
           when Cancellation.was_acknowledged token
                && not (Cancellation.cleanup_failed token) ->
-            let%bind _ =
-              Store.request_cancellation store ~id:(Store.id operation)
-            in
-            Store.cancel store ~id:(Store.id operation)
+            terminalize error
         | _ -> Store.fail store ~id:(Store.id operation) ~error)
   in
   let%bind found = Store.find store ~id:(Store.id operation) in
   match found with
   | Some deployment -> Deferred.Or_error.return deployment
   | None -> Deferred.Or_error.error_string "tracked deployment disappeared"
+
+module For_testing = struct
+  let terminalize_cancelled = terminalize_cancelled
+end
 
 let deploy ?on_stage ?on_requested ?application_key ?expected_project ~store
     ~working_directory ~source ~target () =

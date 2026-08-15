@@ -514,7 +514,7 @@ let list_for_scope t ~working_directory ~target ~limit =
               with_statement db
                 ("SELECT " ^ select_columns
                ^ " FROM deployments WHERE working_directory = ? AND target = ? \
-                  ORDER BY requested_at_ms DESC LIMIT ?")
+                  ORDER BY requested_at_ms DESC, rowid DESC LIMIT ?")
                 ~f:(fun statement ->
                   bind db statement
                     [
@@ -523,6 +523,31 @@ let list_for_scope t ~working_directory ~target ~limit =
                       INT (Int64.of_int limit);
                     ];
                   collect db statement "list scoped deployments"))))
+
+let latest_successful_for_application t ~application_key ~working_directory
+    ~target =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                ("SELECT " ^ select_columns
+               ^ " FROM deployments WHERE application_key = ? AND \
+                  working_directory = ? AND target = ? AND state = 'succeeded' \
+                  ORDER BY requested_at_ms DESC, rowid DESC LIMIT 1")
+                ~f:(fun statement ->
+                  bind db statement
+                    [
+                      Sqlite3.Data.TEXT application_key;
+                      TEXT working_directory;
+                      TEXT (Target_name.to_string target);
+                    ];
+                  match Sqlite3.step statement with
+                  | ROW -> Some (deployment_of_statement statement)
+                  | DONE -> None
+                  | code ->
+                      check db "find latest successful application deployment"
+                        code;
+                      assert false))))
 
 let resource_state_of_string = function
   | "unknown" -> Unknown

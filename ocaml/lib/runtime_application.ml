@@ -6,8 +6,8 @@ type t = {
   target : Configuration.Target.t;
   connection : string;
   container : Podman.runtime_container;
-  caddy : Caddy.t;
-  active_port : int;
+  caddy : Caddy.t option;
+  active_port : int option;
 }
 
 let application t = t.application
@@ -53,9 +53,6 @@ let resolve ?commit ?operation_id application =
           (Configuration.find_target configuration
              (Managed_application.target application))
       in
-      let%bind web =
-        Deferred.return (Configuration.Target.require_web target)
-      in
       let repository_identity = Source.repository source in
       let%bind candidates =
         Deferred.return
@@ -68,29 +65,48 @@ let resolve ?commit ?operation_id application =
           ~candidates
       in
       let%bind connection = Podman.ensure_connection ~target ~resource_key in
-      let caddy = Caddy.create ~target ~resource_key ~web in
-      let%bind route = Caddy.inspect caddy in
-      let%bind active_port =
-        match route with
-        | Caddy.Missing ->
-            Deferred.Or_error.error_string
-              "application has no positively identified active Caddy route"
-        | Existing { active_port; _ } -> Deferred.Or_error.return active_port
-      in
-      let%bind plan =
-        Deferred.return
-          (Deployment_plan.create ~target_kind:(Configuration.Target.Web web)
-             ~active_port:(Some active_port))
-      in
-      let%bind active_slot =
-        match Deployment_plan.active_slot plan with
-        | Some slot -> Deferred.Or_error.return slot
-        | None ->
-            Deferred.Or_error.error_string "application has no active slot"
-      in
-      let%bind container =
-        Podman.find_running_slot ~connection ~project ~target ~resource_key
-          ~slot:active_slot
+      let%bind container, caddy, active_port =
+        match Configuration.Target.kind target with
+        | Non_web ->
+            let%bind plan =
+              Deferred.return
+                (Deployment_plan.create ~target_kind:Non_web ~active_port:None)
+            in
+            let%map container =
+              Podman.find_running_placement ~connection ~project ~target
+                ~resource_key ~repository_identity
+                ~placement:(Deployment_plan.placement plan)
+            in
+            (container, None, None)
+        | Web web ->
+            let caddy = Caddy.create ~target ~resource_key ~web in
+            let%bind route = Caddy.inspect caddy in
+            let%bind active_port =
+              match route with
+              | Caddy.Missing ->
+                  Deferred.Or_error.error_string
+                    "application has no positively identified active Caddy \
+                     route"
+              | Existing { active_port; _ } ->
+                  Deferred.Or_error.return active_port
+            in
+            let%bind plan =
+              Deferred.return
+                (Deployment_plan.create ~target_kind:(Web web)
+                   ~active_port:(Some active_port))
+            in
+            let%bind active_slot =
+              match Deployment_plan.active_slot plan with
+              | Some slot -> Deferred.Or_error.return slot
+              | None ->
+                  Deferred.Or_error.error_string
+                    "application has no active slot"
+            in
+            let%map container =
+              Podman.find_running_slot ~connection ~project ~target
+                ~resource_key ~repository_identity ~slot:active_slot
+            in
+            (container, Some caddy, Some active_port)
       in
       if
         Option.equal String.equal
@@ -105,4 +121,5 @@ let resolve ?commit ?operation_id application =
           { application; target; connection; container; caddy; active_port }
       else
         Deferred.Or_error.error_string
-          "active container revision does not match deployment history")
+          "active container operation or revision does not match deployment \
+           history")

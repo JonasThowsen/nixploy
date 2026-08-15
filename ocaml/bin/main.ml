@@ -1,8 +1,7 @@
 open Async
 open Core
 module Deployment_output = Nixploy_cli_mapping.Deployment_output
-
-let value_or_dash = Option.value ~default:"-"
+module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
 let print_deployment_stage stage message =
   printf "[%s] %s\n%!" (Nixploy.Deployment.stage_name stage) message;
@@ -15,33 +14,7 @@ let exit_after_signal ~default =
       Shutdown.shutdown_with_signal_exn signal;
       Deferred.never ()
 
-let print_status status =
-  let module Target = Nixploy.Configuration.Target in
-  printf "Project:  %s\n"
-    (Nixploy.Project_name.to_string (Nixploy.Application.status_project status));
-  printf "Target:   %s\n"
-    (Nixploy.Target_name.to_string
-       (Target.name (Nixploy.Application.status_target status)));
-  printf "Host:     %s@%s:%d\n"
-    (Target.user (Nixploy.Application.status_target status))
-    (Target.host (Nixploy.Application.status_target status))
-    (Target.port (Nixploy.Application.status_target status));
-  printf "Resource: %s\n"
-    (Nixploy.Resource_key.to_string
-       (Nixploy.Application.status_resource_key status));
-  match Nixploy.Application.status_workloads status with
-  | [] -> printf "\nNo deployed containers found.\n"
-  | workloads ->
-      printf "\n%-36s %-12s %-18s %s\n" "CONTAINER" "STATE" "REVISION" "IMAGE";
-      List.iter workloads ~f:(fun workload ->
-          printf "%-36s %-12s %-18s %s\n"
-            (Nixploy.Workload.name workload)
-            (Nixploy.Workload.state workload |> value_or_dash)
-            (Nixploy.Workload.revision workload
-            |> Option.map ~f:(fun revision ->
-                String.prefix revision (Int.min 16 (String.length revision)))
-            |> value_or_dash)
-            (Nixploy.Workload.image workload |> value_or_dash))
+let print_status status = printf "%s%!" (Inspection_output.status status)
 
 let status_command =
   Async.Command.async ~summary:"Inspect containers managed for one flake target"
@@ -227,23 +200,7 @@ let deploy_command =
                            Shutdown.exit 1)))))
 
 let print_history deployments =
-  match deployments with
-  | [] -> printf "No deployment history found.\n"
-  | deployments ->
-      printf "%-36s %-10s %-18s %s\n" "OPERATION" "STATE" "REVISION" "MESSAGE";
-      List.iter deployments ~f:(fun deployment ->
-          let revision =
-            Nixploy.Application.deployment_revision deployment
-            |> Option.map ~f:(fun revision ->
-                String.prefix revision (Int.min 16 (String.length revision)))
-            |> value_or_dash
-          in
-          printf "%-36s %-10s %-18s %s\n"
-            (Nixploy.Application.deployment_id deployment)
-            (Nixploy.Application.deployment_state deployment
-            |> Nixploy.Application.deployment_state_name)
-            revision
-            (Nixploy.Application.deployment_message deployment))
+  printf "%s%!" (Inspection_output.history deployments)
 
 let history_command =
   Async.Command.async ~summary:"List deployment history for one flake target"

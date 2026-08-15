@@ -3,6 +3,7 @@
  (modules
   authorization
   cancellation_request
+  consumer_response
   deployment_start
   prune_request
   prune_response

@@ -56,6 +56,16 @@ val list_for_scope :
   limit:int ->
   deployment list Deferred.Or_error.t
 
+val latest_successful_for_application :
+  t ->
+  application_key:string ->
+  working_directory:string ->
+  target:Target_name.t ->
+  deployment option Deferred.Or_error.t
+(** Returns the newest successful deployment for the exact managed application
+    identity. Unkeyed local CLI history and later non-successful rows are not
+    considered. *)
+
 val resource_state :
   t ->
   working_directory:string ->

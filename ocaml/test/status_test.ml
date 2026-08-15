@@ -1,5 +1,6 @@
 open Async
 open Core
+module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
 let assert_ok = function
   | Ok value -> value
@@ -141,8 +142,13 @@ esac
   Monitor.protect ~finally:cleanup (fun () ->
       clear_scenario ();
       let%bind modern = Nixploy.Application.live_status application ~scope in
+      let modern = assert_ok modern in
       [%test_eq: int] 1
-        (assert_ok modern |> Nixploy.Application.status_workloads |> List.length);
+        (modern |> Nixploy.Application.status_workloads |> List.length);
+      let rendered = Inspection_output.status modern in
+      assert (String.is_substring rendered ~substring:"Project:  sample");
+      assert (String.is_substring rendered ~substring:resource_key);
+      assert (String.is_substring rendered ~substring:"sample");
       let lines = In_channel.read_lines trace in
       assert (
         List.exists lines ~f:(fun line ->

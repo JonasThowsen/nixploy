@@ -95,6 +95,11 @@ type scope = {
 type active_operation = { scope : scope; cancellation : Cancellation.t }
 
 type cached_runtime = {
+  working_directory : string;
+  target : Target_name.t;
+  deployment_id : string;
+  mutation_id : string option;
+  resource_state : resource_state;
   mutable expires_at : Time_ns.t;
   value : Runtime_application.t Or_error.t Deferred.t;
 }
@@ -239,15 +244,22 @@ let remove_active t operation_id cancellation =
       Hashtbl.remove t.active operation_id
   | Some _ | None -> ()
 
-let invalidate_runtime t = function
-  | None -> ()
-  | Some application_key -> Hashtbl.remove t.runtime_cache application_key
+let invalidate_runtime_scope t ~working_directory ~target =
+  Hashtbl.keys t.runtime_cache
+  |> List.iter ~f:(fun key ->
+      match Hashtbl.find t.runtime_cache key with
+      | Some cached
+        when String.equal cached.working_directory working_directory
+             && Target_name.equal cached.target target ->
+          Hashtbl.remove t.runtime_cache key
+      | Some _ | None -> ())
 
 let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
     ?expected_project t ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
+      invalidate_runtime_scope t ~working_directory ~target;
       let scope = { application_key; working_directory; target } in
       let cancellation = Cancellation.create () in
       let operation_id = ref None in
@@ -283,14 +295,16 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
       in
       let%map result = execution in
       Option.iter !operation_id ~f:(fun id -> remove_active t id cancellation);
-      invalidate_runtime t application_key;
+      invalidate_runtime_scope t ~working_directory ~target;
       result
 
 let prune ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =
+  ignore application_key;
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
+      invalidate_runtime_scope t ~working_directory ~target;
       let%map result =
         Store.with_lease t.store ~working_directory ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
@@ -307,7 +321,7 @@ let prune ?application_key ?expected_project ?repository_identity t
             in
             result)
       in
-      invalidate_runtime t application_key;
+      invalidate_runtime_scope t ~working_directory ~target;
       result
 
 let live_status t ~scope = t.load_status ~scope
@@ -340,7 +354,7 @@ let deployment_history t ~scope ~limit =
           List.map deployments ~f:deployment_of_store
           |> List.filter ~f:(same_scope scope))
 
-let equal_scope left right =
+let equal_scope (left : scope) (right : scope) =
   String.equal left.working_directory right.working_directory
   && Target_name.equal left.target right.target
   && Option.equal String.equal left.application_key right.application_key
@@ -376,31 +390,21 @@ let cancel_deployment t ~scope ~operation_id =
         Deferred.Or_error.error_string
           "deployment is not active in this control-plane process"
   in
-  match Cancellation.request active.cancellation with
-  | Too_late ->
-      Deferred.Or_error.error_string "deployment is already finalizing"
-  | (Accepted | Already_requested) as request ->
-      let%bind.Deferred requested =
-        Store.request_cancellation t.store ~id:operation_id
-      in
-      let%bind () =
-        match requested with
-        | Ok () -> Deferred.Or_error.return ()
-        | Error request_error -> (
-            let%bind found = Store.find t.store ~id:operation_id in
-            match found with
-            | Some deployment
-              when [%equal: Store.state] (Store.state deployment) Cancelled ->
-                Deferred.Or_error.return ()
-            | Some _ | None -> Deferred.return (Error request_error))
-      in
-      Deferred.Or_error.return
-        (match request with
-        | Accepted -> Cancellation_requested
-        | Already_requested -> Already_requested
-        | Too_late -> assert false)
+  let%bind.Deferred marker =
+    Store.request_cancellation t.store ~id:operation_id
+  in
+  match marker with
+  | Error _ when Cancellation.was_requested active.cancellation ->
+      Deferred.Or_error.return Already_requested
+  | Error error -> Deferred.return (Error error)
+  | Ok () -> (
+      match Cancellation.request active.cancellation with
+      | Too_late ->
+          Deferred.Or_error.error_string "deployment is already finalizing"
+      | Accepted -> Deferred.Or_error.return Cancellation_requested
+      | Already_requested -> Deferred.Or_error.return Already_requested)
 
-let resource_state_for_scope t ~scope =
+let resource_state_for_scope t ~(scope : scope) =
   Store.resource_state t.store ~working_directory:scope.working_directory
     ~target:scope.target
 
@@ -412,47 +416,89 @@ let resource_state t ~working_directory ~target =
 let successful_runtime_identity t application =
   let open Deferred.Or_error.Let_syntax in
   let%bind scope = Deferred.return (managed_scope application) in
-  let%bind deployments = deployment_history t ~scope ~limit:25 in
-  match
-    List.find_map deployments ~f:(fun deployment ->
-        if [%equal: deployment_state] deployment.state Succeeded then
-          Option.map deployment.revision ~f:(fun revision ->
-              (revision, deployment.id))
-        else None)
-  with
+  let application_key = Managed_application.key application in
+  let%bind deployment =
+    Store.latest_successful_for_application t.store ~application_key
+      ~working_directory:scope.working_directory ~target:scope.target
+  in
+  match deployment with
   | None ->
       Deferred.Or_error.error_string
-        "application has no persisted successful deployment identity"
-  | Some (revision, operation_id) ->
-      let%map commit =
-        t.find_commit
-          ~working_directory:(Managed_application.working_directory application)
-          ~revision
-      in
-      (commit, operation_id)
+        "application has no exact persisted successful deployment identity"
+  | Some deployment -> (
+      match Store.revision deployment with
+      | None ->
+          Deferred.Or_error.error_string
+            "successful deployment has no immutable revision"
+      | Some revision ->
+          Deferred.Or_error.return (scope, revision, Store.id deployment))
+
+let runtime_cache_key application (scope : scope) =
+  String.concat
+    [
+      scope.working_directory;
+      "\000";
+      Target_name.to_string scope.target;
+      "\000";
+      Managed_application.repository_identity application;
+    ]
 
 let resolve_runtime t application =
-  let key = Managed_application.key application in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind scope, revision, deployment_id =
+    successful_runtime_identity t application
+  in
+  let%bind resource_state = resource_state_for_scope t ~scope in
+  let%bind latest_scope =
+    Store.list_for_scope t.store ~working_directory:scope.working_directory
+      ~target:scope.target ~limit:1
+  in
+  let mutation_id = List.hd latest_scope |> Option.map ~f:Store.id in
+  let%bind () =
+    match resource_state with
+    | Present -> Deferred.Or_error.return ()
+    | Unknown | Absent ->
+        Deferred.Or_error.error_string
+          "application resources are not persisted as present"
+  in
+  let key = runtime_cache_key application scope in
   let now = Time_ns.now () in
   match Hashtbl.find t.runtime_cache key with
-  | Some cached when Time_ns.compare now cached.expires_at < 0 -> cached.value
+  | Some cached
+    when String.equal cached.deployment_id deployment_id
+         && Option.equal String.equal cached.mutation_id mutation_id
+         && [%equal: resource_state] cached.resource_state resource_state
+         && Time_ns.compare now cached.expires_at < 0 ->
+      cached.value
   | Some _ | None ->
       let value =
         let open Deferred.Or_error.Let_syntax in
-        let%bind commit, operation_id =
-          successful_runtime_identity t application
+        let%bind commit =
+          t.find_commit
+            ~working_directory:
+              (Managed_application.working_directory application)
+            ~revision
         in
-        Runtime_application.resolve ~commit ~operation_id application
+        Runtime_application.resolve ~commit ~operation_id:deployment_id
+          application
       in
       let cached =
-        { expires_at = Time_ns.add now (Time_ns.Span.of_min 5.); value }
+        {
+          working_directory = scope.working_directory;
+          target = scope.target;
+          deployment_id;
+          mutation_id;
+          resource_state;
+          expires_at = Time_ns.add now (Time_ns.Span.of_min 5.);
+          value;
+        }
       in
       Hashtbl.set t.runtime_cache ~key ~data:cached;
       don't_wait_for
-        (let%map result = value in
-         cached.expires_at <-
-           Time_ns.add (Time_ns.now ())
-             (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.)));
+        (Deferred.map value ~f:(fun result ->
+             cached.expires_at <-
+               Time_ns.add (Time_ns.now ())
+                 (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.))));
       value
 
 let application_logs t application =
@@ -538,9 +584,17 @@ let observe_application_metrics t application =
           ~connection:(Runtime_application.connection runtime)
           ~container
       and health =
-        Caddy.observe_health
-          (Runtime_application.caddy runtime)
-          ~port:(Runtime_application.active_port runtime)
+        match
+          ( Runtime_application.caddy runtime,
+            Runtime_application.active_port runtime )
+        with
+        | Some caddy, Some port -> Caddy.observe_health caddy ~port
+        | None, None ->
+            Deferred.Or_error.error_string
+              "health check is not configured for a non-web target"
+        | Some _, None | None, Some _ ->
+            Deferred.Or_error.error_string
+              "runtime health configuration is inconsistent"
       in
       let host_error = Result.error host |> Option.map ~f:Error.to_string_hum in
       let host_value = Result.ok host in
@@ -666,7 +720,7 @@ module For_testing = struct
       deploy_operation = deploy;
       prune_operation = prune;
       load_status =
-        Option.value status ~default:(fun ~scope ->
+        Option.value status ~default:(fun ~(scope : scope) ->
             Status.load ~working_directory:scope.working_directory
               ~target:scope.target);
       logs_override = logs;

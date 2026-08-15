@@ -50,7 +50,13 @@
 (test
  (name consumer_mapping_test)
  (modules consumer_mapping_test)
- (libraries nixploy nixploy_cli_mapping nixploy_rpc_mapping protocol core)
+ (libraries
+  async
+  nixploy
+  nixploy_cli_mapping
+  nixploy_rpc_mapping
+  protocol
+  core)
  (preprocess
   (pps ppx_jane)))
 
@@ -111,13 +117,20 @@
 (test
  (name status_test)
  (modules status_test)
- (libraries nixploy core core_unix.command_unix async)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
 
 (test
  (name source_test)
  (modules source_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name runtime_application_test)
+ (modules runtime_application_test)
  (libraries nixploy core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))

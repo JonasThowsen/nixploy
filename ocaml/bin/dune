@@ -1,6 +1,6 @@
 (library
  (name nixploy_cli_mapping)
- (modules deployment_output)
+ (modules deployment_output inspection_output)
  (libraries nixploy core)
  (preprocess
   (pps ppx_jane)))

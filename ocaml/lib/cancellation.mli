@@ -15,5 +15,6 @@ val requested : t -> unit Deferred.t
 val acknowledge_current : unit -> bool
 val commit_current : unit -> commit
 val mark_cleanup_failed : unit -> unit
+val was_requested : t -> bool
 val was_acknowledged : t -> bool
 val cleanup_failed : t -> bool

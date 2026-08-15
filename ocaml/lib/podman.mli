@@ -113,11 +113,23 @@ val runtime_container_revision : runtime_container -> string option
 val runtime_container_operation_id : runtime_container -> string option
 val runtime_container_started_at : runtime_container -> string option
 
+val find_running_placement :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  repository_identity:string ->
+  placement:Deployment_plan.placement ->
+  runtime_container Deferred.Or_error.t
+(** Inspects the exact container name for the deployment placement and verifies
+    its running state, name, and complete managed ownership labels. *)
+
 val find_running_slot :
   connection:string ->
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
+  repository_identity:string ->
   slot:Deployment_plan.slot ->
   runtime_container Deferred.Or_error.t
 

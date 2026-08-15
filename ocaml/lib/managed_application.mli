@@ -2,6 +2,10 @@ open Core
 
 type t
 
+val maximum_count : int
+(** Host allowlists are bounded to keep polling and RPC response cardinality
+    predictable. *)
+
 val all_of_json : string -> t list Or_error.t
 val load_environment : unit -> t list Or_error.t
 val key : t -> string

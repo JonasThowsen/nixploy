@@ -91,6 +91,48 @@ let%test_unit "managed applications preserve host-owned deployment identity" =
            }
          }|}))
 
+let%test_unit "managed application count and operational identities are bounded"
+    =
+  let entry index =
+    ( sprintf "app-%d" index,
+      `Assoc
+        [
+          ("project", `String "sample");
+          ("target", `String (sprintf "target-%d" index));
+          ("repository", `String (sprintf "/srv/sample-%d" index));
+        ] )
+  in
+  let too_many =
+    `Assoc (List.init (Nixploy.Managed_application.maximum_count + 1) ~f:entry)
+    |> Yojson.Safe.to_string
+  in
+  assert (Result.is_error (Nixploy.Managed_application.all_of_json too_many));
+  assert (
+    Result.is_error
+      (Nixploy.Managed_application.all_of_json
+         {|{
+           "first":{"project":"sample","target":"production","repository":"/srv/sample","repositoryIdentity":"owner/sample"},
+           "alias":{"project":"sample","target":"production","repository":"/srv/sample","repositoryIdentity":"owner/sample"}
+         }|}));
+  let root = Filename_unix.temp_dir "nixploy-managed-alias-" "" in
+  let repository = Filename.concat root "repository" in
+  let alias = Filename.concat root "alias" in
+  Core_unix.mkdir repository;
+  Core_unix.symlink ~target:repository ~link_name:alias;
+  let duplicate_alias =
+    sprintf
+      {|{
+        "first":{"project":"sample","target":"production","repository":"%s","repositoryIdentity":"owner/sample"},
+        "alias":{"project":"sample","target":"production","repository":"%s","repositoryIdentity":"owner/sample"}
+      }|}
+      repository alias
+    |> Nixploy.Managed_application.all_of_json
+  in
+  assert (Result.is_error duplicate_alias);
+  Core_unix.unlink alias;
+  Core_unix.rmdir repository;
+  Core_unix.rmdir root
+
 let%test_unit "configuration reads the current flake schema" =
   let json =
     {|{

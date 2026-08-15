@@ -12,5 +12,5 @@ val application : t -> Managed_application.t
 val target : t -> Configuration.Target.t
 val connection : t -> string
 val container : t -> Podman.runtime_container
-val caddy : t -> Caddy.t
-val active_port : t -> int
+val caddy : t -> Caddy.t option
+val active_port : t -> int option

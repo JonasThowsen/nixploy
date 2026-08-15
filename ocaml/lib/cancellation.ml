@@ -59,6 +59,11 @@ let commit_current () =
 let mark_cleanup_failed () =
   Option.iter (current ()) ~f:(fun t -> t.cleanup_failed <- true)
 
+let was_requested t =
+  match t.phase with
+  | Requested | Acknowledged -> true
+  | Open | Committed -> false
+
 let was_acknowledged t =
   match t.phase with
   | Acknowledged -> true

@@ -9,6 +9,7 @@ type t = {
   subdirectory : string;
 }
 
+let maximum_count = 64
 let key t = t.key
 let project t = t.project
 let target t = t.target
@@ -96,16 +97,46 @@ let parse (key, json) =
             }
     | _ -> Or_error.error_string "managed application must be an object"
 
+let canonical_working_directory application =
+  let working_directory = working_directory application in
+  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+  |> Result.ok
+  |> Option.value ~default:working_directory
+
+let duplicate_identity applications =
+  List.find_a_dup applications ~compare:(fun left right ->
+      let by_directory =
+        String.compare
+          (canonical_working_directory left)
+          (canonical_working_directory right)
+      in
+      if not (Int.equal by_directory 0) then by_directory
+      else
+        let by_target = Target_name.compare left.target right.target in
+        if not (Int.equal by_target 0) then by_target
+        else String.compare left.repository_identity right.repository_identity)
+
 let all_of_json input =
   let open Or_error.Let_syntax in
   let%bind json = Or_error.try_with (fun () -> Yojson.Safe.from_string input) in
   match json with
+  | `Assoc applications when List.length applications > maximum_count ->
+      Or_error.errorf "managed applications may contain at most %d entries"
+        maximum_count
   | `Assoc applications ->
-      Or_error.all (List.map applications ~f:parse)
-      |> Or_error.map
-           ~f:
-             (List.sort ~compare:(fun left right ->
-                  String.compare left.key right.key))
+      let%bind parsed = Or_error.all (List.map applications ~f:parse) in
+      let%bind () =
+        match duplicate_identity parsed with
+        | None -> Ok ()
+        | Some application ->
+            Or_error.errorf
+              "managed applications contain duplicate operational identity for \
+               %s"
+              application.key
+      in
+      Ok
+        (List.sort parsed ~compare:(fun left right ->
+             String.compare left.key right.key))
   | _ -> Or_error.error_string "managed applications must be a JSON object"
 
 let load_environment () =

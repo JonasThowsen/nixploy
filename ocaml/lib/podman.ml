@@ -911,7 +911,7 @@ let remove_candidate ~connection ~(candidate : candidate) =
       | _ -> Error removal_error)
 
 let runtime_container_of_inspect output ~project ~target ~resource_key
-    ~expected_name =
+    ~repository_identity ~expected_name =
   let open Or_error.Let_syntax in
   let%bind owned = owned_container output ~project ~target ~resource_key in
   if not owned then
@@ -953,6 +953,16 @@ let runtime_container_of_inspect output ~project ~target ~resource_key
         in
         let revision = label labels "io.nixploy.revision" in
         let operation_id = label labels "io.nixploy.operation_id" in
+        let%bind () =
+          if
+            Option.equal String.equal
+              (label labels "io.nixploy.repository_identity")
+              (Some repository_identity)
+          then Ok ()
+          else
+            Or_error.error_string
+              "active container repository identity does not match"
+        in
         let%bind id =
           Option.value_map id
             ~default:(Or_error.error_string "active container ID is missing")
@@ -979,13 +989,20 @@ let runtime_container_of_inspect output ~project ~target ~resource_key
         Or_error.error_string
           "active container inspect must contain one container"
 
-let find_running_slot ~connection ~project ~target ~resource_key ~slot =
+let find_running_placement ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement =
   let open Deferred.Or_error.Let_syntax in
-  let name = Deployment_plan.web_container_name ~resource_key slot in
+  let name = Deployment_plan.container_name ~resource_key placement in
   let%bind inspected = inspect_container ~connection name in
   Deferred.return
     (runtime_container_of_inspect inspected.stdout ~project ~target
-       ~resource_key ~expected_name:name)
+       ~resource_key ~repository_identity ~expected_name:name)
+
+let find_running_slot ~connection ~project ~target ~resource_key
+    ~repository_identity ~slot =
+  find_running_placement ~connection ~project ~target ~resource_key
+    ~repository_identity
+    ~placement:(Deployment_plan.Web_slot { slot; port = 0 })
 
 let parse_log_line line =
   match String.lsplit2 line ~on:' ' with

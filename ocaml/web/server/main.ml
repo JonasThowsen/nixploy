@@ -4,9 +4,9 @@ module Managed_application = Nixploy.Managed_application
 module Application = Nixploy.Application
 module Authorization = Nixploy_rpc_mapping.Authorization
 module Cancellation_request = Nixploy_rpc_mapping.Cancellation_request
+module Consumer_response = Nixploy_rpc_mapping.Consumer_response
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_request = Nixploy_rpc_mapping.Prune_request
-module Resource_state_response = Nixploy_rpc_mapping.Resource_state_response
 
 type state = {
   applications : Managed_application.t list;
@@ -15,57 +15,11 @@ type state = {
 
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
-let protocol_state = function
-  | Application.Requested -> Protocol.Deployment.State.Requested
-  | Running -> Running
-  | Succeeded -> Succeeded
-  | Failed -> Failed
-  | Cancelled -> Cancelled
-
-let is_active deployment =
-  match Application.deployment_state deployment with
-  | Requested | Running -> true
-  | Succeeded | Failed | Cancelled -> false
-
-let protocol_commit deployment =
-  Application.deployment_revision deployment
-  |> Option.map ~f:(fun revision ->
-      {
-        Protocol.Commit.revision;
-        subject =
-          Application.deployment_commit_subject deployment
-          |> Option.value ~default:"Commit subject unavailable";
-        timestamp_ms =
-          Application.deployment_commit_timestamp_ms deployment
-          |> Option.value
-               ~default:(Application.deployment_requested_at_ms deployment);
-      })
-
 let protocol_deployment state scope deployment =
-  let started_at_ms = Application.deployment_started_at_ms deployment in
-  let finished_at_ms = Application.deployment_finished_at_ms deployment in
-  {
-    Protocol.Deployment.id = Application.deployment_id deployment;
-    state = protocol_state (Application.deployment_state deployment);
-    stage = Application.deployment_stage deployment;
-    message = Application.deployment_message deployment;
-    commit = protocol_commit deployment;
-    container_name = Application.deployment_container_name deployment;
-    error = Application.deployment_error deployment;
-    requested_at_ms = Application.deployment_requested_at_ms deployment;
-    started_at_ms;
-    finished_at_ms;
-    elapsed_ms =
-      Option.map started_at_ms ~f:(fun started ->
-          let finished = Option.value finished_at_ms ~default:(now_ms ()) in
-          Int64.max 0L Int64.(finished - started));
-    cancel_requested_at_ms =
-      Application.deployment_cancel_requested_at_ms deployment;
-    updated_at_ms = Application.deployment_updated_at_ms deployment;
-    can_cancel =
-      is_active deployment
-      && Application.deployment_can_cancel state.application ~scope deployment;
-  }
+  Consumer_response.deployment ~now_ms:(now_ms ())
+    ~can_cancel:
+      (Application.deployment_can_cancel state.application ~scope deployment)
+    deployment
 
 let find_application state key = Managed_application.find state.applications key
 let scope application = Application.managed_scope application
@@ -81,19 +35,10 @@ let list_applications state _connection_state () =
       let%map resource_state =
         Application.resource_state_for_scope state.application ~scope
       in
-      {
-        Protocol.Application.key = Managed_application.key application;
-        project =
-          Managed_application.project application
-          |> Nixploy.Project_name.to_string;
-        target =
-          Managed_application.target application
-          |> Nixploy.Target_name.to_string;
-        repository = Managed_application.repository_identity application;
-        resource_state = Resource_state_response.of_application resource_state;
-        deployment =
-          List.hd deployments |> Option.map ~f:(protocol_deployment state scope);
-      })
+      Consumer_response.application application ~resource_state
+        ~deployment:
+          (List.hd deployments
+          |> Option.map ~f:(protocol_deployment state scope)))
 
 let preview_deployment state _connection_state query =
   match
@@ -182,7 +127,7 @@ let cancel_deployment state _connection_state query =
           let%map result =
             Application.cancel_deployment state.application ~scope ~operation_id
           in
-          Or_error.map result ~f:(fun _ -> ()))
+          Or_error.map result ~f:Consumer_response.cancellation)
     query
 
 let recent_for_application state application ~limit =
@@ -192,11 +137,8 @@ let recent_for_application state application ~limit =
     Application.deployment_history state.application ~scope ~limit
   in
   List.map deployments ~f:(fun deployment ->
-      {
-        Protocol.Recent_deployment.application =
-          Managed_application.key application;
-        deployment = protocol_deployment state scope deployment;
-      })
+      Consumer_response.recent_deployment ~application
+        ~deployment:(protocol_deployment state scope deployment))
 
 let list_deployments state _connection_state query =
   match query.Protocol.List_deployments.Query.application with
@@ -229,78 +171,14 @@ let get_application_logs state _connection_state query =
             Application.application_logs state.application application
           in
           Or_error.map result ~f:(fun snapshot ->
-              Some
-                {
-                  Protocol.Log_snapshot.application = key;
-                  container_name = snapshot.container_name;
-                  revision = snapshot.revision;
-                  observed_at_ms = snapshot.observed_at_ms;
-                  lines =
-                    List.map snapshot.lines ~f:(fun line ->
-                        {
-                          Protocol.Log_line.timestamp = line.timestamp;
-                          text = line.text;
-                        });
-                  truncated = snapshot.truncated;
-                }))
-
-let protocol_health = function
-  | Application.Healthy -> Protocol.Health.Healthy
-  | Unhealthy -> Unhealthy
-  | Unavailable error -> Unavailable error
-
-let protocol_metrics (metrics : Application.target_metrics) =
-  {
-    Protocol.Target_metrics.target = metrics.target;
-    host = metrics.host;
-    observed_at_ms = metrics.observed_at_ms;
-    error = metrics.error;
-    cpu_percent = metrics.cpu_percent;
-    memory_used_bytes = metrics.memory_used_bytes;
-    memory_total_bytes = metrics.memory_total_bytes;
-    filesystem_used_bytes = metrics.filesystem_used_bytes;
-    filesystem_total_bytes = metrics.filesystem_total_bytes;
-    load_1 = metrics.load_1;
-    load_5 = metrics.load_5;
-    load_15 = metrics.load_15;
-    uptime_seconds = metrics.uptime_seconds;
-    applications =
-      List.map metrics.applications ~f:(fun application ->
-          {
-            Protocol.Application_metrics.application = application.application;
-            container_name = application.container_name;
-            health = protocol_health application.health;
-            error = application.error;
-            cpu_percent = application.cpu_percent;
-            memory_used_bytes = application.memory_used_bytes;
-            memory_host_percent = application.memory_host_percent;
-            uptime_seconds = application.uptime_seconds;
-          });
-  }
-
-let merge_target_metrics targets (metric : Protocol.Target_metrics.t) =
-  match
-    List.findi targets ~f:(fun _ existing ->
-        String.equal existing.Protocol.Target_metrics.host metric.host
-        && not (String.equal existing.host "unavailable"))
-  with
-  | None -> targets @ [ metric ]
-  | Some (index, existing) ->
-      List.mapi targets ~f:(fun current item ->
-          if Int.equal current index then
-            {
-              existing with
-              applications = existing.applications @ metric.applications;
-            }
-          else item)
+              Some (Consumer_response.log_snapshot ~application:key snapshot)))
 
 let get_metrics state _connection_state () =
   let%map metrics =
-    Deferred.List.map state.applications ~how:`Parallel ~f:(fun application ->
-        Application.application_metrics state.application application
-        >>| protocol_metrics)
+    Consumer_response.collect_metrics state.applications
+      ~observe:(Application.application_metrics state.application)
   in
-  Ok (List.fold metrics ~init:[] ~f:merge_target_metrics)
+  Ok metrics
 
 let implementations state =
   Rpc.Implementations.create_exn
