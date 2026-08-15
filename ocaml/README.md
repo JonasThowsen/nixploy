@@ -1,8 +1,9 @@
 # nixploy OCaml rewrite
 
 This directory contains the default nixploy CLI and its Bonsai control-plane
-surface. The C# CLI remains packaged as `legacy-nixploy` only for the existing
-Phoenix remote-adapter path while that separate integration is retired.
+surface. The NixOS service now runs this OCaml package directly. Legacy packages
+remain temporarily only as fenced rollback artifacts while their sources await
+the archive milestone.
 
 ## Direction
 
@@ -133,5 +134,30 @@ nix develop
 dune runtest --root ocaml
 ```
 
-The remaining legacy boundary is the Phoenix remote CLI protocol. It continues
-to use `legacy-nixploy`; direct-main CLI and Bonsai deployments are fully OCaml.
+## NixOS operation and migration
+
+Import `nixosModules.default` and configure `services.nixploy`. The module starts
+exactly one `nixploy.service` as the long-lived `nixploy` user, executes
+`bin/nixploy-web --port PORT --state-db /var/lib/nixploy/state.sqlite3`, and
+keeps HOME/XDG state under `/var/lib/nixploy` for durable Podman connection
+configuration. The executable itself hardcodes loopback binding. Managed
+applications serialize exactly the JSON accepted by `Managed_application`.
+
+Use `sshIdentityFile`, `sshKnownHostsFile`, `sopsAgeKeyFile`, and
+`sopsAgeSshKeyFile` for root-readable deployment credentials. systemd copies
+them into the private service credential directory and the module sets only the
+environment names read by OCaml. A generated start wrapper reapplies or clears
+these credential names and the module-owned auth/origin/application names after
+systemd loads `environmentFile`, preventing that file from replacing the module
+security boundary. Repositories and any additional `readOnlyPaths` must be
+readable by the service Unix identity.
+
+Before switching generations, stop all Phoenix web and worker units. Never run
+the old and new deployment engines concurrently. Preserve the `nixploy` user,
+repository paths, strict known-host data, SSH keys, SOPS identities, and remote
+resource identity. PostgreSQL history is deliberately not imported into the new
+SQLite database. A rollback must use the same fence in reverse.
+
+The Phoenix remote protocol and its legacy packages are no longer active
+service dependencies. They remain available only for a temporary, explicitly
+fenced rollback until the source archive milestone.

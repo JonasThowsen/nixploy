@@ -83,7 +83,7 @@
         import ./nix/nixos-module.nix (
           args
           // {
-            defaultPackage = self.packages.${pkgs.system}.control-plane;
+            defaultPackage = self.packages.${pkgs.system}.nixploy;
           }
         );
 
@@ -117,7 +117,10 @@
                 js_of_ocaml-compiler_5_9
                 ocaml-embed-file
               ]
-              ++ [ pkgs.git pkgs.makeWrapper ];
+              ++ [
+                pkgs.git
+                pkgs.makeWrapper
+              ];
 
             propagatedBuildInputs = with ocamlPackages; [
               async
@@ -271,102 +274,128 @@
         }
       );
 
-      checks = forAllSystems (system: {
-        control-plane = self.packages.${system}.control-plane;
-        nixploy = self.packages.${system}.nixploy;
-        ocaml-nixploy = self.packages.${system}.ocaml-nixploy;
-        nixos-module =
-          (lib.nixosSystem {
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+          ocamlPackages = ocamlPackagesFor pkgs;
+          rpcProbe = ocamlPackages.buildDunePackage {
+            pname = "nixploy-rpc-probe";
+            version = "0.1.0-ocaml";
+            src = ./ocaml;
+            duneVersion = "3";
+            nativeBuildInputs = with ocamlPackages; [
+              ocaml-embed-file
+              ppx_jane
+            ];
+            propagatedBuildInputs = with ocamlPackages; [
+              async
+              async_rpc_kernel
+              async_rpc_websocket
+              core
+              core_unix
+              ppx_jane
+            ];
+            doCheck = false;
+            buildPhase = ''
+              runHook preBuild
+              dune build test/rpc_probe.exe
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 _build/default/test/rpc_probe.exe $out/bin/nixploy-rpc-probe
+              runHook postInstall
+            '';
+          };
+          evaluated = lib.nixosSystem {
             inherit system;
             modules = [
               self.nixosModules.default
               {
                 system.stateVersion = "26.05";
-                boot.loader.grub.devices = [ "/dev/vda" ];
-                fileSystems."/" = {
-                  device = "/dev/vda";
-                  fsType = "ext4";
-                };
-                services.nixploy-control-plane = {
+                services.nixploy = {
                   enable = true;
+                  authMode = "tailscale";
+                  operatorEmail = "operator@example.com";
+                  port = 9090;
+                  allowedOrigin = "https://nixploy.example.com";
                   environmentFile = "/run/keys/nixploy.env";
+                  sshIdentityFile = "/run/keys/nixploy-ssh";
+                  sshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+                  sopsAgeKeyFile = "/run/keys/nixploy.age";
+                  sopsAgeSshKeyFile = "/run/keys/nixploy-sops-ssh";
+                  applications.example = {
+                    project = "example";
+                    target = "production";
+                    repository = "/srv/nixploy/example";
+                    repositoryIdentity = "owner/example";
+                    subdirectory = "deploy";
+                  };
                 };
               }
             ];
-          }).config.system.build.toplevel;
-        nixos-module-split =
-          let
-            split = lib.nixosSystem {
-              inherit system;
-              modules = [
-                self.nixosModules.default
-                {
-                  system.stateVersion = "26.05";
-                  boot.loader.grub.devices = [ "/dev/vda" ];
-                  fileSystems."/" = {
-                    device = "/dev/vda";
-                    fsType = "ext4";
-                  };
-                  services.nixploy-control-plane = {
-                    enable = true;
-                    splitRoles = true;
-                    workerSopsAgeKeyFile = "/run/keys/nixploy.age";
-                    workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
-                    workerSshIdentityFile = "/run/keys/nixploy-ssh";
-                    workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
-                    backup.enable = true;
-                    environmentFile = "/run/keys/nixploy.env";
-                  };
-                }
-              ];
+          };
+          service = evaluated.config.systemd.services.nixploy;
+          expectedApplications = builtins.toJSON {
+            example = {
+              project = "example";
+              target = "production";
+              repository = "/srv/nixploy/example";
+              repositoryIdentity = "owner/example";
+              subdirectory = "deploy";
             };
-            web = split.config.systemd.services.nixploy-control-plane.serviceConfig;
-            workerService = split.config.systemd.services.nixploy-control-plane-worker;
-            worker = workerService.serviceConfig;
-          in
-          assert
-            workerService.environment.NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE
-            == "/run/credentials/nixploy-control-plane-worker.service/nixploy-sops-age-ssh-key";
-          assert !(workerService.environment ? SOPS_AGE_SSH_PRIVATE_KEY_FILE);
-          assert web.RuntimeDirectory == "nixploy-web";
-          assert worker.RuntimeDirectory == "nixploy-worker";
-          assert web.RuntimeDirectoryMode == "0700";
-          assert worker.RuntimeDirectoryMode == "0700";
-          assert web.User == "nixploy-web";
-          assert worker.User == "nixploy-worker";
-          assert split.config.virtualisation.podman.enable == false;
-          split.config.system.build.toplevel;
-        nixos-module-staged =
-          let
-            staged = lib.nixosSystem {
-              inherit system;
-              modules = [
-                self.nixosModules.default
-                {
-                  system.stateVersion = "26.05";
-                  boot.loader.grub.devices = [ "/dev/vda" ];
-                  fileSystems."/" = {
-                    device = "/dev/vda";
-                    fsType = "ext4";
-                  };
-                  services.nixploy-control-plane = {
-                    enable = true;
-                    splitRoles = true;
-                    workerEnabled = false;
-                    workerSopsAgeKeyFile = "/run/keys/nixploy.age";
-                    workerSopsAgeSshKeyFile = "/etc/ssh/ssh_host_ed25519_key";
-                    workerSshIdentityFile = "/run/keys/nixploy-ssh";
-                    workerSshKnownHostsFile = "/run/keys/nixploy-known-hosts";
-                    environmentFile = "/run/keys/nixploy.env";
-                  };
-                }
-              ];
-            };
-          in
-          assert staged.config.systemd.services ? nixploy-control-plane-worker;
-          assert staged.config.systemd.services.nixploy-control-plane-worker.wantedBy == [ ];
-          staged.config.system.build.toplevel;
-      });
+          };
+          renamed = lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              {
+                system.stateVersion = "26.05";
+                services.nixploy-control-plane = {
+                  enable = true;
+                  authMode = "unrestricted";
+                };
+              }
+            ];
+          };
+        in
+        {
+          nixploy = self.packages.${system}.nixploy;
+          nixos-module =
+            assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
+            assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];
+            assert service.serviceConfig.User == "nixploy";
+            assert service.serviceConfig.Group == "nixploy";
+            assert service.serviceConfig.StateDirectory == "nixploy";
+            assert service.serviceConfig.WorkingDirectory == "/var/lib/nixploy";
+            assert service.serviceConfig.ProtectSystem == "strict";
+            assert builtins.elem "/srv/nixploy/example" service.serviceConfig.ReadOnlyPaths;
+            assert service.environment.HOME == "/var/lib/nixploy";
+            assert service.environment.NIXPLOY_AUTH_MODE == "tailscale";
+            assert service.environment.NIXPLOY_OPERATOR_EMAIL == "operator@example.com";
+            assert service.environment.NIXPLOY_ALLOWED_ORIGIN == "https://nixploy.example.com";
+            assert service.environment.NIXPLOY_MANAGED_APPLICATIONS_JSON == expectedApplications;
+            assert
+              service.environment.NIXPLOY_SSH_IDENTITY_FILE == "/run/credentials/nixploy.service/ssh-identity";
+            assert
+              service.environment.NIXPLOY_SSH_KNOWN_HOSTS_FILE
+              == "/run/credentials/nixploy.service/ssh-known-hosts";
+            assert service.environment.SOPS_AGE_KEY_FILE == "/run/credentials/nixploy.service/sops-age-key";
+            assert
+              service.environment.NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE
+              == "/run/credentials/nixploy.service/sops-age-ssh-key";
+            assert !(builtins.hasAttr "nixploy-control-plane-worker" evaluated.config.systemd.services);
+            assert !evaluated.config.services.postgresql.enable;
+            assert renamed.config.services.nixploy.enable;
+            pkgs.runCommand "nixploy-nixos-module-evaluation" { } "touch $out";
+          nixos-vm-smoke = import ./nix/nixos-test.nix {
+            inherit pkgs rpcProbe;
+            nixployModule = self.nixosModules.default;
+            nixployPackage = self.packages.${system}.nixploy;
+          };
+        }
+      );
 
       devShells = forAllSystems (
         system:

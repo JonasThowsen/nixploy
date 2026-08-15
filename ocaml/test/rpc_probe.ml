@@ -98,14 +98,31 @@ let rec wait_for_terminal connection application operation_id attempts =
         let%bind.Deferred () = Clock_ns.after (Time_ns.Span.of_sec 1.) in
         wait_for_terminal connection application operation_id (attempts - 1)
 
+let origin_of_uri uri =
+  let open Or_error.Let_syntax in
+  let%bind scheme =
+    Uri.scheme uri
+    |> Or_error.of_option ~error:(Error.of_string "URI has no scheme")
+  in
+  let%bind host =
+    Uri.host uri
+    |> Or_error.of_option ~error:(Error.of_string "URI has no host")
+  in
+  if not (String.equal scheme "http" || String.equal scheme "https") then
+    Or_error.errorf "unsupported URI scheme %S" scheme
+  else Ok (Uri.make ~scheme ~host ?port:(Uri.port uri) () |> Uri.to_string)
+
 let run ~uri ~inspect ~deploy ~cancel_started =
   let open Deferred.Or_error.Let_syntax in
+  let uri = Uri.of_string uri in
+  let%bind origin = origin_of_uri uri |> Deferred.return in
+  let headers = Cohttp.Header.init_with "Origin" origin in
   let headers =
     Sys.getenv "NIXPLOY_PROBE_TAILSCALE_LOGIN"
-    |> Option.map ~f:(fun login ->
-        Cohttp.Header.init_with "Tailscale-User-Login" login)
+    |> Option.value_map ~default:headers ~f:(fun login ->
+        Cohttp.Header.add headers "Tailscale-User-Login" login)
   in
-  let%bind connection = Rpc_websocket.Rpc.client ?headers (Uri.of_string uri) in
+  let%bind connection = Rpc_websocket.Rpc.client ~headers uri in
   let%bind applications =
     Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
   in

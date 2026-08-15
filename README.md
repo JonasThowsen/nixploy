@@ -193,129 +193,87 @@ nix build .#nixploy
 nix develop . -c dune runtest --root ocaml
 ```
 
-## Legacy Phoenix implementation
+## NixOS service
 
-The Phoenix, C#, and MoonBit implementations are legacy. They remain temporarily
-because the existing NixOS service and Phoenix remote protocol still reference
-them; they are not sources of future product scope. After the OCaml application
-API and NixOS service cut over, they will move under `legacy/` and leave the
-active root package graph. The development notes below apply only to that
-transitional implementation.
+The default NixOS module runs the packaged OCaml `nixploy-web` executable as one
+`nixploy.service`. It listens only on `127.0.0.1`, stores its SQLite database and
+Podman connection configuration beneath `/var/lib/nixploy`, and uses one
+long-lived `nixploy` Unix identity. A reverse proxy such as Tailscale Serve can
+publish the loopback endpoint.
 
-Enter the reproducible development environment and initialize Phoenix:
+```nix
+{
+  imports = [ inputs.nixploy.nixosModules.default ];
 
-```bash
-nix develop
-mix setup
+  services.nixploy = {
+    enable = true;
+    port = 8080;
+
+    authMode = "tailscale";
+    operatorEmail = "operator@example.com";
+    # Set only when the browser's public origin differs from the forwarded Host.
+    allowedOrigin = "https://nixploy.example.com";
+
+    applications.my-app = {
+      project = "my-app";
+      target = "production";
+      repository = "/srv/nixploy/my-app";
+      repositoryIdentity = "owner/my-app";
+      subdirectory = ".";
+    };
+
+    sshIdentityFile = "/run/keys/nixploy-ssh";
+    sshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+    sopsAgeKeyFile = "/run/keys/nixploy.age";
+  };
+}
 ```
 
-`.sops.yaml` uses the same age recipient as jomat. `secrets/dev.env` is the
-encrypted development environment, including the operator login, database URL,
-Phoenix secrets, runtime role, host, and port. The small Justfile mirrors jomat:
+`repository` must be an absolute existing local Git checkout readable by the
+service user. The module passes only the fields accepted by OCaml
+`Managed_application`: `project`, `target`, `repository`,
+`repositoryIdentity`, and relative `subdirectory`. Credential options use
+systemd credentials and set the actual OCaml SSH/SOPS environment names.
+`readOnlyPaths` can expose additional Git credential-helper configuration while
+Unix ownership and file modes remain the access boundary. `environmentFile` is
+optional and is intended only for additional process environment. A generated
+start wrapper reapplies module-owned authentication, origin, application, and
+credential variables after systemd loads that file, so it cannot override those
+security boundaries.
 
-```bash
-just dev
-just dev-iex
-```
+For a deliberately trusted local-only installation, set
+`authMode = "unrestricted"`. Tailscale mode requires `operatorEmail` and should
+sit behind a proxy that removes untrusted client-supplied identity headers. The
+health endpoint is `GET /healthz`.
 
-Both recipes decrypt the file directly into the server process environment
-without writing a plaintext dotenv file. Edit it with
-`sops secrets/dev.env`. Development seeds read the same encrypted operator
-credentials, so resetting the database recreates the account before the server
-starts:
+`services.nixploy-control-plane` is a rename alias for `services.nixploy` to
+make the namespace transition explicit. It does not restore the removed
+Phoenix roles, workers, PostgreSQL, Ecto migrations, release registration, or
+backup options.
 
-```bash
-mix ecto.reset
-just dev
-```
+### Migration fence
 
-`mix setup` also runs the seeds on a fresh checkout. The checked-in values
-target local PostgreSQL at `127.0.0.1` with the
-credentials `postgres:postgres` and publish the development endpoint as
-<https://dev-nixploy.tailb61fd1.ts.net/login>. Development uses password mode so
-localhost remains usable. Phoenix stays bound to `127.0.0.1:4000`; the
-Tailscale HTTPS proxy provides remote access, LiveView origin checks, and secure
-session cookies.
+Treat the service replacement as an engine cutover, not a rolling upgrade:
 
-The intended production deployment is the private `svc:nixploy` Tailscale
-Service at <https://nixploy.tailb61fd1.ts.net>. Packaged NixOS services default
-to Tailscale identity authentication: Serve injects a trusted
-`Tailscale-User-Login`, nixploy matches it to a provisioned operator, and no
-second password form is shown. Direct or unprovisioned identities receive HTTP
-403. See [`TAILSCALE_AUTH_TRACER.md`](TAILSCALE_AUTH_TRACER.md) for the acceptance
-criterion and trust boundary.
+1. Stop and disable every old Phoenix web and worker process before starting
+   `nixploy.service`. Never overlap old and OCaml deployment engines, including
+   during rollback.
+2. Preserve the existing long-lived `nixploy` Unix identity, repository
+   checkouts, SSH host verification material, deploy keys, SOPS age identities,
+   and access modes. Point the new module options at those same assets.
+3. Start the OCaml service and verify `systemctl is-active nixploy`,
+   `curl http://127.0.0.1:8080/healthz`, and the operator UI before enabling the
+   public proxy.
 
-The same OTP application supports separate runtime roles:
+The new SQLite history starts at `/var/lib/nixploy/state.sqlite3`. Historical
+Phoenix/PostgreSQL deployment rows are not migrated. Existing remote Podman,
+secret, and Caddy ownership identities are preserved by the OCaml application
+engine rather than copied from PostgreSQL.
 
-```bash
-NIXPLOY_ROLE=web mix phx.server
-NIXPLOY_ROLE=worker mix run --no-halt
-NIXPLOY_ROLE=all mix phx.server
-```
+## Transitional legacy outputs
 
-`all` is the default for a simple development or single-node installation. The
-worker role starts the PostgreSQL repository, Oban, and shared coordination
-processes without starting the Phoenix endpoint. The web role starts the
-endpoint with Oban in enqueue-only mode.
-
-Committed releases can be delivered independently of deployment confirmation
-through the bounded CI endpoint `POST /api/releases`. It accepts
-`application/x-nix-nar`, authenticates a web-only bearer credential, restores at
-most 32 MiB through fixed `nix-store --restore` argv in a private workspace,
-recomputes its content-addressed identity with fixed `nix store add` argv, and
-verifies the exact store path, NAR hash, allowlisted repository/project/target, and full Git object
-ID before staging. Registration persists actor and provenance but never creates
-a deployment job; the operator still reviews and confirms under `/releases`.
-
-The Tailscale dashboard provides a local-host discovery tracer alongside the
-scoped deployment-engine MVP. See [`LOCAL_HOST_TRACER.md`](LOCAL_HOST_TRACER.md)
-for its acceptance criterion and [`MVP.md`](MVP.md) for release deployment,
-security properties, and explicit limitations.
-
-- authenticate a provisioned operator through the private Tailscale Service before exposing control-plane actions
-- discover managed and unmanaged containers directly from the local Podman user
-- show repository and revision identity from nixploy and OCI labels
-- inspect a selected container's local runtime metadata and ephemeral recent logs with explicit time, line, and byte bounds
-- probe a positively identified managed workload through bounded loopback `/health` and `/ready` observations derived from allowlisted runtime port metadata
-- surface bounded Podman and health failures and allow an operator refresh without crashing the LiveView
-- retain existing registered services and immutable deployment history without presenting manual onboarding forms
-- enqueue an immutable, audited Oban deployment for retained services
-- validate the committed flake target against the registered service before mutation
-- stream bounded output and persisted deployment stages to the browser
-- serialize target mutation with a renewable PostgreSQL lease
-- request bounded process-group cancellation or redeploy an exact historical revision
-- refresh persisted Podman, Caddy, slot, revision, and health observations through a worker
-- fetch a bounded 200-entry active-container log snapshot through a worker
-- independently verify the deployed commit, container, ingress, and health before success
-- run web and worker processes independently through PostgreSQL notifications
-
-The next no-GitHub replacement path is documented in
-[`NATIVE_LOCAL_DEPLOYMENT_TRACER.md`](NATIVE_LOCAL_DEPLOYMENT_TRACER.md), including
-the immutable Nix store input boundary and the safety conditions learned from
-production rootless workloads.
-
-The first real deployment tracer checks out the requested Git ref, records the
-resolved commit, and delegates the checked-out repository to the existing
-`nixploy deploy` CLI. This preserves the proven Nix, SSH, Podman, Caddy, and SOPS
-behavior while the durable Elixir orchestration path is validated. During this
-tracer the checked-out repository's `.#nixploy` output remains the deployment
-configuration source, and the target name registered in the control plane must
-match its flake target name. Repositories whose flake is not at the Git root can
-set a relative flake subdirectory when registered.
-
-Deployments are serialized per target with renewable PostgreSQL leases in
-addition to the single-worker MVP queue. Workers must have Git, Nix, Bash,
-`setsid`, OpenSSH, curl, Podman, SOPS, and the existing `nixploy` executable on `PATH`.
-Set `NIXPLOY_LEGACY_EXECUTABLE` to an absolute executable path when it is
-installed elsewhere. This compatibility adapter is temporary; native Elixir execution
-adapters will replace it one end-to-end slice at a time. While the compatibility
-command runs, detailed output is retained as one bounded 64 KiB tail while
-structured progress remains in PostgreSQL. The coarse control-plane stage stays
-`building` until the compatibility command completes.
-
-Run both implementations' test suites while behavior is being ported:
-
-```bash
-mix test
-dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
-```
+Phoenix, C#, and MoonBit source remains in place only until the legacy archive
+milestone. `packages.control-plane`, `packages.legacy-nixploy`,
+`packages.moonbitPolicy`, and `packages.fetch-deps` remain temporarily as
+rollback artifacts, but they are not default packages or default flake checks.
+Do not run a legacy control plane concurrently with `nixploy.service`.

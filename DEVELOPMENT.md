@@ -126,11 +126,30 @@ The CLI exposes shared status and target-scoped history. RPC cancellation versio
 
 **Acceptance:** direct adapter calls are absent from CLI/RPC handlers; application boundary tests cover status, history, cancellation ownership and restart behavior, logs, and metrics; CLI/RPC contract tests exercise the shared seam.
 
-### 5. Packaging cutover
+### 5. Packaging cutover (complete)
 
-Replace the Phoenix-oriented NixOS service with the OCaml `nixploy-web` service and SQLite state. Keep one service unless a real operational constraint demonstrates a split.
+The default NixOS module is `services.nixploy`. It runs the packaged OCaml
+`nixploy-web` executable as one loopback-only `nixploy.service`, with SQLite and
+Podman client state under `/var/lib/nixploy`. The old
+`services.nixploy-control-plane` namespace is only a rename alias; split roles,
+PostgreSQL, Ecto, release registration, and backup behavior are not carried
+forward. Legacy package outputs remain temporarily for a fenced rollback until
+milestone 6, but they are no longer default acceptance checks.
 
-**Acceptance:** the NixOS module starts the packaged OCaml executable, serves health/UI on loopback, and deploys through the shared application API.
+A NixOS VM check starts the production package, verifies health and unrestricted
+UI access, checks the loopback listener and SQLite state, and performs a typed
+`List_applications` RPC through a VM-only `rpc_probe`. That RPC traverses the
+real RPC adapter, `Application` resource/history read, and SQLite store without
+triggering a deployment or requiring a remote Podman host.
+
+**Acceptance:** the NixOS module starts the packaged OCaml executable, serves
+health/UI on loopback, and exposes the shared application API over typed RPC.
+
+**Cutover fence:** stop every old Phoenix web/worker process before starting the
+OCaml service and never overlap deployment engines. Preserve the long-lived
+`nixploy` Unix identity, repositories, SSH/known-host credentials, and SOPS
+identities. PostgreSQL history is not migrated; the OCaml service begins a new
+SQLite history while retaining the established remote resource identities.
 
 ### 6. Legacy archive
 
