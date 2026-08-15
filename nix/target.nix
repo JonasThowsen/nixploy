@@ -1,5 +1,31 @@
 { lib, ... }:
 
+let
+  isSafeRemotePath =
+    path:
+    let
+      segments = lib.splitString "/" path;
+    in
+    lib.hasPrefix "/" path
+    && path != "/"
+    && builtins.match ".*[[:cntrl:]].*" path == null
+    && !lib.hasInfix "," path
+    && lib.all (segment: segment != "" && segment != "." && segment != "..") (lib.tail segments);
+
+  remotePathType = lib.types.addCheck lib.types.str isSafeRemotePath;
+
+  validateReadOnlyBinds =
+    binds:
+    let
+      destinations = map (bind: bind.destination) binds;
+    in
+    if lib.any (bind: bind.source == bind.destination) binds then
+      throw "run.readOnlyBinds source and destination must differ"
+    else if builtins.length destinations != builtins.length (lib.unique destinations) then
+      throw "run.readOnlyBinds destinations must be unique"
+    else
+      binds;
+in
 with lib;
 
 {
@@ -110,6 +136,39 @@ with lib;
               Port mappings passed to podman run with -p.
 
               Usually leave this empty when run.network = "host".
+            '';
+          };
+
+          readOnlyBinds = mkOption {
+            default = [ ];
+            apply = validateReadOnlyBinds;
+            type = types.listOf (
+              types.submodule {
+                options = {
+                  source = mkOption {
+                    type = remotePathType;
+                    example = "/srv/my-app/data";
+                    description = "Absolute normalized path on the remote deployment host.";
+                  };
+
+                  destination = mkOption {
+                    type = remotePathType;
+                    example = "/app/data";
+                    description = "Absolute normalized path inside the container.";
+                  };
+                };
+              }
+            );
+            example = [
+              {
+                source = "/srv/my-app/data";
+                destination = "/app/data";
+              }
+            ];
+            description = ''
+              Bind mounts made available read-only to pre-start and application
+              containers. Source paths belong to the remote deployment host and
+              are not checked for local existence.
             '';
           };
         };

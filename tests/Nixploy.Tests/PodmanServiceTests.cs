@@ -41,6 +41,7 @@ public sealed class PodmanServiceTests
         Assert.True(success);
 
         var run = Assert.Single(runner.Calls, call => call.Arguments.Contains("run"));
+        Assert.DoesNotContain("--mount", run.Arguments);
         Assert.Contains("nixploy.project=my-app", run.Arguments);
         Assert.Contains("nixploy.project_id=abc123", run.Arguments);
         Assert.Contains("nixploy.target=production", run.Arguments);
@@ -219,16 +220,118 @@ public sealed class PodmanServiceTests
             "host",
             new Dictionary<string, string> { ["PORT"] = "{port}" },
             8080,
-            [new SecretMount("secret-source", "SECRET_TARGET")]
+            [new SecretMount("secret-source", "SECRET_TARGET")],
+            [
+                new NixployReadOnlyBind
+                {
+                    Source = "/srv/my data;$(touch nope)",
+                    Destination = "/app/input data"
+                },
+                new NixployReadOnlyBind
+                {
+                    Source = "/srv/config",
+                    Destination = "/app/config"
+                }
+            ]
         );
 
         Assert.True(success);
-        var arguments = runner.Calls[0].Arguments;
-        Assert.Contains("--rm", arguments);
-        Assert.Contains("--network", arguments);
-        Assert.Contains("host", arguments);
-        Assert.Contains("PORT=8080", arguments);
-        Assert.Contains("source=secret-source,type=env,target=SECRET_TARGET", arguments);
-        Assert.Equal("/app/migrate", arguments[^1]);
+        Assert.Equal(
+            [
+                "--connection",
+                "connection",
+                "run",
+                "--secret",
+                "source=secret-source,type=env,target=SECRET_TARGET",
+                "--mount",
+                "type=bind,source=/srv/my data;$(touch nope),destination=/app/input data,ro=true",
+                "--mount",
+                "type=bind,source=/srv/config,destination=/app/config,ro=true",
+                "--rm",
+                "--network",
+                "host",
+                "-e",
+                "PORT=8080",
+                "localhost/app:latest",
+                "/app/migrate"
+            ],
+            runner.Calls[0].Arguments
+        );
+    }
+
+    [Fact]
+    public async Task RunImageAsync_RendersReadOnlyBindAsOneTokenWithoutRegressions()
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(0, "", ""));
+        var service = new PodmanService(runner);
+        var runConfig = new NixployRunConfig
+        {
+            Network = "host",
+            Environment = new Dictionary<string, string> { ["PORT"] = "{port}" },
+            Ports = ["127.0.0.1:8080:8080"],
+            Command = ["/app/server", "--serve"],
+            ReadOnlyBinds =
+            [
+                new NixployReadOnlyBind
+                {
+                    Source = "/srv/my data;$(touch nope)",
+                    Destination = "/app/input data"
+                }
+            ]
+        };
+        var metadata = new DeploymentMetadata(
+            "my-app",
+            "abc123",
+            "production",
+            "deadbeefcafe",
+            "2026-05-06T12:00:00.0000000+00:00"
+        );
+
+        var success = await service.RunImageAsync(
+            "connection",
+            "container",
+            "localhost/app:latest",
+            runConfig,
+            8080,
+            [new SecretMount("secret-source", "SECRET_TARGET")],
+            metadata
+        );
+
+        Assert.True(success);
+        var call = Assert.Single(runner.Calls, call => call.Arguments.Contains("run"));
+        Assert.Equal(
+            [
+                "--connection",
+                "connection",
+                "run",
+                "--secret",
+                "source=secret-source,type=env,target=SECRET_TARGET",
+                "--mount",
+                "type=bind,source=/srv/my data;$(touch nope),destination=/app/input data,ro=true",
+                "-d",
+                "--name",
+                "container",
+                "--network",
+                "host",
+                "-e",
+                "PORT=8080",
+                "--label",
+                "nixploy.project=my-app",
+                "--label",
+                "nixploy.project_id=abc123",
+                "--label",
+                "nixploy.target=production",
+                "--label",
+                "nixploy.git_commit=deadbeefcafe",
+                "--label",
+                "nixploy.deployed_at=2026-05-06T12:00:00.0000000+00:00",
+                "-p",
+                "127.0.0.1:8080:8080",
+                "localhost/app:latest",
+                "/app/server",
+                "--serve"
+            ],
+            call.Arguments
+        );
     }
 }

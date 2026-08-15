@@ -60,6 +60,23 @@
         }
       );
 
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+          configTestsPassed = import ./tests/nix-config.nix {
+            nixployLib = self.lib;
+          };
+        in
+        {
+          nix-config =
+            assert configTestsPassed;
+            pkgs.runCommand "nixploy-nix-config-tests" { } ''
+              touch $out
+            '';
+        }
+      );
+
       devShells = forAllSystems (
         system:
         let

@@ -281,7 +281,8 @@ public static class CommandFactory
                 target.Run.Network,
                 target.Run.Environment,
                 slotPort,
-                secretMounts
+                secretMounts,
+                target.Run.ReadOnlyBinds
             ))
         {
             return;
@@ -345,7 +346,8 @@ public static class CommandFactory
                 target.Run.Network,
                 target.Run.Environment,
                 null,
-                secretMounts
+                secretMounts,
+                target.Run.ReadOnlyBinds
             ))
         {
             return;

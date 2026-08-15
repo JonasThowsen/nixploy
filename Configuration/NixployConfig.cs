@@ -64,6 +64,21 @@ public sealed record NixployRunConfig
 
     [JsonPropertyName("ports")]
     public IReadOnlyList<string> Ports { get; init; } = [];
+
+    [JsonPropertyName("readOnlyBinds")]
+    public IReadOnlyList<NixployReadOnlyBind> ReadOnlyBinds { get; init; } = [];
+}
+
+public sealed record NixployReadOnlyBind
+{
+    [JsonPropertyName("source")]
+    public string Source { get; init; } = "";
+
+    [JsonPropertyName("destination")]
+    public string Destination { get; init; } = "";
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> Extra { get; init; } = [];
 }
 
 public sealed record NixployWebConfig

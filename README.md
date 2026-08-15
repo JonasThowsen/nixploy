@@ -62,6 +62,12 @@ Add nixploy as an input and expose a `nixploy` output:
           preStart = [
             [ "/app/bin/migrate" ]
           ];
+          readOnlyBinds = [
+            {
+              source = "/srv/my-app/reference-data";
+              destination = "/app/reference-data";
+            }
+          ];
         };
 
         web = {
@@ -148,6 +154,17 @@ API_KEY=secret
 ```
 
 Secret names must be unique across all configured secret files for a target.
+
+## Read-only bind mounts
+
+Use `run.readOnlyBinds` to expose an existing directory or file from the remote
+host to every pre-start and application container. Each bind is always rendered
+as a read-only Podman bind mount; writable mode and arbitrary mount options are
+not configurable.
+
+Both paths must be non-root, absolute, normalized Unix paths. The source is a
+path on the remote deployment host, so nixploy validates its syntax without
+requiring it to exist on the local machine. Destinations must be unique.
 
 ## Useful commands
 
