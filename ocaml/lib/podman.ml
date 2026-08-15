@@ -794,9 +794,27 @@ let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
           Deferred.Or_error.errorf
             "ambiguous candidate %s is not owned by this operation" name
         else
+          let%bind candidate_id =
+            Deferred.return
+              (let open Or_error.Let_syntax in
+               let%bind json =
+                 Or_error.try_with (fun () ->
+                     Yojson.Safe.from_string inspected.stdout)
+               in
+               match json with
+               | `List [ `Assoc container ] -> (
+                   match List.Assoc.find container ~equal:String.equal "Id" with
+                   | Some (`String id) when not (String.is_empty id) -> Ok id
+                   | _ ->
+                       Or_error.error_string
+                         "ambiguous candidate inspect did not contain an ID")
+               | _ ->
+                   Or_error.error_string
+                     "ambiguous candidate inspect must contain one container")
+          in
           let%map _ =
             run_ok ~ignore_termination:true
-              [ "--connection"; connection; "rm"; "-f"; name ]
+              [ "--connection"; connection; "rm"; "-f"; candidate_id ]
           in
           ()
   in
