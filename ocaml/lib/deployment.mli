@@ -34,7 +34,6 @@ val revision : t -> string
 val image_id : t -> string
 val container_name : t -> string
 val container_id : t -> string
-val slot : t -> Deployment_plan.slot
-val port : t -> int
+val placement : t -> Deployment_plan.placement
 val warning : t -> string option
 val stage_name : stage -> string

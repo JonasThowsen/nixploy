@@ -75,7 +75,8 @@ let resolve ?commit ?operation_id application =
       in
       let%bind plan =
         Deferred.return
-          (Deployment_plan.create ~web ~active_port:(Some active_port))
+          (Deployment_plan.create ~target_kind:(Configuration.Target.Web web)
+             ~active_port:(Some active_port))
       in
       let%bind active_slot =
         match Deployment_plan.active_slot plan with

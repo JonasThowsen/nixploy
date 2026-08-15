@@ -5,7 +5,7 @@ module Run : sig
 
   val command : t -> string list option
   val environment : t -> (string * string) list
-  val rendered_environment : t -> port:int -> (string * string) list
+  val rendered_environment : t -> port:int option -> (string * string) list
   val pre_start : t -> string list list
   val network : t -> string option
   val ports : t -> string list
@@ -22,6 +22,7 @@ end
 
 module Target : sig
   type t
+  type kind = Non_web | Web of Web.t
 
   val name : t -> Target_name.t
   val image : t -> string
@@ -32,6 +33,7 @@ module Target : sig
   val run : t -> Run.t
   val web : t -> Web.t option
   val secret_references : t -> (string * string) list
+  val kind : t -> kind
   val require_web : t -> Web.t Or_error.t
 end
 

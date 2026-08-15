@@ -366,9 +366,10 @@ let owned_candidate_collision output ~project ~target ~resource_key =
         Or_error.error_string
           "container inspect must contain exactly one container"
 
-let remove_owned_slot ~connection ~project ~target ~resource_key ~slot =
+let remove_owned_placement ~connection ~project ~target ~resource_key ~placement
+    =
   let open Deferred.Or_error.Let_syntax in
-  let name = Deployment_plan.container_name ~resource_key slot in
+  let name = Deployment_plan.container_name ~resource_key placement in
   let%bind exists =
     run [ "--connection"; connection; "container"; "exists"; name ]
   in
@@ -392,11 +393,11 @@ let remove_owned_slot ~connection ~project ~target ~resource_key ~slot =
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip exists.stderr)
 
-let prepare_candidate = remove_owned_slot
+let prepare_candidate = remove_owned_placement
 
 let find_owned_slot ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in
-  let name = Deployment_plan.container_name ~resource_key slot in
+  let name = Deployment_plan.web_container_name ~resource_key slot in
   let%bind exists =
     run [ "--connection"; connection; "container"; "exists"; name ]
   in
@@ -474,18 +475,34 @@ let runtime_args ?(include_ports = true) run ~port =
   in
   network @ environment @ ports
 
+let pre_start_argvs ~connection ~run:run_config ~port ~secret_args
+    ~image_reference =
+  List.map (Configuration.Run.pre_start run_config) ~f:(fun command ->
+      [ "--connection"; connection; "run"; "--rm" ]
+      @ secret_args
+      @ runtime_args ~include_ports:false run_config ~port
+      @ [ image_reference ] @ command)
+
+let runtime_argv ~connection ~name ~run:run_config ~port ~secret_args
+    ~labels:metadata ~image_reference =
+  let command =
+    Configuration.Run.command run_config |> Option.value ~default:[]
+  in
+  [ "--connection"; connection; "run"; "-d"; "--name"; name ]
+  @ secret_args
+  @ runtime_args run_config ~port
+  @ labels metadata @ [ image_reference ] @ command
+
 let run_pre_start ~connection ~target ~port ~image ~secrets ~secret_mounts =
   let open Deferred.Or_error.Let_syntax in
   let run_config = Configuration.Target.run target in
-  Deferred.Or_error.List.iter (Configuration.Run.pre_start run_config)
-    ~how:`Sequential ~f:(fun command ->
-      let%map _ =
-        run_ok ~redact:(Secrets.redact secrets)
-          ([ "--connection"; connection; "run"; "--rm" ]
-          @ secret_args secret_mounts
-          @ runtime_args ~include_ports:false run_config ~port
-          @ [ image.reference ] @ command)
-      in
+  Deferred.Or_error.List.iter
+    (pre_start_argvs ~connection ~run:run_config ~port
+       ~secret_args:(secret_args secret_mounts)
+       ~image_reference:image.reference)
+    ~how:`Sequential
+    ~f:(fun argv ->
+      let%map _ = run_ok ~redact:(Secrets.redact secrets) argv in
       ())
 
 let project_id repository =
@@ -531,10 +548,10 @@ let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
   in
   attempt 10
 
-let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
+let start_candidate ~connection ~project ~target ~resource_key ~placement ~port
     ~source ~configuration_digest ~operation_id ~deployed_at ~image ~secrets
     ~secret_mounts =
-  let name = Deployment_plan.container_name ~resource_key slot in
+  let name = Deployment_plan.container_name ~resource_key placement in
   let target_name = Configuration.Target.name target |> Target_name.to_string in
   let project_name = Project_name.to_string project in
   let repository = Source.repository source in
@@ -560,16 +577,12 @@ let start_candidate ~connection ~project ~target ~resource_key ~slot ~port
     ]
   in
   let run_config = Configuration.Target.run target in
-  let command =
-    Configuration.Run.command run_config |> Option.value ~default:[]
+  let argv =
+    runtime_argv ~connection ~name ~run:run_config ~port
+      ~secret_args:(secret_args secret_mounts)
+      ~labels:metadata ~image_reference:image.reference
   in
-  let%bind.Deferred started =
-    run_ok ~redact:(Secrets.redact secrets)
-      ([ "--connection"; connection; "run"; "-d"; "--name"; name ]
-      @ secret_args secret_mounts
-      @ runtime_args run_config ~port
-      @ labels metadata @ [ image.reference ] @ command)
-  in
+  let%bind.Deferred started = run_ok ~redact:(Secrets.redact secrets) argv in
   let started =
     Or_error.bind started ~f:(fun started ->
         let id = String.strip started.stdout in
@@ -741,7 +754,7 @@ let runtime_container_of_inspect output ~project ~target ~resource_key
 
 let find_running_slot ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in
-  let name = Deployment_plan.container_name ~resource_key slot in
+  let name = Deployment_plan.web_container_name ~resource_key slot in
   let%bind inspected = inspect_container ~connection name in
   Deferred.return
     (runtime_container_of_inspect inspected.stdout ~project ~target
@@ -972,6 +985,8 @@ let read_stats ~connection ~container =
   Deferred.return (parse_stats result.stdout)
 
 module For_testing = struct
+  let pre_start_argvs = pre_start_argvs
+  let runtime_argv = runtime_argv
   let loaded_reference = loaded_reference
   let resource_keys_of_containers = resource_keys_of_containers
   let parse_stats = parse_stats

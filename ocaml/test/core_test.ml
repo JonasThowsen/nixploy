@@ -143,7 +143,7 @@ let%test_unit "deployment configuration renders the selected slot port" =
     [ ("PORT", "8081"); ("URL", "http://0.0.0.0:8081") ]
     (Nixploy.Configuration.Run.rendered_environment
        (Nixploy.Configuration.Target.run target)
-       ~port:8081)
+       ~port:(Some 8081))
 
 let%test_unit "secret-bearing web targets remain deployable" =
   let configuration =
@@ -279,21 +279,168 @@ let%test_unit "deployment plan always selects the inactive slot" =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
   let web = Nixploy.Configuration.Target.require_web target |> assert_ok in
+  let target_kind = Nixploy.Configuration.Target.Web web in
   let first =
-    Nixploy.Deployment_plan.create ~web ~active_port:None |> assert_ok
+    Nixploy.Deployment_plan.create ~target_kind ~active_port:None |> assert_ok
   in
   let after_blue =
-    Nixploy.Deployment_plan.create ~web ~active_port:(Some 8080) |> assert_ok
+    Nixploy.Deployment_plan.create ~target_kind ~active_port:(Some 8080)
+    |> assert_ok
   in
-  [%test_eq: Nixploy.Deployment_plan.slot] Nixploy.Deployment_plan.Blue
-    (Nixploy.Deployment_plan.candidate_slot first);
+  [%test_eq: Nixploy.Deployment_plan.placement]
+    (Nixploy.Deployment_plan.Web_slot { slot = Blue; port = 8080 })
+    (Nixploy.Deployment_plan.placement first);
   [%test_eq: Nixploy.Deployment_plan.slot option] None
     (Nixploy.Deployment_plan.active_slot first);
-  [%test_eq: Nixploy.Deployment_plan.slot] Nixploy.Deployment_plan.Green
-    (Nixploy.Deployment_plan.candidate_slot after_blue);
+  [%test_eq: Nixploy.Deployment_plan.placement]
+    (Nixploy.Deployment_plan.Web_slot { slot = Green; port = 8081 })
+    (Nixploy.Deployment_plan.placement after_blue);
   [%test_eq: Nixploy.Deployment_plan.slot option]
     (Some Nixploy.Deployment_plan.Blue)
     (Nixploy.Deployment_plan.active_slot after_blue)
+
+let%test_unit "non-web targets select exact single-container placement" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{
+        "__schema":"v0.3",
+        "project":"sample",
+        "targets":{"worker":{"image":"worker-image","ip":"host"}}
+      }|}
+    |> assert_ok
+  in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
+  let target_kind = Nixploy.Configuration.Target.kind target in
+  (match target_kind with
+  | Nixploy.Configuration.Target.Non_web -> ()
+  | Web _ -> failwith "non-web target was classified as web");
+  let plan =
+    Nixploy.Deployment_plan.create ~target_kind ~active_port:None |> assert_ok
+  in
+  [%test_eq: Nixploy.Deployment_plan.placement]
+    Nixploy.Deployment_plan.Single_container
+    (Nixploy.Deployment_plan.placement plan);
+  let project = Nixploy.Configuration.project configuration in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target:target_name |> assert_ok
+  in
+  [%test_eq: string]
+    (Nixploy.Resource_key.to_string resource_key)
+    (Nixploy.Deployment_plan.container_name ~resource_key
+       (Nixploy.Deployment_plan.placement plan))
+
+let%test_unit "non-web command construction preserves ordering and options" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{
+        "__schema":"v0.3",
+        "project":"sample",
+        "targets":{
+          "worker":{
+            "image":"worker-image",
+            "ip":"host",
+            "run":{
+              "command":["/app/worker","--once"],
+              "environment":{"PORT":"{port}","MODE":"worker"},
+              "preStart":[["/app/migrate","one"],["/app/seed"]],
+              "network":"private",
+              "ports":["127.0.0.1:9000:9000"]
+            }
+          }
+        }
+      }|}
+    |> assert_ok
+  in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
+  let run = Nixploy.Configuration.Target.run target in
+  [%test_eq: (string * string) list]
+    [ ("PORT", "{port}"); ("MODE", "worker") ]
+    (Nixploy.Configuration.Run.rendered_environment run ~port:None);
+  let secret_args = [ "--secret"; "source=owned-db,type=env,target=DB" ] in
+  let pre_start =
+    Nixploy.Podman.For_testing.pre_start_argvs ~connection:"connection" ~run
+      ~port:None ~secret_args ~image_reference:"loaded@sha256:immutable"
+  in
+  [%test_eq: string list list]
+    [
+      [
+        "--connection";
+        "connection";
+        "run";
+        "--rm";
+        "--secret";
+        "source=owned-db,type=env,target=DB";
+        "--network";
+        "private";
+        "-e";
+        "PORT={port}";
+        "-e";
+        "MODE=worker";
+        "loaded@sha256:immutable";
+        "/app/migrate";
+        "one";
+      ];
+      [
+        "--connection";
+        "connection";
+        "run";
+        "--rm";
+        "--secret";
+        "source=owned-db,type=env,target=DB";
+        "--network";
+        "private";
+        "-e";
+        "PORT={port}";
+        "-e";
+        "MODE=worker";
+        "loaded@sha256:immutable";
+        "/app/seed";
+      ];
+    ]
+    pre_start;
+  let runtime =
+    Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
+      ~name:"nixploy-sample-owned-worker" ~run ~port:None ~secret_args
+      ~labels:
+        [
+          ("io.nixploy.managed", "true");
+          ("io.nixploy.operation_id", "operation-1");
+        ]
+      ~image_reference:"loaded@sha256:immutable"
+  in
+  [%test_eq: string list]
+    [
+      "--connection";
+      "connection";
+      "run";
+      "-d";
+      "--name";
+      "nixploy-sample-owned-worker";
+      "--secret";
+      "source=owned-db,type=env,target=DB";
+      "--network";
+      "private";
+      "-e";
+      "PORT={port}";
+      "-e";
+      "MODE=worker";
+      "-p";
+      "127.0.0.1:9000:9000";
+      "--label";
+      "io.nixploy.managed=true";
+      "--label";
+      "io.nixploy.operation_id=operation-1";
+      "loaded@sha256:immutable";
+      "/app/worker";
+      "--once";
+    ]
+    runtime
 
 let%test_unit "Caddy upstream parsing is exact" =
   [%test_eq: int] 8081

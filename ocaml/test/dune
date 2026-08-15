@@ -14,6 +14,13 @@
   (pps ppx_jane)))
 
 (test
+ (name deployment_test)
+ (modules deployment_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name consumer_mapping_test)
  (modules consumer_mapping_test)
  (libraries nixploy nixploy_cli_mapping nixploy_rpc_mapping core)

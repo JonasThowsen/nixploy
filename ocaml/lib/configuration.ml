@@ -61,9 +61,12 @@ module Run = struct
   let ports t = t.ports
 
   let rendered_environment t ~port =
-    let port = Int.to_string port in
-    List.map t.environment ~f:(fun (name, value) ->
-        (name, String.substr_replace_all value ~pattern:"{port}" ~with_:port))
+    match port with
+    | None -> t.environment
+    | Some port ->
+        let port = Int.to_string port in
+        List.map t.environment ~f:(fun (name, value) ->
+            (name, String.substr_replace_all value ~pattern:"{port}" ~with_:port))
 
   let empty =
     {
@@ -150,6 +153,8 @@ module Web = struct
 end
 
 module Target = struct
+  type kind = Non_web | Web of Web.t
+
   type t = {
     name : Target_name.t;
     image : string;
@@ -171,12 +176,11 @@ module Target = struct
   let run t = t.run
   let web t = t.web
   let secret_references t = t.secret_references
+  let kind t = Option.value_map t.web ~default:Non_web ~f:(fun web -> Web web)
 
   let require_web t =
     match t.web with
-    | None ->
-        Or_error.error_string
-          "the OCaml deployment path currently supports web targets only"
+    | None -> Or_error.error_string "target does not declare web routing"
     | Some web -> Ok web
 end
 

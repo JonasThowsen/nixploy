@@ -32,7 +32,7 @@ val prepare_candidate :
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
-  slot:Deployment_plan.slot ->
+  placement:Deployment_plan.placement ->
   unit Deferred.Or_error.t
 
 val find_owned_slot :
@@ -52,7 +52,7 @@ val install_secrets :
 val run_pre_start :
   connection:string ->
   target:Configuration.Target.t ->
-  port:int ->
+  port:int option ->
   image:image ->
   secrets:Secrets.t list ->
   secret_mounts:secret_mount list ->
@@ -63,8 +63,8 @@ val start_candidate :
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
-  slot:Deployment_plan.slot ->
-  port:int ->
+  placement:Deployment_plan.placement ->
+  port:int option ->
   source:Source.t ->
   configuration_digest:string ->
   operation_id:string ->
@@ -118,6 +118,24 @@ val read_stats :
   runtime_stats Deferred.Or_error.t
 
 module For_testing : sig
+  val pre_start_argvs :
+    connection:string ->
+    run:Configuration.Run.t ->
+    port:int option ->
+    secret_args:string list ->
+    image_reference:string ->
+    string list list
+
+  val runtime_argv :
+    connection:string ->
+    name:string ->
+    run:Configuration.Run.t ->
+    port:int option ->
+    secret_args:string list ->
+    labels:(string * string) list ->
+    image_reference:string ->
+    string list
+
   val loaded_reference : string -> string Or_error.t
   val resource_keys_of_containers : string -> string list Or_error.t
   val parse_stats : string -> runtime_stats Or_error.t
