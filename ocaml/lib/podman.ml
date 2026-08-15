@@ -420,7 +420,13 @@ let remove_owned_placement ~connection ~project ~target ~resource_key ~placement
 
 let prepare_candidate = remove_owned_placement
 
-type prune_container = { prune_id : string }
+type prune_container = { prune_id : string; prune_name : string }
+
+type prepared_prune = {
+  prune_connection : string;
+  prune_containers : prune_container list;
+  prune_secret_names : string list;
+}
 
 let secret_names_of_json output =
   let open Or_error.Let_syntax in
@@ -476,7 +482,8 @@ let inspect_prune_container ~connection ~project ~target ~resource_key name =
         | `List [ `Assoc fields ] -> (
             match List.Assoc.find fields ~equal:String.equal "Id" with
             | Some (`String id) when not (String.is_empty id) ->
-                Deferred.Or_error.return (Some { prune_id = id })
+                Deferred.Or_error.return
+                  (Some { prune_id = id; prune_name = name })
             | _ ->
                 Deferred.Or_error.errorf
                   "container %s inspect did not contain an ID" name)
@@ -484,9 +491,10 @@ let inspect_prune_container ~connection ~project ~target ~resource_key name =
             Deferred.Or_error.errorf
               "container %s inspect must contain exactly one container" name)
 
-let prune_owned_resources ~connection ~project ~target ~resource_key ~plan =
+let preflight_prune_owned_resources ~connection ~project ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
-  let%bind containers =
+  let plan = Prune_plan.create ~resource_key in
+  let%bind prune_containers =
     Deferred.Or_error.List.filter_map
       (Prune_plan.container_names plan)
       ~how:`Sequential
@@ -495,25 +503,53 @@ let prune_owned_resources ~connection ~project ~target ~resource_key ~plan =
   let%bind listed =
     run_ok [ "--connection"; connection; "secret"; "ls"; "--format"; "json" ]
   in
-  let%bind all_secret_names =
+  let%map all_secret_names =
     Deferred.return (secret_names_of_json listed.stdout)
   in
-  let secret_names = Prune_plan.select_secret_names plan all_secret_names in
+  {
+    prune_connection = connection;
+    prune_containers;
+    prune_secret_names = Prune_plan.select_secret_names plan all_secret_names;
+  }
+
+let execute_prepared_prune prepared =
+  let open Deferred.Or_error.Let_syntax in
   let%bind () =
-    Deferred.Or_error.List.iter containers ~how:`Sequential ~f:(fun container ->
+    Deferred.Or_error.List.iter prepared.prune_containers ~how:`Sequential
+      ~f:(fun container ->
         let%map _ =
-          run_ok [ "--connection"; connection; "rm"; "-f"; container.prune_id ]
+          run_ok
+            [
+              "--connection";
+              prepared.prune_connection;
+              "rm";
+              "-f";
+              container.prune_id;
+            ]
+          |> Deferred.map
+               ~f:
+                 (Or_error.tag
+                    ~tag:
+                      (sprintf "could not remove owned container %s"
+                         container.prune_name))
         in
         ())
   in
   let%map () =
-    Deferred.Or_error.List.iter secret_names ~how:`Sequential ~f:(fun name ->
+    Deferred.Or_error.List.iter prepared.prune_secret_names ~how:`Sequential
+      ~f:(fun name ->
         let%map _ =
-          run_ok [ "--connection"; connection; "secret"; "rm"; name ]
+          run_ok
+            [ "--connection"; prepared.prune_connection; "secret"; "rm"; name ]
+          |> Deferred.map
+               ~f:
+                 (Or_error.tag
+                    ~tag:(sprintf "could not remove owned secret %s" name))
         in
         ())
   in
-  (List.length containers, List.length secret_names)
+  ( List.length prepared.prune_containers,
+    List.length prepared.prune_secret_names )
 
 let find_owned_slot ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in

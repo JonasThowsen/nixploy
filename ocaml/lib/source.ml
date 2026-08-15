@@ -44,6 +44,27 @@ let parse_commit output =
       else Ok { revision; subject; timestamp_ms }
   | _ -> Or_error.error_string "Git did not return valid commit metadata"
 
+let canonical_directory working_directory =
+  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+
+let repository_identity ~working_directory =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_directory working_directory)
+  in
+  let%bind.Deferred result =
+    Process_runner.run ~working_directory ~timeout:git_timeout
+      ~max_output_bytes:max_git_output ~prog:"git"
+      ~args:[ "config"; "--get"; "remote.origin.url" ]
+      ()
+  in
+  match result with
+  | Error error -> Deferred.return (Error error)
+  | Ok { exit_status = Ok (); stdout; _ }
+    when not (String.is_empty (String.strip stdout)) ->
+      Deferred.Or_error.return (String.strip stdout)
+  | Ok _ -> Deferred.Or_error.return working_directory
+
 let describe ~working_directory revision =
   let open Deferred.Or_error.Let_syntax in
   let%bind output =
@@ -53,9 +74,7 @@ let describe ~working_directory revision =
   Deferred.return (parse_commit output)
 
 let preview_main ~working_directory =
-  match
-    Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
-  with
+  match canonical_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
       describe ~working_directory "refs/heads/main^{commit}"
@@ -64,9 +83,7 @@ let find_commit ~working_directory ~revision =
   if not (valid_revision revision) then
     Deferred.Or_error.error_string "deployment revision must be a full SHA"
   else
-    match
-      Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
-    with
+    match canonical_directory working_directory with
     | Error error -> Deferred.return (Error error)
     | Ok working_directory -> describe ~working_directory revision
 
@@ -91,8 +108,7 @@ let cleanup t =
 let prepare ~working_directory ~commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =
-    Deferred.return
-      (Or_error.try_with (fun () -> Filename_unix.realpath working_directory))
+    Deferred.return (canonical_directory working_directory)
   in
   let revision = commit.revision in
   let%bind repository_root =
@@ -114,11 +130,7 @@ let prepare ~working_directory ~commit =
                 "working directory is outside the Git repository")
            ~f:Deferred.Or_error.return
   in
-  let%bind repository =
-    git ~working_directory:repository_root
-      [ "config"; "--get"; "remote.origin.url" ]
-  in
-  let repository = String.strip repository in
+  let%bind repository = repository_identity ~working_directory in
   let workspace = Filename_unix.temp_dir "nixploy-" "" in
   let source_root = Filename.concat workspace "source" in
   let source_path =

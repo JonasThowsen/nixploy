@@ -1,3 +1,9 @@
+(rule
+ (alias runtest)
+ (deps cli_contract_test.sh ../bin/main.exe)
+ (action
+  (run bash %{dep:cli_contract_test.sh} %{dep:../bin/main.exe})))
+
 (library
  (name core_test)
  (modules core_test)

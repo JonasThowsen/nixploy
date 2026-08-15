@@ -26,16 +26,10 @@ let load ~working_directory ~target:target_name =
   let%bind canonical_resource_key =
     Deferred.return (Resource_key.derive ~project ~target:target_name)
   in
-  let%bind repository =
-    Process_runner.run_stdout ~working_directory ~timeout:query_timeout
-      ~max_output_bytes:65_536 ~prog:"git"
-      ~args:[ "remote"; "get-url"; "origin" ]
-      ()
-  in
+  let%bind repository = Source.repository_identity ~working_directory in
   let%bind legacy_resource_key =
     Deferred.return
-      (Resource_key.derive_legacy ~project ~target:target_name
-         ~repository:(String.strip repository))
+      (Resource_key.derive_legacy ~project ~target:target_name ~repository)
   in
   let%bind resource_key =
     Podman.select_resource_key ~project ~target

@@ -2,6 +2,10 @@ open Async
 open Core
 
 type commit = Source.commit
+type prune_result = Prune.t
+
+type prune_route_state = Not_configured | Missing | Removed
+[@@deriving compare, equal, sexp]
 
 type deployment_state = Store.state =
   | Requested
@@ -20,6 +24,7 @@ type deployment = {
 }
 
 type t = {
+  store : Store.t;
   preview_main : working_directory:string -> commit Deferred.Or_error.t;
   find_commit :
     working_directory:string -> revision:string -> commit Deferred.Or_error.t;
@@ -35,7 +40,7 @@ type t = {
   prune :
     working_directory:string ->
     target:Target_name.t ->
-    Prune.t Deferred.Or_error.t;
+    prune_result Deferred.Or_error.t;
 }
 
 let no_stage _ _ = Deferred.unit
@@ -49,17 +54,10 @@ let deployment_of_store deployment =
     error = Store.error deployment;
   }
 
-let create ?store () =
-  let default_store = lazy (Store.open_ ~path:(State_path.default ())) in
-  let get_store () =
-    match store with
-    | Some store -> Deferred.Or_error.return store
-    | None -> Lazy.force default_store
-  in
+let create ~store () =
   let deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
       ~target () =
     let open Deferred.Or_error.Let_syntax in
-    let%bind store = get_store () in
     Tracked_deployment.deploy ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
@@ -67,6 +65,7 @@ let create ?store () =
     >>| deployment_of_store
   in
   {
+    store;
     preview_main = Source.preview_main;
     find_commit = Source.find_commit;
     deploy;
@@ -83,7 +82,27 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
   t.deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
     ~target ()
 
-let prune t ~working_directory ~target = t.prune ~working_directory ~target
+let prune t ~working_directory ~target =
+  match
+    Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+  with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory ->
+      Store.with_lease t.store ~working_directory ~target (fun () ->
+          t.prune ~working_directory ~target)
+
+let prune_project = Prune.project
+let prune_target = Prune.target
+let prune_resource_key = Prune.resource_key
+let prune_containers_removed = Prune.containers_removed
+let prune_secrets_removed = Prune.secrets_removed
+
+let prune_route_state result =
+  match Prune.route result with
+  | Not_configured -> Not_configured
+  | Missing -> Missing
+  | Removed -> Removed
+
 let commit_revision = Source.commit_revision
 let commit_subject = Source.commit_subject
 let commit_timestamp_ms = Source.commit_timestamp_ms
@@ -95,8 +114,19 @@ let deployment_error deployment = deployment.error
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ~preview_main ~find_commit ~deploy ~prune =
-    { preview_main; find_commit; deploy; prune }
+  let create ~store ~preview_main ~find_commit ~deploy ~prune =
+    { store; preview_main; find_commit; deploy; prune }
+
+  let prune_result ~project ~target ~resource_key ~containers_removed
+      ~secrets_removed ~(route : prune_route_state) =
+    let route : Prune.route =
+      match route with
+      | Not_configured -> Not_configured
+      | Missing -> Missing
+      | Removed -> Removed
+    in
+    Prune.For_testing.result ~project ~target ~resource_key ~containers_removed
+      ~secrets_removed ~route
 
   let commit = Source.For_testing.commit
 

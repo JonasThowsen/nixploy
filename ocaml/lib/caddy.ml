@@ -9,6 +9,7 @@ type t = {
 }
 
 type route = Missing | Existing of { active_port : int }
+type deletion = { caddy : t; observed : route }
 type response = { status : int; body : string }
 
 let request_timeout = Time_ns.Span.of_sec 30.
@@ -295,7 +296,14 @@ let delete_route ?ignore_termination t =
   | status ->
       Deferred.Or_error.errorf "Caddy route deletion returned HTTP %d" status
 
-let delete t = delete_route t
+let preflight_delete t =
+  let%map.Deferred.Or_error observed = inspect_internal t in
+  { caddy = t; observed }
+
+let execute_delete deletion =
+  match deletion.observed with
+  | Missing -> Deferred.Or_error.return false
+  | Existing _ -> delete_route deletion.caddy
 
 let restore t ~previous =
   let open Deferred.Or_error.Let_syntax in

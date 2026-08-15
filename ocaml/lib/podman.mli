@@ -5,6 +5,7 @@ type image
 type candidate
 type secret_mount
 type runtime_container
+type prepared_prune
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
 type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
@@ -88,13 +89,17 @@ val verify_candidate :
 val remove_candidate :
   connection:string -> candidate:candidate -> unit Deferred.Or_error.t
 
-val prune_owned_resources :
+val preflight_prune_owned_resources :
   connection:string ->
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
-  plan:Prune_plan.t ->
-  (int * int) Deferred.Or_error.t
+  prepared_prune Deferred.Or_error.t
+(** Verifies every exact managed container name and selects only scoped secrets
+    without mutating remote resources. *)
+
+val execute_prepared_prune : prepared_prune -> (int * int) Deferred.Or_error.t
+(** Executes only the opaque, previously verified prune selection. *)
 
 val image_reference : image -> string
 val image_id : image -> string

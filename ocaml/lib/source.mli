@@ -9,6 +9,10 @@ val preview_main : working_directory:string -> commit Deferred.Or_error.t
 val find_commit :
   working_directory:string -> revision:string -> commit Deferred.Or_error.t
 
+val repository_identity : working_directory:string -> string Deferred.Or_error.t
+(** Returns the configured [remote.origin.url], or the canonical working
+    directory when the repository has no origin. *)
+
 val prepare : working_directory:string -> commit:commit -> t Deferred.Or_error.t
 val cleanup : t -> unit Deferred.t
 val path : t -> string

@@ -7,6 +7,11 @@ let assert_ok = function
 
 let run_tests () =
   let open Deferred.Let_syntax in
+  let directory = Filename_unix.temp_dir "nixploy-application-test-" "" in
+  let%bind opened =
+    Nixploy.Store.open_ ~path:(Filename.concat directory "state.sqlite")
+  in
+  let store = assert_ok opened in
   let main_revision = String.make 40 'a' in
   let selected_revision = String.make 40 'b' in
   let main_commit =
@@ -27,17 +32,17 @@ let run_tests () =
     Nixploy.Resource_key.derive ~project ~target:prune_target |> assert_ok
   in
   let prune_result =
-    Nixploy.Prune.For_testing.result ~project ~target:prune_target
+    Nixploy.Application.For_testing.prune_result ~project ~target:prune_target
       ~resource_key:prune_resource ~containers_removed:2 ~secrets_removed:3
-      ~route:Nixploy.Prune.Removed
+      ~route:Nixploy.Application.Removed
   in
   let application =
-    Nixploy.Application.For_testing.create
+    Nixploy.Application.For_testing.create ~store
       ~preview_main:(fun ~working_directory ->
-        assert (String.equal working_directory "/srv/example");
+        assert (String.equal working_directory directory);
         Deferred.Or_error.return main_commit)
       ~find_commit:(fun ~working_directory ~revision ->
-        assert (String.equal working_directory "/srv/example");
+        assert (String.equal working_directory directory);
         assert (String.equal revision selected_revision);
         Deferred.Or_error.return selected_commit)
       ~deploy:(fun
@@ -75,14 +80,14 @@ let run_tests () =
   in
   let%bind preview =
     Nixploy.Application.preview_main_commit application
-      ~working_directory:"/srv/example"
+      ~working_directory:directory
   in
   let preview = assert_ok preview in
   assert (
     String.equal main_revision (Nixploy.Application.commit_revision preview));
   let%bind cli_result =
     Nixploy.Application.deploy ~on_stage ~on_requested application
-      ~working_directory:"/srv/example" ~commit:preview ~target ()
+      ~working_directory:directory ~commit:preview ~target ()
   in
   let cli_deployment = assert_ok cli_result in
   assert (
@@ -90,8 +95,8 @@ let run_tests () =
       (Nixploy.Application.deployment_revision cli_deployment
       |> Option.value_exn));
   let%bind resolved =
-    Nixploy.Application.resolve_commit application
-      ~working_directory:"/srv/example" ~revision:selected_revision
+    Nixploy.Application.resolve_commit application ~working_directory:directory
+      ~revision:selected_revision
   in
   let resolved = assert_ok resolved in
   assert (
@@ -99,7 +104,7 @@ let run_tests () =
       (Nixploy.Application.commit_revision resolved));
   let%bind rpc_result =
     Nixploy.Application.deploy ~on_stage ~on_requested
-      ~application_key:"example" application ~working_directory:"/srv/example"
+      ~application_key:"example" application ~working_directory:directory
       ~commit:resolved ~target ()
   in
   let rpc_deployment = assert_ok rpc_result in
@@ -109,8 +114,8 @@ let run_tests () =
       |> Option.value_exn));
   [%test_eq: (string option * string * string) list]
     [
-      (None, "/srv/example", main_revision);
-      (Some "example", "/srv/example", selected_revision);
+      (None, directory, main_revision);
+      (Some "example", directory, selected_revision);
     ]
     (List.rev !deployed);
   [%test_eq: (Nixploy.Deployment.stage * string) list]
@@ -119,15 +124,22 @@ let run_tests () =
   [%test_eq: string list]
     [ "deployment-a"; "deployment-b" ]
     (List.rev !requested);
+  let%bind blocked_prune =
+    Nixploy.Store.with_lease store ~working_directory:directory ~target
+      (fun () ->
+        Nixploy.Application.prune application ~working_directory:directory
+          ~target)
+  in
+  assert (Result.is_error blocked_prune);
+  assert (List.is_empty !pruned);
   let%map prune =
-    Nixploy.Application.prune application ~working_directory:"/srv/example"
-      ~target
+    Nixploy.Application.prune application ~working_directory:directory ~target
   in
   let prune = assert_ok prune in
-  [%test_eq: int] 2 (Nixploy.Prune.containers_removed prune);
-  [%test_eq: int] 3 (Nixploy.Prune.secrets_removed prune);
+  [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
+  [%test_eq: int] 3 (Nixploy.Application.prune_secrets_removed prune);
   [%test_eq: (string * Nixploy.Target_name.t) list]
-    [ ("/srv/example", target) ]
+    [ (directory, target) ]
     (List.rev !pruned)
 
 let () =

@@ -19,27 +19,6 @@ let resource_key t = t.resource_key
 let containers_removed t = t.containers_removed
 let secrets_removed t = t.secrets_removed
 let route t = t.route
-let query_timeout = Time_ns.Span.of_sec 30.
-let max_git_output = 65_536
-
-let repository_identity ~working_directory =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind canonical_directory =
-    Deferred.return
-      (Or_error.try_with (fun () -> Filename_unix.realpath working_directory))
-  in
-  let%bind.Deferred result =
-    Process_runner.run ~working_directory:canonical_directory
-      ~timeout:query_timeout ~max_output_bytes:max_git_output ~prog:"git"
-      ~args:[ "remote"; "get-url"; "origin" ]
-      ()
-  in
-  match result with
-  | Error _ as error -> Deferred.return error
-  | Ok { exit_status = Ok (); stdout; _ }
-    when not (String.is_empty (String.strip stdout)) ->
-      Deferred.Or_error.return (String.strip stdout)
-  | Ok _ -> Deferred.Or_error.return canonical_directory
 
 let prune ~working_directory ~target:target_name =
   let open Deferred.Or_error.Let_syntax in
@@ -51,7 +30,7 @@ let prune ~working_directory ~target:target_name =
   let%bind canonical =
     Deferred.return (Resource_key.derive ~project ~target:target_name)
   in
-  let%bind repository = repository_identity ~working_directory in
+  let%bind repository = Source.repository_identity ~working_directory in
   let%bind legacy =
     Deferred.return
       (Resource_key.derive_legacy ~project ~target:target_name ~repository)
@@ -60,17 +39,27 @@ let prune ~working_directory ~target:target_name =
     Podman.select_resource_key ~project ~target ~canonical ~legacy
   in
   let%bind connection = Podman.ensure_connection ~target ~resource_key in
-  let plan = Prune_plan.create ~resource_key in
-  let%bind containers_removed, secrets_removed =
-    Podman.prune_owned_resources ~connection ~project ~target ~resource_key
-      ~plan
+  let%bind podman_preflight =
+    Podman.preflight_prune_owned_resources ~connection ~project ~target
+      ~resource_key
   in
-  let%map route =
+  let%bind caddy_preflight =
     match Configuration.Target.kind target with
-    | Non_web -> Deferred.Or_error.return Not_configured
-    | Web web -> (
+    | Non_web -> Deferred.Or_error.return None
+    | Web web ->
         let caddy = Caddy.create ~target ~resource_key ~web in
-        Caddy.delete caddy >>| function true -> Removed | false -> Missing)
+        Caddy.preflight_delete caddy >>| Option.some
+  in
+  let%bind route =
+    match caddy_preflight with
+    | None -> Deferred.Or_error.return Not_configured
+    | Some deletion -> (
+        Caddy.execute_delete deletion >>| function
+        | true -> Removed
+        | false -> Missing)
+  in
+  let%map containers_removed, secrets_removed =
+    Podman.execute_prepared_prune podman_preflight
   in
   {
     project;

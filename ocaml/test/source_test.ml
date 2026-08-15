@@ -39,6 +39,10 @@ let run_tests () =
   let%bind _ =
     run_git ~working_directory:directory [ "commit"; "-m"; "Release A" ]
   in
+  let%bind identity =
+    Nixploy.Source.repository_identity ~working_directory:directory
+  in
+  assert (String.equal (Or_error.ok_exn identity) "git@example.invalid:test.git");
   let%bind preview = Nixploy.Source.preview_main ~working_directory:directory in
   let preview = Or_error.ok_exn preview in
   assert (String.equal (Nixploy.Source.commit_subject preview) "Release A");
@@ -62,11 +66,25 @@ let run_tests () =
          (Filename.concat (Nixploy.Source.path prepared) "release.txt"))
       "release-a\n");
   let%bind () = Nixploy.Source.cleanup prepared in
+  let%bind _ =
+    run_git ~working_directory:directory
+      [ "config"; "--unset-all"; "remote.origin.url" ]
+  in
+  let%bind fallback =
+    Nixploy.Source.repository_identity ~working_directory:application_directory
+  in
+  assert (
+    String.equal (Or_error.ok_exn fallback)
+      (Filename_unix.realpath application_directory));
   let%bind nested =
     Nixploy.Source.prepare ~working_directory:application_directory
       ~commit:preview
   in
   let nested = Or_error.ok_exn nested in
+  assert (
+    String.equal
+      (Nixploy.Source.repository nested)
+      (Filename_unix.realpath application_directory));
   assert (
     String.equal
       (In_channel.read_all

@@ -4,11 +4,15 @@ open Core
 type t
 type commit
 type deployment
+type prune_result
+
+type prune_route_state = Not_configured | Missing | Removed
+[@@deriving compare, equal, sexp]
 
 type deployment_state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
 
-val create : ?store:Store.t -> unit -> t
+val create : store:Store.t -> unit -> t
 
 val preview_main_commit :
   t -> working_directory:string -> commit Deferred.Or_error.t
@@ -31,8 +35,14 @@ val prune :
   t ->
   working_directory:string ->
   target:Target_name.t ->
-  Prune.t Deferred.Or_error.t
+  prune_result Deferred.Or_error.t
 
+val prune_project : prune_result -> Project_name.t
+val prune_target : prune_result -> Target_name.t
+val prune_resource_key : prune_result -> Resource_key.t
+val prune_containers_removed : prune_result -> int
+val prune_secrets_removed : prune_result -> int
+val prune_route_state : prune_result -> prune_route_state
 val commit_revision : commit -> string
 val commit_subject : commit -> string
 val commit_timestamp_ms : commit -> int64
@@ -45,6 +55,7 @@ val deployment_state_name : deployment_state -> string
 
 module For_testing : sig
   val create :
+    store:Store.t ->
     preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->
     find_commit:
       (working_directory:string ->
@@ -62,8 +73,17 @@ module For_testing : sig
     prune:
       (working_directory:string ->
       target:Target_name.t ->
-      Prune.t Deferred.Or_error.t) ->
+      prune_result Deferred.Or_error.t) ->
     t
+
+  val prune_result :
+    project:Project_name.t ->
+    target:Target_name.t ->
+    resource_key:Resource_key.t ->
+    containers_removed:int ->
+    secrets_removed:int ->
+    route:prune_route_state ->
+    prune_result
 
   val commit :
     revision:string -> subject:string -> timestamp_ms:int64 -> commit Or_error.t

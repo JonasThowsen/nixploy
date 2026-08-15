@@ -2,6 +2,7 @@ open Async
 open Core
 
 type t
+type deletion
 type route = Missing | Existing of { active_port : int }
 
 val create :
@@ -16,7 +17,12 @@ val switch :
   t -> previous:route -> candidate_port:int -> unit Deferred.Or_error.t
 
 val restore : t -> previous:route -> unit Deferred.Or_error.t
-val delete : t -> bool Deferred.Or_error.t
+
+val preflight_delete : t -> deletion Deferred.Or_error.t
+(** Verifies that the exact managed route is absent or has the expected route,
+    proxy, domain, and upstream structure without mutating Caddy. *)
+
+val execute_delete : deletion -> bool Deferred.Or_error.t
 val health_check : t -> port:int -> unit Deferred.Or_error.t
 val observe_health : t -> port:int -> bool Deferred.Or_error.t
 

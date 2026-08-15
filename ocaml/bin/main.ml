@@ -69,15 +69,18 @@ let status_command =
 
 let print_prune_result result =
   printf "Project:    %s\n"
-    (Nixploy.Prune.project result |> Nixploy.Project_name.to_string);
+    (Nixploy.Application.prune_project result |> Nixploy.Project_name.to_string);
   printf "Target:     %s\n"
-    (Nixploy.Prune.target result |> Nixploy.Target_name.to_string);
+    (Nixploy.Application.prune_target result |> Nixploy.Target_name.to_string);
   printf "Resource:   %s\n"
-    (Nixploy.Prune.resource_key result |> Nixploy.Resource_key.to_string);
-  printf "Containers: %d removed\n" (Nixploy.Prune.containers_removed result);
-  printf "Secrets:    %d removed\n" (Nixploy.Prune.secrets_removed result);
+    (Nixploy.Application.prune_resource_key result
+    |> Nixploy.Resource_key.to_string);
+  printf "Containers: %d removed\n"
+    (Nixploy.Application.prune_containers_removed result);
+  printf "Secrets:    %d removed\n"
+    (Nixploy.Application.prune_secrets_removed result);
   printf "Caddy route: %s\n"
-    (match Nixploy.Prune.route result with
+    (match Nixploy.Application.prune_route_state result with
     | Not_configured -> "not configured"
     | Missing -> "already absent"
     | Removed -> "removed")
@@ -91,6 +94,10 @@ let prune_command =
        flag "--directory"
          (optional_with_default "." string)
          ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     and state_db =
+       flag "--state-db"
+         (optional_with_default (Nixploy.State_path.default ()) string)
+         ~doc:"PATH durable control-plane state database"
      in
      fun () ->
        let open Deferred.Let_syntax in
@@ -100,17 +107,25 @@ let prune_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let application = Nixploy.Application.create () in
-           let%bind result =
-             Nixploy.Application.prune application ~working_directory ~target
-           in
-           match result with
-           | Ok result ->
-               print_prune_result result;
-               exit_after_signal ~default:(fun () -> Deferred.unit)
+           let%bind opened = Nixploy.Store.open_ ~path:state_db in
+           match opened with
            | Error error ->
-               eprintf "Prune failed: %s\n" (Error.to_string_hum error);
-               exit_after_signal ~default:(fun () -> Shutdown.exit 1)))
+               eprintf "Could not open control-plane state: %s\n"
+                 (Error.to_string_hum error);
+               Shutdown.exit 1
+           | Ok store -> (
+               let application = Nixploy.Application.create ~store () in
+               let%bind result =
+                 Nixploy.Application.prune application ~working_directory
+                   ~target
+               in
+               match result with
+               | Ok result ->
+                   print_prune_result result;
+                   exit_after_signal ~default:(fun () -> Deferred.unit)
+               | Error error ->
+                   eprintf "Prune failed: %s\n" (Error.to_string_hum error);
+                   exit_after_signal ~default:(fun () -> Shutdown.exit 1))))
 
 let deploy_command =
   Async.Command.async
