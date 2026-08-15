@@ -85,7 +85,15 @@ exist.
 Unset `NIXPLOY_AUTH_MODE` is the explicit local-development default. Set it to
 `unrestricted` for an explicitly unrestricted development process or to
 `tailscale` with `NIXPLOY_OPERATOR_EMAIL`; any other set value is a startup
-error.
+error. Static HTTP assets keep this identity policy. Browser WebSocket RPC
+upgrades additionally require an `http` or `https` `Origin` whose authority
+exactly matches the request `Host`, so same-origin localhost development works
+without configuration. When a reverse proxy changes the public authority, set
+`NIXPLOY_ALLOWED_ORIGIN` to that one public origin (for example,
+`https://nixploy.example.com`). The value must contain only a scheme and
+authority: userinfo, paths, queries, fragments, missing/`null` origins, and
+suffix matches are rejected. Host names are case-insensitive and explicit
+standard ports are equivalent to their `http`/`https` defaults.
 
 The operator surface now previews and confirms an exact Git commit, lists recent
 deployments, cancels active deployments cooperatively, searches and follows

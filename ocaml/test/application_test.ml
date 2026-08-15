@@ -54,6 +54,7 @@ let run_tests () =
           ~on_stage
           ~on_requested
           ~application_key
+          ~expected_project
           ~working_directory
           ~commit
           ~target:_
@@ -74,14 +75,15 @@ let run_tests () =
                 ~state:!deployment_state ~revision ()
             in
             deployed :=
-              (application_key, working_directory, revision) :: !deployed;
+              (application_key, expected_project, working_directory, revision)
+              :: !deployed;
             let%map () =
               on_stage Nixploy.Deployment.Preparing_source revision
             in
             on_requested deployment;
             Ok deployment)
-      ~prune:(fun ~working_directory ~target ->
-        pruned := (working_directory, target) :: !pruned;
+      ~prune:(fun ~expected_project ~working_directory ~target ->
+        pruned := (expected_project, working_directory, target) :: !pruned;
         match !prune_error with
         | None -> Deferred.Or_error.return prune_result
         | Some error -> Deferred.return (Error error))
@@ -122,18 +124,19 @@ let run_tests () =
       (Nixploy.Application.commit_revision resolved));
   let%bind rpc_result =
     Nixploy.Application.deploy ~on_stage ~on_requested
-      ~application_key:"example" application ~working_directory:directory
-      ~commit:resolved ~target ()
+      ~application_key:"example" ~expected_project:project application
+      ~working_directory:directory ~commit:resolved ~target ()
   in
   let rpc_deployment = assert_ok rpc_result in
   assert (
     String.equal selected_revision
       (Nixploy.Application.deployment_revision rpc_deployment
       |> Option.value_exn));
-  [%test_eq: (string option * string * string) list]
+  [%test_eq:
+    (string option * Nixploy.Project_name.t option * string * string) list]
     [
-      (None, directory, main_revision);
-      (Some "example", directory, selected_revision);
+      (None, None, directory, main_revision);
+      (Some "example", Some project, directory, selected_revision);
     ]
     (List.rev !deployed);
   [%test_eq: (Nixploy.Deployment.stage * string) list]
@@ -256,8 +259,13 @@ let run_tests () =
   in
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Absent);
-  [%test_eq: (string * Nixploy.Target_name.t) list]
-    [ (directory, target); (directory, target); (directory, target) ]
+  [%test_eq:
+    (Nixploy.Project_name.t option * string * Nixploy.Target_name.t) list]
+    [
+      (None, directory, target);
+      (None, directory, target);
+      (None, directory, target);
+    ]
     (List.rev !pruned);
   Deferred.unit
 

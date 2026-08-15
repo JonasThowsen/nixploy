@@ -35,12 +35,14 @@ type t = {
     on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
     on_requested:(deployment -> unit) ->
     application_key:string option ->
+    expected_project:Project_name.t option ->
     working_directory:string ->
     commit:commit ->
     target:Target_name.t ->
     unit ->
     deployment Deferred.Or_error.t;
   prune :
+    expected_project:Project_name.t option ->
     working_directory:string ->
     target:Target_name.t ->
     prune_result Deferred.Or_error.t;
@@ -58,13 +60,14 @@ let deployment_of_store deployment =
   }
 
 let create ~store () =
-  let deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
-      ~target () =
+  let deploy ~on_stage ~on_requested ~application_key ~expected_project
+      ~working_directory ~commit ~target () =
     let open Deferred.Or_error.Let_syntax in
     Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
-      ?application_key ~store ~working_directory ~commit ~target ()
+      ?application_key ?expected_project ~store ~working_directory ~commit
+      ~target ()
     >>| deployment_of_store
   in
   {
@@ -72,7 +75,9 @@ let create ~store () =
     preview_main = Source.preview_main;
     find_commit = Source.find_commit;
     deploy;
-    prune = Prune.prune;
+    prune =
+      (fun ~expected_project ~working_directory ~target ->
+        Prune.prune ?expected_project ~working_directory ~target ());
   }
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
@@ -83,8 +88,8 @@ let resolve_commit t ~working_directory ~revision =
 let canonical_working_directory working_directory =
   Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
 
-let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
-    ~working_directory ~commit ~target () =
+let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
+    ?expected_project t ~working_directory ~commit ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -94,8 +99,8 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
             Store.set_resource_state t.store ~working_directory ~target Unknown
           in
           let%bind deployment =
-            t.deploy ~on_stage ~on_requested ~application_key ~working_directory
-              ~commit ~target ()
+            t.deploy ~on_stage ~on_requested ~application_key ~expected_project
+              ~working_directory ~commit ~target ()
           in
           let%map () =
             match deployment.state with
@@ -107,7 +112,7 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
           in
           deployment)
 
-let prune t ~working_directory ~target =
+let prune ?expected_project t ~working_directory ~target =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -116,7 +121,9 @@ let prune t ~working_directory ~target =
           let%bind () =
             Store.set_resource_state t.store ~working_directory ~target Unknown
           in
-          let%bind result = t.prune ~working_directory ~target in
+          let%bind result =
+            t.prune ~expected_project ~working_directory ~target
+          in
           let%map () =
             Store.set_resource_state t.store ~working_directory ~target Absent
           in

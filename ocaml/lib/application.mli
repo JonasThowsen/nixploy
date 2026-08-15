@@ -27,6 +27,7 @@ val deploy :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(deployment -> unit) ->
   ?application_key:string ->
+  ?expected_project:Project_name.t ->
   t ->
   working_directory:string ->
   commit:commit ->
@@ -35,6 +36,7 @@ val deploy :
   deployment Deferred.Or_error.t
 
 val prune :
+  ?expected_project:Project_name.t ->
   t ->
   working_directory:string ->
   target:Target_name.t ->
@@ -74,13 +76,15 @@ module For_testing : sig
       (on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
       on_requested:(deployment -> unit) ->
       application_key:string option ->
+      expected_project:Project_name.t option ->
       working_directory:string ->
       commit:commit ->
       target:Target_name.t ->
       unit ->
       deployment Deferred.Or_error.t) ->
     prune:
-      (working_directory:string ->
+      (expected_project:Project_name.t option ->
+      working_directory:string ->
       target:Target_name.t ->
       prune_result Deferred.Or_error.t) ->
     t

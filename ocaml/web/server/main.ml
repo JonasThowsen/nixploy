@@ -166,6 +166,8 @@ let deploy state _connection_state query =
                       ~data:cancellation;
                     Ivar.fill_if_empty started operation_id)
                   ~application_key:(Managed_application.key application)
+                  ~expected_project:
+                    (Deployment_start.expected_project application)
                   state.application ~working_directory ~commit
                   ~target:(Managed_application.target application)
                   ())
@@ -196,8 +198,9 @@ let deploy state _connection_state query =
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
-    ~prune:(fun ~working_directory ~target ->
-      Nixploy.Application.prune state.application ~working_directory ~target)
+    ~prune:(fun ~expected_project ~working_directory ~target ->
+      Nixploy.Application.prune ~expected_project state.application
+        ~working_directory ~target)
     ~on_started:(fun ~application_key ->
       Hashtbl.remove state.runtime_cache application_key)
     query
@@ -547,13 +550,12 @@ let http_handler ~authorization ~body:_ _address request =
   | "" | "/" | "/index.html" -> forbidden ()
   | _ -> respond_string ~content_type:"text/html" ~status:`Not_found not_found
 
-let should_process_request authorization _address = function
+let should_process_request authorization origin_policy _address = function
   | Rpc_websocket.Rpc.Connection_source.Plain_tcp ->
       Or_error.error_string "plain TCP RPC is disabled"
   | Web (_headers, `is_websocket_request false) -> Ok ()
   | Web (headers, `is_websocket_request true) ->
-      if Authorization.authorized authorization headers then Ok ()
-      else Or_error.error_string "Tailscale identity is not authorized"
+      Authorization.authorize_websocket authorization origin_policy headers
 
 let run ~port ~state_db =
   let open Deferred.Let_syntax in
@@ -561,6 +563,7 @@ let run ~port ~state_db =
     Managed_application.load_environment () |> Or_error.ok_exn
   in
   let authorization = Authorization.load_environment () |> Or_error.ok_exn in
+  let origin_policy = Authorization.load_origin_policy () |> Or_error.ok_exn in
   let%bind store = Store.open_ ~path:state_db >>| Or_error.ok_exn in
   let state =
     {
@@ -575,7 +578,8 @@ let run ~port ~state_db =
     Rpc_websocket.Rpc.serve ~on_handler_error:`Raise ~mode:`TCP
       ~where_to_listen:(Tcp.Where_to_listen.bind_to Localhost (On_port port))
       ~http_handler:(fun () -> http_handler ~authorization)
-      ~should_process_request:(should_process_request authorization)
+      ~should_process_request:
+        (should_process_request authorization origin_policy)
       ~implementations:(implementations state)
       ~initial_connection_state:(fun () _initiated_from _address _connection ->
         ())

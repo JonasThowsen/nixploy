@@ -33,6 +33,12 @@ let expect_error = function
   | Ok _ -> failwith "deployment unexpectedly succeeded"
   | Error _ -> ()
 
+let expect_error_containing result text =
+  match result with
+  | Ok _ -> failwith "deployment unexpectedly succeeded"
+  | Error error ->
+      assert (String.is_substring (Error.to_string_hum error) ~substring:text)
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let root = Filename_unix.temp_dir "nixploy-deployment-test-" "" in
@@ -231,8 +237,8 @@ exit 99
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let deploy ?record_stage operation_id =
-        Nixploy.Deployment.deploy ?record_stage ~operation_id
+      let deploy ?record_stage ?expected_project operation_id =
+        Nixploy.Deployment.deploy ?record_stage ?expected_project ~operation_id
           ~working_directory:repository ~commit ~target ()
       in
       let application_store_path = Filename.concat root "application.sqlite" in
@@ -271,6 +277,49 @@ exit 99
           [%equal: Nixploy.Application.resource_state]
             (assert_ok resource_state) Unknown)
       in
+
+      let wrong_project =
+        Nixploy.Project_name.of_string "another-project" |> assert_ok
+      in
+      clear_scenario ();
+      let%bind project_mismatch =
+        deploy ~expected_project:wrong_project "operation-project-mismatch"
+      in
+      expect_error_containing project_mismatch "managed project mismatch";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "nix|eval|");
+      [%test_eq: int] 0 (count lines "nix|build|");
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
+
+      clear_scenario ();
+      let%bind marked_present =
+        Nixploy.Store.set_resource_state application_store
+          ~working_directory:repository ~target Present
+      in
+      assert_ok marked_present;
+      let%bind rejected_application =
+        Nixploy.Application.deploy ~expected_project:wrong_project application
+          ~working_directory:repository ~commit:application_commit ~target ()
+      in
+      let rejected_application = assert_ok rejected_application in
+      assert (
+        [%equal: Nixploy.Application.deployment_state]
+          (Nixploy.Application.deployment_state rejected_application)
+          Failed);
+      let%bind rejected_state =
+        Nixploy.Application.resource_state application
+          ~working_directory:repository ~target
+      in
+      assert (
+        [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
+          Unknown);
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 0 (count lines "nix|build|");
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
 
       clear_scenario ();
       let stages = ref [] in

@@ -147,6 +147,20 @@ nix build .#nixploy
 
 Protect pure domain rules with focused tests. At process boundaries, assert fixed argv, stdin, environment, output bounds, and compensation. For each tracer, exercise a packaged consumer rather than treating compilation as completion.
 
+## Control-plane browser origin policy
+
+Static control-plane HTTP requests use `NIXPLOY_AUTH_MODE` and, in Tailscale
+mode, `NIXPLOY_OPERATOR_EMAIL`. WebSocket RPC upgrades use the same identity
+check and also fail closed unless the browser supplies a valid `http` or
+`https` `Origin`. By default that origin authority must equal the request
+`Host`, preserving same-origin localhost development. Set
+`NIXPLOY_ALLOWED_ORIGIN` at process startup when the exact public origin differs
+from the forwarded host (for example `https://nixploy.example.com`). It accepts
+one scheme-and-authority origin only; it does not accept userinfo, paths,
+queries, fragments, wildcard or suffix matching. Scheme/host case and default
+ports are normalized before exact comparison. Missing, `null`, malformed, or
+mismatched origins are rejected in every auth mode, including Tailscale.
+
 ## Agent delivery
 
 Repository agents commit and push completed task-owned changes automatically. They must protect unrelated work, stage explicit paths, avoid force-pushes, and report validation and commit receipts. See `.agents/skills/commit-and-push/SKILL.md`.

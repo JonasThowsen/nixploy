@@ -27,7 +27,16 @@ let () =
       (Deployment_output.terminal_state output)
       (Deployment_output.Failed (Some "candidate failed")));
   assert (String.equal "operation-123" (Deployment_start.operation_id failed));
+  let managed_application =
+    Nixploy.Managed_application.all_of_json
+      {|{"example":{"project":"example","target":"production","repository":"/srv/example"}}|}
+    |> Or_error.ok_exn |> List.hd_exn
+  in
   let project = Nixploy.Project_name.of_string "example" |> Or_error.ok_exn in
+  assert (
+    Nixploy.Project_name.equal
+      (Deployment_start.expected_project managed_application)
+      project);
   let target = Nixploy.Target_name.of_string "production" |> Or_error.ok_exn in
   let resource_key =
     Nixploy.Resource_key.derive ~project ~target |> Or_error.ok_exn

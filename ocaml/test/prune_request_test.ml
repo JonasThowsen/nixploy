@@ -28,8 +28,8 @@ let run_tests () =
   in
   let prune_calls = ref [] in
   let invalidated = ref [] in
-  let prune ~working_directory ~target =
-    prune_calls := (working_directory, target) :: !prune_calls;
+  let prune ~expected_project ~working_directory ~target =
+    prune_calls := (expected_project, working_directory, target) :: !prune_calls;
     Deferred.Or_error.return application_result
   in
   let on_started ~application_key =
@@ -46,8 +46,11 @@ let run_tests () =
   assert (Int.equal success.secrets_removed 1);
   assert ([%equal: Protocol.Prune_result.Route.t] success.route Missing);
   [%test_eq: string list] [ "example" ] !invalidated;
-  [%test_eq: int] 1 (List.length !prune_calls);
-  let failed_prune ~working_directory:_ ~target:_ =
+  [%test_eq: (Nixploy.Project_name.t * string * Nixploy.Target_name.t) list]
+    [ (project, directory, target) ]
+    !prune_calls;
+  let failed_prune ~expected_project ~working_directory:_ ~target:_ =
+    assert (Nixploy.Project_name.equal expected_project project);
     Deferred.Or_error.error_string "partial cleanup failed"
   in
   let%bind failure =

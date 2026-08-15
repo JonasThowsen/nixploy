@@ -90,8 +90,8 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-let deploy ?(record_stage = no_stage) ~operation_id ~working_directory ~commit
-    ~target:target_name () =
+let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
+    ~working_directory ~commit ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
     record_stage Preparing_source "Materializing the confirmed Git commit"
@@ -108,10 +108,20 @@ let deploy ?(record_stage = no_stage) ~operation_id ~working_directory ~commit
         Nix_configuration.load_evaluated ~working_directory:(Source.path source)
       in
       let configuration = Nix_configuration.configuration evaluated in
+      let project = Configuration.project configuration in
+      let%bind () =
+        match expected_project with
+        | None -> Deferred.Or_error.return ()
+        | Some expected when Project_name.equal expected project ->
+            Deferred.Or_error.return ()
+        | Some _ ->
+            Deferred.Or_error.error_string
+              "managed project mismatch: evaluated configuration project \
+               differs from the allowlisted project"
+      in
       let%bind target =
         Deferred.return (Configuration.find_target configuration target_name)
       in
-      let project = Configuration.project configuration in
       let%bind canonical_resource_key =
         Deferred.return (Resource_key.derive ~project ~target:target_name)
       in

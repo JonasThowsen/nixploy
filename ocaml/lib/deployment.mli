@@ -20,6 +20,7 @@ type t
 
 val deploy :
   ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
+  ?expected_project:Project_name.t ->
   operation_id:string ->
   working_directory:string ->
   commit:Source.commit ->

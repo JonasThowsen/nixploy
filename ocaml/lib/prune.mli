@@ -6,7 +6,11 @@ type route = Not_configured | Missing | Removed
 type t
 
 val prune :
-  working_directory:string -> target:Target_name.t -> t Deferred.Or_error.t
+  ?expected_project:Project_name.t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  unit ->
+  t Deferred.Or_error.t
 (** Prune is cooperatively cancellable between and during bounded subprocesses.
     Resources already removed before cancellation are not recreated. *)
 

@@ -4,6 +4,7 @@ val deploy :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(Store.deployment -> unit) ->
   ?application_key:string ->
+  ?expected_project:Project_name.t ->
   store:Store.t ->
   working_directory:string ->
   commit:Source.commit ->
@@ -15,6 +16,7 @@ val deploy_within_lease :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(Store.deployment -> unit) ->
   ?application_key:string ->
+  ?expected_project:Project_name.t ->
   store:Store.t ->
   working_directory:string ->
   commit:Source.commit ->

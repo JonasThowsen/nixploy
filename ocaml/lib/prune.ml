@@ -20,13 +20,23 @@ let containers_removed t = t.containers_removed
 let secrets_removed t = t.secrets_removed
 let route t = t.route
 
-let prune ~working_directory ~target:target_name =
+let prune ?expected_project ~working_directory ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind configuration = Nix_configuration.load ~working_directory in
+  let project = Configuration.project configuration in
+  let%bind () =
+    match expected_project with
+    | None -> Deferred.Or_error.return ()
+    | Some expected when Project_name.equal expected project ->
+        Deferred.Or_error.return ()
+    | Some _ ->
+        Deferred.Or_error.error_string
+          "managed project mismatch: evaluated configuration project differs \
+           from the allowlisted project"
+  in
   let%bind target =
     Deferred.return (Configuration.find_target configuration target_name)
   in
-  let project = Configuration.project configuration in
   let%bind canonical =
     Deferred.return (Resource_key.derive ~project ~target:target_name)
   in

@@ -257,10 +257,34 @@ exit 99
       let application =
         Nixploy.Application.create ~store:(assert_ok opened) ()
       in
-      let prune () =
-        Nixploy.Application.prune application
+      let prune ?expected_project () =
+        Nixploy.Application.prune ?expected_project application
           ~working_directory:project_directory ~target:target_name
       in
+
+      let wrong_project =
+        Nixploy.Project_name.of_string "another-project" |> assert_ok
+      in
+      clear_scenario canonical_key;
+      let%bind marked_present =
+        Nixploy.Store.set_resource_state (assert_ok opened)
+          ~working_directory:project_directory ~target:target_name Present
+      in
+      assert_ok marked_present;
+      let%bind project_mismatch = prune ~expected_project:wrong_project () in
+      expect_error_containing project_mismatch "managed project mismatch";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "nix|eval|");
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
+      let%bind rejected_state =
+        Nixploy.Application.resource_state application
+          ~working_directory:project_directory ~target:target_name
+      in
+      assert (
+        [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
+          Unknown);
 
       clear_scenario canonical_key;
       let%bind non_web = prune () in
