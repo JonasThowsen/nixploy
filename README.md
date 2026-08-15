@@ -4,7 +4,7 @@ nixploy is a small deployment CLI for shipping Nix-built OCI/Docker images to se
 
 The goal is to keep deployment configuration next to your app in `flake.nix`, so the same image can be deployed to multiple targets such as dev, staging, and production. nixploy builds the configured flake image output, loads it into remote Podman over SSH, starts the container, and can optionally manage Caddy blue/green HTTP routing.
 
-The active implementation is OCaml. Its application API is being made the single source of deployment behavior for both the CLI and Bonsai web UI, with the original user-facing C# CLI as the capability-parity reference. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the product boundary, OCaml module-design rules, parity definition, migration order, and legacy-code policy.
+The active implementation is OCaml. Its application API is the single source of deployment behavior for both the CLI and Bonsai web UI, with the original user-facing C# CLI retained only as a capability-parity reference under [`legacy/`](legacy/README.md). See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the product boundary, OCaml module-design rules, and delivery milestones.
 
 ## What it does
 
@@ -270,10 +270,10 @@ Phoenix/PostgreSQL deployment rows are not migrated. Existing remote Podman,
 secret, and Caddy ownership identities are preserved by the OCaml application
 engine rather than copied from PostgreSQL.
 
-## Transitional legacy outputs
+## Legacy archive
 
-Phoenix, C#, and MoonBit source remains in place only until the legacy archive
-milestone. `packages.control-plane`, `packages.legacy-nixploy`,
-`packages.moonbitPolicy`, and `packages.fetch-deps` remain temporarily as
-rollback artifacts, but they are not default packages or default flake checks.
-Do not run a legacy control plane concurrently with `nixploy.service`.
+The retired Phoenix, C#, and MoonBit implementations and historical rewrite
+notes are preserved under [`legacy/`](legacy/README.md) for reference only. The
+root flake does not package, check, or depend on the archive. Its only package
+outputs are `packages.nixploy` and `packages.default`, both containing the active
+OCaml CLI and web service.

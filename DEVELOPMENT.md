@@ -25,7 +25,7 @@ The following are legacy and must not influence new production design:
 - the MoonBit deployment policy;
 - the expanded C# machine protocol created for Phoenix.
 
-Legacy sources will move under `legacy/` after the OCaml API, package, and NixOS service no longer depend on them. They may be consulted for compatibility evidence but receive no new product features.
+Legacy sources are archived under `legacy/` now that the OCaml API, package, and NixOS service no longer depend on them. They may be consulted for compatibility evidence but receive no new product features.
 
 ## Source policy
 
@@ -133,8 +133,8 @@ The default NixOS module is `services.nixploy`. It runs the packaged OCaml
 Podman client state under `/var/lib/nixploy`. The old
 `services.nixploy-control-plane` namespace is only a rename alias; split roles,
 PostgreSQL, Ecto, release registration, and backup behavior are not carried
-forward. Legacy package outputs remain temporarily for a fenced rollback until
-milestone 6, but they are no longer default acceptance checks.
+forward. Legacy package outputs remained temporarily for a fenced rollback until
+milestone 6 and have now been removed.
 
 A NixOS VM check starts the production package, verifies health and unrestricted
 UI access, checks the loopback listener and SQLite state, and performs a typed
@@ -151,9 +151,9 @@ OCaml service and never overlap deployment engines. Preserve the long-lived
 identities. PostgreSQL history is not migrated; the OCaml service begins a new
 SQLite history while retaining the established remote resource identities.
 
-### 6. Legacy archive
+### 6. Legacy archive (complete)
 
-Move C#, Phoenix, MoonBit, and historical implementation documents beneath `legacy/`. Remove their packages, checks, dependencies, and development tools from the active root flake.
+C#, Phoenix, MoonBit, and historical implementation documents are preserved beneath `legacy/` as read-only references. Their packages, checks, dependencies, and development tools have been removed from the active root flake.
 
 **Acceptance:** active root builds and tests contain only Nix configuration plus OCaml CLI/web; repository search finds no production dependency on `legacy/`.
 

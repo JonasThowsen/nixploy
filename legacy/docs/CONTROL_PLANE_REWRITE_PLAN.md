@@ -1,9 +1,9 @@
 # nixploy Control Plane Rewrite Plan
 
 > **Historical document:** This records the original rewrite architecture and
-> delivery plan. It is not current product scope. [`ROADMAP.md`](ROADMAP.md)
+> delivery plan. It is not current product scope. [`ROADMAP.md`](../../ROADMAP.md)
 > contains the deliberately narrow OCaml control-plane backlog, and
-> [`UI_DIRECTION.md`](UI_DIRECTION.md) defines the operator interface.
+> [`UI_DIRECTION.md`](../../UI_DIRECTION.md) defines the operator interface.
 
 ## Objective
 

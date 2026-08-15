@@ -1,9 +1,9 @@
 # nixploy OCaml rewrite
 
 This directory contains the default nixploy CLI and its Bonsai control-plane
-surface. The NixOS service now runs this OCaml package directly. Legacy packages
-remain temporarily only as fenced rollback artifacts while their sources await
-the archive milestone.
+surface. The NixOS service runs this OCaml package directly. Retired
+implementations are preserved under [`../legacy/`](../legacy/README.md) as
+read-only references and are not package dependencies.
 
 ## Direction
 
@@ -158,6 +158,7 @@ repository paths, strict known-host data, SSH keys, SOPS identities, and remote
 resource identity. PostgreSQL history is deliberately not imported into the new
 SQLite database. A rollback must use the same fence in reverse.
 
-The Phoenix remote protocol and its legacy packages are no longer active
-service dependencies. They remain available only for a temporary, explicitly
-fenced rollback until the source archive milestone.
+The Phoenix remote protocol and all retired packages have been removed from the
+active flake. Historical sources remain available only in the read-only legacy
+archive; rollback requires selecting an older repository revision and observing
+the same no-overlap deployment-engine fence.
