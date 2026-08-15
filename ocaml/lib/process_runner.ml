@@ -26,6 +26,8 @@ let unregister_process_group pid =
     List.filter !active_process_groups ~f:(fun active ->
         not (Pid.equal active pid))
 
+let should_force_termination ~already_delivered = already_delivered
+
 let handle_termination_signals () =
   match !termination_state with
   | Some _ -> ()
@@ -33,9 +35,12 @@ let handle_termination_signals () =
       let state = { delivered = Ivar.create () } in
       termination_state := Some state;
       Async.Signal.handle [ Signal.int; Signal.term ] ~f:(fun signal ->
-          if Ivar.is_empty state.delivered then
-            Ivar.fill_exn state.delivered signal
-          else if not (List.is_empty !active_process_groups) then (
+          if
+            not
+              (should_force_termination
+                 ~already_delivered:(not (Ivar.is_empty state.delivered)))
+          then Ivar.fill_exn state.delivered signal
+          else (
             List.iter !active_process_groups ~f:(fun pid ->
                 Signal_unix.send_i Signal.kill (`Group pid));
             Shutdown.shutdown_with_signal_exn signal))
@@ -47,6 +52,12 @@ let cancellation_error prog = Or_error.errorf "%s cancelled" prog
 
 let termination_signal () =
   Option.bind !termination_state ~f:(fun state -> Ivar.peek state.delivered)
+
+let termination_requested () =
+  handle_termination_signals ();
+  match !termination_state with
+  | Some state -> Ivar.read state.delivered
+  | None -> raise_s [%message "termination signal handler was not initialized"]
 
 let read_bounded reader ~stream ~max_output_bytes ~overflow =
   let buffer = Buffer.create (Int.min max_output_bytes 65_536) in
@@ -212,3 +223,7 @@ let run_stdout ?working_directory ?stdin ?env ?ignore_termination ~timeout
       Deferred.Or_error.errorf "%s failed (%s): %s" prog
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip result.stderr)
+
+module For_testing = struct
+  let should_force_termination = should_force_termination
+end

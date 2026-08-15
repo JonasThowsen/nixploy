@@ -312,6 +312,7 @@ in
         LoadCredential = map (credential: "${credential.name}:${credential.source}") configuredCredentials;
         Restart = "on-failure";
         RestartSec = 5;
+        TimeoutStopSec = 30;
         StateDirectory = "nixploy";
         StateDirectoryMode = "0700";
         WorkingDirectory = "/var/lib/nixploy";

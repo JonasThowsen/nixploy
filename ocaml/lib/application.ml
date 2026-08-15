@@ -23,6 +23,9 @@ type resource_state = Store.resource_state = Unknown | Present | Absent
 type cancellation_result = Cancellation_requested | Already_requested
 [@@deriving compare, equal, sexp]
 
+type shutdown_transition = Shutdown_started | Already_shutting_down
+[@@deriving compare, equal, sexp]
+
 type log_line = { timestamp : string option; text : string }
 [@@deriving compare, equal, sexp]
 
@@ -94,6 +97,12 @@ type scope = {
 
 type active_operation = { scope : scope; cancellation : Cancellation.t }
 
+type mutation_lifecycle = {
+  mutable accepting : bool;
+  mutable active_count : int;
+  drained : unit Ivar.t;
+}
+
 type cached_runtime = {
   working_directory : string;
   target : Target_name.t;
@@ -132,6 +141,7 @@ type t = {
     (Managed_application.t -> target_metrics Deferred.t) option;
   active : active_operation String.Table.t;
   runtime_cache : cached_runtime String.Table.t;
+  mutations : mutation_lifecycle;
 }
 
 let no_stage _ _ = Deferred.unit
@@ -216,7 +226,43 @@ let create ~store () =
     metrics_override = None;
     active = String.Table.create ();
     runtime_cache = String.Table.create ();
+    mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
+
+let begin_shutdown t =
+  if not t.mutations.accepting then Already_shutting_down
+  else (
+    t.mutations.accepting <- false;
+    if Int.equal t.mutations.active_count 0 then
+      Ivar.fill_if_empty t.mutations.drained ();
+    Shutdown_started)
+
+let mutations_drained t =
+  if Int.equal t.mutations.active_count 0 then Deferred.unit
+  else Ivar.read t.mutations.drained
+
+let begin_mutation t =
+  if not t.mutations.accepting then
+    Or_error.error_string
+      "application is shutting down; deploy and prune are unavailable"
+  else (
+    t.mutations.active_count <- t.mutations.active_count + 1;
+    Ok ())
+
+let finish_mutation t =
+  t.mutations.active_count <- t.mutations.active_count - 1;
+  if t.mutations.active_count < 0 then
+    raise_s [%message "application mutation accounting underflow"];
+  if (not t.mutations.accepting) && Int.equal t.mutations.active_count 0 then
+    Ivar.fill_if_empty t.mutations.drained ()
+
+let account_mutation t operation =
+  match begin_mutation t with
+  | Error error -> Deferred.return (Error error)
+  | Ok () ->
+      Monitor.protect operation ~finally:(fun () ->
+          finish_mutation t;
+          Deferred.unit)
 
 let open_ ~state_path =
   let%map.Deferred.Or_error store = Store.open_ ~path:state_path in
@@ -254,8 +300,8 @@ let invalidate_runtime_scope t ~working_directory ~target =
           Hashtbl.remove t.runtime_cache key
       | Some _ | None -> ())
 
-let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
-    ?expected_project t ~working_directory ~source ~target () =
+let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
+    ?application_key ?expected_project t ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -298,7 +344,13 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
       invalidate_runtime_scope t ~working_directory ~target;
       result
 
-let prune ?application_key ?expected_project ?repository_identity t
+let deploy ?on_stage ?on_requested ?application_key ?expected_project t
+    ~working_directory ~source ~target () =
+  account_mutation t (fun () ->
+      deploy_unaccounted ?on_stage ?on_requested ?application_key
+        ?expected_project t ~working_directory ~source ~target ())
+
+let prune_unaccounted ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =
   ignore application_key;
   match canonical_working_directory working_directory with
@@ -323,6 +375,12 @@ let prune ?application_key ?expected_project ?repository_identity t
       in
       invalidate_runtime_scope t ~working_directory ~target;
       result
+
+let prune ?application_key ?expected_project ?repository_identity t
+    ~working_directory ~target =
+  account_mutation t (fun () ->
+      prune_unaccounted ?application_key ?expected_project ?repository_identity
+        t ~working_directory ~target)
 
 let live_status t ~scope = t.load_status ~scope
 let status_project = Status.project
@@ -727,6 +785,8 @@ module For_testing = struct
       metrics_override = metrics;
       active = String.Table.create ();
       runtime_cache = String.Table.create ();
+      mutations =
+        { accepting = true; active_count = 0; drained = Ivar.create () };
     }
 
   let prune_result ~project ~target ~resource_key ~containers_removed

@@ -145,19 +145,23 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
         record_stage Connecting "Verifying the canonical Podman connection"
       in
       let%bind connection = Podman.ensure_connection ~target ~resource_key in
-      let%bind () = record_stage Building "Building and loading the image" in
-      let%bind image =
-        Podman.build_and_load ~connection ~source
-          ~image_output:(Configuration.Target.image target)
-      in
-      let%bind secrets =
-        Secrets.load ~source_root:(Source.path source) ~target
-      in
-      let%bind secret_mounts =
-        Podman.install_secrets ~connection ~resource_key ~secrets
+      let load_artifacts () =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind () = record_stage Building "Building and loading the image" in
+        let%bind image =
+          Podman.build_and_load ~connection ~source
+            ~image_output:(Configuration.Target.image target)
+        in
+        let%bind secrets =
+          Secrets.load ~source_root:(Source.path source) ~target
+        in
+        let%map secret_mounts =
+          Podman.install_secrets ~connection ~resource_key ~secrets
+        in
+        (image, secrets, secret_mounts)
       in
       let target_kind = Configuration.Target.kind target in
-      let deployment_result ~placement ~candidate ~warning =
+      let deployment_result ~image ~placement ~candidate ~warning =
         {
           operation_id;
           project;
@@ -170,12 +174,13 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
           warning;
         }
       in
-      let verify candidate =
-        Podman.verify_candidate ~connection ~project ~target ~resource_key
-          ~source ~configuration_digest ~operation_id ~image ~candidate
-      in
       match target_kind with
       | Configuration.Target.Non_web -> (
+          let%bind image, secrets, secret_mounts = load_artifacts () in
+          let verify candidate =
+            Podman.verify_candidate ~connection ~project ~target ~resource_key
+              ~source ~configuration_digest ~operation_id ~image ~candidate
+          in
           let%bind plan =
             Deferred.return
               (Deployment_plan.create ~target_kind ~active_port:None)
@@ -198,7 +203,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
           in
           let%bind () =
             Podman.prepare_candidate ~connection ~project ~target ~resource_key
-              ~placement
+              ~repository_identity ~placement
           in
           let%bind () =
             record_stage Starting "Starting the application container"
@@ -225,7 +230,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
             let%map () =
               record_stage Succeeded "Deployment independently verified"
             in
-            deployment_result ~placement ~candidate ~warning:None
+            deployment_result ~image ~placement ~candidate ~warning:None
           in
           let%bind.Deferred result = after_candidate in
           match result with
@@ -256,7 +261,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
             | Some slot -> (
                 let%bind candidate =
                   Podman.find_owned_slot ~connection ~project ~target
-                    ~resource_key ~slot
+                    ~resource_key ~repository_identity ~slot
                 in
                 match candidate with
                 | Some candidate -> Deferred.Or_error.return (Some candidate)
@@ -264,13 +269,23 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
                     Deferred.Or_error.error_string
                       "Caddy active slot has no owned container")
           in
+          let%bind legacy_single =
+            Podman.find_owned_placement ~connection ~project ~target
+              ~resource_key ~repository_identity
+              ~placement:Deployment_plan.Single_container
+          in
+          let%bind image, secrets, secret_mounts = load_artifacts () in
+          let verify candidate =
+            Podman.verify_candidate ~connection ~project ~target ~resource_key
+              ~source ~configuration_digest ~operation_id ~image ~candidate
+          in
           let%bind () =
             record_stage Preparing_candidate
               "Removing only the owned inactive slot"
           in
           let%bind () =
             Podman.prepare_candidate ~connection ~project ~target ~resource_key
-              ~placement
+              ~repository_identity ~placement
           in
           let%bind () =
             record_stage Running_pre_start
@@ -327,44 +342,69 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
                   Deferred.Or_error.error_string
                     "deployment cancelled before finalization"
             in
+            let retirements =
+              List.filter_opt [ previous_candidate; legacy_single ]
+              |> List.dedup_and_sort ~compare:(fun left right ->
+                  String.compare (Podman.candidate_id left)
+                    (Podman.candidate_id right))
+            in
             let%bind () =
-              match previous_candidate with
-              | None -> Deferred.Or_error.return ()
-              | Some _ ->
-                  record_stage Retiring_previous
-                    "Retiring the previous active slot"
+              if List.is_empty retirements then Deferred.Or_error.return ()
+              else
+                record_stage Retiring_previous
+                  "Retiring previous owned application containers"
             in
             let%bind () =
               record_stage Succeeded "Deployment independently verified"
             in
-            let%bind.Deferred retired =
-              match previous_candidate with
-              | None -> Deferred.return (Ok ())
-              | Some previous_candidate -> (
-                  let open Deferred.Let_syntax in
-                  let%bind observed =
-                    Caddy.inspect ~ignore_termination:true caddy
+            let%bind.Deferred retirement_results =
+              let open Deferred.Let_syntax in
+              let%bind observed =
+                Caddy.inspect ~ignore_termination:true caddy
+              in
+              match observed with
+              | Ok (Caddy.Existing { active_port; domain })
+                when Int.equal active_port candidate_port
+                     && String.Caseless.equal domain
+                          (Configuration.Web.domain web) ->
+                  Deferred.List.map retirements ~how:`Sequential
+                    ~f:(fun retirement ->
+                      let%map result =
+                        Podman.remove_candidate ~connection
+                          ~candidate:retirement
+                      in
+                      (retirement, result))
+              | Error error ->
+                  Deferred.return
+                    (List.map retirements ~f:(fun retirement ->
+                         (retirement, Error error)))
+              | _ ->
+                  let error =
+                    Error.of_string
+                      "Caddy route changed before container retirement"
                   in
-                  match observed with
-                  | Ok (Caddy.Existing { active_port; domain })
-                    when Int.equal active_port candidate_port
-                         && String.Caseless.equal domain
-                              (Configuration.Web.domain web) ->
-                      Podman.remove_candidate ~connection
-                        ~candidate:previous_candidate
-                  | Error error -> Deferred.return (Error error)
-                  | _ ->
-                      Deferred.Or_error.error_string
-                        "Caddy route changed before previous slot retirement")
+                  Deferred.return
+                    (List.map retirements ~f:(fun retirement ->
+                         (retirement, Error error)))
             in
             let warning =
-              Result.error retired
-              |> Option.map ~f:(fun error ->
-                  "Deployment verified, but previous slot retirement failed: "
-                  ^ Error.to_string_hum error)
+              List.filter_map retirement_results ~f:(fun (retirement, result) ->
+                  Result.error result
+                  |> Option.map ~f:(fun error ->
+                      sprintf "%s: %s"
+                        (Podman.candidate_name retirement)
+                        (Error.to_string_hum error)))
+              |> function
+              | [] -> None
+              | failures ->
+                  Some
+                    (String.prefix
+                       ("Deployment verified, but container retirement failed: "
+                       ^ String.concat failures ~sep:"; ")
+                       4096)
             in
             Deferred.Or_error.return
-              (deployment_result ~placement ~candidate ~warning)
+              (deployment_result ~image ~placement ~candidate ~warning)
           in
           let%bind.Deferred result = after_candidate in
           match result with

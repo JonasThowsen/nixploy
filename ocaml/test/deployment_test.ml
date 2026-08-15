@@ -74,6 +74,14 @@ JSON
   *) echo "unexpected nix command" >&2; exit 97 ;;
 esac
 |};
+  install_executable bin "ssh-to-age"
+    {|#!/bin/sh
+set -eu
+printf 'ssh-to-age' >> "$NIXPLOY_TEST_TRACE"
+printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
+printf '\n' >> "$NIXPLOY_TEST_TRACE"
+printf 'AGE-SECRET-KEY-TEST\n'
+|};
   install_executable bin "sops"
     {|#!/bin/sh
 set -eu
@@ -157,9 +165,16 @@ if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
   exit 0
 fi
 if [ "${3:-}" = "container" ] && [ "${4:-}" = "exists" ]; then
+  if [ "${NIXPLOY_TEST_FAIL_RETIREMENT:-}" = "${5:-}" ]; then exit 0; fi
   if [ -f "$NIXPLOY_TEST_STATE" ]; then exit 0; fi
   if [ "${NIXPLOY_TEST_EXISTING_WEB:-}" = "1" ]; then
-    case "${5:-}" in *-blue) exit 0 ;; *) exit 1 ;; esac
+    case "${5:-}" in *-blue) exit 0 ;; esac
+  fi
+  if [ "${NIXPLOY_TEST_EXISTING_SINGLE:-}" = "1" ]; then
+    case "${5:-}" in *-blue|*-green) ;; *) exit 0 ;; esac
+  fi
+  if [ "${NIXPLOY_TEST_FOREIGN_SINGLE:-}" = "1" ]; then
+    case "${5:-}" in *-blue|*-green) ;; *) exit 0 ;; esac
   fi
   if [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then exit 1; fi
   exit 0
@@ -170,17 +185,25 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
     IFS='|' read -r runtime_name digest operation revision resource < "$NIXPLOY_TEST_STATE"
     image='sha256:image-id'
     if [ "${NIXPLOY_TEST_VERIFY_MISMATCH:-}" = "1" ]; then image='sha256:wrong-image'; fi
-    printf '[{"Id":"candidate-id","Name":"%s","Image":"%s","State":{"Running":true},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.revision":"%s","io.nixploy.configuration_digest":"%s","io.nixploy.operation_id":"%s"}}}]\n' "$runtime_name" "$image" "$resource" "$revision" "$digest" "$operation"
-  elif [ "${NIXPLOY_TEST_UNOWNED:-}" = "1" ]; then
-    printf '[{"Id":"foreign-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"conflicting-modern-resource","nixploy.project":"sample","nixploy.target":"worker"}}}]\n' "$name"
+    printf '[{"Id":"candidate-id","Name":"%s","Image":"%s","State":{"Running":true},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:test.git","io.nixploy.revision":"%s","io.nixploy.configuration_digest":"%s","io.nixploy.operation_id":"%s"}}}]\n' "$runtime_name" "$image" "$resource" "$revision" "$digest" "$operation"
+  elif [ "${NIXPLOY_TEST_UNOWNED:-}" = "1" ] || { [ "${NIXPLOY_TEST_FOREIGN_SINGLE:-}" = "1" ] && ! printf '%s' "$name" | grep -Eq -- '-(blue|green)$'; }; then
+    printf '[{"Id":"foreign-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"conflicting-modern-resource","io.nixploy.repository_identity":"git@example.invalid:foreign.git","nixploy.project":"sample","nixploy.target":"worker"}}}]\n' "$name"
   else
     resource=${name%-blue}
     resource=${resource%-green}
-    printf '[{"Id":"old-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s"}}}]\n' "$name" "$resource"
+    case "$name" in
+      *-blue|*-green) old_id=old-slot-id ;;
+      *) old_id=single-id ;;
+    esac
+    printf '[{"Id":"%s","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:test.git"}}}]\n' "$old_id" "$name" "$resource"
   fi
   exit 0
 fi
 if [ "${3:-}" = "rm" ] && [ "${4:-}" = "-f" ] && [ -n "${5:-}" ] && [ -z "${6:-}" ]; then
+  if [ "${NIXPLOY_TEST_FAIL_RETIREMENT:-}" = "${5:-}" ]; then
+    echo 'retirement failed' >&2
+    exit 42
+  fi
   rm -f "$NIXPLOY_TEST_STATE"
   exit 0
 fi
@@ -218,9 +241,15 @@ exit 99
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
       "NIXPLOY_TEST_EXISTING_WEB";
+      "NIXPLOY_TEST_EXISTING_SINGLE";
+      "NIXPLOY_TEST_FOREIGN_SINGLE";
+      "NIXPLOY_TEST_FAIL_RETIREMENT";
       "NIXPLOY_TEST_SECRETS";
       "NIXPLOY_TEST_SECRET_PATH";
       "NIXPLOY_TEST_EXPECTED_SECRET";
+      "SOPS_AGE_KEY_FILE";
+      "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE";
+      "SOPS_AGE_SSH_PRIVATE_KEY_FILE";
     ]
   in
   let old_environment =
@@ -238,9 +267,15 @@ exit 99
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
         "NIXPLOY_TEST_EXISTING_WEB";
+        "NIXPLOY_TEST_EXISTING_SINGLE";
+        "NIXPLOY_TEST_FOREIGN_SINGLE";
+        "NIXPLOY_TEST_FAIL_RETIREMENT";
         "NIXPLOY_TEST_SECRETS";
         "NIXPLOY_TEST_SECRET_PATH";
         "NIXPLOY_TEST_EXPECTED_SECRET";
+        "SOPS_AGE_KEY_FILE";
+        "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE";
+        "SOPS_AGE_SSH_PRIVATE_KEY_FILE";
       ]
       ~f:Core_unix.unsetenv;
     List.iter [ state; route_state ] ~f:(fun path ->
@@ -414,7 +449,7 @@ exit 99
         && removal < runtime);
       [%test_eq: int] 1 (count lines "|rm|-f|");
       [%test_eq: string]
-        (sprintf "podman|--connection|%s|rm|-f|%s" expected_name expected_name)
+        (sprintf "podman|--connection|%s|rm|-f|single-id" expected_name)
         (List.nth_exn lines removal);
       assert (
         List.for_all lines ~f:(fun line ->
@@ -482,6 +517,59 @@ exit 99
       assert (
         String.is_suffix runtime ~suffix:"|loaded@sha256:immutable|/app/worker|");
 
+      let age_identity = Filename.concat root "age-identity" in
+      let ssh_identity = Filename.concat root "sops-ssh-identity" in
+      write age_identity "AGE-SECRET-KEY-INHERITED\n";
+      write ssh_identity "PRIVATE SSH IDENTITY\n";
+      List.iter [ age_identity; ssh_identity ] ~f:(fun path ->
+          Core_unix.chmod path ~perm:0o600);
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET"
+        (Filename.concat repository "config/secrets.env");
+      Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
+      Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
+      let%bind credential_deployment =
+        Nixploy.Deployment.deploy ~operation_id:"operation-private-identities"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      ignore (assert_ok credential_deployment : Nixploy.Deployment.t);
+      let lines = In_channel.read_lines trace in
+      let ssh_to_age =
+        index_of lines (String.is_prefix ~prefix:"ssh-to-age|")
+      in
+      let sops = index_of lines (String.is_prefix ~prefix:"sops|") in
+      assert (ssh_to_age < sops);
+
+      clear_scenario ();
+      Core_unix.chmod age_identity ~perm:0o640;
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
+      Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
+      let%bind insecure_age =
+        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-age"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      expect_error_containing insecure_age "group or other permissions";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 0 (count lines "ssh-to-age|");
+      [%test_eq: int] 0 (count lines "sops|");
+
+      clear_scenario ();
+      Core_unix.chmod age_identity ~perm:0o600;
+      Core_unix.chmod ssh_identity ~perm:0o604;
+      Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
+      Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
+      Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
+      let%bind insecure_ssh =
+        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-ssh"
+          ~working_directory:repository ~source:local_source ~target ()
+      in
+      expect_error_containing insecure_ssh "group or other permissions";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 0 (count lines "ssh-to-age|");
+      [%test_eq: int] 0 (count lines "sops|");
+
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "../outside.env";
@@ -543,7 +631,7 @@ exit 99
       in
       assert (
         String.is_substring (List.nth_exn removals 0)
-          ~substring:("|rm|-f|" ^ expected_name));
+          ~substring:"|rm|-f|single-id");
       assert (
         String.is_substring (List.nth_exn removals 1)
           ~substring:"|rm|-f|candidate-id");
@@ -608,6 +696,68 @@ exit 99
         String.is_substring (List.last_exn lines)
           ~substring:"|rm|-f|candidate-id");
       Core_unix.rmdir failing_store_path;
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
+      let%bind transitioned = deploy "operation-single-transition" in
+      let transitioned = assert_ok transitioned in
+      assert (Option.is_none (Nixploy.Deployment.warning transitioned));
+      let lines = In_channel.read_lines trace in
+      let single_inspect =
+        index_of lines (fun line ->
+            String.is_suffix line
+              ~suffix:("|inspect|--type|container|" ^ expected_name))
+      in
+      let build =
+        index_of lines (String.is_substring ~substring:"nix|build|")
+      in
+      let switch =
+        index_of lines (String.is_substring ~substring:"'-X' 'POST'")
+      in
+      let single_retirement =
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|single-id")
+      in
+      assert (single_inspect < build && switch < single_retirement);
+      assert (
+        List.for_all lines
+          ~f:(Fn.non (String.is_substring ~substring:"unrelated-resource")));
+      assert (
+        List.for_all lines
+          ~f:(Fn.non (String.is_suffix ~suffix:("|rm|-f|" ^ expected_name))));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_FOREIGN_SINGLE" "1";
+      let%bind foreign_single = deploy "operation-foreign-single" in
+      expect_error_containing foreign_single "not owned by this repository";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 0 (count lines "nix|build|");
+      [%test_eq: int] 0 (count lines "|rm|-f|");
+      [%test_eq: int] 0 (count lines "|run|-d|--name|");
+      assert (
+        List.for_all lines
+          ~f:(Fn.non (String.is_substring ~substring:"unrelated-resource")));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_RETIREMENT" "old-slot-id";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind warned = deploy "operation-retirement-warning" in
+      let warned = assert_ok warned in
+      let warning = Nixploy.Deployment.warning warned |> Option.value_exn in
+      assert (String.length warning <= 4096);
+      assert (String.is_substring warning ~substring:"retirement failed");
+      let lines = In_channel.read_lines trace in
+      let failed_retirement =
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|old-slot-id")
+      in
+      let attempted_single =
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|single-id")
+      in
+      assert (failed_retirement < attempted_single);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

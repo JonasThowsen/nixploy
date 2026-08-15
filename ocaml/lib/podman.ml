@@ -458,32 +458,95 @@ let owned_candidate_collision output ~project ~target ~resource_key =
       Or_error.error_string
         "container inspect must contain exactly one container"
 
-let remove_owned_placement ~connection ~project ~target ~resource_key ~placement
-    =
+let repository_owned output ~repository_identity =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List [ `Assoc container ] -> (
+      match List.Assoc.find container ~equal:String.equal "Config" with
+      | Some (`Assoc config) -> (
+          match List.Assoc.find config ~equal:String.equal "Labels" with
+          | Some (`Assoc labels) ->
+              let repository =
+                Option.first_some
+                  (label labels "io.nixploy.repository_identity")
+                  (Option.first_some
+                     (label labels "io.nixploy.repository")
+                     (label labels "nixploy.repository"))
+              in
+              Ok
+                (Option.equal String.equal repository (Some repository_identity))
+          | _ -> Ok false)
+      | _ -> Ok false)
+  | _ ->
+      Or_error.error_string
+        "container inspect must contain exactly one container"
+
+let find_owned_placement ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement =
   let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key placement in
   let%bind exists =
     run [ "--connection"; connection; "container"; "exists"; name ]
   in
   match exists.exit_status with
-  | Ok () ->
+  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return None
+  | Error failure ->
+      Deferred.Or_error.errorf "could not inspect deployment placement (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip exists.stderr)
+  | Ok () -> (
       let%bind inspected = inspect_container ~connection name in
       let%bind owned =
         Deferred.return
-          (owned_candidate_collision inspected.stdout ~project ~target
-             ~resource_key)
+          (let open Or_error.Let_syntax in
+           let%bind target_owned =
+             owned_candidate_collision inspected.stdout ~project ~target
+               ~resource_key
+           in
+           let%map repository_owned =
+             repository_owned inspected.stdout ~repository_identity
+           in
+           target_owned && repository_owned)
       in
       if not owned then
         Deferred.Or_error.errorf
-          "container %s exists but is not owned by this target" name
+          "container %s exists but is not owned by this repository and target"
+          name
       else
-        let%map _ = run_ok [ "--connection"; connection; "rm"; "-f"; name ] in
-        ()
-  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return ()
-  | Error failure ->
-      Deferred.Or_error.errorf "could not inspect deployment slot (%s): %s"
-        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip exists.stderr)
+        let%bind json =
+          Deferred.return
+            (Or_error.try_with (fun () ->
+                 Yojson.Safe.from_string inspected.stdout))
+        in
+        match json with
+        | `List [ `Assoc container ] -> (
+            match List.Assoc.find container ~equal:String.equal "Id" with
+            | Some (`String id) when not (String.is_empty id) ->
+                Deferred.Or_error.return (Some { name; id })
+            | _ ->
+                Deferred.Or_error.error_string
+                  "deployment placement inspect did not contain an ID")
+        | _ ->
+            Deferred.Or_error.error_string
+              "deployment placement inspect must contain exactly one container")
+
+let remove_owned_placement ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind candidate =
+    find_owned_placement ~connection ~project ~target ~resource_key
+      ~repository_identity ~placement
+  in
+  match candidate with
+  | None -> Deferred.Or_error.return ()
+  | Some candidate ->
+      let%map _ =
+        run_ok [ "--connection"; connection; "rm"; "-f"; candidate.id ]
+      in
+      ()
 
 let prepare_candidate = remove_owned_placement
 
@@ -618,45 +681,11 @@ let execute_prepared_prune prepared =
   ( List.length prepared.prune_containers,
     List.length prepared.prune_secret_names )
 
-let find_owned_slot ~connection ~project ~target ~resource_key ~slot =
-  let open Deferred.Or_error.Let_syntax in
-  let name = Deployment_plan.web_container_name ~resource_key slot in
-  let%bind exists =
-    run [ "--connection"; connection; "container"; "exists"; name ]
-  in
-  match exists.exit_status with
-  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return None
-  | Error failure ->
-      Deferred.Or_error.errorf "could not inspect deployment slot (%s): %s"
-        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip exists.stderr)
-  | Ok () -> (
-      let%bind inspected = inspect_container ~connection name in
-      let%bind owned =
-        Deferred.return
-          (owned_candidate_collision inspected.stdout ~project ~target
-             ~resource_key)
-      in
-      if not owned then
-        Deferred.Or_error.errorf
-          "container %s exists but is not owned by this target" name
-      else
-        let%bind json =
-          Deferred.return
-            (Or_error.try_with (fun () ->
-                 Yojson.Safe.from_string inspected.stdout))
-        in
-        match json with
-        | `List [ `Assoc container ] -> (
-            match List.Assoc.find container ~equal:String.equal "Id" with
-            | Some (`String id) when not (String.is_empty id) ->
-                Deferred.Or_error.return (Some { name; id })
-            | _ ->
-                Deferred.Or_error.error_string
-                  "deployment slot inspect did not contain an ID")
-        | _ ->
-            Deferred.Or_error.error_string
-              "deployment slot inspect must contain exactly one container")
+let find_owned_slot ~connection ~project ~target ~resource_key
+    ~repository_identity ~slot =
+  find_owned_placement ~connection ~project ~target ~resource_key
+    ~repository_identity
+    ~placement:(Deployment_plan.Web_slot { slot; port = 0 })
 
 let secret_args secret_mounts =
   List.concat_map secret_mounts ~f:(fun secret ->

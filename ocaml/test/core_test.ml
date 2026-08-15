@@ -4,6 +4,15 @@ let assert_ok = function
   | Ok value -> value
   | Error error -> failwith (Error.to_string_hum error)
 
+let%test_unit "termination state forces only a repeated signal" =
+  assert (
+    not
+      (Nixploy.Process_runner.For_testing.should_force_termination
+         ~already_delivered:false));
+  assert (
+    Nixploy.Process_runner.For_testing.should_force_termination
+      ~already_delivered:true)
+
 let%test_unit "resource identity matches the deployed host contract" =
   let cases =
     [
@@ -294,6 +303,42 @@ let%test_unit "dotenv secrets are strict and redact retained output" =
   assert (
     Result.is_error
       (Nixploy.Secrets.For_testing.parse_dotenv "DUP=one\nDUP=two\n"))
+
+let%test_unit "private SOPS identity files require secure filesystem metadata" =
+  let root = Filename_unix.temp_dir "nixploy-private-identity-" "" in
+  let identity = Filename.concat root "identity" in
+  Out_channel.write_all identity ~data:"private identity test data\n";
+  Core_unix.chmod identity ~perm:0o600;
+  assert (
+    Result.is_ok
+      (Nixploy.Secrets.For_testing.validate_private_identity_file identity));
+  Core_unix.chmod identity ~perm:0o640;
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.validate_private_identity_file identity));
+  Core_unix.chmod identity ~perm:0o600;
+  let final_link = Filename.concat root "identity-link" in
+  Core_unix.symlink ~target:identity ~link_name:final_link;
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.validate_private_identity_file final_link));
+  let linked_directory = Filename.concat root "linked-directory" in
+  Core_unix.symlink ~target:root ~link_name:linked_directory;
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.validate_private_identity_file
+         (Filename.concat linked_directory "identity")));
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.validate_private_identity_file root));
+  assert (
+    Result.is_error
+      (Nixploy.Secrets.For_testing.validate_private_identity_file
+         "relative-identity"));
+  Core_unix.unlink linked_directory;
+  Core_unix.unlink final_link;
+  Core_unix.unlink identity;
+  Core_unix.rmdir root
 
 let%test_unit "workload accepts current deployment labels" =
   let json =

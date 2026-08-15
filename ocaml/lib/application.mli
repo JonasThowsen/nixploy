@@ -21,6 +21,9 @@ type resource_state = Unknown | Present | Absent
 type cancellation_result = Cancellation_requested | Already_requested
 [@@deriving compare, equal, sexp]
 
+type shutdown_transition = Shutdown_started | Already_shutting_down
+[@@deriving compare, equal, sexp]
+
 type log_line = { timestamp : string option; text : string }
 [@@deriving compare, equal, sexp]
 
@@ -66,6 +69,13 @@ type target_metrics = {
 
 val create : store:Store.t -> unit -> t
 val open_ : state_path:string -> t Deferred.Or_error.t
+
+val begin_shutdown : t -> shutdown_transition
+(** Atomically rejects new deploy and prune mutations. *)
+
+val mutations_drained : t -> unit Deferred.t
+(** Becomes determined after shutdown begins and every admitted deploy or prune
+    mutation has unwound. *)
 
 val local_scope :
   working_directory:string -> target:Target_name.t -> scope Or_error.t

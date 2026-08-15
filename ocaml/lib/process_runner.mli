@@ -10,6 +10,10 @@ type t = {
 val handle_termination_signals : unit -> unit
 val termination_signal : unit -> Signal.t option
 
+val termination_requested : unit -> Signal.t Deferred.t
+(** Resolves on the first handled SIGINT or SIGTERM. A second handled signal
+    forces immediate process shutdown. *)
+
 val run :
   ?working_directory:string ->
   ?stdin:string ->
@@ -33,3 +37,7 @@ val run_stdout :
   args:string list ->
   unit ->
   string Deferred.Or_error.t
+
+module For_testing : sig
+  val should_force_termination : already_delivered:bool -> bool
+end

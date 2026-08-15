@@ -35,14 +35,27 @@ val prepare_candidate :
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
+  repository_identity:string ->
   placement:Deployment_plan.placement ->
   unit Deferred.Or_error.t
+
+val find_owned_placement :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  repository_identity:string ->
+  placement:Deployment_plan.placement ->
+  candidate option Deferred.Or_error.t
+(** Inspects one exact placement without mutation and returns only a container
+    with complete target and repository ownership. *)
 
 val find_owned_slot :
   connection:string ->
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
+  repository_identity:string ->
   slot:Deployment_plan.slot ->
   candidate option Deferred.Or_error.t
 

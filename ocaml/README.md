@@ -81,6 +81,11 @@ The Bonsai control-plane tracer is served by the second packaged executable:
 nixploy-web --port 8080
 ```
 
+SIGINT and SIGTERM stop the listener, reject new deploy and prune requests,
+interrupt active subprocess groups so compensation can unwind, and allow up to
+25 seconds for admitted mutations to drain. A second signal forces immediate
+shutdown. The NixOS unit allows 30 seconds before systemd forcefully stops it.
+
 It binds to loopback, reads the NixOS-owned
 `NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays the latest persisted
 deployment for each application, and sends deploy and prune requests through
@@ -144,7 +149,10 @@ configuration. The executable itself hardcodes loopback binding. Managed
 applications serialize exactly the JSON accepted by `Managed_application`.
 
 Use `sshIdentityFile`, `sshKnownHostsFile`, `sopsAgeKeyFile`, and
-`sopsAgeSshKeyFile` for root-readable deployment credentials. systemd copies
+`sopsAgeSshKeyFile` for root-readable deployment credentials. SOPS private
+identity files must be absolute regular files with no symlink path components
+and no group/other permissions; they may be owned by the service effective UID,
+or by root when read-only as with systemd credentials. systemd copies
 them into the private service credential directory and the module sets only the
 environment names read by OCaml. A generated start wrapper reapplies or clears
 these credential names and the module-owned auth/origin/application names after

@@ -244,6 +244,7 @@
             assert service.serviceConfig.Group == "nixploy";
             assert service.serviceConfig.StateDirectory == "nixploy";
             assert service.serviceConfig.WorkingDirectory == "/var/lib/nixploy";
+            assert service.serviceConfig.TimeoutStopSec == 30;
             assert service.serviceConfig.ProtectSystem == "strict";
             assert builtins.elem "/srv/nixploy/example" service.serviceConfig.ReadOnlyPaths;
             assert service.environment.HOME == "/var/lib/nixploy";

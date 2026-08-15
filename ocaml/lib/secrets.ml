@@ -106,7 +106,56 @@ let redact secrets text =
   |> List.fold ~init:text ~f:(fun text secret ->
       String.substr_replace_all text ~pattern:secret.value ~with_:redacted_value)
 
+let validate_private_identity_file path =
+  let open Or_error.Let_syntax in
+  if not (Filename.is_absolute path) then
+    Or_error.error_string "private identity file path must be absolute"
+  else
+    let components =
+      String.split path ~on:'/' |> List.filter ~f:(Fn.non String.is_empty)
+    in
+    let%bind final_stats =
+      List.fold_result components ~init:("/", None)
+        ~f:(fun (parent, _previous) component ->
+          let current = Filename.concat parent component in
+          match Or_error.try_with (fun () -> Core_unix.lstat current) with
+          | Error _ ->
+              Or_error.error_string "private identity file cannot be inspected"
+          | Ok { st_kind = S_LNK; _ } ->
+              Or_error.error_string
+                "private identity file path must not contain symbolic links"
+          | Ok stats -> Ok (current, Some stats))
+      |> Or_error.map ~f:snd
+    in
+    let%bind stats =
+      Option.value_map final_stats
+        ~default:
+          (Or_error.error_string "private identity file must name a file")
+        ~f:Or_error.return
+    in
+    if
+      match stats.st_kind with
+      | S_REG -> false
+      | S_DIR | S_CHR | S_BLK | S_LNK | S_FIFO | S_SOCK -> true
+    then Or_error.error_string "private identity must be a regular file"
+    else if stats.st_perm land 0o077 <> 0 then
+      Or_error.error_string
+        "private identity file must not grant group or other permissions"
+    else
+      let euid = Core_unix.geteuid () in
+      if Int.equal stats.st_uid euid then Ok ()
+      else if Int.equal stats.st_uid 0 && stats.st_perm land 0o200 = 0 then
+        Ok ()
+      else
+        Or_error.error_string "private identity file ownership is not permitted"
+
 let decryption_env () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    match Sys.getenv "SOPS_AGE_KEY_FILE" with
+    | None -> Deferred.Or_error.return ()
+    | Some path -> Deferred.return (validate_private_identity_file path)
+  in
   let identity =
     Option.first_some
       (Sys.getenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE")
@@ -114,32 +163,34 @@ let decryption_env () =
   in
   match identity with
   | None -> Deferred.Or_error.return None
-  | Some path ->
-      if not (Filename.is_absolute path) then
-        Deferred.Or_error.error_string
-          "the SOPS SSH identity path must be absolute"
-      else
-        let open Deferred.Or_error.Let_syntax in
-        let%bind identity =
-          Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 15.)
-            ~max_output_bytes:65_536 ~prog:"ssh-to-age"
-            ~args:[ "-private-key"; "-i"; path ]
-            ()
-        in
-        let identity = String.strip identity in
-        if String.is_empty identity then
-          Deferred.Or_error.error_string "ssh-to-age returned an empty identity"
-        else
-          Deferred.Or_error.return
-            (Some
-               (`Override
-                  [
-                    ("SOPS_AGE_KEY", Some identity);
-                    ("SOPS_AGE_KEY_CMD", None);
-                    ("SOPS_AGE_KEY_FILE", None);
-                    ("SOPS_AGE_SSH_PRIVATE_KEY_CMD", None);
-                    ("SOPS_AGE_SSH_PRIVATE_KEY_FILE", None);
-                  ]))
+  | Some path -> (
+      let%bind () = Deferred.return (validate_private_identity_file path) in
+      let%bind converted =
+        Process_runner.run ~timeout:(Time_ns.Span.of_sec 15.)
+          ~max_output_bytes:65_536 ~prog:"ssh-to-age"
+          ~args:[ "-private-key"; "-i"; path ]
+          ()
+      in
+      match converted.exit_status with
+      | Error _ ->
+          Deferred.Or_error.error_string
+            "ssh-to-age could not load the private identity"
+      | Ok () ->
+          let identity = String.strip converted.stdout in
+          if String.is_empty identity then
+            Deferred.Or_error.error_string
+              "ssh-to-age returned an empty identity"
+          else
+            Deferred.Or_error.return
+              (Some
+                 (`Override
+                    [
+                      ("SOPS_AGE_KEY", Some identity);
+                      ("SOPS_AGE_KEY_CMD", None);
+                      ("SOPS_AGE_KEY_FILE", None);
+                      ("SOPS_AGE_SSH_PRIVATE_KEY_CMD", None);
+                      ("SOPS_AGE_SSH_PRIVATE_KEY_FILE", None);
+                    ])))
 
 let resolve_reference ~source_root path =
   if Filename.is_absolute path then Ok path
@@ -221,4 +272,5 @@ let load ~source_root ~target =
 module For_testing = struct
   let parse_dotenv = parse_dotenv
   let resolve_reference = resolve_reference
+  let validate_private_identity_file = validate_private_identity_file
 end

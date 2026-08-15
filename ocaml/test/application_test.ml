@@ -292,6 +292,44 @@ let run_tests () =
       (None, None, directory, target);
     ]
     (List.rev !pruned);
+  assert (
+    Deferred.is_determined (Nixploy.Application.mutations_drained application));
+  let shutdown_started = Ivar.create () in
+  let release_shutdown_mutation = Ivar.create () in
+  deployment_started := Some shutdown_started;
+  deployment_gate := Some release_shutdown_mutation;
+  let active_at_shutdown =
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
+  in
+  let%bind () = Ivar.read shutdown_started in
+  assert (
+    [%equal: Nixploy.Application.shutdown_transition]
+      (Nixploy.Application.begin_shutdown application)
+      Shutdown_started);
+  let draining = Nixploy.Application.mutations_drained application in
+  assert (not (Deferred.is_determined draining));
+  assert (
+    [%equal: Nixploy.Application.shutdown_transition]
+      (Nixploy.Application.begin_shutdown application)
+      Already_shutting_down);
+  let%bind rejected_deploy =
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~source:(Nixploy.Application.immutable_source resolved)
+      ~target ()
+  in
+  assert (Result.is_error rejected_deploy);
+  let%bind rejected_prune =
+    Nixploy.Application.prune application ~working_directory:directory ~target
+  in
+  assert (Result.is_error rejected_prune);
+  Ivar.fill_exn release_shutdown_mutation ();
+  let%bind completed = active_at_shutdown in
+  ignore (assert_ok completed : Nixploy.Application.deployment);
+  let%bind () = draining in
+  assert (
+    Deferred.is_determined (Nixploy.Application.mutations_drained application));
   Deferred.unit
 
 let () =

@@ -256,8 +256,11 @@ let should_process_request authorization origin_policy _address = function
   | Web (headers, `is_websocket_request true) ->
       Authorization.authorize_websocket authorization origin_policy headers
 
+let mutation_drain_timeout = Time_ns.Span.of_sec 25.
+
 let run ~port ~state_db =
   let open Deferred.Let_syntax in
+  Nixploy.Process_runner.handle_termination_signals ();
   let applications =
     Managed_application.load_environment () |> Or_error.ok_exn
   in
@@ -279,7 +282,41 @@ let run ~port ~state_db =
       ()
   in
   printf "Nixploy control plane listening on http://127.0.0.1:%d/\n%!" port;
-  Cohttp_async.Server.close_finished server
+  let%bind outcome =
+    Deferred.choose
+      [
+        Deferred.choice (Cohttp_async.Server.close_finished server) (fun () ->
+            `Closed);
+        Deferred.choice (Nixploy.Process_runner.termination_requested ())
+          (fun signal -> `Signal signal);
+      ]
+  in
+  match outcome with
+  | `Closed -> Deferred.unit
+  | `Signal signal ->
+      ignore
+        (Application.begin_shutdown application
+          : Application.shutdown_transition);
+      don't_wait_for (Cohttp_async.Server.close server);
+      let%bind drain =
+        Deferred.choose
+          [
+            Deferred.choice (Application.mutations_drained application)
+              (fun () -> `Drained);
+            Deferred.choice (Clock_ns.after mutation_drain_timeout) (fun () ->
+                `Timed_out);
+          ]
+      in
+      (match drain with
+      | `Drained -> ()
+      | `Timed_out ->
+          eprintf
+            "Timed out draining deployment mutations after %s; forcing web \
+             shutdown\n\
+             %!"
+            (Time_ns.Span.to_short_string mutation_drain_timeout));
+      Shutdown.shutdown_with_signal_exn signal;
+      Deferred.unit
 
 let command =
   Async.Command.async ~summary:"Serve the Nixploy deployment control plane"
