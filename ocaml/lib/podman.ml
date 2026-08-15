@@ -339,18 +339,32 @@ let owned_operation output ~project ~target ~resource_key ~operation_id =
 
 let owned_candidate_collision output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
-  let%bind modern = owned_container output ~project ~target ~resource_key in
-  if modern then Ok true
-  else
-    let%bind json =
-      Or_error.try_with (fun () -> Yojson.Safe.from_string output)
-    in
-    match json with
-    | `List [ `Assoc container ] -> (
-        match List.Assoc.find container ~equal:String.equal "Config" with
-        | Some (`Assoc config) -> (
-            match List.Assoc.find config ~equal:String.equal "Labels" with
-            | Some (`Assoc labels) ->
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List [ `Assoc container ] -> (
+      match List.Assoc.find container ~equal:String.equal "Config" with
+      | Some (`Assoc config) -> (
+          match List.Assoc.find config ~equal:String.equal "Labels" with
+          | Some (`Assoc labels) ->
+              let modern_managed = label labels "io.nixploy.managed" in
+              let modern_resource = label labels "io.nixploy.resource_key" in
+              if Option.is_some modern_managed || Option.is_some modern_resource
+              then
+                Ok
+                  (Option.equal String.equal modern_managed (Some "true")
+                  && Option.equal String.equal modern_resource
+                       (Some (Resource_key.to_string resource_key))
+                  && Option.equal String.equal
+                       (label labels "io.nixploy.project")
+                       (Some (Project_name.to_string project))
+                  && Option.equal String.equal
+                       (label labels "io.nixploy.target")
+                       (Some
+                          (Configuration.Target.name target
+                          |> Target_name.to_string)))
+              else
                 Ok
                   (Option.equal String.equal
                      (label labels "nixploy.project")
@@ -360,11 +374,11 @@ let owned_candidate_collision output ~project ~target ~resource_key =
                        (Some
                           (Configuration.Target.name target
                           |> Target_name.to_string)))
-            | _ -> Ok false)
-        | _ -> Ok false)
-    | _ ->
-        Or_error.error_string
-          "container inspect must contain exactly one container"
+          | _ -> Ok false)
+      | _ -> Ok false)
+  | _ ->
+      Or_error.error_string
+        "container inspect must contain exactly one container"
 
 let remove_owned_placement ~connection ~project ~target ~resource_key ~placement
     =
@@ -493,9 +507,11 @@ let runtime_argv ~connection ~name ~run:run_config ~port ~secret_args
   @ runtime_args run_config ~port
   @ labels metadata @ [ image_reference ] @ command
 
-let run_pre_start ~connection ~target ~port ~image ~secrets ~secret_mounts =
+let run_pre_start ~connection ~target ~placement ~image ~secrets ~secret_mounts
+    =
   let open Deferred.Or_error.Let_syntax in
   let run_config = Configuration.Target.run target in
+  let port = Deployment_plan.runtime_port placement in
   Deferred.Or_error.List.iter
     (pre_start_argvs ~connection ~run:run_config ~port
        ~secret_args:(secret_args secret_mounts)
@@ -548,10 +564,11 @@ let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
   in
   attempt 10
 
-let start_candidate ~connection ~project ~target ~resource_key ~placement ~port
+let start_candidate ~connection ~project ~target ~resource_key ~placement
     ~source ~configuration_digest ~operation_id ~deployed_at ~image ~secrets
     ~secret_mounts =
   let name = Deployment_plan.container_name ~resource_key placement in
+  let port = Deployment_plan.runtime_port placement in
   let target_name = Configuration.Target.name target |> Target_name.to_string in
   let project_name = Project_name.to_string project in
   let repository = Source.repository source in
@@ -991,4 +1008,5 @@ module For_testing = struct
   let resource_keys_of_containers = resource_keys_of_containers
   let parse_stats = parse_stats
   let bound_logs = bound_logs
+  let owned_candidate_collision = owned_candidate_collision
 end

@@ -13,17 +13,19 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
         Store.request store ~application_key ~working_directory ~target ~commit
       in
       on_requested operation;
-      let on_stage stage message =
-        let%bind.Deferred recorded =
+      let record_stage stage message =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind () =
           Store.record_stage store ~id:(Store.id operation) ~stage ~message
         in
-        Or_error.ok_exn recorded;
-        Monitor.try_with (fun () -> on_stage stage message)
-        |> Deferred.map ~f:(fun _ -> ())
+        let%bind.Deferred _ =
+          Monitor.try_with (fun () -> on_stage stage message)
+        in
+        Deferred.Or_error.return ()
       in
       let%bind.Deferred execution =
         Monitor.try_with_or_error (fun () ->
-            Deployment.deploy ~on_stage ~operation_id:(Store.id operation)
+            Deployment.deploy ~record_stage ~operation_id:(Store.id operation)
               ~working_directory ~commit ~target ())
       in
       let result = Or_error.join execution in

@@ -52,7 +52,7 @@ val install_secrets :
 val run_pre_start :
   connection:string ->
   target:Configuration.Target.t ->
-  port:int option ->
+  placement:Deployment_plan.placement ->
   image:image ->
   secrets:Secrets.t list ->
   secret_mounts:secret_mount list ->
@@ -64,7 +64,6 @@ val start_candidate :
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
   placement:Deployment_plan.placement ->
-  port:int option ->
   source:Source.t ->
   configuration_digest:string ->
   operation_id:string ->
@@ -140,4 +139,11 @@ module For_testing : sig
   val resource_keys_of_containers : string -> string list Or_error.t
   val parse_stats : string -> runtime_stats Or_error.t
   val bound_logs : string -> log_snapshot
+
+  val owned_candidate_collision :
+    string ->
+    project:Project_name.t ->
+    target:Configuration.Target.t ->
+    resource_key:Resource_key.t ->
+    bool Or_error.t
 end

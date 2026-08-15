@@ -19,7 +19,7 @@ type stage =
 type t
 
 val deploy :
-  ?on_stage:(stage -> string -> unit Deferred.t) ->
+  ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
   operation_id:string ->
   working_directory:string ->
   commit:Source.commit ->

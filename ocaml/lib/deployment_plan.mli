@@ -12,10 +12,10 @@ val create :
   active_port:int option ->
   t Or_error.t
 
-val target_kind : t -> Configuration.Target.kind
 val placement : t -> placement
+val web_placement : t -> (slot * int) Or_error.t
 val active_slot : t -> slot option
-val previous_port : t -> int option
 val container_name : resource_key:Resource_key.t -> placement -> string
 val web_container_name : resource_key:Resource_key.t -> slot -> string
 val slot_name : slot -> string
+val runtime_port : placement -> int option

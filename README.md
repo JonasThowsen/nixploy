@@ -120,9 +120,16 @@ For a `web` target, nixploy uses blue/green deployment:
 4. switches Caddy to the new slot
 5. stops the old slot
 
+For a target without `web`, nixploy runs declared pre-start commands and then
+replaces the single positively owned application container. Non-web deployment
+does not contact Caddy.
+
 ## Parity work in progress
 
-The original C# CLI also supports direct non-web container replacement and scoped `prune`. Those capabilities are the first OCaml parity milestones and are not yet exposed by the default OCaml CLI. The implementation and documentation must land together; see [`DEVELOPMENT.md`](DEVELOPMENT.md).
+Scoped `prune` remains pending in the OCaml implementation. Until it lands,
+remote resource cleanup must be performed explicitly and with the same
+project/target ownership checks used by deployment; see
+[`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Secrets
 
