@@ -62,6 +62,12 @@ Add nixploy as an input and expose a `nixploy` output:
           preStart = [
             [ "/app/bin/migrate" ]
           ];
+          readOnlyBinds = [
+            {
+              source = "/srv/my-app/reference-data";
+              destination = "/app/reference-data";
+            }
+          ];
         };
 
         web = {
@@ -138,7 +144,7 @@ It does not remove old legacy names or resources from other projects.
 
 ## Secrets
 
-Secrets are local SOPS-encrypted dotenv files. At deploy time nixploy decrypts them locally, creates remote Podman secrets, and exposes each variable as an environment secret in the container.
+Secrets are local SOPS-encrypted dotenv files. At deploy time nixploy decrypts them locally, creates remote Podman secrets, and exposes each variable as an environment secret in the container. The members of the `secrets` object are intentionally arbitrary user-defined labels whose values must be file path strings; they are map keys, not extensible schema fields.
 
 Example dotenv after decryption:
 
@@ -148,6 +154,20 @@ API_KEY=secret
 ```
 
 Secret names must be unique across all configured secret files for a target.
+
+## Read-only bind mounts
+
+Use `run.readOnlyBinds` to expose an existing directory or file from the remote
+host to every pre-start and application container. Each bind is always rendered
+as a read-only Podman bind mount; writable mode and arbitrary mount options are
+not configurable.
+
+Both paths must be non-root, absolute, lexically normalized Unix paths. The
+source is a path on the remote deployment host, so nixploy validates its syntax
+without requiring it to exist on the local machine. This lexical check rejects
+empty, dot, and dot-dot segments, but does not resolve symlinks in either the
+host source or container destination; symlink resolution is left to the remote
+container runtime. Destinations must be unique.
 
 ## Useful commands
 

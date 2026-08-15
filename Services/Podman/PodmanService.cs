@@ -193,7 +193,8 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         string? network,
         IReadOnlyDictionary<string, string> environment,
         int? port,
-        IReadOnlyList<SecretMount> secrets
+        IReadOnlyList<SecretMount> secrets,
+        IReadOnlyList<NixployReadOnlyBind> readOnlyBinds
     )
     {
         for (var index = 0; index < commands.Count; index++)
@@ -207,7 +208,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
 
             Console.WriteLine($"Running pre-start command {index + 1}/{commands.Count}: {string.Join(" ", command)}");
 
-            var arguments = BuildRunArguments(connectionName, secrets);
+            var arguments = BuildRunArguments(connectionName, secrets, readOnlyBinds);
             arguments.Add("--rm");
             AddNetwork(arguments, network);
             AddEnvironment(arguments, environment, port);
@@ -242,7 +243,7 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
             new CommandRunOptions { StreamOutput = false }
         );
 
-        var arguments = BuildRunArguments(connectionName, secrets);
+        var arguments = BuildRunArguments(connectionName, secrets, runConfig.ReadOnlyBinds);
         arguments.Add("-d");
         arguments.Add("--name");
         arguments.Add(containerName);
@@ -392,7 +393,8 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
 
     private static List<string> BuildRunArguments(
         string connectionName,
-        IReadOnlyList<SecretMount> secrets
+        IReadOnlyList<SecretMount> secrets,
+        IReadOnlyList<NixployReadOnlyBind> readOnlyBinds
     )
     {
         var arguments = new List<string>
@@ -406,6 +408,12 @@ public sealed class PodmanService(ICommandRunner commandRunner) : IPodmanService
         {
             arguments.Add("--secret");
             arguments.Add($"source={secret.Source},type=env,target={secret.Target}");
+        }
+
+        foreach (var bind in readOnlyBinds)
+        {
+            arguments.Add("--mount");
+            arguments.Add($"type=bind,source={bind.Source},destination={bind.Destination},ro=true");
         }
 
         return arguments;

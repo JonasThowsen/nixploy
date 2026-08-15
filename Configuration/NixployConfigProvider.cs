@@ -1,14 +1,17 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Nixploy.Cli;
 
 public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixployConfigProvider
 {
-    private const string SupportedSchema = "v0.2";
+    private const string LegacySchema = "v0.2";
+    private const string CurrentSchema = "v0.3";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     private Task<NixployConfig>? configTask;
@@ -39,14 +42,25 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
             var config = JsonSerializer.Deserialize<NixployConfig>(result.StdOutput, JsonOptions)
                 ?? throw new InvalidOperationException(".#nixploy evaluated to empty JSON.");
 
-            if (config.Schema != SupportedSchema)
+            if (config.Schema is not LegacySchema and not CurrentSchema)
             {
                 throw new InvalidOperationException(
-                    $"Unsupported nixploy schema '{config.Schema}'. Expected '{SupportedSchema}'. " +
+                    $"Unsupported nixploy schema '{config.Schema}'. Expected '{LegacySchema}' or '{CurrentSchema}'. " +
                     "Make sure your flake uses nixploy.lib.makeConfig from a compatible nixploy input."
                 );
             }
 
+            if (config.Schema == LegacySchema && config.Targets.Any(
+                target => target.Value.Run?.ReadOnlyBinds?.Count > 0
+            ))
+            {
+                throw new InvalidOperationException(
+                    $"Schema '{LegacySchema}' cannot represent run.readOnlyBinds. " +
+                    $"Use schema '{CurrentSchema}' for configurations that require read-only bind mounts."
+                );
+            }
+
+            ValidateReadOnlyBinds(config);
             return config;
         }
         catch (JsonException exception)
@@ -54,6 +68,81 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
             throw new InvalidOperationException(
                 "Failed to parse .#nixploy JSON.",
                 exception
+            );
+        }
+    }
+
+    private static void ValidateReadOnlyBinds(NixployConfig config)
+    {
+        foreach (var (targetName, target) in config.Targets)
+        {
+            if (target.Run is null || target.Run.ReadOnlyBinds is null)
+            {
+                throw new InvalidOperationException(
+                    $"Target '{targetName}' run.readOnlyBinds must be a list."
+                );
+            }
+
+            var destinations = new HashSet<string>(StringComparer.Ordinal);
+
+            for (var index = 0; index < target.Run.ReadOnlyBinds.Count; index++)
+            {
+                var bind = target.Run.ReadOnlyBinds[index]
+                    ?? throw new InvalidOperationException(
+                        $"Target '{targetName}' run.readOnlyBinds[{index}] must be an object."
+                    );
+                var optionName = $"targets.{targetName}.run.readOnlyBinds[{index}]";
+
+                ValidateUnixPath(bind.Source, $"{optionName}.source");
+                ValidateUnixPath(bind.Destination, $"{optionName}.destination");
+
+                if (string.Equals(bind.Source, bind.Destination, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"{optionName} source and destination must differ."
+                    );
+                }
+
+                if (!destinations.Add(bind.Destination))
+                {
+                    throw new InvalidOperationException(
+                        $"Target '{targetName}' has duplicate read-only bind destination '{bind.Destination}'."
+                    );
+                }
+            }
+        }
+    }
+
+    private static void ValidateUnixPath(string? path, string optionName)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new InvalidOperationException($"{optionName} must be nonempty.");
+        }
+
+        if (path[0] != '/')
+        {
+            throw new InvalidOperationException($"{optionName} must be an absolute Unix path.");
+        }
+
+        if (path == "/")
+        {
+            throw new InvalidOperationException($"{optionName} must not be the filesystem root.");
+        }
+
+        if (path.Contains(',') || path.Any(char.IsControl))
+        {
+            throw new InvalidOperationException(
+                $"{optionName} must not contain commas, NUL, or control characters."
+            );
+        }
+
+        var segments = path.Split('/');
+
+        if (segments.Skip(1).Any(segment => segment.Length == 0 || segment is "." or ".."))
+        {
+            throw new InvalidOperationException(
+                $"{optionName} must be normalized without empty, dot, or dot-dot path segments."
             );
         }
     }

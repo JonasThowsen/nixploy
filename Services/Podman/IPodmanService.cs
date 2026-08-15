@@ -21,7 +21,8 @@ public interface IPodmanService
         string? network,
         IReadOnlyDictionary<string, string> environment,
         int? port,
-        IReadOnlyList<SecretMount> secrets
+        IReadOnlyList<SecretMount> secrets,
+        IReadOnlyList<NixployReadOnlyBind> readOnlyBinds
     );
 
     Task<bool> RunImageAsync(
