@@ -25,6 +25,10 @@ let run_tests () =
     |> assert_ok
   in
   let deployed = ref [] in
+  let deployment_state = ref Nixploy.Application.Succeeded in
+  let deployment_error = ref None in
+  let deployment_started = ref None in
+  let deployment_gate = ref None in
   let pruned = ref [] in
   let prune_error = ref None in
   let project = Nixploy.Project_name.of_string "example" |> assert_ok in
@@ -56,15 +60,26 @@ let run_tests () =
           ()
         ->
         let revision = Nixploy.Application.commit_revision commit in
-        let deployment =
-          Nixploy.Application.For_testing.deployment
-            ~id:("deployment-" ^ String.prefix revision 1)
-            ~state:Succeeded ~revision ()
+        Option.iter !deployment_started ~f:(fun started ->
+            Ivar.fill_if_empty started ());
+        let%bind () =
+          Option.value_map !deployment_gate ~default:Deferred.unit ~f:Ivar.read
         in
-        deployed := (application_key, working_directory, revision) :: !deployed;
-        let%map () = on_stage Nixploy.Deployment.Preparing_source revision in
-        on_requested deployment;
-        Ok deployment)
+        match !deployment_error with
+        | Some error -> Deferred.return (Error error)
+        | None ->
+            let deployment =
+              Nixploy.Application.For_testing.deployment
+                ~id:("deployment-" ^ String.prefix revision 1)
+                ~state:!deployment_state ~revision ()
+            in
+            deployed :=
+              (application_key, working_directory, revision) :: !deployed;
+            let%map () =
+              on_stage Nixploy.Deployment.Preparing_source revision
+            in
+            on_requested deployment;
+            Ok deployment)
       ~prune:(fun ~working_directory ~target ->
         pruned := (working_directory, target) :: !pruned;
         match !prune_error with
@@ -135,21 +150,6 @@ let run_tests () =
     [%equal: Nixploy.Application.resource_state]
       (assert_ok deployed_resources)
       Present);
-  let%bind blocked_prune =
-    Nixploy.Store.with_lease store ~working_directory:directory ~target
-      (fun () ->
-        Nixploy.Application.prune application ~working_directory:directory
-          ~target)
-  in
-  assert (Result.is_error blocked_prune);
-  assert (List.is_empty !pruned);
-  let%bind still_present =
-    Nixploy.Application.resource_state application ~working_directory:directory
-      ~target
-  in
-  assert (
-    [%equal: Nixploy.Application.resource_state] (assert_ok still_present)
-      Present);
   let store_commit =
     Nixploy.Source.For_testing.commit ~revision:selected_revision
       ~subject:"Interrupted deployment" ~timestamp_ms:2_000L
@@ -186,15 +186,80 @@ let run_tests () =
     Nixploy.Store.open_ ~path:(Filename.concat directory "state.sqlite")
   in
   let restarted = Nixploy.Application.create ~store:(assert_ok reopened) () in
-  let%map read_back =
+  let%bind read_back =
     Nixploy.Application.resource_state restarted ~working_directory:directory
       ~target
   in
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Unknown);
+  deployment_state := Failed;
+  let%bind failed_deployment =
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~commit:resolved ~target ()
+  in
+  assert (
+    [%equal: Nixploy.Application.deployment_state]
+      (Nixploy.Application.deployment_state (assert_ok failed_deployment))
+      Failed);
+  let%bind failed_state =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state] (assert_ok failed_state)
+      Unknown);
+  deployment_state := Cancelled;
+  let%bind cancelled_deployment =
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~commit:resolved ~target ()
+  in
+  assert (
+    [%equal: Nixploy.Application.deployment_state]
+      (Nixploy.Application.deployment_state (assert_ok cancelled_deployment))
+      Cancelled);
+  let%bind cancelled_state =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state]
+      (assert_ok cancelled_state)
+      Unknown);
+  deployment_state := Succeeded;
+  prune_error := None;
+  let deploy_started = Ivar.create () in
+  let release_deploy = Ivar.create () in
+  deployment_started := Some deploy_started;
+  deployment_gate := Some release_deploy;
+  let waiting_deploy =
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~commit:resolved ~target ()
+  in
+  let%bind () = Ivar.read deploy_started in
+  let prunes_before_wait = List.length !pruned in
+  let waiting_prune =
+    Nixploy.Application.prune application ~working_directory:directory ~target
+  in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
+  assert (not (Deferred.is_determined waiting_prune));
+  [%test_eq: int] prunes_before_wait (List.length !pruned);
+  Ivar.fill_exn release_deploy ();
+  let%bind deployment_after_wait = waiting_deploy in
+  ignore (assert_ok deployment_after_wait : Nixploy.Application.deployment);
+  let%bind prune_after_wait = waiting_prune in
+  ignore (assert_ok prune_after_wait : Nixploy.Application.prune_result);
+  deployment_started := None;
+  deployment_gate := None;
+  let%bind final_state =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Absent);
   [%test_eq: (string * Nixploy.Target_name.t) list]
-    [ (directory, target); (directory, target) ]
-    (List.rev !pruned)
+    [ (directory, target); (directory, target); (directory, target) ]
+    (List.rev !pruned);
+  Deferred.unit
 
 let () =
   don't_wait_for

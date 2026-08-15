@@ -34,6 +34,13 @@
   (pps ppx_jane)))
 
 (test
+ (name deploy_state_test)
+ (modules deploy_state_test)
+ (libraries core nixploy_web_client_state)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name consumer_mapping_test)
  (modules consumer_mapping_test)
  (libraries nixploy nixploy_cli_mapping nixploy_rpc_mapping protocol core)

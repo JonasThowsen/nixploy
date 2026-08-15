@@ -1,6 +1,6 @@
 (library
  (name nixploy_web_client_state)
- (modules prune_state)
+ (modules deploy_state prune_state)
  (libraries core)
  (preprocess
   (pps ppx_jane)))

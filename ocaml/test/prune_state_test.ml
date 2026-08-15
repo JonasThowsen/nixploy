@@ -5,6 +5,8 @@ let () =
   assert (
     [%equal: Prune_state.t] confirming
       (Confirming { key = "example"; error = None }));
+  assert (Prune_state.is_busy confirming);
+  assert (not (Prune_state.is_pending confirming));
   assert (
     [%equal: Prune_state.t]
       (Prune_state.confirm confirming ~key:"other")
@@ -12,6 +14,7 @@ let () =
   let pending = Prune_state.start confirming ~key:"example" in
   assert ([%equal: Prune_state.t] pending (Pending "example"));
   assert (Prune_state.is_pending pending);
+  assert (Prune_state.is_busy pending);
   assert (
     [%equal: Prune_state.t] (Prune_state.succeed pending ~key:"other") pending);
   let failed = Prune_state.fail pending ~key:"example" ~error:"try again" in

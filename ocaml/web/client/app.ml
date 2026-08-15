@@ -1,6 +1,7 @@
 open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
+module Deploy_state = Nixploy_web_client_state.Deploy_state
 module Prune_state = Nixploy_web_client_state.Prune_state
 
 let text_with_class class_name text =
@@ -97,9 +98,20 @@ let button ?(kind = "secondary") ?(disabled = false) ?(autofocus = false) ~label
       else [ Vdom.Attr.on_click (fun _ -> on_click) ])
     [ Vdom.Node.text label ]
 
-let commit_confirmation ~application ~commit ~dispatch_deploy ~set_preview
-    ~set_notice ~disabled =
+let commit_confirmation ~application ~commit ~deploy_state ~dispatch_deploy
+    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
+    ~set_notice =
+  let pending = Deploy_state.is_pending deploy_state in
   let confirm =
+    let%bind.Effect () =
+      Effect.Many
+        [
+          set_deploy_state
+            (Deploy_state.start_submission deploy_state ~key:application);
+          set_cancel_confirmation None;
+          set_prune_state Prune_state.Idle;
+        ]
+    in
     let%bind.Effect response =
       dispatch_deploy
         {
@@ -107,13 +119,29 @@ let commit_confirmation ~application ~commit ~dispatch_deploy ~set_preview
           revision = commit.Protocol.Commit.revision;
         }
     in
-    let notice =
-      match response with
-      | Error error -> "DEPLOY RPC FAILED: " ^ Error.to_string_hum error
-      | Ok (Error error) -> "DEPLOYMENT REJECTED: " ^ Error.to_string_hum error
-      | Ok (Ok id) -> "DEPLOYMENT STARTED: " ^ id
+    let finished =
+      set_deploy_state
+        (Deploy_state.finish_submission (Deploy_state.Submitting application)
+           ~key:application)
     in
-    Effect.Many [ set_preview None; set_notice notice ]
+    match response with
+    | Error error ->
+        Effect.Many
+          [
+            finished;
+            set_notice ("DEPLOY RPC FAILED: " ^ Error.to_string_hum error);
+          ]
+    | Ok (Error error) ->
+        Effect.Many
+          [
+            finished;
+            set_notice ("DEPLOYMENT REJECTED: " ^ Error.to_string_hum error);
+          ]
+    | Ok (Ok id) ->
+        Effect.Many
+          [
+            finished; set_preview None; set_notice ("DEPLOYMENT STARTED: " ^ id);
+          ]
   in
   Vdom.Node.section
     ~attrs:
@@ -134,9 +162,12 @@ let commit_confirmation ~application ~commit ~dispatch_deploy ~set_preview
       Vdom.Node.div
         ~attrs:[ Vdom.Attr.class_ "button-row" ]
         [
-          button ~kind:"primary" ~disabled ~label:"DEPLOY THIS COMMIT"
+          button ~kind:"primary" ~disabled:pending
+            ~label:
+              (if pending then "SUBMITTING DEPLOYMENT" else "DEPLOY THIS COMMIT")
             ~on_click:confirm ();
-          button ~label:"CANCEL" ~on_click:(set_preview None) ();
+          button ~disabled:pending ~label:"CANCEL" ~on_click:(set_preview None)
+            ();
         ];
     ]
 
@@ -154,9 +185,16 @@ let deployment_is_active = function
       | Requested | Running -> true
       | Succeeded | Failed | Cancelled -> false)
 
+let id_component value =
+  String.concat_map value ~f:(fun character ->
+      sprintf "%02x" (Char.to_int character))
+
 let prune_confirmation ~application ~dispatch_prune ~prune_state
     ~set_prune_state ~set_notice ~deployment_active =
   let key = application.Protocol.Application.key in
+  let id_suffix = id_component key in
+  let title_id = "prune-dialog-title-" ^ id_suffix in
+  let description_id = "prune-dialog-description-" ^ id_suffix in
   let pending =
     match prune_state with
     | Prune_state.Pending pending -> String.equal pending key
@@ -214,9 +252,8 @@ let prune_confirmation ~application ~dispatch_prune ~prune_state
         Vdom.Attr.classes [ "confirmation"; "prune-confirmation" ];
         Vdom.Attr.create "role" "alertdialog";
         Vdom.Attr.create "aria-modal" "false";
-        Vdom.Attr.create "aria-labelledby" "prune-dialog-title";
-        Vdom.Attr.create "aria-describedby" "prune-dialog-description";
-        Vdom.Attr.create "aria-label" ("Confirm resource prune for " ^ key);
+        Vdom.Attr.create "aria-labelledby" title_id;
+        Vdom.Attr.create "aria-describedby" description_id;
       ]
     [
       Vdom.Node.div
@@ -225,10 +262,10 @@ let prune_confirmation ~application ~dispatch_prune ~prune_state
             ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
             [ Vdom.Node.text "DESTRUCTIVE RESOURCE PRUNE" ];
           Vdom.Node.strong
-            ~attrs:[ Vdom.Attr.id "prune-dialog-title" ]
+            ~attrs:[ Vdom.Attr.id title_id ]
             [ Vdom.Node.text ("APPLICATION " ^ key) ];
           Vdom.Node.p
-            ~attrs:[ Vdom.Attr.id "prune-dialog-description" ]
+            ~attrs:[ Vdom.Attr.id description_id ]
             [
               Vdom.Node.text
                 ("Project " ^ application.project ^ " / target "
@@ -263,9 +300,9 @@ let prune_confirmation ~application ~dispatch_prune ~prune_state
         ];
     ]
 
-let application_card ~preview ~cancel_confirmation ~prune_state
+let application_card ~preview ~deploy_state ~cancel_confirmation ~prune_state
     ~dispatch_preview ~dispatch_deploy ~dispatch_cancel ~dispatch_prune
-    ~set_preview ~set_cancel_confirmation ~set_prune_state
+    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
     ~set_deployment_filter ~set_selected_logs ~set_search ~set_current_match
     ~set_follow ~set_paused_snapshot ~set_notice application =
   let deployment = application.Protocol.Application.deployment in
@@ -290,22 +327,52 @@ let application_card ~preview ~cancel_confirmation ~prune_state
           revision,
           subject )
   in
-  let prune_pending = Prune_state.is_pending prune_state in
   let prune_busy = Prune_state.is_busy prune_state in
+  let deploy_busy = Deploy_state.is_busy deploy_state in
+  let previewing =
+    Deploy_state.is_previewing deploy_state ~key:application.key
+  in
   let request_preview =
-    let%bind.Effect () = set_notice ("READING MAIN: " ^ application.key) in
+    let%bind.Effect () =
+      Effect.Many
+        [
+          set_deploy_state
+            (Deploy_state.start_preview deploy_state ~key:application.key);
+          set_preview None;
+          set_cancel_confirmation None;
+          set_prune_state Prune_state.Idle;
+          set_notice ("READING MAIN: " ^ application.key);
+        ]
+    in
     let%bind.Effect response =
       dispatch_preview
         { Protocol.Preview_deployment.Query.application = application.key }
     in
+    let finished =
+      set_deploy_state
+        (Deploy_state.finish_preview (Deploy_state.Previewing application.key)
+           ~key:application.key)
+    in
     match response with
     | Error error ->
-        set_notice ("PREVIEW RPC FAILED: " ^ Error.to_string_hum error)
+        Effect.Many
+          [
+            finished;
+            set_notice ("PREVIEW RPC FAILED: " ^ Error.to_string_hum error);
+          ]
     | Ok (Error error) ->
-        set_notice ("COMMIT PREVIEW FAILED: " ^ Error.to_string_hum error)
+        Effect.Many
+          [
+            finished;
+            set_notice ("COMMIT PREVIEW FAILED: " ^ Error.to_string_hum error);
+          ]
     | Ok (Ok commit) ->
         Effect.Many
-          [ set_preview (Some (application.key, commit)); set_notice "" ]
+          [
+            finished;
+            set_preview (Some (application.key, commit));
+            set_notice "";
+          ]
   in
   let open_logs =
     Effect.Many
@@ -357,34 +424,41 @@ let application_card ~preview ~cancel_confirmation ~prune_state
               Vdom.Node.div
                 ~attrs:[ Vdom.Attr.class_ "button-row" ]
                 [
-                  button ~kind:"danger" ~label:"CONFIRM CANCELLATION"
-                    ~on_click:confirm_cancel ();
-                  button ~label:"KEEP RUNNING"
+                  button ~kind:"danger"
+                    ~disabled:(prune_busy || deploy_busy)
+                    ~label:"CONFIRM CANCELLATION" ~on_click:confirm_cancel ();
+                  button
+                    ~disabled:(prune_busy || deploy_busy)
+                    ~label:"KEEP RUNNING"
                     ~on_click:(set_cancel_confirmation None)
                     ();
                 ];
             ]
         else
-          button ~kind:"danger" ~disabled:prune_pending
+          button ~kind:"danger"
+            ~disabled:(prune_busy || deploy_busy)
             ~label:"CANCEL DEPLOYMENT"
-            ~on_click:(set_cancel_confirmation (Some deployment.id))
+            ~on_click:
+              (Effect.Many
+                 [
+                   set_preview None;
+                   set_prune_state Prune_state.Idle;
+                   set_cancel_confirmation (Some deployment.id);
+                 ])
             ()
-    | Some deployment
-      when ([%equal: Protocol.Deployment.State.t] deployment.state Requested
-           || [%equal: Protocol.Deployment.State.t] deployment.state Running)
-           && deployment.can_cancel ->
-        button ~disabled:true ~label:"DEPLOYMENT ACTIVE" ~on_click:Effect.Ignore
-          ()
     | _ ->
-        button ~kind:"primary" ~disabled:prune_busy ~label:"PREVIEW MAIN"
+        button ~kind:"primary"
+          ~disabled:(prune_busy || deploy_busy)
+          ~label:(if previewing then "READING MAIN" else "PREVIEW MAIN")
           ~on_click:request_preview ()
   in
   let confirmation =
     match preview with
     | Some (key, commit) when String.equal key application.key && not prune_busy
       ->
-        commit_confirmation ~application:key ~commit ~dispatch_deploy
-          ~set_preview ~set_notice ~disabled:prune_pending
+        commit_confirmation ~application:key ~commit ~deploy_state
+          ~dispatch_deploy ~set_preview ~set_deploy_state
+          ~set_cancel_confirmation ~set_prune_state ~set_notice
     | _ -> Vdom.Node.none
   in
   let deployment_active = deployment_is_active deployment in
@@ -416,7 +490,7 @@ let application_card ~preview ~cancel_confirmation ~prune_state
   in
   let prune_action =
     button ~kind:"danger-outline"
-      ~disabled:(deployment_active || prune_busy)
+      ~disabled:(deployment_active || prune_busy || deploy_busy)
       ~label:"PRUNE RESOURCES" ~on_click:open_prune ()
   in
   Vdom.Node.create "article"
@@ -831,6 +905,7 @@ let metrics_panel response =
 
 let component graph =
   let preview, set_preview = Bonsai.state None graph in
+  let deploy_state, set_deploy_state = Bonsai.state Deploy_state.Idle graph in
   let cancel_confirmation, set_cancel_confirmation = Bonsai.state None graph in
   let prune_state, set_prune_state = Bonsai.state Prune_state.Idle graph in
   let deployment_filter, set_deployment_filter = Bonsai.state None graph in
@@ -892,6 +967,8 @@ let component graph =
   and metrics = metrics
   and preview = preview
   and set_preview = set_preview
+  and deploy_state = deploy_state
+  and set_deploy_state = set_deploy_state
   and cancel_confirmation = cancel_confirmation
   and set_cancel_confirmation = set_cancel_confirmation
   and prune_state = prune_state
@@ -919,12 +996,12 @@ let component graph =
     | Some (_, Ok (_ :: _ as application_list)) ->
         List.map application_list
           ~f:
-            (application_card ~preview ~cancel_confirmation ~prune_state
-               ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
-               ~dispatch_prune ~set_preview ~set_cancel_confirmation
-               ~set_prune_state ~set_deployment_filter ~set_selected_logs
-               ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
-               ~set_notice)
+            (application_card ~preview ~deploy_state ~cancel_confirmation
+               ~prune_state ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
+               ~dispatch_prune ~set_preview ~set_deploy_state
+               ~set_cancel_confirmation ~set_prune_state ~set_deployment_filter
+               ~set_selected_logs ~set_search ~set_current_match ~set_follow
+               ~set_paused_snapshot ~set_notice)
     | Some (_, Ok []) ->
         [ text_with_class "empty-panel" "NO APPLICATIONS ARE ALLOWLISTED" ]
     | Some (_, Error error) ->

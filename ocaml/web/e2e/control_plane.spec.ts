@@ -27,7 +27,7 @@ for (const viewport of [
     const application = page.locator(".application-card").first();
     await application.getByRole("button", { name: "PRUNE RESOURCES" }).click();
     const pruneConfirmation = application.getByRole("alertdialog", {
-      name: /Confirm resource prune for/,
+      name: /APPLICATION /,
     });
     await expect(pruneConfirmation).toBeVisible();
     await expect(
@@ -37,18 +37,34 @@ for (const viewport of [
     await expect(
       pruneConfirmation.getByRole("button", { name: "CONFIRM PRUNE" }),
     ).toBeVisible();
-    const openConfirmationOverflow = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    );
-    expect(openConfirmationOverflow).toBe(false);
-    for (const control of await pruneConfirmation.locator("button:visible").all()) {
+    const openConfirmationOverflow = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      cards: [...document.querySelectorAll(".application-card")].some(
+        (card) => card.scrollWidth > card.clientWidth,
+      ),
+      dialog: [...document.querySelectorAll('[role="alertdialog"]')].some(
+        (dialog) => dialog.scrollWidth > dialog.clientWidth,
+      ),
+    }));
+    expect(openConfirmationOverflow).toEqual({
+      document: false,
+      cards: false,
+      dialog: false,
+    });
+    for (const control of await page.locator("button:visible").all()) {
       const box = await control.boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
     }
-    await expect(
-      pruneConfirmation.getByRole("button", { name: "KEEP RESOURCES" }),
-    ).toBeFocused();
-    await pruneConfirmation.getByRole("button", { name: "KEEP RESOURCES" }).click();
+    const keepResources = pruneConfirmation.getByRole("button", {
+      name: "KEEP RESOURCES",
+    });
+    expect(
+      await keepResources.evaluate(
+        (keep) => keep.nextElementSibling?.textContent?.trim() === "CONFIRM PRUNE",
+      ),
+    ).toBe(true);
+    await expect(keepResources).toBeFocused();
+    await keepResources.click();
     await expect(pruneConfirmation).toBeHidden();
 
     await application.getByRole("button", { name: "PREVIEW MAIN" }).click();

@@ -43,6 +43,46 @@ let create_v1_database path =
   if not (phys_equal result Sqlite3.Rc.OK) then failwith (Sqlite3.errmsg db);
   assert (Sqlite3.db_close db)
 
+let create_v2_database path =
+  let db = Sqlite3.db_open path in
+  let sql =
+    {|
+      CREATE TABLE deployments (
+        id TEXT PRIMARY KEY,
+        application_key TEXT,
+        working_directory TEXT NOT NULL,
+        target TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('requested', 'running', 'succeeded', 'failed', 'cancelled')),
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        revision TEXT,
+        commit_subject TEXT,
+        commit_timestamp_ms INTEGER,
+        container_name TEXT,
+        error TEXT,
+        requested_at_ms INTEGER NOT NULL,
+        started_at_ms INTEGER,
+        finished_at_ms INTEGER,
+        cancel_requested_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE deployment_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        inserted_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX deployments_recent ON deployments(requested_at_ms DESC);
+      CREATE INDEX deployments_application_recent ON deployments(application_key, requested_at_ms DESC);
+      CREATE INDEX deployment_events_operation ON deployment_events(deployment_id, id);
+      PRAGMA user_version = 2;
+    |}
+  in
+  let result = Sqlite3.exec db sql in
+  if not (phys_equal result Sqlite3.Rc.OK) then failwith (Sqlite3.errmsg db);
+  assert (Sqlite3.db_close db)
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-store-test-" "" in
@@ -73,17 +113,25 @@ let run_tests () =
   in
   assert (
     [%equal: Nixploy.Store.resource_state] (Or_error.ok_exn present) Present);
-  let%bind lease_test =
+  let lease_entered = Ivar.create () in
+  let release_lease = Ivar.create () in
+  let first_lease =
     Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
       (fun () ->
-        let%map nested =
-          Nixploy.Store.with_lease store ~working_directory:"/tmp/project"
-            ~target (fun () -> Deferred.Or_error.return ())
-        in
-        if Result.is_error nested then Ok ()
-        else Or_error.error_string "a second target lease was acquired")
+        Ivar.fill_if_empty lease_entered ();
+        let%map () = Ivar.read release_lease in
+        Ok ())
   in
-  Or_error.ok_exn lease_test;
+  let%bind () = Ivar.read lease_entered in
+  let second_lease =
+    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
+      (fun () -> Deferred.Or_error.return ())
+  in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
+  assert (not (Deferred.is_determined second_lease));
+  Ivar.fill_exn release_lease ();
+  let%bind lease_results = Deferred.all [ first_lease; second_lease ] in
+  List.iter lease_results ~f:Or_error.ok_exn;
   let%bind requested =
     Nixploy.Store.request store ~application_key:(Some "test")
       ~working_directory:"/tmp/project" ~target ~commit
@@ -163,6 +211,22 @@ let run_tests () =
     [%equal: Nixploy.Store.resource_state]
       (Or_error.ok_exn migrated_resource)
       Unknown);
+  let concurrent_v2_path = Filename.concat directory "concurrent-v2.db" in
+  create_v2_database concurrent_v2_path;
+  let%bind concurrent_opens =
+    List.init 8 ~f:(fun _ -> Nixploy.Store.open_ ~path:concurrent_v2_path)
+    |> Deferred.all
+  in
+  let concurrent_stores = List.map concurrent_opens ~f:Or_error.ok_exn in
+  let%bind concurrent_resources =
+    List.map concurrent_stores ~f:(fun concurrent_store ->
+        Nixploy.Store.resource_state concurrent_store
+          ~working_directory:"/tmp/concurrent" ~target)
+    |> Deferred.all
+  in
+  List.iter concurrent_resources ~f:(fun state ->
+      assert (
+        [%equal: Nixploy.Store.resource_state] (Or_error.ok_exn state) Unknown));
   let%bind reopened = Nixploy.Store.open_ ~path in
   let%bind persisted_resource =
     Nixploy.Store.resource_state (Or_error.ok_exn reopened)

@@ -154,82 +154,58 @@ let check_foreign_keys db =
       | ROW -> failwith "SQLite foreign key check found a violation"
       | code -> check db "check foreign keys" code)
 
-let migrate_v1 db =
+let migrate_v1_within_transaction db =
+  exec db "ALTER TABLE deployment_events RENAME TO deployment_events_v1";
+  exec db "ALTER TABLE deployments RENAME TO deployments_v1";
+  exec db "DROP INDEX IF EXISTS deployments_recent";
+  exec db "DROP INDEX IF EXISTS deployment_events_operation";
+  exec db schema_v2;
+  exec db
+    {|
+    INSERT INTO deployments (
+      id, working_directory, target, state, stage, message, revision,
+      container_name, error, requested_at_ms, started_at_ms,
+      finished_at_ms, updated_at_ms
+    )
+    SELECT id, working_directory, target, state, stage, message, revision,
+      container_name, error, requested_at_ms,
+      CASE WHEN state = 'requested' THEN NULL ELSE requested_at_ms END,
+      CASE WHEN state IN ('succeeded', 'failed') THEN updated_at_ms ELSE NULL END,
+      updated_at_ms
+    FROM deployments_v1;
+    INSERT INTO deployment_events
+      (id, deployment_id, stage, message, inserted_at_ms)
+    SELECT id, deployment_id, stage, message, inserted_at_ms
+    FROM deployment_events_v1;
+    DROP TABLE deployment_events_v1;
+    DROP TABLE deployments_v1;
+  |}
+
+let migrate db =
+  exec db "PRAGMA journal_mode = DELETE";
+  exec db "PRAGMA synchronous = FULL";
   exec db "PRAGMA foreign_keys = OFF";
   exec db "BEGIN IMMEDIATE";
   let committed = ref false in
   Exn.protect
     ~f:(fun () ->
-      if Int.equal (user_version db) 2 then exec db "COMMIT"
-      else (
-        exec db "ALTER TABLE deployment_events RENAME TO deployment_events_v1";
-        exec db "ALTER TABLE deployments RENAME TO deployments_v1";
-        exec db "DROP INDEX IF EXISTS deployments_recent";
-        exec db "DROP INDEX IF EXISTS deployment_events_operation";
-        exec db schema_v2;
-        exec db
-          {|
-          INSERT INTO deployments (
-            id, working_directory, target, state, stage, message, revision,
-            container_name, error, requested_at_ms, started_at_ms,
-            finished_at_ms, updated_at_ms
-          )
-          SELECT id, working_directory, target, state, stage, message, revision,
-            container_name, error, requested_at_ms,
-            CASE WHEN state = 'requested' THEN NULL ELSE requested_at_ms END,
-            CASE WHEN state IN ('succeeded', 'failed') THEN updated_at_ms ELSE NULL END,
-            updated_at_ms
-          FROM deployments_v1;
-          INSERT INTO deployment_events
-            (id, deployment_id, stage, message, inserted_at_ms)
-          SELECT id, deployment_id, stage, message, inserted_at_ms
-          FROM deployment_events_v1;
-          DROP TABLE deployment_events_v1;
-          DROP TABLE deployments_v1;
-          PRAGMA user_version = 2;
-          COMMIT;
-        |});
+      (match user_version db with
+      | 0 ->
+          exec db schema_v2;
+          exec db resource_state_schema
+      | 1 ->
+          migrate_v1_within_transaction db;
+          exec db resource_state_schema
+      | 2 -> exec db resource_state_schema
+      | 3 -> ()
+      | version -> failwithf "unsupported SQLite schema version %d" version ());
+      exec db "PRAGMA user_version = 3";
+      exec db "COMMIT";
       committed := true)
     ~finally:(fun () ->
       if not !committed then ignore (Sqlite3.exec db "ROLLBACK" : Sqlite3.Rc.t));
   exec db "PRAGMA foreign_keys = ON";
   check_foreign_keys db
-
-let migrate_v2 db =
-  exec db "BEGIN IMMEDIATE";
-  let committed = ref false in
-  Exn.protect
-    ~f:(fun () ->
-      exec db resource_state_schema;
-      exec db "PRAGMA user_version = 3";
-      exec db "COMMIT";
-      committed := true)
-    ~finally:(fun () ->
-      if not !committed then ignore (Sqlite3.exec db "ROLLBACK" : Sqlite3.Rc.t))
-
-let migrate db =
-  exec db "PRAGMA journal_mode = DELETE";
-  exec db "PRAGMA synchronous = FULL";
-  match user_version db with
-  | 0 ->
-      exec db "BEGIN IMMEDIATE";
-      let committed = ref false in
-      Exn.protect
-        ~f:(fun () ->
-          exec db schema_v2;
-          exec db resource_state_schema;
-          exec db "PRAGMA user_version = 3";
-          exec db "COMMIT";
-          committed := true)
-        ~finally:(fun () ->
-          if not !committed then
-            ignore (Sqlite3.exec db "ROLLBACK" : Sqlite3.Rc.t))
-  | 1 ->
-      migrate_v1 db;
-      migrate_v2 db
-  | 2 -> migrate_v2 db
-  | 3 -> ()
-  | version -> failwithf "unsupported SQLite schema version %d" version ()
 
 let open_ ~path =
   Monitor.try_with_or_error (fun () ->
@@ -254,11 +230,9 @@ let acquire_lease t ~working_directory ~target =
           let descriptor =
             Core_unix.openfile path ~mode:[ O_CREAT; O_RDWR ] ~perm:0o600
           in
-          if Core_unix.flock descriptor Core_unix.Flock_command.lock_exclusive
-          then descriptor
-          else (
-            Core_unix.close descriptor;
-            failwith "another deployment already holds the target lease")))
+          Core_unix.flock_blocking descriptor
+            Core_unix.Flock_command.lock_exclusive;
+          descriptor))
 
 let release_lease descriptor =
   In_thread.run (fun () ->

@@ -235,6 +235,42 @@ exit 99
         Nixploy.Deployment.deploy ?record_stage ~operation_id
           ~working_directory:repository ~commit ~target ()
       in
+      let application_store_path = Filename.concat root "application.sqlite" in
+      let%bind application_store =
+        Nixploy.Store.open_ ~path:application_store_path
+      in
+      let application_store = assert_ok application_store in
+      let application =
+        Nixploy.Application.create ~store:application_store ()
+      in
+      let%bind application_commit =
+        Nixploy.Application.preview_main_commit application
+          ~working_directory:repository
+      in
+      let application_commit = assert_ok application_commit in
+      let expect_application_failure_leaves_unknown () =
+        let%bind marked_present =
+          Nixploy.Store.set_resource_state application_store
+            ~working_directory:repository ~target Present
+        in
+        assert_ok marked_present;
+        let%bind deployment =
+          Nixploy.Application.deploy application ~working_directory:repository
+            ~commit:application_commit ~target ()
+        in
+        let deployment = assert_ok deployment in
+        assert (
+          [%equal: Nixploy.Application.deployment_state]
+            (Nixploy.Application.deployment_state deployment)
+            Failed);
+        let%map resource_state =
+          Nixploy.Application.resource_state application
+            ~working_directory:repository ~target
+        in
+        assert (
+          [%equal: Nixploy.Application.resource_state]
+            (assert_ok resource_state) Unknown)
+      in
 
       clear_scenario ();
       let stages = ref [] in
@@ -325,6 +361,9 @@ exit 99
       assert (count lines "|inspect|--type|container|" = 0);
       assert (count lines "|rm|-f|" = 0);
       assert (count lines "|run|-d|--name|" = 0);
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
+      let%bind () = expect_application_failure_leaves_unknown () in
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_UNOWNED" "1";
@@ -350,6 +389,9 @@ exit 99
       assert (
         String.is_substring (List.nth_exn removals 1)
           ~substring:"|rm|-f|candidate-id");
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_VERIFY_MISMATCH" "1";
+      let%bind () = expect_application_failure_leaves_unknown () in
 
       clear_scenario ();
       let record_stage stage _message =

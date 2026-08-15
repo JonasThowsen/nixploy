@@ -61,7 +61,7 @@ let create ~store () =
   let deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
       ~target () =
     let open Deferred.Or_error.Let_syntax in
-    Tracked_deployment.deploy ~on_stage
+    Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
       ?application_key ~store ~working_directory ~commit ~target ()
@@ -88,19 +88,24 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind deployment =
-        t.deploy ~on_stage ~on_requested ~application_key ~working_directory
-          ~commit ~target ()
-      in
-      let%map () =
-        match deployment.state with
-        | Succeeded ->
-            Store.set_resource_state t.store ~working_directory ~target Present
-        | Requested | Running | Failed | Cancelled ->
-            Deferred.Or_error.return ()
-      in
-      deployment
+      Store.with_lease t.store ~working_directory ~target (fun () ->
+          let open Deferred.Or_error.Let_syntax in
+          let%bind () =
+            Store.set_resource_state t.store ~working_directory ~target Unknown
+          in
+          let%bind deployment =
+            t.deploy ~on_stage ~on_requested ~application_key ~working_directory
+              ~commit ~target ()
+          in
+          let%map () =
+            match deployment.state with
+            | Succeeded ->
+                Store.set_resource_state t.store ~working_directory ~target
+                  Present
+            | Requested | Running | Failed | Cancelled ->
+                Deferred.Or_error.return ()
+          in
+          deployment)
 
 let prune t ~working_directory ~target =
   match canonical_working_directory working_directory with
