@@ -96,8 +96,10 @@ let deploy_command =
                  (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok store -> (
+               let application = Nixploy.Application.create ~store in
                let%bind preview =
-                 Nixploy.Source.preview_main ~working_directory
+                 Nixploy.Application.preview_commit application
+                   ~working_directory
                in
                match preview with
                | Error error ->
@@ -106,12 +108,11 @@ let deploy_command =
                    Shutdown.exit 1
                | Ok commit -> (
                    printf "Deploying %s  %s\n%!"
-                     (Nixploy.Source.commit_revision commit)
-                     (Nixploy.Source.commit_subject commit);
+                     (Nixploy.Application.commit_revision commit)
+                     (Nixploy.Application.commit_subject commit);
                    let%bind result =
-                     Nixploy.Tracked_deployment.deploy
-                       ~on_stage:print_deployment_stage ~store
-                       ~working_directory ~commit ~target ()
+                     Nixploy.Application.deploy ~on_stage:print_deployment_stage
+                       application ~working_directory ~commit ~target ()
                    in
                    match result with
                    | Error error ->

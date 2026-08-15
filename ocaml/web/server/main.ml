@@ -10,6 +10,7 @@ type cached_runtime = {
 
 type state = {
   applications : Managed_application.t list;
+  application : Nixploy.Application.t;
   store : Store.t;
   active : Nixploy.Cancellation.t String.Table.t;
   runtime_cache : cached_runtime String.Table.t;
@@ -136,14 +137,15 @@ let preview_deployment state _connection_state query =
   | Error _ as error -> Deferred.return error
   | Ok application ->
       let%map preview =
-        Nixploy.Source.preview_main
+        Nixploy.Application.preview_commit state.application
           ~working_directory:(Managed_application.working_directory application)
       in
       Or_error.map preview ~f:(fun commit ->
           {
-            Protocol.Commit.revision = Nixploy.Source.commit_revision commit;
-            subject = Nixploy.Source.commit_subject commit;
-            timestamp_ms = Nixploy.Source.commit_timestamp_ms commit;
+            Protocol.Commit.revision =
+              Nixploy.Application.commit_revision commit;
+            subject = Nixploy.Application.commit_subject commit;
+            timestamp_ms = Nixploy.Application.commit_timestamp_ms commit;
           })
 
 let deploy state _connection_state query =
@@ -157,7 +159,7 @@ let deploy state _connection_state query =
         Managed_application.working_directory application
       in
       let%bind commit =
-        Nixploy.Source.find_commit ~working_directory
+        Nixploy.Application.resolve_commit state.application ~working_directory
           ~revision:query.Protocol.Deploy.Query.revision
       in
       match commit with
@@ -167,13 +169,13 @@ let deploy state _connection_state query =
           let started = Ivar.create () in
           let execution =
             Nixploy.Cancellation.within cancellation (fun () ->
-                Nixploy.Tracked_deployment.deploy
+                Nixploy.Application.deploy
                   ~on_requested:(fun operation ->
                     Hashtbl.set state.active ~key:(Store.id operation)
                       ~data:cancellation;
                     Ivar.fill_if_empty started (Store.id operation))
                   ~application_key:(Managed_application.key application)
-                  ~store:state.store ~working_directory ~commit
+                  state.application ~working_directory ~commit
                   ~target:(Managed_application.target application)
                   ())
           in
@@ -562,6 +564,7 @@ let run ~port ~state_db =
   let state =
     {
       applications;
+      application = Nixploy.Application.create ~store;
       store;
       active = String.Table.create ();
       runtime_cache = String.Table.create ();
