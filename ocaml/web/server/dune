@@ -2,6 +2,7 @@
  (name nixploy_rpc_mapping)
  (modules
   authorization
+  cancellation_request
   deployment_start
   prune_request
   prune_response

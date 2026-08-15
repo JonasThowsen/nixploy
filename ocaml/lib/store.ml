@@ -494,18 +494,35 @@ let list_for_application t ~application_key ~working_directory ~target ~limit =
           with_db t ~f:(fun db ->
               with_statement db
                 ("SELECT " ^ select_columns
-               ^ " FROM deployments WHERE application_key = ? OR \
-                  (application_key IS NULL AND working_directory = ? AND \
-                  target = ?) ORDER BY requested_at_ms DESC LIMIT ?")
+               ^ " FROM deployments WHERE working_directory = ? AND target = ? \
+                  AND (application_key = ? OR application_key IS NULL) ORDER \
+                  BY requested_at_ms DESC LIMIT ?")
                 ~f:(fun statement ->
                   bind db statement
                     [
-                      Sqlite3.Data.TEXT application_key;
                       TEXT working_directory;
                       TEXT (Target_name.to_string target);
+                      Sqlite3.Data.TEXT application_key;
                       INT (Int64.of_int limit);
                     ];
                   collect db statement "list application deployments"))))
+
+let list_for_scope t ~working_directory ~target ~limit =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                ("SELECT " ^ select_columns
+               ^ " FROM deployments WHERE working_directory = ? AND target = ? \
+                  ORDER BY requested_at_ms DESC LIMIT ?")
+                ~f:(fun statement ->
+                  bind db statement
+                    [
+                      Sqlite3.Data.TEXT working_directory;
+                      TEXT (Target_name.to_string target);
+                      INT (Int64.of_int limit);
+                    ];
+                  collect db statement "list scoped deployments"))))
 
 let resource_state_of_string = function
   | "unknown" -> Unknown

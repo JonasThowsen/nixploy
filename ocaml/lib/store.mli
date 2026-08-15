@@ -49,6 +49,13 @@ val list_for_application :
   limit:int ->
   deployment list Deferred.Or_error.t
 
+val list_for_scope :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  limit:int ->
+  deployment list Deferred.Or_error.t
+
 val resource_state :
   t ->
   working_directory:string ->

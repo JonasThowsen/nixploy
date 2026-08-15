@@ -1,107 +1,85 @@
 open! Core
 open! Async
 module Managed_application = Nixploy.Managed_application
-module Store = Nixploy.Store
+module Application = Nixploy.Application
 module Authorization = Nixploy_rpc_mapping.Authorization
+module Cancellation_request = Nixploy_rpc_mapping.Cancellation_request
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_request = Nixploy_rpc_mapping.Prune_request
 module Resource_state_response = Nixploy_rpc_mapping.Resource_state_response
 
-type cached_runtime = {
-  mutable expires_at : Time_ns.t;
-  value : Nixploy.Runtime_application.t Or_error.t Deferred.t;
-}
-
 type state = {
   applications : Managed_application.t list;
-  application : Nixploy.Application.t;
-  store : Store.t;
-  active : Nixploy.Cancellation.t String.Table.t;
-  runtime_cache : cached_runtime String.Table.t;
+  application : Application.t;
 }
 
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
 let protocol_state = function
-  | Store.Requested -> Protocol.Deployment.State.Requested
+  | Application.Requested -> Protocol.Deployment.State.Requested
   | Running -> Running
   | Succeeded -> Succeeded
   | Failed -> Failed
   | Cancelled -> Cancelled
 
 let is_active deployment =
-  match Store.state deployment with
+  match Application.deployment_state deployment with
   | Requested | Running -> true
   | Succeeded | Failed | Cancelled -> false
 
 let protocol_commit deployment =
-  Store.revision deployment
+  Application.deployment_revision deployment
   |> Option.map ~f:(fun revision ->
       {
         Protocol.Commit.revision;
         subject =
-          Store.commit_subject deployment
+          Application.deployment_commit_subject deployment
           |> Option.value ~default:"Commit subject unavailable";
         timestamp_ms =
-          Store.commit_timestamp_ms deployment
-          |> Option.value ~default:(Store.requested_at_ms deployment);
+          Application.deployment_commit_timestamp_ms deployment
+          |> Option.value
+               ~default:(Application.deployment_requested_at_ms deployment);
       })
 
-let protocol_deployment state deployment =
+let protocol_deployment state scope deployment =
+  let started_at_ms = Application.deployment_started_at_ms deployment in
+  let finished_at_ms = Application.deployment_finished_at_ms deployment in
   {
-    Protocol.Deployment.id = Store.id deployment;
-    state = protocol_state (Store.state deployment);
-    stage = Store.stage deployment;
-    message = Store.message deployment;
+    Protocol.Deployment.id = Application.deployment_id deployment;
+    state = protocol_state (Application.deployment_state deployment);
+    stage = Application.deployment_stage deployment;
+    message = Application.deployment_message deployment;
     commit = protocol_commit deployment;
-    container_name = Store.container_name deployment;
-    error = Store.error deployment;
-    requested_at_ms = Store.requested_at_ms deployment;
-    started_at_ms = Store.started_at_ms deployment;
-    finished_at_ms = Store.finished_at_ms deployment;
+    container_name = Application.deployment_container_name deployment;
+    error = Application.deployment_error deployment;
+    requested_at_ms = Application.deployment_requested_at_ms deployment;
+    started_at_ms;
+    finished_at_ms;
     elapsed_ms =
-      Option.map (Store.started_at_ms deployment) ~f:(fun started ->
-          let finished =
-            Store.finished_at_ms deployment |> Option.value ~default:(now_ms ())
-          in
+      Option.map started_at_ms ~f:(fun started ->
+          let finished = Option.value finished_at_ms ~default:(now_ms ()) in
           Int64.max 0L Int64.(finished - started));
-    cancel_requested_at_ms = Store.cancel_requested_at_ms deployment;
-    updated_at_ms = Store.updated_at_ms deployment;
+    cancel_requested_at_ms =
+      Application.deployment_cancel_requested_at_ms deployment;
+    updated_at_ms = Application.deployment_updated_at_ms deployment;
     can_cancel =
-      is_active deployment && Hashtbl.mem state.active (Store.id deployment);
+      is_active deployment
+      && Application.deployment_can_cancel state.application ~scope deployment;
   }
 
-let canonical_working_directory application =
-  let working_directory = Managed_application.working_directory application in
-  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
-  |> Result.ok
-  |> Option.value ~default:working_directory
-
-let deployment_matches application deployment =
-  Option.equal String.equal
-    (Store.application_key deployment)
-    (Some (Managed_application.key application))
-  || Option.is_none (Store.application_key deployment)
-     && String.equal
-          (Store.working_directory deployment)
-          (canonical_working_directory application)
-     && Nixploy.Target_name.equal (Store.target deployment)
-          (Managed_application.target application)
+let find_application state key = Managed_application.find state.applications key
+let scope application = Application.managed_scope application
 
 let list_applications state _connection_state () =
   Deferred.Or_error.List.map state.applications ~how:`Parallel
     ~f:(fun application ->
-      let%bind.Deferred.Or_error deployments =
-        Store.list_for_application state.store
-          ~application_key:(Managed_application.key application)
-          ~working_directory:(canonical_working_directory application)
-          ~target:(Managed_application.target application)
-          ~limit:1
+      let open Deferred.Or_error.Let_syntax in
+      let%bind scope = Deferred.return (scope application) in
+      let%bind deployments =
+        Application.deployment_history state.application ~scope ~limit:1
       in
-      let%map.Deferred.Or_error resource_state =
-        Nixploy.Application.resource_state state.application
-          ~working_directory:(Managed_application.working_directory application)
-          ~target:(Managed_application.target application)
+      let%map resource_state =
+        Application.resource_state_for_scope state.application ~scope
       in
       {
         Protocol.Application.key = Managed_application.key application;
@@ -114,80 +92,57 @@ let list_applications state _connection_state () =
         repository = Managed_application.repository_identity application;
         resource_state = Resource_state_response.of_application resource_state;
         deployment =
-          List.hd deployments |> Option.map ~f:(protocol_deployment state);
+          List.hd deployments |> Option.map ~f:(protocol_deployment state scope);
       })
 
 let preview_deployment state _connection_state query =
   match
-    Managed_application.find state.applications
-      query.Protocol.Preview_deployment.Query.application
+    find_application state query.Protocol.Preview_deployment.Query.application
   with
   | Error _ as error -> Deferred.return error
   | Ok application ->
       let%map preview =
-        Nixploy.Application.preview_main_commit state.application
+        Application.preview_main_commit state.application
           ~working_directory:(Managed_application.working_directory application)
       in
       Or_error.map preview ~f:(fun commit ->
           {
-            Protocol.Commit.revision =
-              Nixploy.Application.commit_revision commit;
-            subject = Nixploy.Application.commit_subject commit;
-            timestamp_ms = Nixploy.Application.commit_timestamp_ms commit;
+            Protocol.Commit.revision = Application.commit_revision commit;
+            subject = Application.commit_subject commit;
+            timestamp_ms = Application.commit_timestamp_ms commit;
           })
 
 let deploy state _connection_state query =
-  match
-    Managed_application.find state.applications
-      query.Protocol.Deploy.Query.application
-  with
+  match find_application state query.Protocol.Deploy.Query.application with
   | Error _ as error -> Deferred.return error
-  | Ok application -> (
-      let working_directory =
-        Managed_application.working_directory application
-      in
+  | Ok managed -> (
+      let working_directory = Managed_application.working_directory managed in
       let%bind commit =
-        Nixploy.Application.resolve_commit state.application ~working_directory
+        Application.resolve_commit state.application ~working_directory
           ~revision:query.Protocol.Deploy.Query.revision
       in
       match commit with
       | Error _ as error -> Deferred.return error
       | Ok commit ->
-          let cancellation = Nixploy.Cancellation.create () in
           let started = Ivar.create () in
           let execution =
-            Nixploy.Cancellation.within cancellation (fun () ->
-                Nixploy.Application.deploy
-                  ~on_requested:(fun operation ->
-                    let operation_id =
-                      Deployment_start.operation_id operation
-                    in
-                    Hashtbl.set state.active ~key:operation_id
-                      ~data:cancellation;
-                    Ivar.fill_if_empty started operation_id)
-                  ~application_key:(Managed_application.key application)
-                  ~expected_project:
-                    (Deployment_start.expected_project application)
-                  state.application ~working_directory
-                  ~source:
-                    (Nixploy.Application.immutable_source
-                       ~repository_identity:
-                         (Managed_application.repository_identity application)
-                       commit)
-                  ~target:(Managed_application.target application)
-                  ())
+            Application.deploy
+              ~on_requested:(fun operation ->
+                Ivar.fill_if_empty started
+                  (Deployment_start.operation_id operation))
+              ~application_key:(Managed_application.key managed)
+              ~expected_project:(Deployment_start.expected_project managed)
+              state.application ~working_directory
+              ~source:
+                (Application.immutable_source
+                   ~repository_identity:
+                     (Managed_application.repository_identity managed)
+                   commit)
+              ~target:(Managed_application.target managed)
+              ()
           in
           don't_wait_for
             (let%map result = execution in
-             Hashtbl.remove state.runtime_cache
-               (Managed_application.key application);
-             (match Ivar.peek started with
-             | Some operation_id -> (
-                 match Hashtbl.find state.active operation_id with
-                 | Some registered when phys_equal registered cancellation ->
-                     Hashtbl.remove state.active operation_id
-                 | _ -> ())
-             | None -> ());
              match result with
              | Ok _ -> ()
              | Error error ->
@@ -203,274 +158,130 @@ let deploy state _connection_state query =
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
-    ~prune:(fun
-        ~expected_project ~repository_identity ~working_directory ~target ->
-      Nixploy.Application.prune ~expected_project ~repository_identity
-        state.application ~working_directory ~target)
-    ~on_started:(fun ~application_key ->
-      Hashtbl.remove state.runtime_cache application_key)
+    ~prune:(fun ~application ->
+      Application.prune
+        ~application_key:(Managed_application.key application)
+        ~expected_project:(Managed_application.project application)
+        ~repository_identity:
+          (Managed_application.repository_identity application)
+        state.application
+        ~working_directory:(Managed_application.working_directory application)
+        ~target:(Managed_application.target application))
     query
 
-let cancel_deployment state _connection_state query =
-  let operation_id = query.Protocol.Cancel_deployment.Query.operation_id in
-  match Hashtbl.find state.active operation_id with
-  | None ->
-      Deferred.Or_error.error_string
-        "deployment is not active in this control-plane process"
-  | Some cancellation -> (
-      match Nixploy.Cancellation.request cancellation with
-      | Too_late ->
-          Deferred.Or_error.error_string "deployment is already finalizing"
-      | Accepted | Already_requested -> (
-          let%bind requested =
-            Store.request_cancellation state.store ~id:operation_id
-          in
-          match requested with
-          | Ok () -> Deferred.Or_error.return ()
-          | Error request_error ->
-              let%map found = Store.find state.store ~id:operation_id in
-              Or_error.bind found ~f:(function
-                | Some deployment
-                  when [%equal: Store.state] (Store.state deployment) Cancelled
-                  ->
-                    Ok ()
-                | _ -> Error request_error)))
+let cancel_deployment_v0 _state _connection_state _query =
+  Deferred.Or_error.error_string
+    "cancel-deployment version 1 requires an application identity"
 
-let application_for_deployment state deployment =
-  List.find state.applications ~f:(fun application ->
-      deployment_matches application deployment)
+let cancel_deployment state _connection_state query =
+  Cancellation_request.handle ~applications:state.applications
+    ~cancel:(fun ~application ~operation_id ->
+      match scope application with
+      | Error error -> Deferred.return (Error error)
+      | Ok scope ->
+          let%map result =
+            Application.cancel_deployment state.application ~scope ~operation_id
+          in
+          Or_error.map result ~f:(fun _ -> ()))
+    query
+
+let recent_for_application state application ~limit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind scope = Deferred.return (scope application) in
+  let%map deployments =
+    Application.deployment_history state.application ~scope ~limit
+  in
+  List.map deployments ~f:(fun deployment ->
+      {
+        Protocol.Recent_deployment.application =
+          Managed_application.key application;
+        deployment = protocol_deployment state scope deployment;
+      })
 
 let list_deployments state _connection_state query =
-  let%map deployments =
-    match query.Protocol.List_deployments.Query.application with
-    | None -> Store.list state.store ~limit:50
-    | Some key -> (
-        match Managed_application.find state.applications key with
-        | Error error -> Deferred.return (Error error)
-        | Ok application ->
-            Store.list_for_application state.store ~application_key:key
-              ~working_directory:(canonical_working_directory application)
-              ~target:(Managed_application.target application)
-              ~limit:25)
-  in
-  Or_error.map deployments ~f:(fun deployments ->
-      List.filter_map deployments ~f:(fun deployment ->
-          application_for_deployment state deployment
-          |> Option.map ~f:(fun application ->
-              {
-                Protocol.Recent_deployment.application =
-                  Managed_application.key application;
-                deployment = protocol_deployment state deployment;
-              })))
-
-let resolve_runtime state application =
-  let key = Managed_application.key application in
-  let now = Time_ns.now () in
-  match Hashtbl.find state.runtime_cache key with
-  | Some cached when Time_ns.compare now cached.expires_at < 0 -> cached.value
-  | _ ->
-      let value =
-        let open Deferred.Or_error.Let_syntax in
-        let%bind deployments =
-          Store.list_for_application state.store ~application_key:key
-            ~working_directory:(canonical_working_directory application)
-            ~target:(Managed_application.target application)
-            ~limit:25
-        in
-        let successful_identity =
-          List.find_map deployments ~f:(fun deployment ->
-              if [%equal: Store.state] (Store.state deployment) Succeeded then
-                Option.map (Store.revision deployment) ~f:(fun revision ->
-                    (revision, Store.id deployment))
-              else None)
-        in
-        let%bind commit, operation_id =
-          match successful_identity with
-          | None -> Deferred.Or_error.return (None, None)
-          | Some (revision, operation_id) ->
-              let%map commit =
-                Nixploy.Source.find_commit
-                  ~working_directory:
-                    (Managed_application.working_directory application)
-                  ~revision
-              in
-              (Some commit, Some operation_id)
-        in
-        Nixploy.Runtime_application.resolve ?commit ?operation_id application
+  match query.Protocol.List_deployments.Query.application with
+  | Some key -> (
+      match find_application state key with
+      | Error error -> Deferred.return (Error error)
+      | Ok application -> recent_for_application state application ~limit:25)
+  | None ->
+      let%map result =
+        Deferred.Or_error.List.map state.applications ~how:`Parallel
+          ~f:(fun application ->
+            recent_for_application state application ~limit:50)
       in
-      let cached =
-        { expires_at = Time_ns.add now (Time_ns.Span.of_min 5.); value }
-      in
-      Hashtbl.set state.runtime_cache ~key ~data:cached;
-      don't_wait_for
-        (let%map result = value in
-         cached.expires_at <-
-           Time_ns.add (Time_ns.now ())
-             (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.)));
-      value
+      Or_error.map result ~f:(fun histories ->
+          List.concat histories
+          |> List.sort ~compare:(fun left right ->
+              Int64.compare
+                right.Protocol.Recent_deployment.deployment.requested_at_ms
+                left.deployment.requested_at_ms)
+          |> Fn.flip List.take 50)
 
 let get_application_logs state _connection_state query =
   match query.Protocol.Get_application_logs.Query.application with
   | None -> Deferred.Or_error.return None
   | Some key -> (
-      match Managed_application.find state.applications key with
+      match find_application state key with
       | Error _ as error -> Deferred.return error
-      | Ok application -> (
-          let open Deferred.Or_error.Let_syntax in
-          let%bind runtime = resolve_runtime state application in
-          let container = Nixploy.Runtime_application.container runtime in
-          let%bind.Deferred snapshot =
-            Nixploy.Podman.read_logs
-              ~connection:(Nixploy.Runtime_application.connection runtime)
-              ~container
+      | Ok application ->
+          let%map result =
+            Application.application_logs state.application application
           in
-          match snapshot with
-          | Error error ->
-              Hashtbl.remove state.runtime_cache key;
-              Deferred.return (Error error)
-          | Ok snapshot ->
-              Deferred.Or_error.return
-                (Some
-                   {
-                     Protocol.Log_snapshot.application = key;
-                     container_name =
-                       Nixploy.Podman.runtime_container_name container;
-                     revision =
-                       Nixploy.Podman.runtime_container_revision container;
-                     observed_at_ms = now_ms ();
-                     lines =
-                       List.map snapshot.lines ~f:(fun line ->
-                           {
-                             Protocol.Log_line.timestamp = line.timestamp;
-                             text = line.text;
-                           });
-                     truncated = snapshot.truncated;
-                   })))
+          Or_error.map result ~f:(fun snapshot ->
+              Some
+                {
+                  Protocol.Log_snapshot.application = key;
+                  container_name = snapshot.container_name;
+                  revision = snapshot.revision;
+                  observed_at_ms = snapshot.observed_at_ms;
+                  lines =
+                    List.map snapshot.lines ~f:(fun line ->
+                        {
+                          Protocol.Log_line.timestamp = line.timestamp;
+                          text = line.text;
+                        });
+                  truncated = snapshot.truncated;
+                }))
 
-let container_uptime container =
-  Nixploy.Podman.runtime_container_started_at container
-  |> Option.bind ~f:(fun started_at ->
-      Or_error.try_with (fun () -> Time_ns.of_string_with_utc_offset started_at)
-      |> Result.ok
-      |> Option.map ~f:(fun started ->
-          Time_ns.diff (Time_ns.now ()) started
-          |> Time_ns.Span.to_sec |> Float.max 0. |> Float.iround_down_exn
-          |> Int64.of_int))
+let protocol_health = function
+  | Application.Healthy -> Protocol.Health.Healthy
+  | Unhealthy -> Unhealthy
+  | Unavailable error -> Unavailable error
 
-let application_metrics state application =
-  let key = Managed_application.key application in
-  let%bind runtime = resolve_runtime state application in
-  match runtime with
-  | Error error ->
-      Deferred.return
-        {
-          Protocol.Target_metrics.target =
-            Managed_application.target application
-            |> Nixploy.Target_name.to_string;
-          host = "unavailable";
-          observed_at_ms = now_ms ();
-          error = Some (Error.to_string_hum error);
-          cpu_percent = None;
-          memory_used_bytes = None;
-          memory_total_bytes = None;
-          filesystem_used_bytes = None;
-          filesystem_total_bytes = None;
-          load_1 = None;
-          load_5 = None;
-          load_15 = None;
-          uptime_seconds = None;
-          applications =
-            [
-              {
-                Protocol.Application_metrics.application = key;
-                container_name = None;
-                health = Unavailable (Error.to_string_hum error);
-                error = Some (Error.to_string_hum error);
-                cpu_percent = None;
-                memory_used_bytes = None;
-                memory_host_percent = None;
-                uptime_seconds = None;
-              };
-            ];
-        }
-  | Ok runtime ->
-      let target = Nixploy.Runtime_application.target runtime in
-      let container = Nixploy.Runtime_application.container runtime in
-      let%map host = Nixploy.Host_metrics.observe target
-      and stats =
-        Nixploy.Podman.read_stats
-          ~connection:(Nixploy.Runtime_application.connection runtime)
-          ~container
-      and health =
-        Nixploy.Caddy.observe_health
-          (Nixploy.Runtime_application.caddy runtime)
-          ~port:(Nixploy.Runtime_application.active_port runtime)
-      in
-      let host_error = Result.error host |> Option.map ~f:Error.to_string_hum in
-      let host_value = Result.ok host in
-      let stats_value = Result.ok stats in
-      let health =
-        match health with
-        | Ok true -> Protocol.Health.Healthy
-        | Ok false -> Unhealthy
-        | Error error -> Unavailable (Error.to_string_hum error)
-      in
-      let memory_host_percent =
-        let open Option.Let_syntax in
-        let%bind stats = stats_value in
-        let%map host = host_value in
-        Int64.to_float stats.memory_used_bytes
-        /. Int64.to_float (Nixploy.Host_metrics.memory_total_bytes host)
-        *. 100.
-      in
-      {
-        Protocol.Target_metrics.target =
-          Nixploy.Configuration.Target.name target
-          |> Nixploy.Target_name.to_string;
-        host =
-          sprintf "%s@%s:%d"
-            (Nixploy.Configuration.Target.user target)
-            (Nixploy.Configuration.Target.host target)
-            (Nixploy.Configuration.Target.port target);
-        observed_at_ms = now_ms ();
-        error = host_error;
-        cpu_percent = Option.map host_value ~f:Nixploy.Host_metrics.cpu_percent;
-        memory_used_bytes =
-          Option.map host_value ~f:Nixploy.Host_metrics.memory_used_bytes;
-        memory_total_bytes =
-          Option.map host_value ~f:Nixploy.Host_metrics.memory_total_bytes;
-        filesystem_used_bytes =
-          Option.map host_value ~f:Nixploy.Host_metrics.filesystem_used_bytes;
-        filesystem_total_bytes =
-          Option.map host_value ~f:Nixploy.Host_metrics.filesystem_total_bytes;
-        load_1 = Option.map host_value ~f:Nixploy.Host_metrics.load_1;
-        load_5 = Option.map host_value ~f:Nixploy.Host_metrics.load_5;
-        load_15 = Option.map host_value ~f:Nixploy.Host_metrics.load_15;
-        uptime_seconds =
-          Option.map host_value ~f:Nixploy.Host_metrics.uptime_seconds;
-        applications =
-          [
-            {
-              Protocol.Application_metrics.application = key;
-              container_name =
-                Some (Nixploy.Podman.runtime_container_name container);
-              health;
-              error = Result.error stats |> Option.map ~f:Error.to_string_hum;
-              cpu_percent =
-                Option.bind stats_value ~f:(fun stats -> stats.cpu_percent);
-              memory_used_bytes =
-                Option.map stats_value ~f:(fun stats -> stats.memory_used_bytes);
-              memory_host_percent;
-              uptime_seconds = container_uptime container;
-            };
-          ];
-      }
+let protocol_metrics (metrics : Application.target_metrics) =
+  {
+    Protocol.Target_metrics.target = metrics.target;
+    host = metrics.host;
+    observed_at_ms = metrics.observed_at_ms;
+    error = metrics.error;
+    cpu_percent = metrics.cpu_percent;
+    memory_used_bytes = metrics.memory_used_bytes;
+    memory_total_bytes = metrics.memory_total_bytes;
+    filesystem_used_bytes = metrics.filesystem_used_bytes;
+    filesystem_total_bytes = metrics.filesystem_total_bytes;
+    load_1 = metrics.load_1;
+    load_5 = metrics.load_5;
+    load_15 = metrics.load_15;
+    uptime_seconds = metrics.uptime_seconds;
+    applications =
+      List.map metrics.applications ~f:(fun application ->
+          {
+            Protocol.Application_metrics.application = application.application;
+            container_name = application.container_name;
+            health = protocol_health application.health;
+            error = application.error;
+            cpu_percent = application.cpu_percent;
+            memory_used_bytes = application.memory_used_bytes;
+            memory_host_percent = application.memory_host_percent;
+            uptime_seconds = application.uptime_seconds;
+          });
+  }
 
-let merge_target_metrics targets metric =
+let merge_target_metrics targets (metric : Protocol.Target_metrics.t) =
   match
     List.findi targets ~f:(fun _ existing ->
-        String.equal existing.Protocol.Target_metrics.host
-          metric.Protocol.Target_metrics.host
+        String.equal existing.Protocol.Target_metrics.host metric.host
         && not (String.equal existing.host "unavailable"))
   with
   | None -> targets @ [ metric ]
@@ -485,8 +296,9 @@ let merge_target_metrics targets metric =
 
 let get_metrics state _connection_state () =
   let%map metrics =
-    Deferred.List.map state.applications ~how:`Parallel
-      ~f:(application_metrics state)
+    Deferred.List.map state.applications ~how:`Parallel ~f:(fun application ->
+        Application.application_metrics state.application application
+        >>| protocol_metrics)
   in
   Ok (List.fold metrics ~init:[] ~f:merge_target_metrics)
 
@@ -499,7 +311,10 @@ let implementations state =
           (preview_deployment state);
         Rpc.Rpc.implement Protocol.Deploy.t (deploy state);
         Rpc.Rpc.implement Protocol.List_deployments.t (list_deployments state);
-        Rpc.Rpc.implement Protocol.Cancel_deployment.t (cancel_deployment state);
+        Rpc.Rpc.implement Protocol.Cancel_deployment.t
+          (cancel_deployment_v0 state);
+        Rpc.Rpc.implement Protocol.Cancel_deployment_v1.t
+          (cancel_deployment state);
         Rpc.Rpc.implement Protocol.Prune.t (prune state);
         Rpc.Rpc.implement Protocol.Get_application_logs.t
           (get_application_logs state);
@@ -570,16 +385,10 @@ let run ~port ~state_db =
   in
   let authorization = Authorization.load_environment () |> Or_error.ok_exn in
   let origin_policy = Authorization.load_origin_policy () |> Or_error.ok_exn in
-  let%bind store = Store.open_ ~path:state_db >>| Or_error.ok_exn in
-  let state =
-    {
-      applications;
-      application = Nixploy.Application.create ~store ();
-      store;
-      active = String.Table.create ();
-      runtime_cache = String.Table.create ();
-    }
+  let%bind application =
+    Application.open_ ~state_path:state_db >>| Or_error.ok_exn
   in
+  let state = { applications; application } in
   let%bind server =
     Rpc_websocket.Rpc.serve ~on_handler_error:`Raise ~mode:`TCP
       ~where_to_listen:(Tcp.Where_to_listen.bind_to Localhost (On_port port))

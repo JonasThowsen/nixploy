@@ -4,6 +4,7 @@ open Core
 type commit = Source.commit
 type source = Source.selection
 type prune_result = Prune.t
+type status = Status.t
 
 type prune_route_state = Not_configured | Missing | Removed
 [@@deriving compare, equal, sexp]
@@ -19,12 +20,83 @@ type deployment_state = Store.state =
 type resource_state = Store.resource_state = Unknown | Present | Absent
 [@@deriving compare, equal, sexp]
 
+type cancellation_result = Cancellation_requested | Already_requested
+[@@deriving compare, equal, sexp]
+
+type log_line = { timestamp : string option; text : string }
+[@@deriving compare, equal, sexp]
+
+type log_snapshot = {
+  container_name : string;
+  revision : string option;
+  observed_at_ms : int64;
+  lines : log_line list;
+  truncated : bool;
+}
+[@@deriving compare, equal, sexp]
+
+type health = Healthy | Unhealthy | Unavailable of string
+[@@deriving compare, equal, sexp]
+
+type application_metrics = {
+  application : string;
+  container_name : string option;
+  health : health;
+  error : string option;
+  cpu_percent : float option;
+  memory_used_bytes : int64 option;
+  memory_host_percent : float option;
+  uptime_seconds : int64 option;
+}
+
+type target_metrics = {
+  target : string;
+  host : string;
+  observed_at_ms : int64;
+  error : string option;
+  cpu_percent : float option;
+  memory_used_bytes : int64 option;
+  memory_total_bytes : int64 option;
+  filesystem_used_bytes : int64 option;
+  filesystem_total_bytes : int64 option;
+  load_1 : float option;
+  load_5 : float option;
+  load_15 : float option;
+  uptime_seconds : int64 option;
+  applications : application_metrics list;
+}
+
 type deployment = {
   id : string;
+  application_key : string option;
+  working_directory : string;
+  target : Target_name.t;
   state : deployment_state;
+  stage : string;
+  message : string;
   revision : string option;
+  commit_subject : string option;
+  commit_timestamp_ms : int64 option;
   container_name : string option;
   error : string option;
+  requested_at_ms : int64;
+  started_at_ms : int64 option;
+  finished_at_ms : int64 option;
+  cancel_requested_at_ms : int64 option;
+  updated_at_ms : int64;
+}
+
+type scope = {
+  application_key : string option;
+  working_directory : string;
+  target : Target_name.t;
+}
+
+type active_operation = { scope : scope; cancellation : Cancellation.t }
+
+type cached_runtime = {
+  mutable expires_at : Time_ns.t;
+  value : Runtime_application.t Or_error.t Deferred.t;
 }
 
 type t = {
@@ -32,7 +104,7 @@ type t = {
   preview_main : working_directory:string -> commit Deferred.Or_error.t;
   find_commit :
     working_directory:string -> revision:string -> commit Deferred.Or_error.t;
-  deploy :
+  deploy_operation :
     on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
     on_requested:(deployment -> unit) ->
     application_key:string option ->
@@ -42,28 +114,78 @@ type t = {
     target:Target_name.t ->
     unit ->
     deployment Deferred.Or_error.t;
-  prune :
+  prune_operation :
     expected_project:Project_name.t option ->
     repository_identity:string option ->
     working_directory:string ->
     target:Target_name.t ->
     prune_result Deferred.Or_error.t;
+  load_status : scope:scope -> status Deferred.Or_error.t;
+  logs_override :
+    (Managed_application.t -> log_snapshot Deferred.Or_error.t) option;
+  metrics_override :
+    (Managed_application.t -> target_metrics Deferred.t) option;
+  active : active_operation String.Table.t;
+  runtime_cache : cached_runtime String.Table.t;
 }
 
 let no_stage _ _ = Deferred.unit
+let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
+
+let canonical_working_directory working_directory =
+  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+
+let local_scope ~working_directory ~target =
+  let%map.Or_error working_directory =
+    canonical_working_directory working_directory
+  in
+  { application_key = None; working_directory; target }
+
+let managed_scope application =
+  let%map.Or_error working_directory =
+    canonical_working_directory
+      (Managed_application.working_directory application)
+  in
+  {
+    application_key = Some (Managed_application.key application);
+    working_directory;
+    target = Managed_application.target application;
+  }
 
 let deployment_of_store deployment =
   {
     id = Store.id deployment;
+    application_key = Store.application_key deployment;
+    working_directory = Store.working_directory deployment;
+    target = Store.target deployment;
     state = Store.state deployment;
+    stage = Store.stage deployment;
+    message = Store.message deployment;
     revision = Store.revision deployment;
+    commit_subject = Store.commit_subject deployment;
+    commit_timestamp_ms = Store.commit_timestamp_ms deployment;
     container_name = Store.container_name deployment;
     error = Store.error deployment;
+    requested_at_ms = Store.requested_at_ms deployment;
+    started_at_ms = Store.started_at_ms deployment;
+    finished_at_ms = Store.finished_at_ms deployment;
+    cancel_requested_at_ms = Store.cancel_requested_at_ms deployment;
+    updated_at_ms = Store.updated_at_ms deployment;
   }
 
+let same_scope (scope : scope) (deployment : deployment) =
+  String.equal scope.working_directory deployment.working_directory
+  && Target_name.equal scope.target deployment.target
+  &&
+  match (scope.application_key, deployment.application_key) with
+  | Some expected, Some actual -> String.equal expected actual
+  | Some _, None -> true
+  | None, None -> true
+  | None, Some _ -> false
+
 let create ~store () =
-  let deploy ~on_stage ~on_requested ~application_key ~expected_project
-      ~working_directory ~source ~target () =
+  let deploy_operation ~on_stage ~on_requested ~application_key
+      ~expected_project ~working_directory ~source ~target () =
     let open Deferred.Or_error.Let_syntax in
     Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
@@ -76,12 +198,24 @@ let create ~store () =
     store;
     preview_main = Source.preview_main;
     find_commit = Source.find_commit;
-    deploy;
-    prune =
+    deploy_operation;
+    prune_operation =
       (fun ~expected_project ~repository_identity ~working_directory ~target ->
         Prune.prune ?expected_project ?repository_identity ~working_directory
           ~target ());
+    load_status =
+      (fun ~scope ->
+        Status.load ~working_directory:scope.working_directory
+          ~target:scope.target);
+    logs_override = None;
+    metrics_override = None;
+    active = String.Table.create ();
+    runtime_cache = String.Table.create ();
   }
+
+let open_ ~state_path =
+  let%map.Deferred.Or_error store = Store.open_ ~path:state_path in
+  create ~store ()
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 
@@ -99,56 +233,375 @@ let source_subject source =
 
 let source_is_local = Source.selection_is_local
 
-let canonical_working_directory working_directory =
-  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+let remove_active t operation_id cancellation =
+  match Hashtbl.find t.active operation_id with
+  | Some active when phys_equal active.cancellation cancellation ->
+      Hashtbl.remove t.active operation_id
+  | Some _ | None -> ()
+
+let invalidate_runtime t = function
+  | None -> ()
+  | Some application_key -> Hashtbl.remove t.runtime_cache application_key
 
 let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key
     ?expected_project t ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
-      Store.with_lease t.store ~working_directory ~target (fun () ->
-          let open Deferred.Or_error.Let_syntax in
-          let%bind () =
-            Store.set_resource_state t.store ~working_directory ~target Unknown
-          in
-          let%bind deployment =
-            t.deploy ~on_stage ~on_requested ~application_key ~expected_project
-              ~working_directory ~source ~target ()
-          in
-          let%map () =
-            match deployment.state with
-            | Succeeded ->
-                Store.set_resource_state t.store ~working_directory ~target
-                  Present
-            | Requested | Running | Failed | Cancelled ->
-                Deferred.Or_error.return ()
-          in
-          deployment)
+      let scope = { application_key; working_directory; target } in
+      let cancellation = Cancellation.create () in
+      let operation_id = ref None in
+      let requested deployment =
+        operation_id := Some deployment.id;
+        Option.iter application_key ~f:(fun _ ->
+            Hashtbl.set t.active ~key:deployment.id
+              ~data:{ scope; cancellation });
+        on_requested deployment
+      in
+      let execution =
+        Cancellation.within cancellation (fun () ->
+            Store.with_lease t.store ~working_directory ~target (fun () ->
+                let open Deferred.Or_error.Let_syntax in
+                let%bind () =
+                  Store.set_resource_state t.store ~working_directory ~target
+                    Unknown
+                in
+                let%bind deployment =
+                  t.deploy_operation ~on_stage ~on_requested:requested
+                    ~application_key ~expected_project ~working_directory
+                    ~source ~target ()
+                in
+                let%map () =
+                  match deployment.state with
+                  | Succeeded ->
+                      Store.set_resource_state t.store ~working_directory
+                        ~target Present
+                  | Requested | Running | Failed | Cancelled ->
+                      Deferred.Or_error.return ()
+                in
+                deployment))
+      in
+      let%map result = execution in
+      Option.iter !operation_id ~f:(fun id -> remove_active t id cancellation);
+      invalidate_runtime t application_key;
+      result
 
-let prune ?expected_project ?repository_identity t ~working_directory ~target =
+let prune ?application_key ?expected_project ?repository_identity t
+    ~working_directory ~target =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
-      Store.with_lease t.store ~working_directory ~target (fun () ->
-          let open Deferred.Or_error.Let_syntax in
-          let%bind () =
-            Store.set_resource_state t.store ~working_directory ~target Unknown
-          in
-          let%bind result =
-            t.prune ~expected_project ~repository_identity ~working_directory
-              ~target
-          in
-          let%map () =
-            Store.set_resource_state t.store ~working_directory ~target Absent
-          in
-          result)
+      let%map result =
+        Store.with_lease t.store ~working_directory ~target (fun () ->
+            let open Deferred.Or_error.Let_syntax in
+            let%bind () =
+              Store.set_resource_state t.store ~working_directory ~target
+                Unknown
+            in
+            let%bind result =
+              t.prune_operation ~expected_project ~repository_identity
+                ~working_directory ~target
+            in
+            let%map () =
+              Store.set_resource_state t.store ~working_directory ~target Absent
+            in
+            result)
+      in
+      invalidate_runtime t application_key;
+      result
+
+let live_status t ~scope = t.load_status ~scope
+let status_project = Status.project
+let status_target = Status.target
+let status_resource_key = Status.resource_key
+let status_workloads = Status.workloads
+
+let bounded_limit limit =
+  if limit < 1 || limit > 100 then
+    Or_error.error_string "history limit must be between 1 and 100"
+  else Ok limit
+
+let deployment_history t ~scope ~limit =
+  match bounded_limit limit with
+  | Error error -> Deferred.return (Error error)
+  | Ok limit ->
+      let%map deployments =
+        match scope.application_key with
+        | Some application_key ->
+            Store.list_for_application t.store ~application_key
+              ~working_directory:scope.working_directory ~target:scope.target
+              ~limit
+        | None ->
+            Store.list_for_scope t.store
+              ~working_directory:scope.working_directory ~target:scope.target
+              ~limit
+      in
+      Or_error.map deployments ~f:(fun deployments ->
+          List.map deployments ~f:deployment_of_store
+          |> List.filter ~f:(same_scope scope))
+
+let equal_scope left right =
+  String.equal left.working_directory right.working_directory
+  && Target_name.equal left.target right.target
+  && Option.equal String.equal left.application_key right.application_key
+
+let deployment_can_cancel t ~scope deployment =
+  same_scope scope deployment
+  &&
+  match Hashtbl.find t.active deployment.id with
+  | Some active -> equal_scope scope active.scope
+  | None -> false
+
+let cancel_deployment t ~scope ~operation_id =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind found = Store.find t.store ~id:operation_id in
+  let%bind deployment =
+    match Option.map found ~f:deployment_of_store with
+    | None -> Deferred.Or_error.error_string "deployment does not exist"
+    | Some deployment when same_scope scope deployment ->
+        Deferred.Or_error.return deployment
+    | Some _ ->
+        Deferred.Or_error.error_string
+          "deployment does not belong to the selected application"
+  in
+  let%bind active =
+    match Hashtbl.find t.active operation_id with
+    | Some active
+      when same_scope scope deployment && same_scope active.scope deployment ->
+        Deferred.Or_error.return active
+    | Some _ ->
+        Deferred.Or_error.error_string
+          "deployment does not belong to the selected application"
+    | None ->
+        Deferred.Or_error.error_string
+          "deployment is not active in this control-plane process"
+  in
+  match Cancellation.request active.cancellation with
+  | Too_late ->
+      Deferred.Or_error.error_string "deployment is already finalizing"
+  | (Accepted | Already_requested) as request ->
+      let%bind.Deferred requested =
+        Store.request_cancellation t.store ~id:operation_id
+      in
+      let%bind () =
+        match requested with
+        | Ok () -> Deferred.Or_error.return ()
+        | Error request_error -> (
+            let%bind found = Store.find t.store ~id:operation_id in
+            match found with
+            | Some deployment
+              when [%equal: Store.state] (Store.state deployment) Cancelled ->
+                Deferred.Or_error.return ()
+            | Some _ | None -> Deferred.return (Error request_error))
+      in
+      Deferred.Or_error.return
+        (match request with
+        | Accepted -> Cancellation_requested
+        | Already_requested -> Already_requested
+        | Too_late -> assert false)
+
+let resource_state_for_scope t ~scope =
+  Store.resource_state t.store ~working_directory:scope.working_directory
+    ~target:scope.target
 
 let resource_state t ~working_directory ~target =
-  match canonical_working_directory working_directory with
+  match local_scope ~working_directory ~target with
   | Error error -> Deferred.return (Error error)
-  | Ok working_directory ->
-      Store.resource_state t.store ~working_directory ~target
+  | Ok scope -> resource_state_for_scope t ~scope
+
+let successful_runtime_identity t application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind scope = Deferred.return (managed_scope application) in
+  let%bind deployments = deployment_history t ~scope ~limit:25 in
+  match
+    List.find_map deployments ~f:(fun deployment ->
+        if [%equal: deployment_state] deployment.state Succeeded then
+          Option.map deployment.revision ~f:(fun revision ->
+              (revision, deployment.id))
+        else None)
+  with
+  | None ->
+      Deferred.Or_error.error_string
+        "application has no persisted successful deployment identity"
+  | Some (revision, operation_id) ->
+      let%map commit =
+        t.find_commit
+          ~working_directory:(Managed_application.working_directory application)
+          ~revision
+      in
+      (commit, operation_id)
+
+let resolve_runtime t application =
+  let key = Managed_application.key application in
+  let now = Time_ns.now () in
+  match Hashtbl.find t.runtime_cache key with
+  | Some cached when Time_ns.compare now cached.expires_at < 0 -> cached.value
+  | Some _ | None ->
+      let value =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind commit, operation_id =
+          successful_runtime_identity t application
+        in
+        Runtime_application.resolve ~commit ~operation_id application
+      in
+      let cached =
+        { expires_at = Time_ns.add now (Time_ns.Span.of_min 5.); value }
+      in
+      Hashtbl.set t.runtime_cache ~key ~data:cached;
+      don't_wait_for
+        (let%map result = value in
+         cached.expires_at <-
+           Time_ns.add (Time_ns.now ())
+             (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.)));
+      value
+
+let application_logs t application =
+  match t.logs_override with
+  | Some logs -> logs application
+  | None -> (
+      let key = Managed_application.key application in
+      let open Deferred.Or_error.Let_syntax in
+      let%bind runtime = resolve_runtime t application in
+      let container = Runtime_application.container runtime in
+      let%bind.Deferred snapshot =
+        Podman.read_logs
+          ~connection:(Runtime_application.connection runtime)
+          ~container
+      in
+      match snapshot with
+      | Error error ->
+          Hashtbl.remove t.runtime_cache key;
+          Deferred.return (Error error)
+      | Ok snapshot ->
+          Deferred.Or_error.return
+            {
+              container_name = Podman.runtime_container_name container;
+              revision = Podman.runtime_container_revision container;
+              observed_at_ms = now_ms ();
+              lines =
+                List.map snapshot.lines ~f:(fun line ->
+                    { timestamp = line.timestamp; text = line.text });
+              truncated = snapshot.truncated;
+            })
+
+let container_uptime container =
+  Podman.runtime_container_started_at container
+  |> Option.bind ~f:(fun started_at ->
+      Or_error.try_with (fun () -> Time_ns.of_string_with_utc_offset started_at)
+      |> Result.ok
+      |> Option.map ~f:(fun started ->
+          Time_ns.diff (Time_ns.now ()) started
+          |> Time_ns.Span.to_sec |> Float.max 0. |> Float.iround_down_exn
+          |> Int64.of_int))
+
+let unavailable_metrics application error =
+  let error = Error.to_string_hum error in
+  {
+    target = Managed_application.target application |> Target_name.to_string;
+    host = "unavailable";
+    observed_at_ms = now_ms ();
+    error = Some error;
+    cpu_percent = None;
+    memory_used_bytes = None;
+    memory_total_bytes = None;
+    filesystem_used_bytes = None;
+    filesystem_total_bytes = None;
+    load_1 = None;
+    load_5 = None;
+    load_15 = None;
+    uptime_seconds = None;
+    applications =
+      [
+        {
+          application = Managed_application.key application;
+          container_name = None;
+          health = Unavailable error;
+          error = Some error;
+          cpu_percent = None;
+          memory_used_bytes = None;
+          memory_host_percent = None;
+          uptime_seconds = None;
+        };
+      ];
+  }
+
+let observe_application_metrics t application =
+  let%bind runtime = resolve_runtime t application in
+  match runtime with
+  | Error error -> Deferred.return (unavailable_metrics application error)
+  | Ok runtime ->
+      let target = Runtime_application.target runtime in
+      let container = Runtime_application.container runtime in
+      let%map host = Host_metrics.observe target
+      and stats =
+        Podman.read_stats
+          ~connection:(Runtime_application.connection runtime)
+          ~container
+      and health =
+        Caddy.observe_health
+          (Runtime_application.caddy runtime)
+          ~port:(Runtime_application.active_port runtime)
+      in
+      let host_error = Result.error host |> Option.map ~f:Error.to_string_hum in
+      let host_value = Result.ok host in
+      let stats_value = Result.ok stats in
+      let health =
+        match health with
+        | Ok true -> Healthy
+        | Ok false -> Unhealthy
+        | Error error -> Unavailable (Error.to_string_hum error)
+      in
+      let memory_host_percent =
+        let open Option.Let_syntax in
+        let%bind stats = stats_value in
+        let%map host = host_value in
+        Int64.to_float stats.memory_used_bytes
+        /. Int64.to_float (Host_metrics.memory_total_bytes host)
+        *. 100.
+      in
+      {
+        target = Configuration.Target.name target |> Target_name.to_string;
+        host =
+          sprintf "%s@%s:%d"
+            (Configuration.Target.user target)
+            (Configuration.Target.host target)
+            (Configuration.Target.port target);
+        observed_at_ms = now_ms ();
+        error = host_error;
+        cpu_percent = Option.map host_value ~f:Host_metrics.cpu_percent;
+        memory_used_bytes =
+          Option.map host_value ~f:Host_metrics.memory_used_bytes;
+        memory_total_bytes =
+          Option.map host_value ~f:Host_metrics.memory_total_bytes;
+        filesystem_used_bytes =
+          Option.map host_value ~f:Host_metrics.filesystem_used_bytes;
+        filesystem_total_bytes =
+          Option.map host_value ~f:Host_metrics.filesystem_total_bytes;
+        load_1 = Option.map host_value ~f:Host_metrics.load_1;
+        load_5 = Option.map host_value ~f:Host_metrics.load_5;
+        load_15 = Option.map host_value ~f:Host_metrics.load_15;
+        uptime_seconds = Option.map host_value ~f:Host_metrics.uptime_seconds;
+        applications =
+          [
+            {
+              application = Managed_application.key application;
+              container_name = Some (Podman.runtime_container_name container);
+              health;
+              error = Result.error stats |> Option.map ~f:Error.to_string_hum;
+              cpu_percent =
+                Option.bind stats_value ~f:(fun stats -> stats.cpu_percent);
+              memory_used_bytes =
+                Option.map stats_value ~f:(fun stats -> stats.memory_used_bytes);
+              memory_host_percent;
+              uptime_seconds = container_uptime container;
+            };
+          ];
+      }
+
+let application_metrics t application =
+  match t.metrics_override with
+  | Some metrics -> metrics application
+  | None -> observe_application_metrics t application
 
 let prune_project = Prune.project
 let prune_target = Prune.target
@@ -165,16 +618,62 @@ let prune_route_state result =
 let commit_revision = Source.commit_revision
 let commit_subject = Source.commit_subject
 let commit_timestamp_ms = Source.commit_timestamp_ms
-let deployment_id deployment = deployment.id
-let deployment_state deployment = deployment.state
-let deployment_revision deployment = deployment.revision
-let deployment_container_name deployment = deployment.container_name
-let deployment_error deployment = deployment.error
+let deployment_id (deployment : deployment) = deployment.id
+
+let deployment_application_key (deployment : deployment) =
+  deployment.application_key
+
+let deployment_state (deployment : deployment) = deployment.state
+let deployment_stage (deployment : deployment) = deployment.stage
+let deployment_message (deployment : deployment) = deployment.message
+let deployment_revision (deployment : deployment) = deployment.revision
+
+let deployment_commit_subject (deployment : deployment) =
+  deployment.commit_subject
+
+let deployment_commit_timestamp_ms (deployment : deployment) =
+  deployment.commit_timestamp_ms
+
+let deployment_container_name (deployment : deployment) =
+  deployment.container_name
+
+let deployment_error (deployment : deployment) = deployment.error
+
+let deployment_requested_at_ms (deployment : deployment) =
+  deployment.requested_at_ms
+
+let deployment_started_at_ms (deployment : deployment) =
+  deployment.started_at_ms
+
+let deployment_finished_at_ms (deployment : deployment) =
+  deployment.finished_at_ms
+
+let deployment_cancel_requested_at_ms (deployment : deployment) =
+  deployment.cancel_requested_at_ms
+
+let deployment_updated_at_ms (deployment : deployment) =
+  deployment.updated_at_ms
+
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ~store ~preview_main ~find_commit ~deploy ~prune =
-    { store; preview_main; find_commit; deploy; prune }
+  let create ?status ?logs ?metrics ~store ~preview_main ~find_commit ~deploy
+      ~prune () =
+    {
+      store;
+      preview_main;
+      find_commit;
+      deploy_operation = deploy;
+      prune_operation = prune;
+      load_status =
+        Option.value status ~default:(fun ~scope ->
+            Status.load ~working_directory:scope.working_directory
+              ~target:scope.target);
+      logs_override = logs;
+      metrics_override = metrics;
+      active = String.Table.create ();
+      runtime_cache = String.Table.create ();
+    }
 
   let prune_result ~project ~target ~resource_key ~containers_removed
       ~secrets_removed ~(route : prune_route_state) =
@@ -192,6 +691,29 @@ module For_testing = struct
   let local_source ~working_directory commit =
     Source.For_testing.local ~working_directory commit
 
-  let deployment ?revision ?container_name ?error ~id ~state () =
-    { id; state; revision; container_name; error }
+  let deployment ?application_key ?(working_directory = "")
+      ?(target = Target_name.of_string "test" |> Or_error.ok_exn)
+      ?(stage = "requested") ?(message = "Deployment requested") ?revision
+      ?commit_subject ?commit_timestamp_ms ?container_name ?error
+      ?(requested_at_ms = 0L) ?started_at_ms ?finished_at_ms
+      ?cancel_requested_at_ms ?(updated_at_ms = requested_at_ms) ~id ~state () =
+    {
+      id;
+      application_key;
+      working_directory;
+      target;
+      state;
+      stage;
+      message;
+      revision;
+      commit_subject;
+      commit_timestamp_ms;
+      container_name;
+      error;
+      requested_at_ms;
+      started_at_ms;
+      finished_at_ms;
+      cancel_requested_at_ms;
+      updated_at_ms;
+    }
 end

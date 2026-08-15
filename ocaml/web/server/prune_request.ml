@@ -1,30 +1,12 @@
 open Async
 open Core
 
-let canonical_working_directory application =
-  let working_directory =
-    Nixploy.Managed_application.working_directory application
-  in
-  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
-  |> Result.ok
-  |> Option.value ~default:working_directory
-
-let handle ~applications ~prune ~on_started query =
+let handle ~applications ~prune query =
   match
     Nixploy.Managed_application.find applications
       query.Protocol.Prune.Query.application
   with
-  | Error _ as error -> Deferred.return error
+  | Error error -> Deferred.return (Error error)
   | Ok application ->
-      let application_key = Nixploy.Managed_application.key application in
-      let working_directory = canonical_working_directory application in
-      let target = Nixploy.Managed_application.target application in
-      let expected_project = Nixploy.Managed_application.project application in
-      let repository_identity =
-        Nixploy.Managed_application.repository_identity application
-      in
-      on_started ~application_key;
-      let%map result =
-        prune ~expected_project ~repository_identity ~working_directory ~target
-      in
+      let%map result = prune ~application in
       Or_error.map result ~f:Prune_response.of_application

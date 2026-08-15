@@ -29,48 +29,32 @@ let run_tests () =
       ~route:Nixploy.Application.Missing
   in
   let prune_calls = ref [] in
-  let invalidated = ref [] in
-  let prune ~expected_project ~repository_identity ~working_directory ~target =
-    prune_calls :=
-      (expected_project, repository_identity, working_directory, target)
-      :: !prune_calls;
+  let prune ~application =
+    prune_calls := Nixploy.Managed_application.key application :: !prune_calls;
     Deferred.Or_error.return application_result
   in
-  let on_started ~application_key =
-    invalidated := application_key :: !invalidated
-  in
   let query = { Protocol.Prune.Query.application = "example" } in
-  let%bind success =
-    Prune_request.handle ~applications ~prune ~on_started query
-  in
+  let%bind success = Prune_request.handle ~applications ~prune query in
   let success = assert_ok success in
   assert (String.equal success.project "example");
   assert (String.equal success.target "production");
   assert (Int.equal success.containers_removed 2);
   assert (Int.equal success.secrets_removed 1);
   assert ([%equal: Protocol.Prune_result.Route.t] success.route Missing);
-  [%test_eq: string list] [ "example" ] !invalidated;
-  [%test_eq:
-    (Nixploy.Project_name.t * string * string * Nixploy.Target_name.t) list]
-    [ (project, "owner/example", directory, target) ]
-    !prune_calls;
-  let failed_prune ~expected_project ~repository_identity ~working_directory:_
-      ~target:_ =
-    assert (String.equal repository_identity "owner/example");
-    assert (Nixploy.Project_name.equal expected_project project);
+  [%test_eq: string list] [ "example" ] !prune_calls;
+  let failed_prune ~application =
+    assert (String.equal (Nixploy.Managed_application.key application) "example");
     Deferred.Or_error.error_string "partial cleanup failed"
   in
   let%bind failure =
-    Prune_request.handle ~applications ~prune:failed_prune ~on_started query
+    Prune_request.handle ~applications ~prune:failed_prune query
   in
   assert (Result.is_error failure);
-  [%test_eq: string list] [ "example"; "example" ] !invalidated;
   let%map unknown =
-    Prune_request.handle ~applications ~prune ~on_started
+    Prune_request.handle ~applications ~prune
       { Protocol.Prune.Query.application = "unknown" }
   in
   assert (Result.is_error unknown);
-  [%test_eq: int] 1 (List.length !prune_calls);
-  [%test_eq: string list] [ "example"; "example" ] !invalidated
+  [%test_eq: int] 1 (List.length !prune_calls)
 
 let () = Thread_safe.block_on_async_exn run_tests

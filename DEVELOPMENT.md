@@ -118,11 +118,13 @@ Add one scoped prune operation using the same resolved resource identity as depl
 
 **Acceptance:** web and non-web command traces prove that unrelated resources cannot be selected.
 
-### 4. Consumer cutover (in progress)
+### 4. Consumer cutover (complete)
 
-Make CLI and web use only `Application`. Keep argument parsing, rendering, authorization, and serialization at their respective edges. CLI and web deploy and scoped prune now use the shared `Application` operations; remaining runtime observation cutover stays within this milestone.
+CLI and web use only `Application`. Argument parsing, rendering, authorization, managed-application lookup, and serialization remain at their respective edges. `Application` owns live scoped status, scoped deployment history, process-local cancellation registration, bounded logs, bounded host/runtime/health metrics, runtime source resolution, and runtime caching. Cancellation requires the managed application identity plus operation id; persisted interrupted operations remain visible after restart but are honestly reported as not active in the new process.
 
-**Acceptance:** direct adapter calls disappear from CLI/RPC handlers, and contract tests exercise the same application behavior through both surfaces.
+The CLI exposes shared status and target-scoped history. RPC cancellation version 1 adds the application key while version 0 remains available only to return a safe upgrade error. Deploy and prune invalidate application-owned runtime observations.
+
+**Acceptance:** direct adapter calls are absent from CLI/RPC handlers; application boundary tests cover status, history, cancellation ownership and restart behavior, logs, and metrics; CLI/RPC contract tests exercise the shared seam.
 
 ### 5. Packaging cutover
 

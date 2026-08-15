@@ -96,6 +96,7 @@ let run_tests () =
         match !prune_error with
         | None -> Deferred.Or_error.return prune_result
         | Some error -> Deferred.return (Error error))
+      ()
   in
   let target = prune_target in
   let stages = ref [] in

@@ -45,6 +45,15 @@ let run_tests () =
   in
   let project = Nixploy.Project_name.of_string "sample" |> assert_ok in
   let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let%bind application =
+    Nixploy.Application.open_ ~state_path:(Filename.concat root "state.sqlite")
+  in
+  let application = assert_ok application in
+  let scope =
+    Nixploy.Application.local_scope ~working_directory:repository
+      ~target:target_name
+    |> assert_ok
+  in
   let resource_key =
     Nixploy.Resource_key.derive ~project ~target:target_name
       ~repository_identity:"git@example.invalid:sample.git"
@@ -131,11 +140,9 @@ esac
   in
   Monitor.protect ~finally:cleanup (fun () ->
       clear_scenario ();
-      let%bind modern =
-        Nixploy.Status.load ~working_directory:repository ~target:target_name
-      in
+      let%bind modern = Nixploy.Application.live_status application ~scope in
       [%test_eq: int] 1
-        (assert_ok modern |> Nixploy.Status.workloads |> List.length);
+        (assert_ok modern |> Nixploy.Application.status_workloads |> List.length);
       let lines = In_channel.read_lines trace in
       assert (
         List.exists lines ~f:(fun line ->
@@ -145,19 +152,15 @@ esac
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FOREIGN" "1";
-      let%bind foreign =
-        Nixploy.Status.load ~working_directory:repository ~target:target_name
-      in
+      let%bind foreign = Nixploy.Application.live_status application ~scope in
       expect_error_containing foreign
         "ownership does not match this repository and resource";
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_LEGACY" "1";
-      let%bind legacy =
-        Nixploy.Status.load ~working_directory:repository ~target:target_name
-      in
+      let%bind legacy = Nixploy.Application.live_status application ~scope in
       [%test_eq: int] 1
-        (assert_ok legacy |> Nixploy.Status.workloads |> List.length);
+        (assert_ok legacy |> Nixploy.Application.status_workloads |> List.length);
       let lines = In_channel.read_lines trace in
       assert (
         List.exists lines

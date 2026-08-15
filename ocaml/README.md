@@ -62,6 +62,11 @@ secret-backed pre-start commands, switched the exact Caddy route, independently
 verified the result, retired the previous slot, and preserved public health
 throughout.
 
+Live scoped inspection and deployment history are available through
+`nixploy status --target TARGET` and `nixploy history --target TARGET`. Both are
+transport adapters over `Application`; history is bounded and scoped by the
+canonical working directory and target.
+
 Scoped cleanup is available through `nixploy prune --target TARGET`. It evaluates
 the selected local flake through `Application`, derives the same
 repository-bound canonical identity and safe OCaml/C# migration candidates as
@@ -107,9 +112,12 @@ standard ports are equivalent to their `http`/`https` defaults.
 The operator surface now previews and confirms an exact Git commit, lists recent
 deployments, cancels active deployments cooperatively, searches and follows
 bounded logs from the positively identified active container, and reports remote
-host health plus per-application resource usage. These workflows use separate
-polling state so confirmation, filters, and log search remain stable while
-runtime observations refresh.
+host health plus per-application resource usage. `Application` owns the active
+cancellation registry and runtime source/cache orchestration. Cancellation is
+scoped by managed application plus operation id; after a process restart,
+persisted interrupted state remains visible but cannot be signalled by the new
+process. These workflows use separate polling state so confirmation, filters,
+and log search remain stable while runtime observations refresh.
 
 The non-destructive Playwright specification checks open prune-confirmation
 layout, accessible controls, mobile overflow, and 44px hit areas. It requires an

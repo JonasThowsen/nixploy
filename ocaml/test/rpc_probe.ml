@@ -135,8 +135,11 @@ let run ~uri ~inspect ~deploy ~cancel_started =
       printf "started %s\n%!" operation;
       if cancel_started then
         let cancelled =
-          Rpc.Rpc.dispatch Protocol.Cancel_deployment.t connection
-            { Protocol.Cancel_deployment.Query.operation_id = operation }
+          Rpc.Rpc.dispatch Protocol.Cancel_deployment_v1.t connection
+            {
+              Protocol.Cancel_deployment_v1.Query.application;
+              operation_id = operation;
+            }
         in
         let%bind cancellation = cancelled in
         let%bind () = Deferred.return cancellation in

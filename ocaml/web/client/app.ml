@@ -400,7 +400,9 @@ let application_card ~preview ~deploy_state ~cancel_confirmation ~prune_state
             let%bind.Effect response =
               dispatch_cancel
                 {
-                  Protocol.Cancel_deployment.Query.operation_id = deployment.id;
+                  Protocol.Cancel_deployment_v1.Query.application =
+                    application.key;
+                  operation_id = deployment.id;
                 }
             in
             let notice =
@@ -955,7 +957,7 @@ let component graph =
     Rpc_effect.Rpc.dispatcher Protocol.Deploy.t ~where_to_connect:Self graph
   in
   let dispatch_cancel =
-    Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment.t
+    Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.t
       ~where_to_connect:Self graph
   in
   let dispatch_prune =

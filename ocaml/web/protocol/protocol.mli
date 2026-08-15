@@ -1,13 +1,13 @@
-open! Core
-open! Async_rpc_kernel
+open Core
+open Async_rpc_kernel
 
-module Commit = struct
+module Commit : sig
   type t = { revision : string; subject : string; timestamp_ms : int64 }
   [@@deriving bin_io, equal, sexp]
 end
 
-module Deployment = struct
-  module State = struct
+module Deployment : sig
+  module State : sig
     type t = Requested | Running | Succeeded | Failed | Cancelled
     [@@deriving bin_io, compare, equal, sexp]
   end
@@ -31,12 +31,12 @@ module Deployment = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Resource_state = struct
+module Resource_state : sig
   type t = Unknown | Present | Absent
   [@@deriving bin_io, compare, equal, sexp]
 end
 
-module Application = struct
+module Application : sig
   type t = {
     key : string;
     project : string;
@@ -48,83 +48,59 @@ module Application = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Recent_deployment = struct
+module Recent_deployment : sig
   type t = { application : string; deployment : Deployment.t }
   [@@deriving bin_io, equal, sexp]
 end
 
-module Preview_deployment = struct
-  module Query = struct
+module Preview_deployment : sig
+  module Query : sig
     type t = { application : string } [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"preview-deployment" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: Commit.t Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, Commit.t Or_error.t) Rpc.Rpc.t
 end
 
-module List_applications = struct
-  let t =
-    Rpc.Rpc.create ~name:"list-applications" ~version:2
-      ~bin_query:[%bin_type_class: unit]
-      ~bin_response:[%bin_type_class: Application.t list Or_error.t]
-      ~include_in_error_count:Or_error
+module List_applications : sig
+  val t : (unit, Application.t list Or_error.t) Rpc.Rpc.t
 end
 
-module Deploy = struct
-  module Query = struct
+module Deploy : sig
+  module Query : sig
     type t = { application : string; revision : string }
     [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"start-deployment" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: string Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, string Or_error.t) Rpc.Rpc.t
 end
 
-module List_deployments = struct
-  module Query = struct
+module List_deployments : sig
+  module Query : sig
     type t = { application : string option } [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"list-deployments" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: Recent_deployment.t list Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, Recent_deployment.t list Or_error.t) Rpc.Rpc.t
 end
 
-module Cancel_deployment = struct
-  module Query = struct
+module Cancel_deployment : sig
+  module Query : sig
     type t = { operation_id : string } [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"cancel-deployment" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: unit Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, unit Or_error.t) Rpc.Rpc.t
 end
 
-module Cancel_deployment_v1 = struct
-  module Query = struct
+module Cancel_deployment_v1 : sig
+  module Query : sig
     type t = { application : string; operation_id : string }
     [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"cancel-deployment" ~version:1
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: unit Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, unit Or_error.t) Rpc.Rpc.t
 end
 
-module Prune_result = struct
-  module Route = struct
+module Prune_result : sig
+  module Route : sig
     type t = Not_configured | Missing | Removed
     [@@deriving bin_io, equal, sexp]
   end
@@ -140,24 +116,20 @@ module Prune_result = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Prune = struct
-  module Query = struct
+module Prune : sig
+  module Query : sig
     type t = { application : string } [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"prune-application" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: Prune_result.t Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, Prune_result.t Or_error.t) Rpc.Rpc.t
 end
 
-module Log_line = struct
+module Log_line : sig
   type t = { timestamp : string option; text : string }
   [@@deriving bin_io, equal, sexp]
 end
 
-module Log_snapshot = struct
+module Log_snapshot : sig
   type t = {
     application : string;
     container_name : string;
@@ -169,24 +141,20 @@ module Log_snapshot = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Get_application_logs = struct
-  module Query = struct
+module Get_application_logs : sig
+  module Query : sig
     type t = { application : string option } [@@deriving bin_io, equal, sexp]
   end
 
-  let t =
-    Rpc.Rpc.create ~name:"get-application-logs" ~version:0
-      ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: Log_snapshot.t option Or_error.t]
-      ~include_in_error_count:Or_error
+  val t : (Query.t, Log_snapshot.t option Or_error.t) Rpc.Rpc.t
 end
 
-module Health = struct
+module Health : sig
   type t = Healthy | Unhealthy | Unavailable of string
   [@@deriving bin_io, equal, sexp]
 end
 
-module Application_metrics = struct
+module Application_metrics : sig
   type t = {
     application : string;
     container_name : string option;
@@ -200,7 +168,7 @@ module Application_metrics = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Target_metrics = struct
+module Target_metrics : sig
   type t = {
     target : string;
     host : string;
@@ -220,10 +188,6 @@ module Target_metrics = struct
   [@@deriving bin_io, equal, sexp]
 end
 
-module Get_metrics = struct
-  let t =
-    Rpc.Rpc.create ~name:"get-metrics" ~version:0
-      ~bin_query:[%bin_type_class: unit]
-      ~bin_response:[%bin_type_class: Target_metrics.t list Or_error.t]
-      ~include_in_error_count:Or_error
+module Get_metrics : sig
+  val t : (unit, Target_metrics.t list Or_error.t) Rpc.Rpc.t
 end

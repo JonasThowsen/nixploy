@@ -18,16 +18,18 @@ let exit_after_signal ~default =
 let print_status status =
   let module Target = Nixploy.Configuration.Target in
   printf "Project:  %s\n"
-    (Nixploy.Project_name.to_string (Nixploy.Status.project status));
+    (Nixploy.Project_name.to_string (Nixploy.Application.status_project status));
   printf "Target:   %s\n"
-    (Nixploy.Target_name.to_string (Target.name (Nixploy.Status.target status)));
+    (Nixploy.Target_name.to_string
+       (Target.name (Nixploy.Application.status_target status)));
   printf "Host:     %s@%s:%d\n"
-    (Target.user (Nixploy.Status.target status))
-    (Target.host (Nixploy.Status.target status))
-    (Target.port (Nixploy.Status.target status));
+    (Target.user (Nixploy.Application.status_target status))
+    (Target.host (Nixploy.Application.status_target status))
+    (Target.port (Nixploy.Application.status_target status));
   printf "Resource: %s\n"
-    (Nixploy.Resource_key.to_string (Nixploy.Status.resource_key status));
-  match Nixploy.Status.workloads status with
+    (Nixploy.Resource_key.to_string
+       (Nixploy.Application.status_resource_key status));
+  match Nixploy.Application.status_workloads status with
   | [] -> printf "\nNo deployed containers found.\n"
   | workloads ->
       printf "\n%-36s %-12s %-18s %s\n" "CONTAINER" "STATE" "REVISION" "IMAGE";
@@ -50,6 +52,10 @@ let status_command =
        flag "--directory"
          (optional_with_default "." string)
          ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     and state_db =
+       flag "--state-db"
+         (optional_with_default (Nixploy.State_path.default ()) string)
+         ~doc:"PATH durable control-plane state database"
      in
      fun () ->
        let open Deferred.Let_syntax in
@@ -58,14 +64,30 @@ let status_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind result = Nixploy.Status.load ~working_directory ~target in
-           match result with
-           | Ok status ->
-               print_status status;
-               Deferred.unit
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
+           match opened with
            | Error error ->
-               eprintf "Status failed: %s\n" (Error.to_string_hum error);
-               Shutdown.exit 1))
+               eprintf "Could not open control-plane state: %s\n"
+                 (Error.to_string_hum error);
+               Shutdown.exit 1
+           | Ok application -> (
+               match
+                 Nixploy.Application.local_scope ~working_directory ~target
+               with
+               | Error error ->
+                   eprintf "Status failed: %s\n" (Error.to_string_hum error);
+                   Shutdown.exit 1
+               | Ok scope -> (
+                   let%bind result =
+                     Nixploy.Application.live_status application ~scope
+                   in
+                   match result with
+                   | Ok status ->
+                       print_status status;
+                       Deferred.unit
+                   | Error error ->
+                       eprintf "Status failed: %s\n" (Error.to_string_hum error);
+                       Shutdown.exit 1))))
 
 let print_prune_result result =
   printf "Project:    %s\n"
@@ -107,14 +129,13 @@ let prune_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Store.open_ ~path:state_db in
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"
                  (Error.to_string_hum error);
                Shutdown.exit 1
-           | Ok store -> (
-               let application = Nixploy.Application.create ~store () in
+           | Ok application -> (
                let%bind result =
                  Nixploy.Application.prune application ~working_directory
                    ~target
@@ -149,14 +170,13 @@ let deploy_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Store.open_ ~path:state_db in
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"
                  (Error.to_string_hum error);
                Shutdown.exit 1
-           | Ok store -> (
-               let application = Nixploy.Application.create ~store () in
+           | Ok application -> (
                let%bind selected =
                  Nixploy.Application.local_source application ~working_directory
                in
@@ -206,10 +226,82 @@ let deploy_command =
                              "Deployment ended without a terminal state.\n";
                            Shutdown.exit 1)))))
 
+let print_history deployments =
+  match deployments with
+  | [] -> printf "No deployment history found.\n"
+  | deployments ->
+      printf "%-36s %-10s %-18s %s\n" "OPERATION" "STATE" "REVISION" "MESSAGE";
+      List.iter deployments ~f:(fun deployment ->
+          let revision =
+            Nixploy.Application.deployment_revision deployment
+            |> Option.map ~f:(fun revision ->
+                String.prefix revision (Int.min 16 (String.length revision)))
+            |> value_or_dash
+          in
+          printf "%-36s %-10s %-18s %s\n"
+            (Nixploy.Application.deployment_id deployment)
+            (Nixploy.Application.deployment_state deployment
+            |> Nixploy.Application.deployment_state_name)
+            revision
+            (Nixploy.Application.deployment_message deployment))
+
+let history_command =
+  Async.Command.async ~summary:"List deployment history for one flake target"
+    (let%map_open.Command target =
+       flag "--target" (required string) ~aliases:[ "-t" ]
+         ~doc:"TARGET target declared by .#nixploy"
+     and working_directory =
+       flag "--directory"
+         (optional_with_default "." string)
+         ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     and state_db =
+       flag "--state-db"
+         (optional_with_default (Nixploy.State_path.default ()) string)
+         ~doc:"PATH durable control-plane state database"
+     and limit =
+       flag "--limit"
+         (optional_with_default 25 int)
+         ~doc:"COUNT number of recent deployments (1-100)"
+     in
+     fun () ->
+       let open Deferred.Let_syntax in
+       match Nixploy.Target_name.of_string target with
+       | Error error ->
+           eprintf "%s\n" (Error.to_string_hum error);
+           Shutdown.exit 2
+       | Ok target -> (
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
+           match opened with
+           | Error error ->
+               eprintf "Could not open control-plane state: %s\n"
+                 (Error.to_string_hum error);
+               Shutdown.exit 1
+           | Ok application -> (
+               match
+                 Nixploy.Application.local_scope ~working_directory ~target
+               with
+               | Error error ->
+                   eprintf "History failed: %s\n" (Error.to_string_hum error);
+                   Shutdown.exit 1
+               | Ok scope -> (
+                   let%bind result =
+                     Nixploy.Application.deployment_history application ~scope
+                       ~limit
+                   in
+                   match result with
+                   | Ok deployments ->
+                       print_history deployments;
+                       Deferred.unit
+                   | Error error ->
+                       eprintf "History failed: %s\n"
+                         (Error.to_string_hum error);
+                       Shutdown.exit 1))))
+
 let command =
   Command.group ~summary:"Deploy and manage Nix-built applications"
     [
       ("deploy", deploy_command);
+      ("history", history_command);
       ("prune", prune_command);
       ("status", status_command);
     ]
