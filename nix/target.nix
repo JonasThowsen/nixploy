@@ -1,14 +1,20 @@
 { lib, ... }:
 
 let
+  c1ControlStart = builtins.fromJSON ''"\u0080"'';
+  c1ControlEnd = builtins.fromJSON ''"\u009f"'';
+
   isSafeRemotePath =
     path:
     let
       segments = lib.splitString "/" path;
+      hasC0OrDelControl = builtins.match ".*[[:cntrl:]].*" path != null;
+      hasC1Control = builtins.match (".*[${c1ControlStart}-${c1ControlEnd}].*") path != null;
     in
     lib.hasPrefix "/" path
     && path != "/"
-    && builtins.match ".*[[:cntrl:]].*" path == null
+    && !hasC0OrDelControl
+    && !hasC1Control
     && !lib.hasInfix "," path
     && lib.all (segment: segment != "" && segment != "." && segment != "..") (lib.tail segments);
 

@@ -6,7 +6,7 @@ namespace Nixploy.Tests;
 public sealed class NixployConfigProviderTests
 {
     [Fact]
-    public async Task GetConfigAsync_EvaluatesNixployFlakeOutput()
+    public async Task GetConfigAsync_AcceptsV02AndDefaultsReadOnlyBindsEmpty()
     {
         var runner = new RecordingCommandRunner(new CommandRunResult(0, """
         {
@@ -24,6 +24,7 @@ public sealed class NixployConfigProviderTests
 
         var config = await provider.GetConfigAsync();
 
+        Assert.Equal("v0.2", config.Schema);
         Assert.Equal("my-app", config.Project);
         Assert.True(config.Targets.ContainsKey("prod"));
         Assert.Equal("docker", config.Targets["prod"].Image);
@@ -45,6 +46,7 @@ public sealed class NixployConfigProviderTests
 
         var config = await provider.GetConfigAsync();
 
+        Assert.Equal("v0.3", config.Schema);
         Assert.Collection(
             config.Targets["prod"].Run.ReadOnlyBinds,
             bind =>
@@ -71,6 +73,8 @@ public sealed class NixployConfigProviderTests
     [InlineData("{ \"source\": \"/srv/data,ro=false\", \"destination\": \"/app/data\" }")]
     [InlineData("{ \"source\": \"/srv/data\\nother\", \"destination\": \"/app/data\" }")]
     [InlineData("{ \"source\": \"/srv/data\\u0000other\", \"destination\": \"/app/data\" }")]
+    [InlineData("{ \"source\": \"/srv/data\\u007fother\", \"destination\": \"/app/data\" }")]
+    [InlineData("{ \"source\": \"/srv/data\\u0085other\", \"destination\": \"/app/data\" }")]
     [InlineData("{ \"source\": \"/srv/data\", \"destination\": \"app/data\" }")]
     [InlineData("{ \"source\": \"/srv/data\", \"destination\": \"/app/../data\" }")]
     [InlineData("{ \"source\": \"/srv/data\", \"destination\": \"/app/data,rw\" }")]
@@ -103,16 +107,105 @@ public sealed class NixployConfigProviderTests
     }
 
     [Fact]
-    public async Task GetConfigAsync_RejectsUnsupportedSchema()
+    public async Task GetConfigAsync_RejectsReadOnlyBindsInV02()
     {
-        var runner = new RecordingCommandRunner(new CommandRunResult(0, """
-        { "__schema": "v0.1", "project": "my-app", "targets": {} }
-        """, ""));
+        var provider = ProviderWithReadOnlyBinds(
+            """
+            [{ "source": "/srv/data", "destination": "/app/data" }]
+            """,
+            "v0.2"
+        );
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.GetConfigAsync()
+        );
+
+        Assert.Contains("Schema 'v0.2' cannot represent run.readOnlyBinds", exception.Message);
+        Assert.Contains("Use schema 'v0.3'", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("v0.1")]
+    [InlineData("v0.4")]
+    public async Task GetConfigAsync_RejectsSchemasOutsideExactSupportedVersions(string schema)
+    {
+        var provider = ProviderWithJson($$"""
+        { "__schema": "{{schema}}", "project": "my-app", "targets": {} }
+        """);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.GetConfigAsync()
+        );
+
+        Assert.Contains($"Unsupported nixploy schema '{schema}'", exception.Message);
+        Assert.Contains("Expected 'v0.2' or 'v0.3'", exception.Message);
+    }
+
+    public static TheoryData<string> UnknownMemberConfigs => new()
+    {
+        """{ "__schema": "v0.3", "project": "app", "targets": {}, "unknown": true }""",
+        """{ "__schema": "v0.3", "project": "app", "targets": { "prod": { "image": "docker", "ip": "host", "unknown": true } } }""",
+        """{ "__schema": "v0.3", "project": "app", "targets": { "prod": { "image": "docker", "ip": "host", "run": { "unknown": true } } } }""",
+        """{ "__schema": "v0.3", "project": "app", "targets": { "prod": { "image": "docker", "ip": "host", "web": { "domain": "app.example", "unknown": true } } } }""",
+        """{ "__schema": "v0.3", "project": "app", "targets": { "prod": { "image": "docker", "ip": "host", "web": { "domain": "app.example", "slots": { "unknown": true } } } } }""",
+        """{ "__schema": "v0.3", "project": "app", "targets": { "prod": { "image": "docker", "ip": "host", "run": { "readOnlyBinds": [{ "source": "/srv/data", "destination": "/app/data", "unknown": true }] } } } }"""
+    };
+
+    [Theory]
+    [MemberData(nameof(UnknownMemberConfigs))]
+    public async Task GetConfigAsync_RejectsUnknownMembersBeforeDeployment(string json)
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(0, json, ""));
         var provider = new NixployConfigProvider(runner);
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => provider.GetConfigAsync());
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.GetConfigAsync()
+        );
 
-        Assert.Contains("Unsupported nixploy schema 'v0.1'", exception.Message);
+        Assert.Equal("Failed to parse .#nixploy JSON.", exception.Message);
+        var call = Assert.Single(runner.Calls);
+        Assert.Equal("nix", call.FileName);
+        Assert.Equal(["eval", ".#nixploy", "--json"], call.Arguments);
+    }
+
+    [Fact]
+    public async Task GetConfigAsync_PreservesIntentionalSecretLabelMapOnlyForStringValues()
+    {
+        var validProvider = ProviderWithJson("""
+        {
+          "__schema": "v0.2",
+          "project": "app",
+          "targets": {
+            "prod": {
+              "image": "docker",
+              "ip": "host",
+              "secrets": { "user-defined-label": "/secrets/app.env" }
+            }
+          }
+        }
+        """);
+        var invalidProvider = ProviderWithJson("""
+        {
+          "__schema": "v0.2",
+          "project": "app",
+          "targets": {
+            "prod": {
+              "image": "docker",
+              "ip": "host",
+              "secrets": {
+                "user-defined-label": { "path": "/secrets/app.env", "unknown": true }
+              }
+            }
+          }
+        }
+        """);
+
+        var config = await validProvider.GetConfigAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => invalidProvider.GetConfigAsync()
+        );
+
+        Assert.Equal("/secrets/app.env", config.Targets["prod"].Secrets["user-defined-label"]);
     }
 
     [Fact]
@@ -129,11 +222,14 @@ public sealed class NixployConfigProviderTests
         Assert.Single(runner.Calls);
     }
 
-    private static NixployConfigProvider ProviderWithReadOnlyBinds(string readOnlyBinds)
+    private static NixployConfigProvider ProviderWithReadOnlyBinds(
+        string readOnlyBinds,
+        string schema = "v0.3"
+    )
     {
-        var runner = new RecordingCommandRunner(new CommandRunResult(0, $$"""
+        return ProviderWithJson($$"""
         {
-          "__schema": "v0.2",
+          "__schema": "{{schema}}",
           "project": "my-app",
           "targets": {
             "prod": {
@@ -143,8 +239,12 @@ public sealed class NixployConfigProviderTests
             }
           }
         }
-        """, ""));
+        """);
+    }
 
+    private static NixployConfigProvider ProviderWithJson(string json)
+    {
+        var runner = new RecordingCommandRunner(new CommandRunResult(0, json, ""));
         return new NixployConfigProvider(runner);
     }
 }

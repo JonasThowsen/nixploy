@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Nixploy.Cli;
@@ -13,9 +12,6 @@ public sealed record NixployConfig
 
     [JsonPropertyName("targets")]
     public Dictionary<string, NixployTarget> Targets { get; init; } = [];
-
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement> Extra { get; init; } = [];
 }
 
 public sealed record NixployTarget
@@ -43,9 +39,6 @@ public sealed record NixployTarget
 
     [JsonPropertyName("secrets")]
     public Dictionary<string, string> Secrets { get; init; } = [];
-
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement> Extra { get; init; } = [];
 }
 
 public sealed record NixployRunConfig
@@ -76,9 +69,6 @@ public sealed record NixployReadOnlyBind
 
     [JsonPropertyName("destination")]
     public string Destination { get; init; } = "";
-
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement> Extra { get; init; } = [];
 }
 
 public sealed record NixployWebConfig

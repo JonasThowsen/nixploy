@@ -1,14 +1,17 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Nixploy.Cli;
 
 public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixployConfigProvider
 {
-    private const string SupportedSchema = "v0.2";
+    private const string LegacySchema = "v0.2";
+    private const string CurrentSchema = "v0.3";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     private Task<NixployConfig>? configTask;
@@ -39,11 +42,21 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
             var config = JsonSerializer.Deserialize<NixployConfig>(result.StdOutput, JsonOptions)
                 ?? throw new InvalidOperationException(".#nixploy evaluated to empty JSON.");
 
-            if (config.Schema != SupportedSchema)
+            if (config.Schema is not LegacySchema and not CurrentSchema)
             {
                 throw new InvalidOperationException(
-                    $"Unsupported nixploy schema '{config.Schema}'. Expected '{SupportedSchema}'. " +
+                    $"Unsupported nixploy schema '{config.Schema}'. Expected '{LegacySchema}' or '{CurrentSchema}'. " +
                     "Make sure your flake uses nixploy.lib.makeConfig from a compatible nixploy input."
+                );
+            }
+
+            if (config.Schema == LegacySchema && config.Targets.Any(
+                target => target.Value.Run?.ReadOnlyBinds?.Count > 0
+            ))
+            {
+                throw new InvalidOperationException(
+                    $"Schema '{LegacySchema}' cannot represent run.readOnlyBinds. " +
+                    $"Use schema '{CurrentSchema}' for configurations that require read-only bind mounts."
                 );
             }
 
@@ -79,14 +92,6 @@ public sealed class NixployConfigProvider(ICommandRunner commandRunner) : INixpl
                         $"Target '{targetName}' run.readOnlyBinds[{index}] must be an object."
                     );
                 var optionName = $"targets.{targetName}.run.readOnlyBinds[{index}]";
-
-                if (bind.Extra.Count > 0)
-                {
-                    throw new InvalidOperationException(
-                        $"{optionName} contains unsupported field(s): {string.Join(", ", bind.Extra.Keys.Order())}. " +
-                        "Read-only bind mounts accept only source and destination."
-                    );
-                }
 
                 ValidateUnixPath(bind.Source, $"{optionName}.source");
                 ValidateUnixPath(bind.Destination, $"{optionName}.destination");

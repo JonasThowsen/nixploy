@@ -28,7 +28,22 @@ let
   };
 
   rejects = target: !(builtins.tryEval (builtins.deepSeq (evaluate target) true)).success;
+  rejectsSource =
+    source:
+    rejects {
+      run.readOnlyBinds = [
+        {
+          inherit source;
+          destination = "/app/data";
+        }
+      ];
+    };
+
+  delControl = builtins.fromJSON ''"\u007f"'';
+  c1Control = builtins.fromJSON ''"\u0085"'';
 in
+assert nixployLib.schema == "v0.3";
+assert defaultConfig.__schema == "v0.3";
 assert defaultConfig.targets.production.run.readOnlyBinds == [ ];
 assert
   configured.targets.production.run.readOnlyBinds == [
@@ -41,11 +56,21 @@ assert
       destination = "/app/config";
     }
   ];
+assert rejectsSource "relative";
+assert rejectsSource "/";
+assert rejectsSource "/srv/data,ro=false";
+assert rejectsSource "/srv/data\nother";
+assert rejectsSource ("/srv/data" + delControl + "other");
+assert rejectsSource ("/srv/data" + c1Control + "other");
+assert rejectsSource "/srv//data";
+assert rejectsSource "/srv/data/";
+assert rejectsSource "/srv/./data";
+assert rejectsSource "/srv/../data";
 assert rejects {
   run.readOnlyBinds = [
     {
-      source = "relative";
-      destination = "/app/data";
+      source = "/same";
+      destination = "/same";
     }
   ];
 };
