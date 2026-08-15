@@ -177,7 +177,10 @@ nix develop . -c dune runtest --root ocaml
 
 The default `nixploy` CLI and the Bonsai browser control plane are implemented in
 OCaml. Both deploy and scoped prune flow through the shared `Application` API;
-deployments also share the SQLite-backed tracked deployment path. See
+deployments also share the SQLite-backed tracked deployment path. Resource
+presence is stored separately: deploy success is present, completed prune is
+absent, and prune in progress or failed is unknown, without deleting historical
+deployment outcomes. See
 [`ocaml/README.md`](ocaml/README.md) for implementation details,
 [`ROADMAP.md`](ROADMAP.md) for the deliberately narrow product backlog, and
 [`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive operator-interface

@@ -15,6 +15,9 @@ type deployment_state = Store.state =
   | Cancelled
 [@@deriving compare, equal, sexp]
 
+type resource_state = Store.resource_state = Unknown | Present | Absent
+[@@deriving compare, equal, sexp]
+
 type deployment = {
   id : string;
   state : deployment_state;
@@ -77,19 +80,48 @@ let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 let resolve_commit t ~working_directory ~revision =
   t.find_commit ~working_directory ~revision
 
+let canonical_working_directory working_directory =
+  Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+
 let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
     ~working_directory ~commit ~target () =
-  t.deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
-    ~target ()
+  match canonical_working_directory working_directory with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory ->
+      let open Deferred.Or_error.Let_syntax in
+      let%bind deployment =
+        t.deploy ~on_stage ~on_requested ~application_key ~working_directory
+          ~commit ~target ()
+      in
+      let%map () =
+        match deployment.state with
+        | Succeeded ->
+            Store.set_resource_state t.store ~working_directory ~target Present
+        | Requested | Running | Failed | Cancelled ->
+            Deferred.Or_error.return ()
+      in
+      deployment
 
 let prune t ~working_directory ~target =
-  match
-    Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
-  with
+  match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
       Store.with_lease t.store ~working_directory ~target (fun () ->
-          t.prune ~working_directory ~target)
+          let open Deferred.Or_error.Let_syntax in
+          let%bind () =
+            Store.set_resource_state t.store ~working_directory ~target Unknown
+          in
+          let%bind result = t.prune ~working_directory ~target in
+          let%map () =
+            Store.set_resource_state t.store ~working_directory ~target Absent
+          in
+          result)
+
+let resource_state t ~working_directory ~target =
+  match canonical_working_directory working_directory with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory ->
+      Store.resource_state t.store ~working_directory ~target
 
 let prune_project = Prune.project
 let prune_target = Prune.target

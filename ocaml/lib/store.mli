@@ -6,6 +6,9 @@ type t
 type state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
 
+type resource_state = Unknown | Present | Absent
+[@@deriving compare, equal, sexp]
+
 type deployment
 
 val open_ : path:string -> t Deferred.Or_error.t
@@ -46,12 +49,18 @@ val list_for_application :
   limit:int ->
   deployment list Deferred.Or_error.t
 
-val has_active_for_application :
+val resource_state :
   t ->
-  application_key:string ->
   working_directory:string ->
   target:Target_name.t ->
-  bool Deferred.Or_error.t
+  resource_state Deferred.Or_error.t
+
+val set_resource_state :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  resource_state ->
+  unit Deferred.Or_error.t
 
 val find : t -> id:string -> deployment option Deferred.Or_error.t
 val id : deployment -> string

@@ -12,6 +12,9 @@ type prune_route_state = Not_configured | Missing | Removed
 type deployment_state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
 
+type resource_state = Unknown | Present | Absent
+[@@deriving compare, equal, sexp]
+
 val create : store:Store.t -> unit -> t
 
 val preview_main_commit :
@@ -36,6 +39,12 @@ val prune :
   working_directory:string ->
   target:Target_name.t ->
   prune_result Deferred.Or_error.t
+
+val resource_state :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  resource_state Deferred.Or_error.t
 
 val prune_project : prune_result -> Project_name.t
 val prune_target : prune_result -> Target_name.t

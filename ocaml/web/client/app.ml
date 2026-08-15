@@ -1,6 +1,7 @@
 open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
+module Prune_state = Nixploy_web_client_state.Prune_state
 
 let text_with_class class_name text =
   Vdom.Node.div ~attrs:[ Vdom.Attr.class_ class_name ] [ Vdom.Node.text text ]
@@ -82,20 +83,22 @@ let commit_summary = function
   | Some commit ->
       (short_revision commit.Protocol.Commit.revision, commit.subject)
 
-let button ?(kind = "secondary") ?(disabled = false) ~label ~on_click () =
+let button ?(kind = "secondary") ?(disabled = false) ?(autofocus = false) ~label
+    ~on_click () =
   Vdom.Node.button
     ~attrs:
       ([
          Vdom.Attr.classes [ "button"; "button-" ^ kind ];
          Vdom.Attr.create "type" "button";
        ]
+      @ (if autofocus then [ Vdom.Attr.create "autofocus" "true" ] else [])
       @
       if disabled then [ Vdom.Attr.disabled ]
       else [ Vdom.Attr.on_click (fun _ -> on_click) ])
     [ Vdom.Node.text label ]
 
 let commit_confirmation ~application ~commit ~dispatch_deploy ~set_preview
-    ~set_notice =
+    ~set_notice ~disabled =
   let confirm =
     let%bind.Effect response =
       dispatch_deploy
@@ -131,8 +134,8 @@ let commit_confirmation ~application ~commit ~dispatch_deploy ~set_preview
       Vdom.Node.div
         ~attrs:[ Vdom.Attr.class_ "button-row" ]
         [
-          button ~kind:"primary" ~label:"DEPLOY THIS COMMIT" ~on_click:confirm
-            ();
+          button ~kind:"primary" ~disabled ~label:"DEPLOY THIS COMMIT"
+            ~on_click:confirm ();
           button ~label:"CANCEL" ~on_click:(set_preview None) ();
         ];
     ]
@@ -145,28 +148,52 @@ let prune_route_notice = function
 let deployment_is_active = function
   | None -> false
   | Some deployment -> (
-      match deployment.Protocol.Deployment.state with
+      deployment.Protocol.Deployment.can_cancel
+      &&
+      match deployment.state with
       | Requested | Running -> true
       | Succeeded | Failed | Cancelled -> false)
 
-let prune_confirmation ~application ~dispatch_prune ~set_confirmation
-    ~set_pending ~set_notice ~confirm_disabled ~pending =
+let prune_confirmation ~application ~dispatch_prune ~prune_state
+    ~set_prune_state ~set_notice ~deployment_active =
+  let key = application.Protocol.Application.key in
+  let pending =
+    match prune_state with
+    | Prune_state.Pending pending -> String.equal pending key
+    | Prune_state.Idle | Prune_state.Confirming _ -> false
+  in
+  let error =
+    match Prune_state.confirmation prune_state with
+    | Some (confirmation_key, error) when String.equal confirmation_key key ->
+        error
+    | _ -> None
+  in
   let confirm =
-    let%bind.Effect () =
-      set_pending (Some application.Protocol.Application.key)
-    in
+    let%bind.Effect () = set_prune_state (Prune_state.start prune_state ~key) in
     let%bind.Effect response =
-      dispatch_prune
-        {
-          Protocol.Prune.Query.application =
-            application.Protocol.Application.key;
-        }
+      dispatch_prune { Protocol.Prune.Query.application = key }
     in
-    let notice =
-      match response with
-      | Error error -> "PRUNE RPC FAILED: " ^ Error.to_string_hum error
-      | Ok (Error error) -> "PRUNE REJECTED: " ^ Error.to_string_hum error
-      | Ok (Ok result) ->
+    match response with
+    | Error rpc_error ->
+        let error = "PRUNE RPC FAILED: " ^ Error.to_string_hum rpc_error in
+        Effect.Many
+          [
+            set_prune_state
+              (Prune_state.fail (Prune_state.Pending key) ~key ~error);
+            set_notice error;
+          ]
+    | Ok (Error application_error) ->
+        let error =
+          "PRUNE REJECTED: " ^ Error.to_string_hum application_error
+        in
+        Effect.Many
+          [
+            set_prune_state
+              (Prune_state.fail (Prune_state.Pending key) ~key ~error);
+            set_notice error;
+          ]
+    | Ok (Ok result) ->
+        let notice =
           sprintf
             "PRUNE COMPLETED FOR %s/%s: %d CONTAINERS REMOVED; %d SCOPED \
              SECRETS REMOVED; CADDY ROUTE %s. RUNTIME OBSERVATIONS WILL \
@@ -174,15 +201,22 @@ let prune_confirmation ~application ~dispatch_prune ~set_confirmation
             result.Protocol.Prune_result.project result.target
             result.containers_removed result.secrets_removed
             (prune_route_notice result.route)
-    in
-    Effect.Many [ set_pending None; set_confirmation None; set_notice notice ]
+        in
+        Effect.Many
+          [
+            set_prune_state (Prune_state.succeed (Prune_state.Pending key) ~key);
+            set_notice notice;
+          ]
   in
   Vdom.Node.section
     ~attrs:
       [
         Vdom.Attr.classes [ "confirmation"; "prune-confirmation" ];
-        Vdom.Attr.create "aria-label"
-          ("Confirm resource prune for " ^ application.key);
+        Vdom.Attr.create "role" "alertdialog";
+        Vdom.Attr.create "aria-modal" "false";
+        Vdom.Attr.create "aria-labelledby" "prune-dialog-title";
+        Vdom.Attr.create "aria-describedby" "prune-dialog-description";
+        Vdom.Attr.create "aria-label" ("Confirm resource prune for " ^ key);
       ]
     [
       Vdom.Node.div
@@ -190,8 +224,11 @@ let prune_confirmation ~application ~dispatch_prune ~set_confirmation
           Vdom.Node.span
             ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
             [ Vdom.Node.text "DESTRUCTIVE RESOURCE PRUNE" ];
-          Vdom.Node.strong [ Vdom.Node.text ("APPLICATION " ^ application.key) ];
+          Vdom.Node.strong
+            ~attrs:[ Vdom.Attr.id "prune-dialog-title" ]
+            [ Vdom.Node.text ("APPLICATION " ^ key) ];
           Vdom.Node.p
+            ~attrs:[ Vdom.Attr.id "prune-dialog-description" ]
             [
               Vdom.Node.text
                 ("Project " ^ application.project ^ " / target "
@@ -200,41 +237,61 @@ let prune_confirmation ~application ~dispatch_prune ~set_confirmation
                   Caddy route. It causes downtime until resources are deployed \
                   again.");
             ];
+          (match error with
+          | None -> Vdom.Node.none
+          | Some error ->
+              Vdom.Node.p
+                ~attrs:
+                  [
+                    Vdom.Attr.class_ "prune-error";
+                    Vdom.Attr.create "role" "alert";
+                    Vdom.Attr.create "aria-live" "assertive";
+                  ]
+                [ Vdom.Node.text error ]);
         ];
       Vdom.Node.div
         ~attrs:[ Vdom.Attr.class_ "button-row" ]
         [
-          button ~kind:"danger" ~disabled:confirm_disabled
+          button ~autofocus:(not pending) ~disabled:pending
+            ~label:"KEEP RESOURCES"
+            ~on_click:(set_prune_state (Prune_state.keep prune_state ~key))
+            ();
+          button ~kind:"danger"
+            ~disabled:(deployment_active || pending)
             ~label:(if pending then "PRUNING RESOURCES" else "CONFIRM PRUNE")
             ~on_click:confirm ();
-          button ~disabled:pending ~label:"KEEP RESOURCES"
-            ~on_click:(set_confirmation None) ();
         ];
     ]
 
-let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
-    ~prune_pending ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
-    ~dispatch_prune ~set_preview ~set_cancel_confirmation
-    ~set_prune_confirmation ~set_prune_pending ~set_deployment_filter
-    ~set_selected_logs ~set_search ~set_current_match ~set_follow
-    ~set_paused_snapshot ~set_notice application =
+let application_card ~preview ~cancel_confirmation ~prune_state
+    ~dispatch_preview ~dispatch_deploy ~dispatch_cancel ~dispatch_prune
+    ~set_preview ~set_cancel_confirmation ~set_prune_state
+    ~set_deployment_filter ~set_selected_logs ~set_search ~set_current_match
+    ~set_follow ~set_paused_snapshot ~set_notice application =
   let deployment = application.Protocol.Application.deployment in
-  let state, stage, message, revision, subject =
+  let state, state_class =
+    match application.resource_state with
+    | Protocol.Resource_state.Unknown ->
+        ("RESOURCE STATE UNKNOWN", "interrupted")
+    | Protocol.Resource_state.Present -> ("RESOURCES PRESENT", "succeeded")
+    | Protocol.Resource_state.Absent -> ("PRUNED / ABSENT", "absent")
+  in
+  let stage, message, revision, subject =
     match deployment with
     | None ->
-        ( "NOT DEPLOYED",
-          "awaiting first deployment",
+        ( "awaiting first deployment",
           "No deployment has been recorded for this application.",
           "NO REVISION",
           "Commit details unavailable" )
     | Some deployment ->
         let revision, subject = commit_summary deployment.commit in
-        ( deployment_state_name deployment,
-          deployment.stage,
+        ( deployment.stage,
           Option.value deployment.error ~default:deployment.message,
           revision,
           subject )
   in
+  let prune_pending = Prune_state.is_pending prune_state in
+  let prune_busy = Prune_state.is_busy prune_state in
   let request_preview =
     let%bind.Effect () = set_notice ("READING MAIN: " ^ application.key) in
     let%bind.Effect response =
@@ -308,7 +365,8 @@ let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
                 ];
             ]
         else
-          button ~kind:"danger" ~label:"CANCEL DEPLOYMENT"
+          button ~kind:"danger" ~disabled:prune_pending
+            ~label:"CANCEL DEPLOYMENT"
             ~on_click:(set_cancel_confirmation (Some deployment.id))
             ()
     | Some deployment
@@ -318,39 +376,48 @@ let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
         button ~disabled:true ~label:"DEPLOYMENT ACTIVE" ~on_click:Effect.Ignore
           ()
     | _ ->
-        button ~kind:"primary" ~label:"PREVIEW MAIN" ~on_click:request_preview
-          ()
+        button ~kind:"primary" ~disabled:prune_busy ~label:"PREVIEW MAIN"
+          ~on_click:request_preview ()
   in
   let confirmation =
     match preview with
-    | Some (key, commit) when String.equal key application.key ->
+    | Some (key, commit) when String.equal key application.key && not prune_busy
+      ->
         commit_confirmation ~application:key ~commit ~dispatch_deploy
-          ~set_preview ~set_notice
+          ~set_preview ~set_notice ~disabled:prune_pending
     | _ -> Vdom.Node.none
   in
   let deployment_active = deployment_is_active deployment in
-  let prune_is_pending =
-    Option.equal String.equal prune_pending (Some application.key)
-  in
   let prune_confirmation_open =
-    Option.equal String.equal prune_confirmation_key (Some application.key)
+    match Prune_state.confirmation prune_state with
+    | Some (key, _) -> String.equal key application.key
+    | None -> false
+  in
+  let prune_operation_matches =
+    prune_confirmation_open
+    ||
+    match prune_state with
+    | Prune_state.Pending key -> String.equal key application.key
+    | Prune_state.Idle | Prune_state.Confirming _ -> false
   in
   let prune_confirmation =
-    if prune_confirmation_open then
-      prune_confirmation ~application ~dispatch_prune
-        ~set_confirmation:set_prune_confirmation ~set_pending:set_prune_pending
-        ~set_notice
-        ~confirm_disabled:(deployment_active || prune_is_pending)
-        ~pending:prune_is_pending
+    if prune_operation_matches then
+      prune_confirmation ~application ~dispatch_prune ~prune_state
+        ~set_prune_state ~set_notice ~deployment_active
     else Vdom.Node.none
+  in
+  let open_prune =
+    Effect.Many
+      [
+        set_preview None;
+        set_cancel_confirmation None;
+        set_prune_state (Prune_state.confirm prune_state ~key:application.key);
+      ]
   in
   let prune_action =
     button ~kind:"danger-outline"
-      ~disabled:
-        (deployment_active || prune_is_pending || prune_confirmation_open)
-      ~label:"PRUNE RESOURCES"
-      ~on_click:(set_prune_confirmation (Some application.key))
-      ()
+      ~disabled:(deployment_active || prune_busy)
+      ~label:"PRUNE RESOURCES" ~on_click:open_prune ()
   in
   Vdom.Node.create "article"
     ~attrs:[ Vdom.Attr.class_ "application-card" ]
@@ -369,15 +436,7 @@ let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
                 [ Vdom.Node.text application.repository ];
             ];
           Vdom.Node.div
-            ~attrs:
-              [
-                Vdom.Attr.classes
-                  [
-                    "state";
-                    Option.value_map deployment ~default:"empty"
-                      ~f:deployment_state_class;
-                  ];
-              ]
+            ~attrs:[ Vdom.Attr.classes [ "state"; state_class ] ]
             [
               Vdom.Node.span ~attrs:[ Vdom.Attr.class_ "state-light" ] [];
               Vdom.Node.text state;
@@ -409,12 +468,10 @@ let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
         ~attrs:[ Vdom.Attr.class_ "operation-message" ]
         [ Vdom.Node.text message ];
       confirmation;
-      prune_confirmation;
       Vdom.Node.div
         ~attrs:[ Vdom.Attr.class_ "card-actions" ]
         [
           deployment_actions;
-          prune_action;
           button ~label:"VIEW LOGS" ~on_click:open_logs ();
           button ~label:"VIEW HISTORY"
             ~on_click:
@@ -424,7 +481,9 @@ let application_card ~preview ~cancel_confirmation ~prune_confirmation_key
                    set_notice ("SHOWING HISTORY: " ^ application.key);
                  ])
             ();
+          prune_action;
         ];
+      prune_confirmation;
     ]
 
 let deployment_row recent =
@@ -773,8 +832,7 @@ let metrics_panel response =
 let component graph =
   let preview, set_preview = Bonsai.state None graph in
   let cancel_confirmation, set_cancel_confirmation = Bonsai.state None graph in
-  let prune_confirmation, set_prune_confirmation = Bonsai.state None graph in
-  let prune_pending, set_prune_pending = Bonsai.state None graph in
+  let prune_state, set_prune_state = Bonsai.state Prune_state.Idle graph in
   let deployment_filter, set_deployment_filter = Bonsai.state None graph in
   let selected_logs, set_selected_logs = Bonsai.state None graph in
   let search, set_search = Bonsai.state "" graph in
@@ -836,10 +894,8 @@ let component graph =
   and set_preview = set_preview
   and cancel_confirmation = cancel_confirmation
   and set_cancel_confirmation = set_cancel_confirmation
-  and prune_confirmation = prune_confirmation
-  and set_prune_confirmation = set_prune_confirmation
-  and prune_pending = prune_pending
-  and set_prune_pending = set_prune_pending
+  and prune_state = prune_state
+  and set_prune_state = set_prune_state
   and deployment_filter = deployment_filter
   and set_deployment_filter = set_deployment_filter
   and selected_logs = selected_logs
@@ -863,13 +919,12 @@ let component graph =
     | Some (_, Ok (_ :: _ as application_list)) ->
         List.map application_list
           ~f:
-            (application_card ~preview ~cancel_confirmation
-               ~prune_confirmation_key:prune_confirmation ~prune_pending
+            (application_card ~preview ~cancel_confirmation ~prune_state
                ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
                ~dispatch_prune ~set_preview ~set_cancel_confirmation
-               ~set_prune_confirmation ~set_prune_pending ~set_deployment_filter
-               ~set_selected_logs ~set_search ~set_current_match ~set_follow
-               ~set_paused_snapshot ~set_notice)
+               ~set_prune_state ~set_deployment_filter ~set_selected_logs
+               ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
+               ~set_notice)
     | Some (_, Ok []) ->
         [ text_with_class "empty-panel" "NO APPLICATIONS ARE ALLOWLISTED" ]
     | Some (_, Error error) ->

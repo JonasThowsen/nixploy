@@ -3,6 +3,7 @@ module Application = Nixploy.Application
 module Deployment_output = Nixploy_cli_mapping.Deployment_output
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_response = Nixploy_rpc_mapping.Prune_response
+module Resource_state_response = Nixploy_rpc_mapping.Resource_state_response
 
 let deployment state =
   Application.For_testing.deployment ~id:"operation-123" ~state
@@ -51,6 +52,18 @@ let () =
   assert (
     [%equal: Protocol.Prune_result.Route.t]
       (prune Application.Not_configured).route Not_configured);
+  assert (
+    [%equal: Protocol.Resource_state.t]
+      (Resource_state_response.of_application Application.Unknown)
+      Unknown);
+  assert (
+    [%equal: Protocol.Resource_state.t]
+      (Resource_state_response.of_application Application.Present)
+      Present);
+  assert (
+    [%equal: Protocol.Resource_state.t]
+      (Resource_state_response.of_application Application.Absent)
+      Absent);
   assert (
     [%equal: Deployment_output.terminal_state]
       (Deployment_output.of_deployment (deployment Application.Succeeded)

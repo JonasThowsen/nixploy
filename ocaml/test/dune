@@ -13,6 +13,13 @@
   (pps ppx_jane)))
 
 (test
+ (name authorization_test)
+ (modules authorization_test)
+ (libraries core nixploy_rpc_mapping)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name application_test)
  (modules application_test)
  (libraries nixploy core core_unix.command_unix async)
@@ -50,6 +57,13 @@
   nixploy
   nixploy_rpc_mapping
   protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name prune_state_test)
+ (modules prune_state_test)
+ (libraries core nixploy_web_client_state)
  (preprocess
   (pps ppx_jane)))
 

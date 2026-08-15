@@ -2,8 +2,10 @@ open! Core
 open! Async
 module Managed_application = Nixploy.Managed_application
 module Store = Nixploy.Store
+module Authorization = Nixploy_rpc_mapping.Authorization
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_request = Nixploy_rpc_mapping.Prune_request
+module Resource_state_response = Nixploy_rpc_mapping.Resource_state_response
 
 type cached_runtime = {
   mutable expires_at : Time_ns.t;
@@ -18,29 +20,7 @@ type state = {
   runtime_cache : cached_runtime String.Table.t;
 }
 
-type authorization = Unrestricted | Tailscale of string
-
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
-let normalized_login login = String.strip login |> String.lowercase
-
-let load_authorization () =
-  match Sys.getenv "NIXPLOY_AUTH_MODE" with
-  | Some mode when String.Caseless.equal mode "tailscale" -> (
-      match Sys.getenv "NIXPLOY_OPERATOR_EMAIL" with
-      | Some email when not (String.is_empty (String.strip email)) ->
-          Ok (Tailscale (normalized_login email))
-      | _ ->
-          Or_error.error_string
-            "NIXPLOY_OPERATOR_EMAIL is required in Tailscale auth mode")
-  | _ -> Ok Unrestricted
-
-let authorized authorization headers =
-  match authorization with
-  | Unrestricted -> true
-  | Tailscale expected ->
-      Cohttp.Header.get headers "tailscale-user-login"
-      |> Option.exists ~f:(fun login ->
-          String.equal (normalized_login login) expected)
 
 let protocol_state = function
   | Store.Requested -> Protocol.Deployment.State.Requested
@@ -111,12 +91,17 @@ let deployment_matches application deployment =
 let list_applications state _connection_state () =
   Deferred.Or_error.List.map state.applications ~how:`Parallel
     ~f:(fun application ->
-      let%map.Deferred.Or_error deployments =
+      let%bind.Deferred.Or_error deployments =
         Store.list_for_application state.store
           ~application_key:(Managed_application.key application)
           ~working_directory:(canonical_working_directory application)
           ~target:(Managed_application.target application)
           ~limit:1
+      in
+      let%map.Deferred.Or_error resource_state =
+        Nixploy.Application.resource_state state.application
+          ~working_directory:(Managed_application.working_directory application)
+          ~target:(Managed_application.target application)
       in
       {
         Protocol.Application.key = Managed_application.key application;
@@ -127,6 +112,7 @@ let list_applications state _connection_state () =
           Managed_application.target application
           |> Nixploy.Target_name.to_string;
         repository = Managed_application.repository_identity application;
+        resource_state = Resource_state_response.of_application resource_state;
         deployment =
           List.hd deployments |> Option.map ~f:(protocol_deployment state);
       })
@@ -209,10 +195,10 @@ let deploy state _connection_state query =
             ])
 
 let prune state _connection_state query =
-  Prune_request.handle ~applications:state.applications ~store:state.store
+  Prune_request.handle ~applications:state.applications
     ~prune:(fun ~working_directory ~target ->
       Nixploy.Application.prune state.application ~working_directory ~target)
-    ~on_success:(fun ~application_key ->
+    ~on_started:(fun ~application_key ->
       Hashtbl.remove state.runtime_cache application_key)
     query
 
@@ -546,15 +532,16 @@ let not_found =
 let http_handler ~authorization ~body:_ _address request =
   match Uri.path (Cohttp.Request.uri request) with
   | "/healthz" -> respond_string ~content_type:"text/plain" "ok\n"
-  | ("" | "/" | "/index.html") when authorized authorization request.headers ->
+  | ("" | "/" | "/index.html")
+    when Authorization.authorized authorization request.headers ->
       respond_string ~content_type:"text/html" html
   | "/main.js" ->
-      if authorized authorization request.headers then
+      if Authorization.authorized authorization request.headers then
         respond_string ~content_type:"application/javascript"
           Embedded_files.main_dot_bc_dot_js
       else forbidden ()
   | "/app.css" ->
-      if authorized authorization request.headers then
+      if Authorization.authorized authorization request.headers then
         respond_string ~content_type:"text/css" Embedded_files.app_dot_css
       else forbidden ()
   | "" | "/" | "/index.html" -> forbidden ()
@@ -565,7 +552,7 @@ let should_process_request authorization _address = function
       Or_error.error_string "plain TCP RPC is disabled"
   | Web (_headers, `is_websocket_request false) -> Ok ()
   | Web (headers, `is_websocket_request true) ->
-      if authorized authorization headers then Ok ()
+      if Authorization.authorized authorization headers then Ok ()
       else Or_error.error_string "Tailscale identity is not authorized"
 
 let run ~port ~state_db =
@@ -573,7 +560,7 @@ let run ~port ~state_db =
   let applications =
     Managed_application.load_environment () |> Or_error.ok_exn
   in
-  let authorization = load_authorization () |> Or_error.ok_exn in
+  let authorization = Authorization.load_environment () |> Or_error.ok_exn in
   let%bind store = Store.open_ ~path:state_db >>| Or_error.ok_exn in
   let state =
     {

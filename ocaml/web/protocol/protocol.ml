@@ -31,12 +31,18 @@ module Deployment = struct
   [@@deriving bin_io, equal, sexp]
 end
 
+module Resource_state = struct
+  type t = Unknown | Present | Absent
+  [@@deriving bin_io, compare, equal, sexp]
+end
+
 module Application = struct
   type t = {
     key : string;
     project : string;
     target : string;
     repository : string;
+    resource_state : Resource_state.t;
     deployment : Deployment.t option;
   }
   [@@deriving bin_io, equal, sexp]
@@ -61,7 +67,7 @@ end
 
 module List_applications = struct
   let t =
-    Rpc.Rpc.create ~name:"list-applications" ~version:1
+    Rpc.Rpc.create ~name:"list-applications" ~version:2
       ~bin_query:[%bin_type_class: unit]
       ~bin_response:[%bin_type_class: Application.t list Or_error.t]
       ~include_in_error_count:Or_error

@@ -6,6 +6,9 @@ type t = { path : string }
 type state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
 
+type resource_state = Unknown | Present | Absent
+[@@deriving compare, equal, sexp]
+
 type deployment = {
   id : string;
   application_key : string option;
@@ -125,6 +128,17 @@ let schema_v2 =
     CREATE INDEX deployment_events_operation ON deployment_events(deployment_id, id);
   |}
 
+let resource_state_schema =
+  {|
+    CREATE TABLE resource_states (
+      working_directory TEXT NOT NULL,
+      target TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('unknown', 'present', 'absent')),
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (working_directory, target)
+    );
+  |}
+
 let user_version db =
   with_statement db "PRAGMA user_version" ~f:(fun statement ->
       match Sqlite3.step statement with
@@ -181,6 +195,18 @@ let migrate_v1 db =
   exec db "PRAGMA foreign_keys = ON";
   check_foreign_keys db
 
+let migrate_v2 db =
+  exec db "BEGIN IMMEDIATE";
+  let committed = ref false in
+  Exn.protect
+    ~f:(fun () ->
+      exec db resource_state_schema;
+      exec db "PRAGMA user_version = 3";
+      exec db "COMMIT";
+      committed := true)
+    ~finally:(fun () ->
+      if not !committed then ignore (Sqlite3.exec db "ROLLBACK" : Sqlite3.Rc.t))
+
 let migrate db =
   exec db "PRAGMA journal_mode = DELETE";
   exec db "PRAGMA synchronous = FULL";
@@ -191,14 +217,18 @@ let migrate db =
       Exn.protect
         ~f:(fun () ->
           exec db schema_v2;
-          exec db "PRAGMA user_version = 2";
+          exec db resource_state_schema;
+          exec db "PRAGMA user_version = 3";
           exec db "COMMIT";
           committed := true)
         ~finally:(fun () ->
           if not !committed then
             ignore (Sqlite3.exec db "ROLLBACK" : Sqlite3.Rc.t))
-  | 1 -> migrate_v1 db
-  | 2 -> ()
+  | 1 ->
+      migrate_v1 db;
+      migrate_v2 db
+  | 2 -> migrate_v2 db
+  | 3 -> ()
   | version -> failwithf "unsupported SQLite schema version %d" version ()
 
 let open_ ~path =
@@ -503,27 +533,57 @@ let list_for_application t ~application_key ~working_directory ~target ~limit =
                     ];
                   collect db statement "list application deployments"))))
 
-let has_active_for_application t ~application_key ~working_directory ~target =
+let resource_state_of_string = function
+  | "unknown" -> Unknown
+  | "present" -> Present
+  | "absent" -> Absent
+  | state -> failwithf "unknown resource state %s" state ()
+
+let resource_state_name = function
+  | Unknown -> "unknown"
+  | Present -> "present"
+  | Absent -> "absent"
+
+let resource_state t ~working_directory ~target =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
           with_db t ~f:(fun db ->
               with_statement db
-                "SELECT 1 FROM deployments WHERE (application_key = ? OR \
-                 (application_key IS NULL AND working_directory = ? AND target \
-                 = ?)) AND state IN ('requested', 'running') LIMIT 1"
-                ~f:(fun statement ->
+                "SELECT state FROM resource_states WHERE working_directory = ? \
+                 AND target = ?" ~f:(fun statement ->
                   bind db statement
                     [
-                      Sqlite3.Data.TEXT application_key;
-                      TEXT working_directory;
+                      Sqlite3.Data.TEXT working_directory;
                       TEXT (Target_name.to_string target);
                     ];
                   match Sqlite3.step statement with
-                  | ROW -> true
-                  | DONE -> false
+                  | ROW ->
+                      Sqlite3.column_text statement 0
+                      |> resource_state_of_string
+                  | DONE -> Unknown
                   | code ->
-                      check db "check active application deployment" code;
+                      check db "read resource state" code;
                       assert false))))
+
+let set_resource_state t ~working_directory ~target state =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          let now = now_ms () in
+          with_db t ~f:(fun db ->
+              with_statement db
+                "INSERT INTO resource_states (working_directory, target, \
+                 state, updated_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT \
+                 (working_directory, target) DO UPDATE SET state = \
+                 excluded.state, updated_at_ms = excluded.updated_at_ms"
+                ~f:(fun statement ->
+                  bind db statement
+                    [
+                      Sqlite3.Data.TEXT working_directory;
+                      TEXT (Target_name.to_string target);
+                      TEXT (resource_state_name state);
+                      INT now;
+                    ];
+                  check db "write resource state" (Sqlite3.step statement)))))
 
 let find t ~id =
   Monitor.try_with_or_error (fun () ->

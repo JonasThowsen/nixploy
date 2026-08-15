@@ -70,9 +70,22 @@ It binds to loopback, reads the NixOS-owned
 `NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays the latest persisted
 deployment for each application, and sends deploy and prune requests through
 the same shared `Application` operations as the CLI. CLI and web mutations share
-a cross-process target lease rooted beside the SQLite state database. Web prune
-is rejected while the selected application has an active deployment or
-cancellation.
+a cross-process target lease rooted beside the SQLite state database. Persisted
+requested/running rows from an interrupted process remain deployment history;
+they do not act as live-operation locks after restart.
+
+SQLite also stores resource presence by canonical working directory and target.
+A verified deploy records `Present`; prune records `Unknown` before cleanup,
+`Absent` after complete cleanup, and leaves `Unknown` after an error because
+partial safe cleanup may already have happened. Deployment history is retained
+independently. The application card renders these resource states rather than
+presenting a historical successful deployment as proof that resources still
+exist.
+
+Unset `NIXPLOY_AUTH_MODE` is the explicit local-development default. Set it to
+`unrestricted` for an explicitly unrestricted development process or to
+`tailscale` with `NIXPLOY_OPERATOR_EMAIL`; any other set value is a startup
+error.
 
 The operator surface now previews and confirms an exact Git commit, lists recent
 deployments, cancels active deployments cooperatively, searches and follows
@@ -80,6 +93,12 @@ bounded logs from the positively identified active container, and reports remote
 host health plus per-application resource usage. These workflows use separate
 polling state so confirmation, filters, and log search remain stable while
 runtime observations refresh.
+
+The non-destructive Playwright specification checks open prune-confirmation
+layout, accessible controls, mobile overflow, and 44px hit areas. It requires an
+externally running control plane via `NIXPLOY_E2E_URL`; the repository does not
+currently provide a self-contained Playwright harness, so `dune runtest` and the
+package build do not execute it.
 
 Build and test through the repository flake:
 

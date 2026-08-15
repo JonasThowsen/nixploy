@@ -26,7 +26,9 @@ for (const viewport of [
 
     const application = page.locator(".application-card").first();
     await application.getByRole("button", { name: "PRUNE RESOURCES" }).click();
-    const pruneConfirmation = application.getByLabel(/Confirm resource prune for/);
+    const pruneConfirmation = application.getByRole("alertdialog", {
+      name: /Confirm resource prune for/,
+    });
     await expect(pruneConfirmation).toBeVisible();
     await expect(
       pruneConfirmation.getByText(/removes owned containers, scoped secrets, and the Caddy route/i),
@@ -35,6 +37,17 @@ for (const viewport of [
     await expect(
       pruneConfirmation.getByRole("button", { name: "CONFIRM PRUNE" }),
     ).toBeVisible();
+    const openConfirmationOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(openConfirmationOverflow).toBe(false);
+    for (const control of await pruneConfirmation.locator("button:visible").all()) {
+      const box = await control.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    await expect(
+      pruneConfirmation.getByRole("button", { name: "KEEP RESOURCES" }),
+    ).toBeFocused();
     await pruneConfirmation.getByRole("button", { name: "KEEP RESOURCES" }).click();
     await expect(pruneConfirmation).toBeHidden();
 

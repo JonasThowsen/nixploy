@@ -56,6 +56,23 @@ let run_tests () =
   in
   let%bind opened = Nixploy.Store.open_ ~path in
   let store = Or_error.ok_exn opened in
+  let%bind initial_resources =
+    Nixploy.Store.resource_state store ~working_directory:"/tmp/project" ~target
+  in
+  assert (
+    [%equal: Nixploy.Store.resource_state]
+      (Or_error.ok_exn initial_resources)
+      Unknown);
+  let%bind present =
+    Nixploy.Store.set_resource_state store ~working_directory:"/tmp/project"
+      ~target Present
+  in
+  Or_error.ok_exn present;
+  let%bind present =
+    Nixploy.Store.resource_state store ~working_directory:"/tmp/project" ~target
+  in
+  assert (
+    [%equal: Nixploy.Store.resource_state] (Or_error.ok_exn present) Present);
   let%bind lease_test =
     Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
       (fun () ->
@@ -138,6 +155,23 @@ let run_tests () =
   assert ([%equal: Nixploy.Store.state] (Nixploy.Store.state migrated) Succeeded);
   assert (Option.is_some (Nixploy.Store.started_at_ms migrated));
   assert (Option.is_some (Nixploy.Store.finished_at_ms migrated));
+  let%bind migrated_resource =
+    Nixploy.Store.resource_state migrated_store ~working_directory:"/tmp/legacy"
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Store.resource_state]
+      (Or_error.ok_exn migrated_resource)
+      Unknown);
+  let%bind reopened = Nixploy.Store.open_ ~path in
+  let%bind persisted_resource =
+    Nixploy.Store.resource_state (Or_error.ok_exn reopened)
+      ~working_directory:"/tmp/project" ~target
+  in
+  assert (
+    [%equal: Nixploy.Store.resource_state]
+      (Or_error.ok_exn persisted_resource)
+      Present);
   let%map _ =
     Nixploy.Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:65_536 ~prog:"rm" ~args:[ "-rf"; "--"; directory ] ()

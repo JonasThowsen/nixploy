@@ -9,10 +9,6 @@ let assert_ok = function
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-prune-request-test-" "" in
-  let%bind store_result =
-    Nixploy.Store.open_ ~path:(Filename.concat directory "state.sqlite")
-  in
-  let store = assert_ok store_result in
   let applications =
     sprintf
       {|{"example":{"project":"example","target":"production","repository":"%s"}}|}
@@ -36,12 +32,12 @@ let run_tests () =
     prune_calls := (working_directory, target) :: !prune_calls;
     Deferred.Or_error.return application_result
   in
-  let on_success ~application_key =
+  let on_started ~application_key =
     invalidated := application_key :: !invalidated
   in
   let query = { Protocol.Prune.Query.application = "example" } in
   let%bind success =
-    Prune_request.handle ~applications ~store ~prune ~on_success query
+    Prune_request.handle ~applications ~prune ~on_started query
   in
   let success = assert_ok success in
   assert (String.equal success.project "example");
@@ -51,45 +47,20 @@ let run_tests () =
   assert ([%equal: Protocol.Prune_result.Route.t] success.route Missing);
   [%test_eq: string list] [ "example" ] !invalidated;
   [%test_eq: int] 1 (List.length !prune_calls);
-  let commit =
-    Nixploy.Source.For_testing.commit ~revision:(String.make 40 'a')
-      ~subject:"Active deployment" ~timestamp_ms:1L
-    |> assert_ok
+  let failed_prune ~working_directory:_ ~target:_ =
+    Deferred.Or_error.error_string "partial cleanup failed"
   in
-  let%bind requested =
-    Nixploy.Store.request store ~application_key:(Some "example")
-      ~working_directory:directory ~target ~commit
+  let%bind failure =
+    Prune_request.handle ~applications ~prune:failed_prune ~on_started query
   in
-  let operation = assert_ok requested in
-  let assert_blocked () =
-    let%map blocked =
-      Prune_request.handle ~applications ~store ~prune ~on_success query
-    in
-    let blocked_error = Result.error blocked |> Option.value_exn in
-    assert (
-      Error.to_string_hum blocked_error
-      |> String.is_substring ~substring:"deployment or cancellation is active");
-    [%test_eq: int] 1 (List.length !prune_calls);
-    [%test_eq: string list] [ "example" ] !invalidated
-  in
-  let%bind () = assert_blocked () in
-  let%bind running =
-    Nixploy.Store.record_stage store
-      ~id:(Nixploy.Store.id operation)
-      ~stage:Nixploy.Deployment.Preparing_source ~message:"Deployment running"
-  in
-  ignore (assert_ok running : unit);
-  let%bind cancellation =
-    Nixploy.Store.request_cancellation store ~id:(Nixploy.Store.id operation)
-  in
-  ignore (assert_ok cancellation : unit);
-  let%bind () = assert_blocked () in
-  let%bind unknown =
-    Prune_request.handle ~applications ~store ~prune ~on_success
+  assert (Result.is_error failure);
+  [%test_eq: string list] [ "example"; "example" ] !invalidated;
+  let%map unknown =
+    Prune_request.handle ~applications ~prune ~on_started
       { Protocol.Prune.Query.application = "unknown" }
   in
   assert (Result.is_error unknown);
   [%test_eq: int] 1 (List.length !prune_calls);
-  Deferred.unit
+  [%test_eq: string list] [ "example"; "example" ] !invalidated
 
 let () = Thread_safe.block_on_async_exn run_tests

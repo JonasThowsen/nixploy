@@ -26,6 +26,7 @@ let run_tests () =
   in
   let deployed = ref [] in
   let pruned = ref [] in
+  let prune_error = ref None in
   let project = Nixploy.Project_name.of_string "example" |> assert_ok in
   let prune_target = Nixploy.Target_name.of_string "production" |> assert_ok in
   let prune_resource =
@@ -66,7 +67,9 @@ let run_tests () =
         Ok deployment)
       ~prune:(fun ~working_directory ~target ->
         pruned := (working_directory, target) :: !pruned;
-        Deferred.Or_error.return prune_result)
+        match !prune_error with
+        | None -> Deferred.Or_error.return prune_result
+        | Some error -> Deferred.return (Error error))
   in
   let target = prune_target in
   let stages = ref [] in
@@ -124,6 +127,14 @@ let run_tests () =
   [%test_eq: string list]
     [ "deployment-a"; "deployment-b" ]
     (List.rev !requested);
+  let%bind deployed_resources =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state]
+      (assert_ok deployed_resources)
+      Present);
   let%bind blocked_prune =
     Nixploy.Store.with_lease store ~working_directory:directory ~target
       (fun () ->
@@ -132,14 +143,57 @@ let run_tests () =
   in
   assert (Result.is_error blocked_prune);
   assert (List.is_empty !pruned);
-  let%map prune =
+  let%bind still_present =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state] (assert_ok still_present)
+      Present);
+  let store_commit =
+    Nixploy.Source.For_testing.commit ~revision:selected_revision
+      ~subject:"Interrupted deployment" ~timestamp_ms:2_000L
+    |> assert_ok
+  in
+  let%bind interrupted =
+    Nixploy.Store.request store ~application_key:(Some "example")
+      ~working_directory:directory ~target ~commit:store_commit
+  in
+  ignore (assert_ok interrupted : Nixploy.Store.deployment);
+  let%bind prune =
     Nixploy.Application.prune application ~working_directory:directory ~target
   in
   let prune = assert_ok prune in
   [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
   [%test_eq: int] 3 (Nixploy.Application.prune_secrets_removed prune);
+  let%bind absent =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert ([%equal: Nixploy.Application.resource_state] (assert_ok absent) Absent);
+  prune_error := Some (Error.of_string "cleanup stopped after one container");
+  let%bind failed_prune =
+    Nixploy.Application.prune application ~working_directory:directory ~target
+  in
+  assert (Result.is_error failed_prune);
+  let%bind unknown =
+    Nixploy.Application.resource_state application ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state] (assert_ok unknown) Unknown);
+  let%bind reopened =
+    Nixploy.Store.open_ ~path:(Filename.concat directory "state.sqlite")
+  in
+  let restarted = Nixploy.Application.create ~store:(assert_ok reopened) () in
+  let%map read_back =
+    Nixploy.Application.resource_state restarted ~working_directory:directory
+      ~target
+  in
+  assert (
+    [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Unknown);
   [%test_eq: (string * Nixploy.Target_name.t) list]
-    [ (directory, target) ]
+    [ (directory, target); (directory, target) ]
     (List.rev !pruned)
 
 let () =
