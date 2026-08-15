@@ -134,7 +134,9 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$*" in
   "system connection list --format json")
-    if [ "${NIXPLOY_TEST_LEGACY_CONNECTION:-}" = "1" ]; then
+    if [ "${NIXPLOY_TEST_WRONG_CONNECTION:-}" = "1" ]; then
+      printf '[{"Name":"%s","URI":"ssh://deployer@wrong.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_KEY"
+    elif [ "${NIXPLOY_TEST_LEGACY_CONNECTION:-}" = "1" ]; then
       printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_LEGACY_KEY"
     else
       printf '[]\n'
@@ -215,6 +217,7 @@ exit 99
       "NIXPLOY_TEST_WEB";
       "NIXPLOY_TEST_REMOTE_RESOURCE";
       "NIXPLOY_TEST_LEGACY_CONNECTION";
+      "NIXPLOY_TEST_WRONG_CONNECTION";
       "NIXPLOY_TEST_UNOWNED_BLUE";
       "NIXPLOY_TEST_FAIL_SECRET_LIST";
       "NIXPLOY_TEST_CADDY_MISSING";
@@ -342,6 +345,28 @@ exit 99
       let%bind unowned = prune () in
       expect_error_containing unowned "not owned";
       let lines = In_channel.read_lines trace in
+      assert (count lines "|rm|-f|" = 0);
+      assert (count lines "|secret|rm|" = 0);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_WRONG_CONNECTION" "1";
+      let%bind wrong_connection = prune () in
+      expect_error_containing wrong_connection
+        "exists but does not match the flake target";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "curl" = 0);
+      assert (count lines "|rm|-f|" = 0);
+      assert (count lines "|secret|rm|" = 0);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_CADDY_INSPECT_ERROR" "1";
+      let%bind caddy_preflight_failure = prune () in
+      expect_error_containing caddy_preflight_failure
+        "Caddy route read returned HTTP 500";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "'-X' 'DELETE'" = 0);
       assert (count lines "|rm|-f|" = 0);
       assert (count lines "|secret|rm|" = 0);
 
