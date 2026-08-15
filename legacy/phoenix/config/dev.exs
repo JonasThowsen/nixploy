@@ -84,12 +84,12 @@ config :nixploy, NixployWeb.Endpoint,
     web_console_logger: true,
     patterns: [
       # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
       # Gettext translations
-      ~r"priv/gettext/.*\.po$",
+      ~r"priv/gettext/.*\.po$"E,
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/nixploy_web/router\.ex$",
-      ~r"lib/nixploy_web/(controllers|live|components)/.*\.(ex|heex)$"
+      ~r"lib/nixploy_web/router\.ex$"E,
+      ~r"lib/nixploy_web/(controllers|live|components)/.*\.(ex|heex)$"E
     ]
   ]
 
