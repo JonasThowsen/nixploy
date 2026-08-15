@@ -12,7 +12,3 @@ anything under `legacy/`. Production code lives under `ocaml/` and `nix/`.
   evidence.
 - `moonbit/policy/` contains the retired deployment policy component.
 - `docs/` contains historical implementation plans and tracers.
-
-`config/dev.exs` remains temporarily at the repository root because it contains
-pre-existing uncommitted user work. It is the sole legacy archive overlap and
-must not be moved without explicit owner approval.
