@@ -4,6 +4,8 @@ nixploy is a small deployment CLI for shipping Nix-built OCI/Docker images to se
 
 The goal is to keep deployment configuration next to your app in `flake.nix`, so the same image can be deployed to multiple targets such as dev, staging, and production. nixploy builds the configured flake image output, loads it into remote Podman over SSH, starts the container, and can optionally manage Caddy blue/green HTTP routing.
 
+The active implementation is OCaml. Its application API is being made the single source of deployment behavior for both the CLI and Bonsai web UI, with the original user-facing C# CLI as the capability-parity reference. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the product boundary, OCaml module-design rules, parity definition, migration order, and legacy-code policy.
+
 ## What it does
 
 - evaluates `.#nixploy` from the current flake
@@ -110,8 +112,6 @@ nixploy deploy --target production
 nixploy deploy -t production
 ```
 
-For a non-web target, nixploy replaces the project-scoped container directly.
-
 For a `web` target, nixploy uses blue/green deployment:
 
 1. detects the active Caddy upstream port
@@ -120,21 +120,9 @@ For a `web` target, nixploy uses blue/green deployment:
 4. switches Caddy to the new slot
 5. stops the old slot
 
-## Prune a target
+## Parity work in progress
 
-Remove resources for the current project/target identity:
-
-```bash
-nixploy prune --target production
-```
-
-This removes:
-
-- project-scoped containers
-- project-scoped Podman secrets
-- the project-scoped Caddy route, for web targets
-
-It does not remove old legacy names or resources from other projects.
+The original C# CLI also supports direct non-web container replacement and scoped `prune`. Those capabilities are the first OCaml parity milestones and are not yet exposed by the default OCaml CLI. The implementation and documentation must land together; see [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Secrets
 
@@ -185,12 +173,14 @@ nix build .#nixploy
 nix develop . -c dune runtest --root ocaml
 ```
 
-## Historical Phoenix implementation
+## Legacy Phoenix implementation
 
-The Phoenix implementation remains in the repository as architectural history
-and for the legacy compatibility path. It is not the current production control
-plane or the source of future product scope. The development notes below apply
-only to that implementation.
+The Phoenix, C#, and MoonBit implementations are legacy. They remain temporarily
+because the existing NixOS service and Phoenix remote protocol still reference
+them; they are not sources of future product scope. After the OCaml application
+API and NixOS service cut over, they will move under `legacy/` and leave the
+active root package graph. The development notes below apply only to that
+transitional implementation.
 
 Enter the reproducible development environment and initialize Phoenix:
 
