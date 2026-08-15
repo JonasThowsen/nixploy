@@ -176,7 +176,8 @@ nix develop . -c dune runtest --root ocaml
 ## OCaml control plane
 
 The default `nixploy` CLI and the Bonsai browser control plane are implemented in
-OCaml and share the SQLite-backed tracked deployment path. See
+OCaml. Both deploy and scoped prune flow through the shared `Application` API;
+deployments also share the SQLite-backed tracked deployment path. See
 [`ocaml/README.md`](ocaml/README.md) for implementation details,
 [`ROADMAP.md`](ROADMAP.md) for the deliberately narrow product backlog, and
 [`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive operator-interface

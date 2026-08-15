@@ -1,7 +1,9 @@
 (library
  (name nixploy_rpc_mapping)
- (modules deployment_start)
- (libraries nixploy))
+ (modules deployment_start prune_request prune_response)
+ (libraries async core nixploy protocol)
+ (preprocess
+  (pps ppx_jane)))
 
 (executable
  (name main)

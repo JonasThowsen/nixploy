@@ -1,0 +1,12 @@
+open Async
+
+val handle :
+  applications:Nixploy.Managed_application.t list ->
+  store:Nixploy.Store.t ->
+  prune:
+    (working_directory:string ->
+    target:Nixploy.Target_name.t ->
+    Nixploy.Application.prune_result Deferred.Or_error.t) ->
+  on_success:(application_key:string -> unit) ->
+  Protocol.Prune.Query.t ->
+  Protocol.Prune_result.t Deferred.Or_error.t

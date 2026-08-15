@@ -25,6 +25,19 @@ for (const viewport of [
     }
 
     const application = page.locator(".application-card").first();
+    await application.getByRole("button", { name: "PRUNE RESOURCES" }).click();
+    const pruneConfirmation = application.getByLabel(/Confirm resource prune for/);
+    await expect(pruneConfirmation).toBeVisible();
+    await expect(
+      pruneConfirmation.getByText(/removes owned containers, scoped secrets, and the Caddy route/i),
+    ).toBeVisible();
+    await expect(pruneConfirmation.getByText(/causes downtime/i)).toBeVisible();
+    await expect(
+      pruneConfirmation.getByRole("button", { name: "CONFIRM PRUNE" }),
+    ).toBeVisible();
+    await pruneConfirmation.getByRole("button", { name: "KEEP RESOURCES" }).click();
+    await expect(pruneConfirmation).toBeHidden();
+
     await application.getByRole("button", { name: "PREVIEW MAIN" }).click();
     const confirmation = application.getByLabel("Confirm deployment commit");
     await expect(confirmation).toBeVisible({

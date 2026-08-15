@@ -503,6 +503,28 @@ let list_for_application t ~application_key ~working_directory ~target ~limit =
                     ];
                   collect db statement "list application deployments"))))
 
+let has_active_for_application t ~application_key ~working_directory ~target =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                "SELECT 1 FROM deployments WHERE (application_key = ? OR \
+                 (application_key IS NULL AND working_directory = ? AND target \
+                 = ?)) AND state IN ('requested', 'running') LIMIT 1"
+                ~f:(fun statement ->
+                  bind db statement
+                    [
+                      Sqlite3.Data.TEXT application_key;
+                      TEXT working_directory;
+                      TEXT (Target_name.to_string target);
+                    ];
+                  match Sqlite3.step statement with
+                  | ROW -> true
+                  | DONE -> false
+                  | code ->
+                      check db "check active application deployment" code;
+                      assert false))))
+
 let find t ~id =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->

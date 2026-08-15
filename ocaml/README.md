@@ -68,9 +68,11 @@ nixploy-web --port 8080
 
 It binds to loopback, reads the NixOS-owned
 `NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays the latest persisted
-deployment for each application, and sends deploy requests through the same
-`Tracked_deployment.deploy` path as the CLI. CLI and web mutations share a
-cross-process target lease rooted beside the SQLite state database.
+deployment for each application, and sends deploy and prune requests through
+the same shared `Application` operations as the CLI. CLI and web mutations share
+a cross-process target lease rooted beside the SQLite state database. Web prune
+is rejected while the selected application has an active deployment or
+cancellation.
 
 The operator surface now previews and confirms an exact Git commit, lists recent
 deployments, cancels active deployments cooperatively, searches and follows

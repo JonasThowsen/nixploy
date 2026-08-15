@@ -29,7 +29,7 @@
 (test
  (name consumer_mapping_test)
  (modules consumer_mapping_test)
- (libraries nixploy nixploy_cli_mapping nixploy_rpc_mapping core)
+ (libraries nixploy nixploy_cli_mapping nixploy_rpc_mapping protocol core)
  (preprocess
   (pps ppx_jane)))
 
@@ -37,6 +37,19 @@
  (name prune_test)
  (modules prune_test)
  (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name prune_request_test)
+ (modules prune_request_test)
+ (libraries
+  async
+  core
+  core_unix.command_unix
+  nixploy
+  nixploy_rpc_mapping
+  protocol)
  (preprocess
   (pps ppx_jane)))
 

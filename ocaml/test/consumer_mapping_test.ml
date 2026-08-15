@@ -2,6 +2,7 @@ open Core
 module Application = Nixploy.Application
 module Deployment_output = Nixploy_cli_mapping.Deployment_output
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
+module Prune_response = Nixploy_rpc_mapping.Prune_response
 
 let deployment state =
   Application.For_testing.deployment ~id:"operation-123" ~state
@@ -25,6 +26,31 @@ let () =
       (Deployment_output.terminal_state output)
       (Deployment_output.Failed (Some "candidate failed")));
   assert (String.equal "operation-123" (Deployment_start.operation_id failed));
+  let project = Nixploy.Project_name.of_string "example" |> Or_error.ok_exn in
+  let target = Nixploy.Target_name.of_string "production" |> Or_error.ok_exn in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target |> Or_error.ok_exn
+  in
+  let prune route =
+    Application.For_testing.prune_result ~project ~target ~resource_key
+      ~containers_removed:2 ~secrets_removed:3 ~route
+    |> Prune_response.of_application
+  in
+  let removed = prune Application.Removed in
+  assert (String.equal removed.project "example");
+  assert (String.equal removed.target "production");
+  assert (
+    String.equal removed.resource_key
+      (Nixploy.Resource_key.to_string resource_key));
+  assert (Int.equal removed.containers_removed 2);
+  assert (Int.equal removed.secrets_removed 3);
+  assert ([%equal: Protocol.Prune_result.Route.t] removed.route Removed);
+  assert (
+    [%equal: Protocol.Prune_result.Route.t] (prune Application.Missing).route
+      Missing);
+  assert (
+    [%equal: Protocol.Prune_result.Route.t]
+      (prune Application.Not_configured).route Not_configured);
   assert (
     [%equal: Deployment_output.terminal_state]
       (Deployment_output.of_deployment (deployment Application.Succeeded)

@@ -3,6 +3,7 @@ open! Async
 module Managed_application = Nixploy.Managed_application
 module Store = Nixploy.Store
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
+module Prune_request = Nixploy_rpc_mapping.Prune_request
 
 type cached_runtime = {
   mutable expires_at : Time_ns.t;
@@ -206,6 +207,14 @@ let deploy state _connection_state query =
                 | Error error -> Error error
                 | Ok deployment -> Ok (Deployment_start.operation_id deployment));
             ])
+
+let prune state _connection_state query =
+  Prune_request.handle ~applications:state.applications ~store:state.store
+    ~prune:(fun ~working_directory ~target ->
+      Nixploy.Application.prune state.application ~working_directory ~target)
+    ~on_success:(fun ~application_key ->
+      Hashtbl.remove state.runtime_cache application_key)
+    query
 
 let cancel_deployment state _connection_state query =
   let operation_id = query.Protocol.Cancel_deployment.Query.operation_id in
@@ -496,6 +505,7 @@ let implementations state =
         Rpc.Rpc.implement Protocol.Deploy.t (deploy state);
         Rpc.Rpc.implement Protocol.List_deployments.t (list_deployments state);
         Rpc.Rpc.implement Protocol.Cancel_deployment.t (cancel_deployment state);
+        Rpc.Rpc.implement Protocol.Prune.t (prune state);
         Rpc.Rpc.implement Protocol.Get_application_logs.t
           (get_application_logs state);
         Rpc.Rpc.implement Protocol.Get_metrics.t (get_metrics state);

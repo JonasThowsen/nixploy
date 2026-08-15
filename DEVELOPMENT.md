@@ -118,9 +118,9 @@ Add one scoped prune operation using the same resolved resource identity as depl
 
 **Acceptance:** web and non-web command traces prove that unrelated resources cannot be selected.
 
-### 4. Consumer cutover
+### 4. Consumer cutover (in progress)
 
-Make CLI and web use only `Application`. Keep argument parsing, rendering, authorization, and serialization at their respective edges.
+Make CLI and web use only `Application`. Keep argument parsing, rendering, authorization, and serialization at their respective edges. CLI and web deploy and scoped prune now use the shared `Application` operations; remaining runtime observation cutover stays within this milestone.
 
 **Acceptance:** direct adapter calls disappear from CLI/RPC handlers, and contract tests exercise the same application behavior through both surfaces.
 

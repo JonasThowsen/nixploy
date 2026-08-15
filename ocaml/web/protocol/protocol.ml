@@ -104,6 +104,35 @@ module Cancel_deployment = struct
       ~include_in_error_count:Or_error
 end
 
+module Prune_result = struct
+  module Route = struct
+    type t = Not_configured | Missing | Removed
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  type t = {
+    project : string;
+    target : string;
+    resource_key : string;
+    containers_removed : int;
+    secrets_removed : int;
+    route : Route.t;
+  }
+  [@@deriving bin_io, equal, sexp]
+end
+
+module Prune = struct
+  module Query = struct
+    type t = { application : string } [@@deriving bin_io, equal, sexp]
+  end
+
+  let t =
+    Rpc.Rpc.create ~name:"prune-application" ~version:0
+      ~bin_query:[%bin_type_class: Query.t]
+      ~bin_response:[%bin_type_class: Prune_result.t Or_error.t]
+      ~include_in_error_count:Or_error
+end
+
 module Log_line = struct
   type t = { timestamp : string option; text : string }
   [@@deriving bin_io, equal, sexp]

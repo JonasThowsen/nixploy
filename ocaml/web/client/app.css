@@ -246,6 +246,8 @@ dd { margin: 3px 0 0; font-weight: 800; overflow-wrap: anywhere; }
 .button-primary:hover:not(:disabled) { color: var(--ink); background: #f06a3e; }
 .button-danger { color: #fff; border-color: var(--danger); background: var(--danger); }
 .button-danger:hover:not(:disabled) { color: var(--danger); background: #f4d7d3; }
+.button-danger-outline { color: var(--danger); border-color: var(--danger); }
+.button-danger-outline:hover:not(:disabled) { color: #fff; background: var(--danger); }
 
 .confirmation, .cancel-confirmation {
   margin: 14px 0;
@@ -265,6 +267,8 @@ dd { margin: 3px 0 0; font-weight: 800; overflow-wrap: anywhere; }
 .confirmation code { overflow-wrap: anywhere; }
 .confirmation small { color: var(--muted); }
 .cancel-confirmation p { margin: 0 0 10px; overflow-wrap: anywhere; }
+.prune-confirmation { border-color: var(--danger); background: #f4d7d3; }
+.prune-confirmation p { margin: 3px 0 0; overflow-wrap: anywhere; }
 
 .deployment-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .deployment-row {
