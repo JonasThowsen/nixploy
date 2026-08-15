@@ -16,6 +16,7 @@ val switch :
   t -> previous:route -> candidate_port:int -> unit Deferred.Or_error.t
 
 val restore : t -> previous:route -> unit Deferred.Or_error.t
+val delete : t -> bool Deferred.Or_error.t
 val health_check : t -> port:int -> unit Deferred.Or_error.t
 val observe_health : t -> port:int -> bool Deferred.Or_error.t
 

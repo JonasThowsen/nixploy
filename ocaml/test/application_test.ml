@@ -20,6 +20,17 @@ let run_tests () =
     |> assert_ok
   in
   let deployed = ref [] in
+  let pruned = ref [] in
+  let project = Nixploy.Project_name.of_string "example" |> assert_ok in
+  let prune_target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let prune_resource =
+    Nixploy.Resource_key.derive ~project ~target:prune_target |> assert_ok
+  in
+  let prune_result =
+    Nixploy.Prune.For_testing.result ~project ~target:prune_target
+      ~resource_key:prune_resource ~containers_removed:2 ~secrets_removed:3
+      ~route:Nixploy.Prune.Removed
+  in
   let application =
     Nixploy.Application.For_testing.create
       ~preview_main:(fun ~working_directory ->
@@ -48,8 +59,11 @@ let run_tests () =
         let%map () = on_stage Nixploy.Deployment.Preparing_source revision in
         on_requested deployment;
         Ok deployment)
+      ~prune:(fun ~working_directory ~target ->
+        pruned := (working_directory, target) :: !pruned;
+        Deferred.Or_error.return prune_result)
   in
-  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let target = prune_target in
   let stages = ref [] in
   let requested = ref [] in
   let on_stage stage message =
@@ -83,7 +97,7 @@ let run_tests () =
   assert (
     String.equal selected_revision
       (Nixploy.Application.commit_revision resolved));
-  let%map rpc_result =
+  let%bind rpc_result =
     Nixploy.Application.deploy ~on_stage ~on_requested
       ~application_key:"example" application ~working_directory:"/srv/example"
       ~commit:resolved ~target ()
@@ -104,7 +118,17 @@ let run_tests () =
     (List.rev !stages);
   [%test_eq: string list]
     [ "deployment-a"; "deployment-b" ]
-    (List.rev !requested)
+    (List.rev !requested);
+  let%map prune =
+    Nixploy.Application.prune application ~working_directory:"/srv/example"
+      ~target
+  in
+  let prune = assert_ok prune in
+  [%test_eq: int] 2 (Nixploy.Prune.containers_removed prune);
+  [%test_eq: int] 3 (Nixploy.Prune.secrets_removed prune);
+  [%test_eq: (string * Nixploy.Target_name.t) list]
+    [ ("/srv/example", target) ]
+    (List.rev !pruned)
 
 let () =
   don't_wait_for

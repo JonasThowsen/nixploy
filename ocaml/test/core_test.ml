@@ -332,6 +332,37 @@ let%test_unit "non-web targets select exact single-container placement" =
     (Nixploy.Deployment_plan.container_name ~resource_key
        (Nixploy.Deployment_plan.placement plan))
 
+let%test_unit "prune derives only single blue and green container names" =
+  let project = Nixploy.Project_name.of_string "sample" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target |> assert_ok
+  in
+  let key = Nixploy.Resource_key.to_string resource_key in
+  let plan = Nixploy.Prune_plan.create ~resource_key in
+  [%test_eq: string list]
+    [ key; key ^ "-blue"; key ^ "-green" ]
+    (Nixploy.Prune_plan.container_names plan)
+
+let%test_unit "prune secret selection requires the resource key and hyphen" =
+  let project = Nixploy.Project_name.of_string "sample" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target |> assert_ok
+  in
+  let key = Nixploy.Resource_key.to_string resource_key in
+  let plan = Nixploy.Prune_plan.create ~resource_key in
+  [%test_eq: string list]
+    [ key ^ "-api"; key ^ "-database" ]
+    (Nixploy.Prune_plan.select_secret_names plan
+       [
+         key ^ "ish-api";
+         key;
+         key ^ "-database";
+         "unrelated-" ^ key ^ "-api";
+         key ^ "-api";
+       ])
+
 let%test_unit "modern ownership labels override contradictory legacy labels" =
   let configuration =
     Nixploy.Configuration.of_json
@@ -362,6 +393,10 @@ let%test_unit "modern ownership labels override contradictory legacy labels" =
          (sprintf
             {|{"io.nixploy.managed":"false","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","nixploy.project":"sample","nixploy.target":"worker"}|}
             (Nixploy.Resource_key.to_string resource_key))));
+  assert (
+    not
+      (owned
+         {|{"io.nixploy.project":"other","nixploy.project":"sample","nixploy.target":"worker"}|}));
   assert (owned {|{"nixploy.project":"sample","nixploy.target":"worker"}|})
 
 let%test_unit "non-web command construction preserves ordering and options" =

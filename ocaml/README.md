@@ -54,6 +54,12 @@ secret-backed pre-start commands, switched the exact Caddy route, independently
 verified the result, retired the previous slot, and preserved public health
 throughout.
 
+Scoped cleanup is available through `nixploy prune --target TARGET`. It evaluates
+the selected local flake through `Application`, adopts the same canonical or
+legacy resource identity as deployment, verifies exact container ownership,
+removes only resource-prefixed Podman secrets, and deletes the exact Caddy route
+for web targets. Non-web prune never contacts Caddy.
+
 The Bonsai control-plane tracer is served by the second packaged executable:
 
 ```console

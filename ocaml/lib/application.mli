@@ -8,7 +8,7 @@ type deployment
 type deployment_state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
 
-val create : store:Store.t -> t
+val create : ?store:Store.t -> unit -> t
 
 val preview_main_commit :
   t -> working_directory:string -> commit Deferred.Or_error.t
@@ -26,6 +26,12 @@ val deploy :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
+
+val prune :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  Prune.t Deferred.Or_error.t
 
 val commit_revision : commit -> string
 val commit_subject : commit -> string
@@ -53,6 +59,10 @@ module For_testing : sig
       target:Target_name.t ->
       unit ->
       deployment Deferred.Or_error.t) ->
+    prune:
+      (working_directory:string ->
+      target:Target_name.t ->
+      Prune.t Deferred.Or_error.t) ->
     t
 
   val commit :

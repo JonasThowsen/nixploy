@@ -568,7 +568,7 @@ let run ~port ~state_db =
   let state =
     {
       applications;
-      application = Nixploy.Application.create ~store;
+      application = Nixploy.Application.create ~store ();
       store;
       active = String.Table.create ();
       runtime_cache = String.Table.create ();

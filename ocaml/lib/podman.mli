@@ -88,6 +88,14 @@ val verify_candidate :
 val remove_candidate :
   connection:string -> candidate:candidate -> unit Deferred.Or_error.t
 
+val prune_owned_resources :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  plan:Prune_plan.t ->
+  (int * int) Deferred.Or_error.t
+
 val image_reference : image -> string
 val image_id : image -> string
 val candidate_name : candidate -> string

@@ -32,6 +32,10 @@ type t = {
     target:Target_name.t ->
     unit ->
     deployment Deferred.Or_error.t;
+  prune :
+    working_directory:string ->
+    target:Target_name.t ->
+    Prune.t Deferred.Or_error.t;
 }
 
 let no_stage _ _ = Deferred.unit
@@ -45,19 +49,28 @@ let deployment_of_store deployment =
     error = Store.error deployment;
   }
 
-let create ~store =
+let create ?store () =
+  let default_store = lazy (Store.open_ ~path:(State_path.default ())) in
+  let get_store () =
+    match store with
+    | Some store -> Deferred.Or_error.return store
+    | None -> Lazy.force default_store
+  in
   let deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
       ~target () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind store = get_store () in
     Tracked_deployment.deploy ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
       ?application_key ~store ~working_directory ~commit ~target ()
-    >>| Or_error.map ~f:deployment_of_store
+    >>| deployment_of_store
   in
   {
     preview_main = Source.preview_main;
     find_commit = Source.find_commit;
     deploy;
+    prune = Prune.prune;
   }
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
@@ -70,6 +83,7 @@ let deploy ?(on_stage = no_stage) ?(on_requested = Fn.ignore) ?application_key t
   t.deploy ~on_stage ~on_requested ~application_key ~working_directory ~commit
     ~target ()
 
+let prune t ~working_directory ~target = t.prune ~working_directory ~target
 let commit_revision = Source.commit_revision
 let commit_subject = Source.commit_subject
 let commit_timestamp_ms = Source.commit_timestamp_ms
@@ -81,8 +95,8 @@ let deployment_error deployment = deployment.error
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ~preview_main ~find_commit ~deploy =
-    { preview_main; find_commit; deploy }
+  let create ~preview_main ~find_commit ~deploy ~prune =
+    { preview_main; find_commit; deploy; prune }
 
   let commit = Source.For_testing.commit
 

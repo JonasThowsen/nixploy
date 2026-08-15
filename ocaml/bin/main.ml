@@ -67,6 +67,51 @@ let status_command =
                eprintf "Status failed: %s\n" (Error.to_string_hum error);
                Shutdown.exit 1))
 
+let print_prune_result result =
+  printf "Project:    %s\n"
+    (Nixploy.Prune.project result |> Nixploy.Project_name.to_string);
+  printf "Target:     %s\n"
+    (Nixploy.Prune.target result |> Nixploy.Target_name.to_string);
+  printf "Resource:   %s\n"
+    (Nixploy.Prune.resource_key result |> Nixploy.Resource_key.to_string);
+  printf "Containers: %d removed\n" (Nixploy.Prune.containers_removed result);
+  printf "Secrets:    %d removed\n" (Nixploy.Prune.secrets_removed result);
+  printf "Caddy route: %s\n"
+    (match Nixploy.Prune.route result with
+    | Not_configured -> "not configured"
+    | Missing -> "already absent"
+    | Removed -> "removed")
+
+let prune_command =
+  Async.Command.async ~summary:"Remove resources owned by one flake target"
+    (let%map_open.Command target =
+       flag "--target" (required string) ~aliases:[ "-t" ]
+         ~doc:"TARGET target declared by .#nixploy"
+     and working_directory =
+       flag "--directory"
+         (optional_with_default "." string)
+         ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     in
+     fun () ->
+       let open Deferred.Let_syntax in
+       Nixploy.Process_runner.handle_termination_signals ();
+       match Nixploy.Target_name.of_string target with
+       | Error error ->
+           eprintf "%s\n" (Error.to_string_hum error);
+           Shutdown.exit 2
+       | Ok target -> (
+           let application = Nixploy.Application.create () in
+           let%bind result =
+             Nixploy.Application.prune application ~working_directory ~target
+           in
+           match result with
+           | Ok result ->
+               print_prune_result result;
+               exit_after_signal ~default:(fun () -> Deferred.unit)
+           | Error error ->
+               eprintf "Prune failed: %s\n" (Error.to_string_hum error);
+               exit_after_signal ~default:(fun () -> Shutdown.exit 1)))
+
 let deploy_command =
   Async.Command.async
     ~summary:"Deploy the exact head of main to one flake target"
@@ -97,7 +142,7 @@ let deploy_command =
                  (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok store -> (
-               let application = Nixploy.Application.create ~store in
+               let application = Nixploy.Application.create ~store () in
                let%bind preview =
                  Nixploy.Application.preview_main_commit application
                    ~working_directory
@@ -149,7 +194,11 @@ let deploy_command =
                            Shutdown.exit 1)))))
 
 let command =
-  Command.group ~summary:"Deploy and inspect Nix-built applications"
-    [ ("deploy", deploy_command); ("status", status_command) ]
+  Command.group ~summary:"Deploy and manage Nix-built applications"
+    [
+      ("deploy", deploy_command);
+      ("prune", prune_command);
+      ("status", status_command);
+    ]
 
 let () = Command_unix.run ~version:"0.1.0-ocaml" command

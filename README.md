@@ -124,12 +124,21 @@ For a target without `web`, nixploy runs declared pre-start commands and then
 replaces the single positively owned application container. Non-web deployment
 does not contact Caddy.
 
-## Parity work in progress
+## Prune
 
-Scoped `prune` remains pending in the OCaml implementation. Until it lands,
-remote resource cleanup must be performed explicitly and with the same
-project/target ownership checks used by deployment; see
-[`DEVELOPMENT.md`](DEVELOPMENT.md).
+Remove the resources owned by one configured target:
+
+```bash
+nixploy prune --target production
+# or, from another flake directory
+nixploy prune -t production -C /srv/my-app
+```
+
+Prune resolves the same canonical or adopted legacy resource identity as deploy.
+It checks ownership before removing the exact single, blue, and green container
+names, removes only secrets prefixed by that resource key, and deletes the exact
+Caddy route for web targets. Targets without `web` never contact Caddy. A name
+collision with missing or contradictory ownership labels fails closed.
 
 ## Secrets
 

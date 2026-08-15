@@ -281,6 +281,9 @@ let label fields name =
   | Some (`String value) -> Some value
   | _ -> None
 
+let has_label fields name =
+  List.Assoc.find fields ~equal:String.equal name |> Option.is_some
+
 let owned_container output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
   let%bind json =
@@ -349,18 +352,26 @@ let owned_candidate_collision output ~project ~target ~resource_key =
           match List.Assoc.find config ~equal:String.equal "Labels" with
           | Some (`Assoc labels) ->
               let modern_managed = label labels "io.nixploy.managed" in
+              let modern_project = label labels "io.nixploy.project" in
+              let modern_target = label labels "io.nixploy.target" in
               let modern_resource = label labels "io.nixploy.resource_key" in
-              if Option.is_some modern_managed || Option.is_some modern_resource
+              if
+                List.exists
+                  [
+                    "io.nixploy.managed";
+                    "io.nixploy.project";
+                    "io.nixploy.target";
+                    "io.nixploy.resource_key";
+                  ]
+                  ~f:(has_label labels)
               then
                 Ok
                   (Option.equal String.equal modern_managed (Some "true")
                   && Option.equal String.equal modern_resource
                        (Some (Resource_key.to_string resource_key))
-                  && Option.equal String.equal
-                       (label labels "io.nixploy.project")
+                  && Option.equal String.equal modern_project
                        (Some (Project_name.to_string project))
-                  && Option.equal String.equal
-                       (label labels "io.nixploy.target")
+                  && Option.equal String.equal modern_target
                        (Some
                           (Configuration.Target.name target
                           |> Target_name.to_string)))
@@ -408,6 +419,101 @@ let remove_owned_placement ~connection ~project ~target ~resource_key ~placement
         (String.strip exists.stderr)
 
 let prepare_candidate = remove_owned_placement
+
+type prune_container = { prune_id : string }
+
+let secret_names_of_json output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  let secret_name = function
+    | `Assoc fields -> (
+        match List.Assoc.find fields ~equal:String.equal "Name" with
+        | Some (`String name) when not (String.is_empty name) -> Ok name
+        | _ -> (
+            match List.Assoc.find fields ~equal:String.equal "Spec" with
+            | Some (`Assoc spec) -> (
+                match List.Assoc.find spec ~equal:String.equal "Name" with
+                | Some (`String name) when not (String.is_empty name) -> Ok name
+                | _ -> Or_error.error_string "Podman secret is missing its name"
+                )
+            | _ -> Or_error.error_string "Podman secret is missing its name"))
+    | _ -> Or_error.error_string "Podman secret list entry must be an object"
+  in
+  match json with
+  | `List secrets -> Or_error.all (List.map secrets ~f:secret_name)
+  | _ -> Or_error.error_string "Podman secret list must be a JSON array"
+
+let inspect_prune_container ~connection ~project ~target ~resource_key name =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind exists =
+    run [ "--connection"; connection; "container"; "exists"; name ]
+  in
+  match exists.exit_status with
+  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return None
+  | Error failure ->
+      Deferred.Or_error.errorf "could not inspect prune container (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip exists.stderr)
+  | Ok () -> (
+      let%bind inspected = inspect_container ~connection name in
+      let%bind owned =
+        Deferred.return
+          (owned_candidate_collision inspected.stdout ~project ~target
+             ~resource_key)
+      in
+      if not owned then
+        Deferred.Or_error.errorf
+          "container %s exists but is not owned by this target" name
+      else
+        let%bind json =
+          Deferred.return
+            (Or_error.try_with (fun () ->
+                 Yojson.Safe.from_string inspected.stdout))
+        in
+        match json with
+        | `List [ `Assoc fields ] -> (
+            match List.Assoc.find fields ~equal:String.equal "Id" with
+            | Some (`String id) when not (String.is_empty id) ->
+                Deferred.Or_error.return (Some { prune_id = id })
+            | _ ->
+                Deferred.Or_error.errorf
+                  "container %s inspect did not contain an ID" name)
+        | _ ->
+            Deferred.Or_error.errorf
+              "container %s inspect must contain exactly one container" name)
+
+let prune_owned_resources ~connection ~project ~target ~resource_key ~plan =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind containers =
+    Deferred.Or_error.List.filter_map
+      (Prune_plan.container_names plan)
+      ~how:`Sequential
+      ~f:(inspect_prune_container ~connection ~project ~target ~resource_key)
+  in
+  let%bind listed =
+    run_ok [ "--connection"; connection; "secret"; "ls"; "--format"; "json" ]
+  in
+  let%bind all_secret_names =
+    Deferred.return (secret_names_of_json listed.stdout)
+  in
+  let secret_names = Prune_plan.select_secret_names plan all_secret_names in
+  let%bind () =
+    Deferred.Or_error.List.iter containers ~how:`Sequential ~f:(fun container ->
+        let%map _ =
+          run_ok [ "--connection"; connection; "rm"; "-f"; container.prune_id ]
+        in
+        ())
+  in
+  let%map () =
+    Deferred.Or_error.List.iter secret_names ~how:`Sequential ~f:(fun name ->
+        let%map _ =
+          run_ok [ "--connection"; connection; "secret"; "rm"; name ]
+        in
+        ())
+  in
+  (List.length containers, List.length secret_names)
 
 let find_owned_slot ~connection ~project ~target ~resource_key ~slot =
   let open Deferred.Or_error.Let_syntax in

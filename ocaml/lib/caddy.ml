@@ -289,17 +289,21 @@ let delete_route ?ignore_termination t =
   let%bind response =
     request ?ignore_termination t ~meth:"DELETE" ~path:("/id/" ^ t.route_id)
   in
-  if List.mem [ 200; 204; 404 ] response.status ~equal:Int.equal then
-    Deferred.Or_error.return ()
-  else
-    Deferred.Or_error.errorf "Caddy route deletion returned HTTP %d"
-      response.status
+  match response.status with
+  | 200 | 204 -> Deferred.Or_error.return true
+  | 404 -> Deferred.Or_error.return false
+  | status ->
+      Deferred.Or_error.errorf "Caddy route deletion returned HTTP %d" status
+
+let delete t = delete_route t
 
 let restore t ~previous =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
     match previous with
-    | Missing -> delete_route ~ignore_termination:true t
+    | Missing ->
+        let%map _ = delete_route ~ignore_termination:true t in
+        ()
     | Existing { active_port } ->
         let%bind response =
           request ~ignore_termination:true

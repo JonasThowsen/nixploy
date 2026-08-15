@@ -28,6 +28,13 @@
   (pps ppx_jane)))
 
 (test
+ (name prune_test)
+ (modules prune_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name process_runner_test)
  (modules process_runner_test)
  (libraries nixploy core core_unix.command_unix async)

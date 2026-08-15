@@ -3,6 +3,7 @@ obj/
 !/ocaml/bin/
 !/ocaml/bin/**
 .direnv/
+/.pi-subagents/
 result
 result-*
 *.user
