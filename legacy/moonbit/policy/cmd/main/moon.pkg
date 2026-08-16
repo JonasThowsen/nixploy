@@ -1,0 +1,9 @@
+options(
+  link: {
+    "wasm": {
+      "exports": ["decide"],
+    },
+  },
+)
+
+pkgtype(kind: "executable")

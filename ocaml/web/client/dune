@@ -1,0 +1,19 @@
+(library
+ (name nixploy_web_client_state)
+ (modules deploy_state prune_state)
+ (libraries core)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name main)
+ (modes js)
+ (modules app main)
+ (libraries
+  async_js
+  async_kernel
+  bonsai.web
+  nixploy_web_client_state
+  protocol)
+ (preprocess
+  (pps bonsai.ppx_bonsai js_of_ocaml-ppx ppx_jane)))

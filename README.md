@@ -4,6 +4,8 @@ nixploy is a small deployment CLI for shipping Nix-built OCI/Docker images to se
 
 The goal is to keep deployment configuration next to your app in `flake.nix`, so the same image can be deployed to multiple targets such as dev, staging, and production. nixploy builds the configured flake image output, loads it into remote Podman over SSH, starts the container, and can optionally manage Caddy blue/green HTTP routing.
 
+The active implementation is OCaml. Its application API is the single source of deployment behavior for both the CLI and Bonsai web UI, with the original user-facing C# CLI retained only as a capability-parity reference under [`legacy/`](legacy/README.md). See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the product boundary, OCaml module-design rules, and delivery milestones.
+
 ## What it does
 
 - evaluates `.#nixploy` from the current flake
@@ -12,6 +14,7 @@ The goal is to keep deployment configuration next to your app in `flake.nix`, so
 - loads the image into remote Podman
 - installs SOPS dotenv secrets as Podman secrets
 - runs optional pre-start commands, such as migrations
+- mounts typed existing host paths read-only in pre-start and application containers
 - starts the long-running application container
 - optionally switches a Caddy route after a health check
 - scopes remote resources by project and target to avoid name conflicts
@@ -116,8 +119,6 @@ nixploy deploy --target production
 nixploy deploy -t production
 ```
 
-For a non-web target, nixploy replaces the project-scoped container directly.
-
 For a `web` target, nixploy uses blue/green deployment:
 
 1. detects the active Caddy upstream port
@@ -126,25 +127,29 @@ For a `web` target, nixploy uses blue/green deployment:
 4. switches Caddy to the new slot
 5. stops the old slot
 
-## Prune a target
+For a target without `web`, nixploy runs declared pre-start commands and then
+replaces the single positively owned application container. Non-web deployment
+does not contact Caddy.
 
-Remove resources for the current project/target identity:
+## Prune
+
+Remove the resources owned by one configured target:
 
 ```bash
 nixploy prune --target production
+# or, from another flake directory
+nixploy prune -t production -C /srv/my-app
 ```
 
-This removes:
-
-- project-scoped containers
-- project-scoped Podman secrets
-- the project-scoped Caddy route, for web targets
-
-It does not remove old legacy names or resources from other projects.
+Prune resolves the same canonical or adopted legacy resource identity as deploy.
+It checks ownership before removing the exact single, blue, and green container
+names, removes only secrets prefixed by that resource key, and deletes the exact
+Caddy route for web targets. Targets without `web` never contact Caddy. A name
+collision with missing or contradictory ownership labels fails closed.
 
 ## Secrets
 
-Secrets are local SOPS-encrypted dotenv files. At deploy time nixploy decrypts them locally, creates remote Podman secrets, and exposes each variable as an environment secret in the container. The members of the `secrets` object are intentionally arbitrary user-defined labels whose values must be file path strings; they are map keys, not extensible schema fields.
+Secrets are local SOPS-encrypted dotenv files. At deploy time nixploy decrypts them locally, creates remote Podman secrets, and exposes each variable as an environment secret in the container.
 
 Example dotenv after decryption:
 
@@ -157,17 +162,62 @@ Secret names must be unique across all configured secret files for a target.
 
 ## Read-only bind mounts
 
-Use `run.readOnlyBinds` to expose an existing directory or file from the remote
-host to every pre-start and application container. Each bind is always rendered
-as a read-only Podman bind mount; writable mode and arbitrary mount options are
-not configurable.
+Schema `v0.4` adds the typed `run.readOnlyBinds` list. Each entry contains only
+`source` and `destination`; nixploy always renders it as the two shell-free
+Podman arguments:
 
-Both paths must be non-root, absolute, lexically normalized Unix paths. The
-source is a path on the remote deployment host, so nixploy validates its syntax
-without requiring it to exist on the local machine. This lexical check rejects
-empty, dot, and dot-dot segments, but does not resolve symlinks in either the
-host source or container destination; symlink resolution is left to the remote
-container runtime. Destinations must be unique.
+```text
+--mount type=bind,source=/srv/my-app/reference-data,destination=/app/reference-data,ro=true
+```
+
+The same ordered bind arguments are applied to every pre-start container and
+the long-running application container. Writable mode, raw Podman arguments,
+and arbitrary mount options are intentionally unavailable.
+
+Both values must be non-root absolute normalized Unix paths. Empty, relative,
+trailing-slash, repeated-slash, dot, dot-dot, comma, and control-character paths
+are rejected, as are unknown bind fields, identical source/destination pairs,
+and duplicate destinations. Before building or running deployment containers,
+nixploy checks each source on the remote host with the configured SSH identity.
+A missing or inaccessible source fails the deployment; nixploy never creates
+it. Paths are checked lexically and remote symlink resolution remains the
+remote runtime's responsibility.
+
+The OCaml parser continues to accept schemas `v0.2` and `v0.3` for deployments
+without this field. Supplying `readOnlyBinds` under either older schema is an
+error rather than a silently ignored mount requirement.
+
+## Updating an older nixploy input
+
+Existing project configuration for deploy, prune, web/non-web targets, runtime
+environment, ports, pre-start commands, secrets, and read-only binds remains
+source-compatible. Updating the input automatically evaluates that configuration
+as schema `v0.4`; the package outputs remain `packages.default` and
+`packages.nixploy`, and `nixployModules.default` remains available.
+
+If the input URL already follows the default branch, update normally:
+
+```bash
+nix flake lock --update-input nixploy
+nix eval .#nixploy --json | jq -e '.__schema == "v0.4"'
+nix flake check
+```
+
+A URL pinned to a migration branch, such as
+`github:JonasThowsen/nixploy/rewrite/control-plane`, stays on that branch when
+only its lock is updated. Change it to `github:JonasThowsen/nixploy` first, then
+run the commands above to move back to `main`.
+
+Remove any `tasks` declaration before updating. Named operational tasks belonged
+to a retired control-plane experiment and were never executed by the supported
+CLI; schema `v0.4` rejects them instead of silently accepting dead configuration.
+Older schema `v0.3` output containing the historical default `tasks = { }` is
+accepted by the new CLI, but non-empty task declarations fail explicitly.
+
+Project checks that intentionally pin `nixploy.lib.schema`, `config.__schema`, or
+the exact `flake.lock` revision must update those assertions to `v0.4` and the
+new lock revision. These assertions are expected coordination guards rather than
+runtime compatibility contracts.
 
 ## Useful commands
 
@@ -183,8 +233,113 @@ Build the image manually:
 nix build .#docker -o result-nixploy-image
 ```
 
-Run tests for nixploy itself:
+Run tests for the current OCaml CLI and control plane:
 
 ```bash
-dotnet test tests/Nixploy.Tests/Nixploy.Tests.csproj
+nix develop . -c dune runtest --root ocaml
 ```
+
+## OCaml control plane
+
+The default `nixploy` CLI and the Bonsai browser control plane are implemented in
+OCaml. Both deploy and scoped prune flow through the shared `Application` API;
+deployments also share the SQLite-backed tracked deployment path. Resource
+presence is stored separately: deploy success is present, completed prune is
+absent, and prune in progress or failed is unknown, without deleting historical
+deployment outcomes. See
+[`ocaml/README.md`](ocaml/README.md) for implementation details,
+[`ROADMAP.md`](ROADMAP.md) for the deliberately narrow product backlog, and
+[`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive operator-interface
+requirements.
+
+Build and test the packaged implementation through Nix:
+
+```bash
+nix build .#nixploy
+nix develop . -c dune runtest --root ocaml
+```
+
+## NixOS service
+
+The default NixOS module runs the packaged OCaml `nixploy-web` executable as one
+`nixploy.service`. It listens only on `127.0.0.1`, stores its SQLite database and
+Podman connection configuration beneath `/var/lib/nixploy`, and uses one
+long-lived `nixploy` Unix identity. A reverse proxy such as Tailscale Serve can
+publish the loopback endpoint.
+
+```nix
+{
+  imports = [ inputs.nixploy.nixosModules.default ];
+
+  services.nixploy = {
+    enable = true;
+    port = 8080;
+
+    authMode = "tailscale";
+    operatorEmail = "operator@example.com";
+    # Set only when the browser's public origin differs from the forwarded Host.
+    allowedOrigin = "https://nixploy.example.com";
+
+    applications.my-app = {
+      project = "my-app";
+      target = "production";
+      repository = "/srv/nixploy/my-app";
+      repositoryIdentity = "owner/my-app";
+      subdirectory = ".";
+    };
+
+    sshIdentityFile = "/run/keys/nixploy-ssh";
+    sshKnownHostsFile = "/run/keys/nixploy-known-hosts";
+    sopsAgeKeyFile = "/run/keys/nixploy.age";
+  };
+}
+```
+
+`repository` must be an absolute existing local Git checkout readable by the
+service user. The module passes only the fields accepted by OCaml
+`Managed_application`: `project`, `target`, `repository`,
+`repositoryIdentity`, and relative `subdirectory`. Credential options use
+systemd credentials and set the actual OCaml SSH/SOPS environment names.
+`readOnlyPaths` can expose additional Git credential-helper configuration while
+Unix ownership and file modes remain the access boundary. `environmentFile` is
+optional and is intended only for additional process environment. A generated
+start wrapper reapplies module-owned authentication, origin, application, and
+credential variables after systemd loads that file, so it cannot override those
+security boundaries.
+
+For a deliberately trusted local-only installation, set
+`authMode = "unrestricted"`. Tailscale mode requires `operatorEmail` and should
+sit behind a proxy that removes untrusted client-supplied identity headers. The
+health endpoint is `GET /healthz`.
+
+`services.nixploy-control-plane` is a rename alias for `services.nixploy` to
+make the namespace transition explicit. It does not restore the removed
+Phoenix roles, workers, PostgreSQL, Ecto migrations, release registration, or
+backup options.
+
+### Migration fence
+
+Treat the service replacement as an engine cutover, not a rolling upgrade:
+
+1. Stop and disable every old Phoenix web and worker process before starting
+   `nixploy.service`. Never overlap old and OCaml deployment engines, including
+   during rollback.
+2. Preserve the existing long-lived `nixploy` Unix identity, repository
+   checkouts, SSH host verification material, deploy keys, SOPS age identities,
+   and access modes. Point the new module options at those same assets.
+3. Start the OCaml service and verify `systemctl is-active nixploy`,
+   `curl http://127.0.0.1:8080/healthz`, and the operator UI before enabling the
+   public proxy.
+
+The new SQLite history starts at `/var/lib/nixploy/state.sqlite3`. Historical
+Phoenix/PostgreSQL deployment rows are not migrated. Existing remote Podman,
+secret, and Caddy ownership identities are preserved by the OCaml application
+engine rather than copied from PostgreSQL.
+
+## Legacy archive
+
+The retired Phoenix, C#, and MoonBit implementations and historical rewrite
+notes are preserved under [`legacy/`](legacy/README.md) for reference only. The
+root flake does not package, check, or depend on the archive. Its only package
+outputs are `packages.nixploy` and `packages.default`, both containing the active
+OCaml CLI and web service.

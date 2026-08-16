@@ -1,0 +1,14 @@
+(library
+ (name nixploy_cli_mapping)
+ (modules deployment_output inspection_output)
+ (libraries nixploy core)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name main)
+ (public_name nixploy)
+ (modules main)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))

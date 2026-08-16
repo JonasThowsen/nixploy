@@ -1,0 +1,323 @@
+<Layouts.app flash={@flash} current_operator={@current_operator} current_path="/releases">
+  <% input = @deployment_input %>
+  <% snapshot = input.derived_snapshot || %{} %>
+  <% target = snapshot["target"] || %{} %>
+  <% slots = target["slots"] || %{} %>
+  <% pre_start = get_in(target, ["run", "pre_start"]) || [] %>
+  <% credential_references = target["credential_references"] || %{} %>
+  <% latest_attempt = latest_attempt(@native_deployments) %>
+
+  <main id="deployment-input-detail" class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden">
+    <header class="space-y-5 border-b border-base-300 pb-6">
+      <.link navigate={~p"/releases"} class="btn btn-ghost btn-sm -ml-3 gap-2">
+        <.icon name="hero-arrow-left" class="size-4" /> Deploy
+      </.link>
+
+      <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="np-kicker">
+              {if input.state == :staging, do: "Preparing main", else: "Immutable release"}
+            </p>
+            <span class={["badge badge-sm", input_state_class(input.state)]}>
+              {if input.state == :staged, do: "ready", else: input.state}
+            </span>
+            <span
+              :if={input.registration_channel == :ci}
+              class="badge badge-info badge-outline badge-sm"
+            >
+              CI registered
+            </span>
+          </div>
+          <h1 class="mt-2 break-words text-3xl font-semibold tracking-[-0.035em] sm:text-5xl">
+            {snapshot["project"] || input.application_key || "Release validation failed"}
+          </h1>
+          <p class="mt-2 text-sm text-base-content/55">
+            {input.selected_target || "Unknown environment"} · registered {format_time(
+              input.inserted_at
+            )}
+          </p>
+        </div>
+        <.button
+          :if={input.state == :staged}
+          id="deploy-native-input"
+          phx-click="deploy_native"
+          class="btn-primary min-h-11 w-full sm:w-auto"
+          data-confirm={
+            cond do
+              map_size(credential_references) > 0 and pre_start != [] ->
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{map_size(credential_references)} credential file(s) and #{length(pre_start)} preparation action(s) will be applied before it receives traffic."
+
+              map_size(credential_references) > 0 ->
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{map_size(credential_references)} credential file(s) will be resolved by the worker."
+
+              pre_start != [] ->
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? #{length(pre_start)} preparation action(s) will run before it receives traffic."
+
+              true ->
+                "Deploy commit #{short_revision(input.source_revision)} to #{input.selected_target}? The current version stays live until health checks pass."
+            end
+          }
+        >
+          {deploy_button_label(input)}
+        </.button>
+      </div>
+    </header>
+
+    <section
+      :if={input.state == :staging}
+      id="main-preparation-progress"
+      class="np-panel overflow-hidden"
+    >
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Preparing immutable release</h2>
+          <p class="np-panel-description">
+            The worker resolves main once, then evaluates only that exact source.
+          </p>
+        </div>
+        <span class="loading loading-spinner loading-sm"></span>
+      </div>
+      <ol class="divide-y divide-base-300">
+        <li :for={event <- @preparation_events} class="px-4 py-3 sm:px-5">
+          <p class="text-sm font-medium">{event.message}</p>
+          <p class="mt-1 font-mono text-xs text-base-content/45">
+            {event.stage} · {format_time(event.inserted_at)}
+          </p>
+        </li>
+      </ol>
+    </section>
+
+    <section
+      :if={input.failure}
+      id="deployment-input-failure"
+      class="alert alert-error items-start"
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">This release is not deployable</p>
+        <p class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
+          {input.failure["message"]}
+        </p>
+      </div>
+    </section>
+
+    <section :if={input.state == :staged} class="grid gap-4 md:grid-cols-3">
+      <article class="np-stat">
+        <p class="np-stat-label">Environment</p>
+        <p id="deployment-input-target" class="np-stat-value">{input.selected_target}</p>
+        <p class="np-stat-meta">deployment destination</p>
+      </article>
+      <article class="np-stat">
+        <p class="np-stat-label">Public address</p>
+        <p id="deployment-input-domain" class="np-stat-value truncate">
+          {target["domain"] || "Not exposed"}
+        </p>
+        <p class="np-stat-meta">health at {target["health_path"]}</p>
+      </article>
+      <article class="np-stat">
+        <p class="np-stat-label">Preparation</p>
+        <p class="np-stat-value">
+          {length(pre_start)} actions · {map_size(credential_references)} credentials
+        </p>
+        <p class="np-stat-meta">resolved only by the deployment worker</p>
+      </article>
+    </section>
+
+    <section :if={input.state == :staged} class="np-panel overflow-hidden">
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Safe remote deployment plan</h2>
+          <p class="np-panel-description">
+            Exact commit {short_revision(input.source_revision)} through named connection <span class="font-mono">{Nixploy.Deployments.ResourceIdentity.derive!(snapshot["project"], input.selected_target)}</span>.
+          </p>
+        </div>
+      </div>
+      <ol class="grid gap-px bg-base-300 sm:grid-cols-2 lg:grid-cols-4">
+        <li class="bg-base-100 p-4">
+          <span class="np-step-number">1</span><strong class="mt-3 block text-sm">Prepare</strong>
+          <p class="mt-1 text-xs text-base-content/50">
+            Build the release and prepare the inactive slot.
+          </p>
+        </li>
+        <li class="bg-base-100 p-4">
+          <span class="np-step-number">2</span><strong class="mt-3 block text-sm">Configure</strong>
+          <p class="mt-1 text-xs text-base-content/50">
+            Apply worker-only credentials and preparation actions.
+          </p>
+        </li>
+        <li class="bg-base-100 p-4">
+          <span class="np-step-number">3</span><strong class="mt-3 block text-sm">Verify</strong>
+          <p class="mt-1 text-xs text-base-content/50">
+            Start the candidate and check {target["health_path"]}.
+          </p>
+        </li>
+        <li class="bg-base-100 p-4">
+          <span class="np-step-number">4</span><strong class="mt-3 block text-sm">Switch</strong>
+          <p class="mt-1 text-xs text-base-content/50">
+            Send traffic only after independent verification.
+          </p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="native-deployment-history" class="np-panel overflow-hidden">
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Deployment history</h2>
+          <p class="np-panel-description">Every attempt made with this release.</p>
+        </div>
+        <span class="font-mono text-xs text-base-content/45">
+          {length(@native_deployments)} attempts
+        </span>
+      </div>
+      <div :if={@native_deployments == []} class="np-empty">
+        This release has not been deployed.
+      </div>
+      <div class="divide-y divide-base-300">
+        <article
+          :for={deployment <- @native_deployments}
+          id={"native-deployment-#{deployment.id}"}
+          class="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+        >
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class={["badge badge-sm", native_state_class(deployment.state)]}>
+                {deployment.state}
+              </span>
+              <strong class="text-sm">
+                {if deployment.operation_kind == :rollback, do: "Rollback", else: "Deployment"}
+              </strong>
+              <span class="text-xs text-base-content/45">
+                {format_time(deployment.inserted_at)}
+              </span>
+            </div>
+            <p :if={deployment.failure} class="mt-2 line-clamp-2 break-words text-sm text-error">
+              {deployment.failure["message"]}
+            </p>
+          </div>
+          <.link
+            navigate={~p"/deployments/#{deployment.id}"}
+            class="btn btn-outline btn-sm min-h-10"
+          >
+            View details
+          </.link>
+        </article>
+      </div>
+    </section>
+
+    <details class="np-technical-details">
+      <summary>Technical release evidence</summary>
+      <p class="mt-2 text-xs text-base-content/50">
+        Immutable identifiers retained for audit and exact rollback.
+      </p>
+      <dl class="mt-4 grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2">
+        <div :if={input.source_repository} class="np-data-cell">
+          <dt>Repository</dt>
+          <dd class="break-all font-mono text-xs">{input.source_repository}</dd>
+        </div>
+        <div :if={input.source_ref} class="np-data-cell">
+          <dt>Source ref</dt>
+          <dd class="break-all font-mono text-xs">{input.source_ref}</dd>
+        </div>
+        <div :if={input.source_revision} class="np-data-cell sm:col-span-2">
+          <dt>Git commit</dt>
+          <dd id="deployment-input-source-revision" class="break-all font-mono text-xs">
+            {input.source_revision}
+          </dd>
+          <p :if={input.commit_subject} class="mt-2 text-sm">{input.commit_subject}</p>
+          <p :if={input.commit_timestamp} class="mt-1 text-xs text-base-content/45">
+            Committed {format_time(input.commit_timestamp)}
+          </p>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Source store path</dt>
+          <dd id="deployment-input-store-path" class="break-all font-mono text-xs">
+            {input.store_path}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Source NAR hash</dt>
+          <dd id="deployment-input-nar-hash" class="break-all font-mono text-xs">
+            {input.nar_hash || "Not verified"}
+          </dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Project</dt>
+          <dd id="deployment-input-project">{snapshot["project"]}</dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Health endpoint</dt>
+          <dd id="deployment-input-health" class="font-mono">{target["health_path"]}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Image output</dt>
+          <dd id="deployment-input-image" class="break-all font-mono text-xs">
+            {target["image_output"]}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Image store path</dt>
+          <dd id="deployment-input-image-store-path" class="break-all font-mono text-xs">
+            {if latest_attempt && latest_attempt.image_store_path,
+              do: latest_attempt.image_store_path,
+              else: "Not built yet"}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>OCI image ID</dt>
+          <dd id="deployment-input-oci-image-id" class="break-all font-mono text-xs">
+            {if latest_attempt && latest_attempt.image_id,
+              do: latest_attempt.image_id,
+              else: "Not built yet"}
+          </dd>
+        </div>
+        <div
+          :if={is_binary(snapshot["project"]) and is_binary(input.selected_target)}
+          class="np-data-cell sm:col-span-2"
+        >
+          <dt>Canonical remote resource key</dt>
+          <dd id="deployment-input-resource-key" class="break-all font-mono text-xs">
+            {Nixploy.Deployments.ResourceIdentity.derive!(
+              snapshot["project"],
+              input.selected_target
+            )}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Configuration digest</dt>
+          <dd id="deployment-input-digest" class="break-all font-mono text-xs">
+            {input.configuration_digest}
+          </dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Blue slot</dt>
+          <dd>{slots["blue"]}</dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Green slot</dt>
+          <dd>{slots["green"]}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Registered by</dt>
+          <dd id="deployment-input-actor" class="break-all">
+            {input.requested_by_operator.email}
+          </dd>
+        </div>
+      </dl>
+    </details>
+
+    <div
+      id="staging-no-mutation"
+      class="flex gap-3 rounded-box border border-success/25 bg-success/5 p-4 text-sm"
+    >
+      <.icon name="hero-shield-check" class="size-5 shrink-0 text-success" />
+      <div>
+        <p class="font-semibold">Safe to review</p>
+        <p class="mt-1 text-base-content/60">
+          Registering this release did not start a deployment or change the running application.
+        </p>
+      </div>
+    </div>
+  </main>
+</Layouts.app>

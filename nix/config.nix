@@ -1,7 +1,7 @@
 { lib, targetModule }:
 
 let
-  schema = "v0.3";
+  schema = "v0.4";
 
   configModule =
     { ... }:
@@ -24,10 +24,14 @@ in
 {
   inherit schema;
 
-  makeConfig = config:
+  makeConfig =
+    config:
     let
       evaluated = lib.evalModules {
-        modules = [ configModule config ];
+        modules = [
+          configModule
+          config
+        ];
       };
     in
     evaluated.config

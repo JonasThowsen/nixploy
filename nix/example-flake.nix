@@ -6,11 +6,18 @@
     nixploy.url = "path:..";
   };
 
-  outputs = { self, nixploy, nixpkgs, ... }:
+  outputs =
+    {
+      self,
+      nixploy,
+      nixpkgs,
+      ...
+    }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
-    in {
+    in
+    {
       nixploy = nixploy.lib.makeConfig {
         project = "example-app";
 

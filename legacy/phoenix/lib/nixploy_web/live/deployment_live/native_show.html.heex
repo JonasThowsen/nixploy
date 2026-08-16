@@ -1,0 +1,404 @@
+<Layouts.app flash={@flash} current_operator={@current_operator} current_path="/deployments">
+  <% deployment = @deployment %>
+  <% input = deployment.deployment_input %>
+  <% target = input.derived_snapshot["target"] || %{} %>
+  <% tasks = target["tasks"] || %{} %>
+
+  <main
+    id="native-deployment-detail"
+    class="mx-auto min-w-0 max-w-5xl space-y-6 overflow-x-hidden"
+  >
+    <header class="space-y-5 border-b border-base-300 pb-6">
+      <.link navigate={~p"/deployments"} class="btn btn-ghost btn-sm -ml-3 gap-2">
+        <.icon name="hero-arrow-left" class="size-4" /> Deployments
+      </.link>
+
+      <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="np-kicker">
+              {if deployment.operation_kind == :rollback, do: "Rollback", else: "Deployment"}
+            </p>
+            <span class={["badge badge-sm", state_class(deployment.state)]}>
+              {deployment.state}
+            </span>
+          </div>
+          <h1 class="mt-2 break-words text-3xl font-semibold tracking-[-0.035em] sm:text-5xl">
+            {deployment.project}
+          </h1>
+          <p class="mt-2 text-sm text-base-content/55">
+            {deployment.target} · requested {format_time(deployment.inserted_at)}
+          </p>
+        </div>
+        <div class="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
+          <.button
+            :if={deployment.resource_prefix && deployment.image_id && deployment.container_name}
+            id="refresh-remote-status"
+            phx-click="refresh_remote_status"
+            class="btn-outline btn-sm min-h-11 w-full sm:w-auto"
+          >
+            Refresh remote status
+          </.button>
+          <.button
+            :if={deployment.state in [:failed, :cancelled]}
+            id="retry-native-deployment"
+            phx-click="retry_native_deployment"
+            class="btn-primary btn-sm min-h-11 w-full sm:w-auto"
+            data-confirm="Retry this exact immutable release and target plan?"
+          >
+            Retry exact release
+          </.button>
+          <.button
+            :if={@rollback_status == :available}
+            id="rollback-native-deployment"
+            phx-click="rollback_native_deployment"
+            class="btn-error btn-sm min-h-11 w-full sm:w-auto"
+            data-confirm="Roll back production to this verified release? The current application stays live until the rollback passes health checks."
+          >
+            Roll back to this release
+          </.button>
+          <.button
+            :if={not terminal?(deployment) and is_nil(deployment.cancellation_requested_at)}
+            id="cancel-native-deployment"
+            phx-click="cancel_native_deployment"
+            class="btn-warning btn-sm min-h-11 w-full sm:w-auto"
+            data-confirm="Cancel this deployment? The currently healthy version will remain routed."
+          >
+            Cancel deployment
+          </.button>
+        </div>
+      </div>
+    </header>
+
+    <section
+      :if={deployment.operation_kind == :rollback}
+      id="native-rollback-identity"
+      class="alert items-start border border-warning/30 bg-warning/10"
+    >
+      <.icon name="hero-arrow-uturn-left" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Verified rollback</p>
+        <p class="text-sm">This deployment restores an exact previously healthy release.</p>
+        <.link
+          :if={deployment.rollback_of}
+          navigate={~p"/deployments/#{deployment.rollback_of.id}"}
+          class="link mt-2 block text-xs"
+        >
+          View the original deployment
+        </.link>
+        <p class="sr-only">
+          {deployment.rollback_of && deployment.rollback_of.id} {deployment.expected_image_id}
+        </p>
+      </div>
+    </section>
+
+    <section
+      :if={deployment.retry_of}
+      id="native-retry-identity"
+      class="alert items-start border border-info/30 bg-info/10"
+    >
+      <.icon name="hero-arrow-path" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Exact immutable retry</p>
+        <p class="text-sm">
+          This attempt reuses the prior persisted release and target identity.
+        </p>
+        <.link
+          navigate={~p"/deployments/#{deployment.retry_of.id}"}
+          class="link mt-2 block text-xs"
+        >
+          View the prior attempt
+        </.link>
+      </div>
+    </section>
+
+    <section
+      :if={deployment.failure}
+      id="native-deployment-failure"
+      class="alert alert-error items-start"
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+      <div class="min-w-0">
+        <p class="font-semibold">Deployment failed</p>
+        <p class="break-words text-sm">{deployment.failure["message"]}</p>
+        <p class="mt-2 text-xs opacity-70">
+          The previously healthy application remains selected unless the evidence below says otherwise.
+        </p>
+      </div>
+    </section>
+
+    <section class="np-panel overflow-hidden">
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Current status</h2>
+          <p class="np-panel-description">Updates automatically while the deployment runs.</p>
+        </div>
+        <span class={["badge badge-sm", state_class(deployment.state)]}>{deployment.state}</span>
+      </div>
+      <div class="p-5 sm:p-6">
+        <div class="flex items-center gap-4">
+          <span class={[
+            "grid size-12 shrink-0 place-items-center rounded-full",
+            deployment.state == :succeeded && "bg-success/15 text-success",
+            deployment.state == :failed && "bg-error/15 text-error",
+            deployment.state == :cancelled && "bg-warning/15 text-warning",
+            deployment.state not in [:succeeded, :failed, :cancelled] && "bg-info/15 text-info"
+          ]}>
+            <.icon
+              name={
+                if deployment.state == :succeeded,
+                  do: "hero-check",
+                  else:
+                    if(deployment.state == :failed, do: "hero-x-mark", else: "hero-arrow-path")
+              }
+              class={["size-6", !terminal?(deployment) && "animate-spin"]}
+            />
+          </span>
+          <div class="min-w-0">
+            <p id="native-current-stage" class="text-xl font-semibold">
+              {deployment.current_stage}
+            </p>
+            <p class="mt-1 text-sm text-base-content/55">
+              {stage_label(deployment.current_stage)}
+            </p>
+          </div>
+        </div>
+
+        <dl class="mt-6 grid gap-3 sm:grid-cols-3">
+          <div class="rounded-box bg-base-200 p-4">
+            <dt class="np-field-label">Environment</dt>
+            <dd class="font-medium">{deployment.target}</dd>
+          </div>
+          <div class="rounded-box bg-base-200 p-4">
+            <dt class="np-field-label">Serving slot</dt>
+            <dd class="font-medium">{deployment.selected_slot || "Pending"}</dd>
+          </div>
+          <div class="rounded-box bg-base-200 p-4">
+            <dt class="np-field-label">Health endpoint</dt>
+            <dd class="break-all font-mono text-sm">{target["health_path"] || "Pending"}</dd>
+          </div>
+        </dl>
+        <p
+          :if={deployment.verified_upstream}
+          id="native-verified-upstream"
+          class="mt-3 text-xs text-base-content/45"
+        >
+          Verified production endpoint: {deployment.verified_upstream}
+        </p>
+      </div>
+    </section>
+
+    <section
+      :if={deployment.state == :succeeded and map_size(tasks) > 0}
+      id="declared-tasks"
+      class="np-panel overflow-hidden"
+    >
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Declared tasks</h2>
+          <p class="np-panel-description">
+            Fixed arguments from this exact release. Type the task name to confirm.
+          </p>
+        </div>
+      </div>
+      <div class="divide-y divide-base-300">
+        <article
+          :for={{name, task} <- Enum.sort(tasks)}
+          class="grid gap-3 p-4 sm:grid-cols-2 sm:items-end"
+        >
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <strong class="font-mono text-sm">{name}</strong>
+              <span :if={task["confirmation"] == "dangerous"} class="badge badge-error badge-sm">
+                dangerous
+              </span>
+            </div>
+            <p class="mt-1 text-sm text-base-content/60">{task["description"]}</p>
+            <p class="mt-1 text-xs text-base-content/45">Timeout {task["timeout_seconds"]}s</p>
+          </div>
+          <form phx-submit="run_task" class="flex min-w-0 flex-col gap-2 sm:flex-row">
+            <input type="hidden" name="task_name" value={name} />
+            <input
+              name="confirmed_name"
+              aria-label={"Confirm task #{name}"}
+              autocomplete="off"
+              class="input input-bordered min-h-11 min-w-0 flex-1 font-mono text-sm"
+              placeholder={name}
+            />
+            <button class={[
+              "btn min-h-11",
+              task["confirmation"] == "dangerous" && "btn-error",
+              task["confirmation"] != "dangerous" && "btn-primary"
+            ]}>
+              Run task
+            </button>
+          </form>
+        </article>
+      </div>
+      <div :if={@task_operations != []} class="border-t border-base-300">
+        <article
+          :for={operation <- @task_operations}
+          id={"task-operation-#{operation.id}"}
+          class="p-4"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <span class={["badge badge-sm", state_class(operation.state)]}>
+              {operation.state}
+            </span>
+            <strong class="font-mono text-sm">{operation.task_name}</strong>
+            <span class="text-xs text-base-content/45">{format_time(operation.inserted_at)}</span>
+          </div>
+          <pre
+            :if={operation.output_tail not in [nil, ""]}
+            class="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-box bg-base-200 p-3 text-xs"
+          ><code>{operation.output_tail}</code></pre>
+          <p :if={operation.failure} class="mt-2 text-sm text-error">
+            {operation.failure["message"]}
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section id="native-deployment-events" class="np-panel overflow-hidden">
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">Progress</h2>
+          <p class="np-panel-description">Durable steps from request to production.</p>
+        </div>
+      </div>
+      <ol class="divide-y divide-base-300">
+        <li
+          :for={{event, index} <- Enum.with_index(@events)}
+          id={"native-event-#{event.id}"}
+          class="flex min-w-0 gap-3 px-4 py-3 sm:px-5"
+        >
+          <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-success/15 text-success">
+            <.icon name="hero-check" class="size-4" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between">
+              <span class="break-words text-sm font-medium">{event.message}</span>
+              <time class="shrink-0 font-mono text-[0.68rem] text-base-content/45">
+                {format_time(event.inserted_at)}
+              </time>
+            </div>
+            <span class="text-xs text-base-content/45">
+              Step {index + 1} · {stage_label(event.stage)}
+            </span>
+            <dl
+              :if={event.metadata["policy_code"] || event.metadata["policy_component_digest"]}
+              class="mt-2 grid gap-2 rounded-field bg-base-200 p-3 text-xs sm:grid-cols-2"
+            >
+              <div>
+                <dt class="np-field-label">Policy decision</dt>
+                <dd class="font-mono">
+                  {event.metadata["policy_code"] || "runtime failure"} · {event.metadata[
+                    "policy_mode"
+                  ]}
+                </dd>
+              </div>
+              <div>
+                <dt class="np-field-label">Contract / duration</dt>
+                <dd class="font-mono">
+                  {event.metadata["policy_contract_version"] || "nixploy.policy/v1"} · {event.metadata[
+                    "policy_duration_ms"
+                  ] || "—"}ms
+                </dd>
+              </div>
+              <div class="sm:col-span-2">
+                <dt class="np-field-label">Component digest</dt>
+                <dd class="break-all font-mono">
+                  {event.metadata["policy_component_digest"] || "unavailable"}
+                </dd>
+              </div>
+              <div class="sm:col-span-2">
+                <dt class="np-field-label">Plan digest</dt>
+                <dd class="break-all font-mono">
+                  {event.metadata["policy_plan_digest"] || event.metadata["fresh_plan_digest"] ||
+                    "unavailable"}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="grid gap-3 sm:grid-cols-2">
+      <article class="np-stat">
+        <p class="np-stat-label">Traffic</p>
+        <p class="np-stat-value">
+          {if deployment.state == :succeeded,
+            do: "Verified on new release",
+            else: "Previous release preserved"}
+        </p>
+        <p class="np-stat-meta">
+          {deployment.verified_upstream || deployment.previous_upstream ||
+            "waiting for runtime evidence"}
+        </p>
+      </article>
+      <article class="np-stat">
+        <p class="np-stat-label">Finished</p>
+        <p class="np-stat-value">{format_time(deployment.finished_at)}</p>
+        <p class="np-stat-meta">requested by {deployment.requested_by_operator.email}</p>
+      </article>
+    </section>
+
+    <details class="np-technical-details">
+      <summary>Technical deployment evidence</summary>
+      <p class="mt-2 text-xs text-base-content/50">
+        Exact identities retained for investigation and rollback.
+      </p>
+      <dl class="mt-4 grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2">
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Operation ID</dt>
+          <dd class="break-all font-mono text-xs">{deployment.id}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Release source</dt>
+          <dd class="break-all font-mono text-xs">{input.store_path}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Immutable source identity</dt>
+          <dd class="break-all font-mono text-xs">
+            {input.source_revision || "non-Git recovery input"}<br />{input.nar_hash}<br />{input.configuration_digest}
+          </dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Fencing token</dt>
+          <dd class="font-mono text-xs">{deployment.fencing_token || "pending"}</dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Attempt ancestry</dt>
+          <dd class="break-all font-mono text-xs">
+            {deployment.retry_of_id || deployment.rollback_of_id || "first attempt"}
+          </dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Candidate slot</dt>
+          <dd>{deployment.selected_slot || "—"}:{deployment.selected_port || "—"}</dd>
+        </div>
+        <div class="np-data-cell">
+          <dt>Previous endpoint</dt>
+          <dd class="break-all font-mono text-xs">{deployment.previous_upstream || "none"}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Managed identity</dt>
+          <dd class="break-all font-mono text-xs">{deployment.resource_prefix || "pending"}</dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Image</dt>
+          <dd class="break-all font-mono text-xs">
+            {deployment.image_reference || "pending"}<br />{deployment.image_id || "—"}
+          </dd>
+        </div>
+        <div class="np-data-cell sm:col-span-2">
+          <dt>Container</dt>
+          <dd class="break-all font-mono text-xs">
+            {deployment.container_name || "pending"}<br />{deployment.container_id || "—"}
+          </dd>
+        </div>
+      </dl>
+    </details>
+  </main>
+</Layouts.app>
