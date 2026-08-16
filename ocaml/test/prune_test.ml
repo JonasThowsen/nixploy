@@ -83,7 +83,7 @@ set -eu
 printf 'nix' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
-if [ "$*" != "eval --json --no-write-lock-file path:.#nixploy" ]; then
+if [ "$*" != "eval --json --no-update-lock-file --no-write-lock-file .#nixploy" ]; then
   echo "unexpected nix command: $*" >&2
   exit 97
 fi

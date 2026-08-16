@@ -10,6 +10,37 @@ let assert_error_containing substring result =
   | Error error ->
       assert (String.is_substring (Error.to_string_hum error) ~substring)
 
+let%test_unit "Nix evaluation and builds use Git-aware local flake snapshots" =
+  [%test_eq: string list]
+    [
+      "eval";
+      "--json";
+      "--no-update-lock-file";
+      "--no-write-lock-file";
+      ".#nixploy";
+    ]
+    (Nixploy.Nix_command.evaluation_args ~flake:"." ~output:"nixploy");
+  [%test_eq: string list]
+    [
+      "build";
+      "--no-update-lock-file";
+      "--no-write-lock-file";
+      ".#docker";
+      "--print-out-paths";
+      "--no-link";
+    ]
+    (Nixploy.Nix_command.build_args ~flake:"." ~output:"docker");
+  [%test_eq: string list]
+    [
+      "build";
+      "--no-update-lock-file";
+      "--no-write-lock-file";
+      "path:.?dir=deploy#docker";
+      "--print-out-paths";
+      "--no-link";
+    ]
+    (Nixploy.Nix_command.build_args ~flake:"path:.?dir=deploy" ~output:"docker")
+
 let%test_unit "termination state forces only a repeated signal" =
   assert (
     not

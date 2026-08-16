@@ -110,7 +110,9 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
         record_stage Evaluating "Evaluating committed flake configuration"
       in
       let%bind evaluated =
-        Nix_configuration.load_evaluated ~working_directory:(Source.path source)
+        Nix_configuration.load_evaluated
+          ~working_directory:(Source.nix_root source)
+          ~flake:(Source.nix_flake source)
       in
       let configuration = Nix_configuration.configuration evaluated in
       let project = Configuration.project configuration in

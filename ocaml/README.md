@@ -42,13 +42,15 @@ The native deployment tracer adds:
 nixploy deploy --target production
 ```
 
-The CLI evaluates and builds the current local flake path, including the current
-branch and intentional working-tree changes, matching the pragmatic original
-CLI workflow. The web control plane instead requires an explicitly previewed
-full commit and materializes that exact immutable revision. Both selections are
-typed caller policies passed through `Application` to the same deployment
-engine. The local HEAD or immutable commit remains recorded as useful revision
-metadata.
+The CLI evaluates and builds a Git-aware snapshot of the current local flake,
+including tracked working-tree changes and intent-to-add files while excluding
+ignored dependency and build output. It rejects ordinary non-ignored untracked
+files rather than silently omitting them; `git add -N -- PATH` marks an
+intentional new file without staging its contents. The web control plane instead
+requires an explicitly previewed full commit and materializes that exact
+immutable revision. Both selections are typed caller policies passed through
+`Application` to the same deployment engine. The local HEAD or immutable commit
+remains recorded as useful revision metadata.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and

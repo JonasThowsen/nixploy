@@ -94,7 +94,10 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 last=""
 for argument in "$@"; do last="$argument"; done
-[ "$last" = "$NIXPLOY_TEST_EXPECTED_SECRET" ]
+case "$last" in
+  */config/secrets.env) : ;;
+  *) echo "unexpected secret path: $last" >&2; exit 96 ;;
+esac
 printf 'EMPTY=\n'
 |};
   install_executable bin "ssh"
@@ -536,10 +539,13 @@ exit 99
       let secret_directory = Filename.concat repository "config" in
       Core_unix.mkdir secret_directory;
       write (Filename.concat secret_directory "secrets.env") "encrypted\n";
+      let%bind _ =
+        run_git ~working_directory:repository
+          [ "add"; "-N"; "--"; "config/secrets.env" ]
+      in
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
-      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET"
-        (Filename.concat repository "config/secrets.env");
+      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET" "config/secrets.env";
       let%bind local_source =
         Nixploy.Source.local ~working_directory:repository
       in
@@ -553,14 +559,13 @@ exit 99
       assert (
         List.exists lines
           ~f:
-            (String.equal "nix|eval|--json|--no-write-lock-file|path:.#nixploy"));
+            (String.equal
+               "nix|eval|--json|--no-update-lock-file|--no-write-lock-file|.#nixploy"));
       assert (
-        List.exists lines
-          ~f:(String.is_substring ~substring:"|path:.#workerImage|"));
-      [%test_eq: string]
-        ("sops|--decrypt|--input-type|dotenv|--output-type|dotenv|"
-        ^ Filename.concat repository "config/secrets.env")
-        (List.find_exn lines ~f:(String.is_prefix ~prefix:"sops|"));
+        List.exists lines ~f:(String.is_substring ~substring:"|.#workerImage|"));
+      assert (
+        List.find_exn lines ~f:(String.is_prefix ~prefix:"sops|")
+        |> String.is_suffix ~suffix:"/config/secrets.env");
       let runtime =
         List.find_exn lines
           ~f:(String.is_substring ~substring:"|run|-d|--name|")
@@ -576,8 +581,7 @@ exit 99
           Core_unix.chmod path ~perm:0o600);
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
-      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET"
-        (Filename.concat repository "config/secrets.env");
+      Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET" "config/secrets.env";
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
       let%bind credential_deployment =
@@ -637,6 +641,10 @@ exit 99
       write outside_secret "encrypted\n";
       let escaping_link = Filename.concat secret_directory "escape.env" in
       Caml_unix.symlink outside_secret escaping_link;
+      let%bind _ =
+        run_git ~working_directory:repository
+          [ "add"; "-N"; "--"; "config/escape.env" ]
+      in
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "config/escape.env";

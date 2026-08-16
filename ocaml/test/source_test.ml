@@ -9,6 +9,12 @@ let run_git ?working_directory args =
 
 let write path contents = Out_channel.write_all path ~data:contents
 
+let assert_error_containing result substring =
+  match result with
+  | Ok _ -> failwith "expected an error"
+  | Error error ->
+      assert (String.is_substring (Error.to_string_hum error) ~substring)
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-source-test-" "" in
@@ -27,6 +33,7 @@ let run_tests () =
   in
   write (Filename.concat directory "flake.nix") "{ outputs = _: {}; }\n";
   write (Filename.concat directory "flake.lock") "{}\n";
+  write (Filename.concat directory ".gitignore") "/deps/\n";
   write (Filename.concat directory "release.txt") "release-a\n";
   let application_directory = Filename.concat directory "application" in
   Core_unix.mkdir application_directory;
@@ -56,6 +63,13 @@ let run_tests () =
   let latest = Or_error.ok_exn latest in
   assert (not (String.equal revision_a (Nixploy.Source.commit_revision latest)));
   write (Filename.concat directory "release.txt") "working-tree-change\n";
+  let deps = Filename.concat directory "deps" in
+  let expo = Filename.concat deps "expo" in
+  let expo_source = Filename.concat expo "src" in
+  Core_unix.mkdir deps;
+  Core_unix.mkdir expo;
+  Core_unix.mkdir expo_source;
+  write (Filename.concat expo_source "ignored.ex") "ignored build artifact\n";
   let%bind local_selection =
     Nixploy.Source.local ~working_directory:directory
   in
@@ -67,15 +81,48 @@ let run_tests () =
   in
   let local = Or_error.ok_exn local in
   assert (Nixploy.Source.is_local local);
+  let local_path = Nixploy.Source.path local in
+  assert (not (String.equal local_path (Filename_unix.realpath directory)));
+  assert (String.equal (Nixploy.Source.nix_root local) local_path);
+  assert (String.equal (Nixploy.Source.nix_flake local) ".");
   assert (
-    String.equal (Nixploy.Source.path local) (Filename_unix.realpath directory));
+    String.equal
+      (In_channel.read_all (Filename.concat local_path "release.txt"))
+      "working-tree-change\n");
+  write (Filename.concat directory "release.txt") "changed-after-prepare\n";
+  assert (
+    String.equal
+      (In_channel.read_all (Filename.concat local_path "release.txt"))
+      "working-tree-change\n");
+  assert (not (Sys_unix.file_exists_exn (Filename.concat local_path "deps")));
+  let%bind () = Nixploy.Source.cleanup local in
+  assert (Sys_unix.file_exists_exn directory);
+  assert (not (Sys_unix.file_exists_exn local_path));
+  let untracked = Filename.concat directory "new_source.ex" in
+  write untracked "intentional source\n";
+  let%bind rejected_untracked =
+    Nixploy.Source.prepare ~working_directory:directory
+      ~selection:local_selection
+  in
+  assert_error_containing rejected_untracked "non-ignored untracked files";
+  let%bind _ =
+    run_git ~working_directory:directory [ "add"; "-N"; "--"; "new_source.ex" ]
+  in
+  let%bind intent_to_add =
+    Nixploy.Source.prepare ~working_directory:directory
+      ~selection:local_selection
+  in
+  let intent_to_add = Or_error.ok_exn intent_to_add in
   assert (
     String.equal
       (In_channel.read_all
-         (Filename.concat (Nixploy.Source.path local) "release.txt"))
-      "working-tree-change\n");
-  let%bind () = Nixploy.Source.cleanup local in
-  assert (Sys_unix.file_exists_exn directory);
+         (Filename.concat (Nixploy.Source.path intent_to_add) "new_source.ex"))
+      "intentional source\n");
+  let%bind () = Nixploy.Source.cleanup intent_to_add in
+  let%bind _ =
+    run_git ~working_directory:directory [ "reset"; "--"; "new_source.ex" ]
+  in
+  Core_unix.unlink untracked;
   let%bind mismatched =
     Nixploy.Source.prepare ~working_directory:application_directory
       ~selection:local_selection
@@ -88,6 +135,10 @@ let run_tests () =
   in
   let prepared = Or_error.ok_exn prepared in
   assert (String.equal revision_a (Nixploy.Source.revision prepared));
+  assert (
+    not
+      (Sys_unix.file_exists_exn
+         (Filename.concat (Nixploy.Source.nix_root prepared) ".git")));
   assert (String.equal "owner/test" (Nixploy.Source.repository prepared));
   assert (
     String.equal
@@ -114,6 +165,16 @@ let run_tests () =
     String.equal
       (Nixploy.Source.repository nested)
       (Filename_unix.realpath application_directory));
+  assert (
+    String.equal
+      (Nixploy.Source.path nested)
+      (Filename.concat (Nixploy.Source.nix_root nested) "application"));
+  assert (
+    String.equal (Nixploy.Source.nix_flake nested) "path:.?dir=application");
+  assert (
+    not
+      (Sys_unix.file_exists_exn
+         (Filename.concat (Nixploy.Source.nix_root nested) ".git")));
   assert (
     String.equal
       (In_channel.read_all

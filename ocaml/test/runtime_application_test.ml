@@ -13,9 +13,20 @@ let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-runtime-non-web-" "" in
   let fake_bin = Filename.concat directory "bin" in
+  let application_directory = Filename.concat directory "deploy" in
   Core_unix.mkdir_p fake_bin;
+  Core_unix.mkdir application_directory;
+  Out_channel.write_all
+    (Filename.concat directory "shared.nix")
+    ~data:"\"tracked sibling\"\n";
   Out_channel.write_all (Filename.concat directory "flake.nix") ~data:"{}\n";
   Out_channel.write_all (Filename.concat directory "flake.lock") ~data:"{}\n";
+  Out_channel.write_all
+    (Filename.concat application_directory "flake.nix")
+    ~data:"{}\n";
+  Out_channel.write_all
+    (Filename.concat application_directory "flake.lock")
+    ~data:"{}\n";
   let git args =
     let command =
       String.concat ~sep:" "
@@ -25,10 +36,18 @@ let run_tests () =
     if not (Int.equal (Stdlib.Sys.command command) 0) then
       failwithf "fixture command failed: %s" command ()
   in
-  git [ "init"; "-q" ];
+  git [ "init"; "-q"; "-b"; "main" ];
   git [ "config"; "user.email"; "test@example.invalid" ];
   git [ "config"; "user.name"; "Test" ];
-  git [ "add"; "flake.nix"; "flake.lock" ];
+  git
+    [
+      "add";
+      "shared.nix";
+      "flake.nix";
+      "flake.lock";
+      "deploy/flake.nix";
+      "deploy/flake.lock";
+    ];
   git [ "commit"; "-qm"; "runtime fixture" ];
   let revision_path = Filename.concat directory "revision" in
   let revision_command =
@@ -43,6 +62,16 @@ let run_tests () =
   write_executable
     (Filename.concat fake_bin "nix")
     {|#!/bin/sh
+set -eu
+case "$*" in
+  "eval --json --no-update-lock-file --no-write-lock-file .#nixploy")
+    [ -f "$PWD/flake.nix" ] ;;
+  "eval --json --no-update-lock-file --no-write-lock-file path:.?dir=deploy#nixploy")
+    [ -f "$PWD/shared.nix" ]
+    [ -f "$PWD/deploy/flake.nix" ] ;;
+  *) echo "unexpected nix command: $*" >&2; exit 97 ;;
+esac
+[ ! -e "$PWD/.git" ]
 printf '%s\n' '{"__schema":"v0.3","project":"example","targets":{"production":{"image":"worker","ip":"host","user":"deploy","port":22}}}'
 |};
   write_executable (Filename.concat fake_bin "ssh") {|#!/bin/sh
@@ -78,6 +107,17 @@ esac
       ~timestamp_ms:0L
     |> assert_ok
   in
+  let nested_application =
+    Nixploy.Managed_application.all_of_json
+      (sprintf
+         {|{"nested":{"project":"example","target":"production","repository":"%s","repositoryIdentity":"%s","subdirectory":"deploy"}}|}
+         directory repository_identity)
+    |> assert_ok |> List.hd_exn
+  in
+  let%bind nested_resolved =
+    Nixploy.Runtime_application.resolve ~commit ~operation_id nested_application
+  in
+  ignore (assert_ok nested_resolved : Nixploy.Runtime_application.t);
   let%bind resolved =
     Nixploy.Runtime_application.resolve ~commit ~operation_id application
   in

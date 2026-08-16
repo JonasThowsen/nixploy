@@ -119,6 +119,13 @@ nixploy deploy --target production
 nixploy deploy -t production
 ```
 
+Local deployment uses Git-aware flake source semantics: committed files,
+tracked modifications, and intent-to-add files are eligible, while ignored build
+artifacts such as `deps/`, `_build/`, and `node_modules/` are excluded. Nixploy
+rejects ordinary non-ignored untracked files rather than silently deploying
+without them. Add an intentional new file to the index first (`git add -N --
+PATH` is sufficient).
+
 For a `web` target, nixploy uses blue/green deployment:
 
 1. detects the active Caddy upstream port

@@ -237,12 +237,16 @@
           configContract = import ./nix/config-test.nix {
             nixployLib = self.lib;
           };
+          mixExpoFixture = import ./nix/test-fixtures/mix-expo/package.nix {
+            inherit pkgs;
+          };
         in
         {
           nixploy = self.packages.${system}.nixploy;
           config-contract =
             assert configContract;
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";
+          mix-expo-source = mixExpoFixture;
           nixos-module =
             assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
             assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];

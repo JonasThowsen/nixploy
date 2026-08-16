@@ -34,7 +34,7 @@ The application API represents source selection explicitly:
 - the CLI may deploy the current local flake, matching the pragmatic C# workflow;
 - the web UI deploys an explicitly previewed Git revision from an allowlisted repository.
 
-Both policies resolve to the same prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation retains the canonical local flake path without cloning; immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
+Both policies resolve to one stable prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation snapshots the repository's committed files, tracked modifications, and intent-to-add files once, while excluding ignored build output; evaluation, secrets, and image building all consume that same snapshot. Ordinary non-ignored untracked files fail preflight with an instruction to add or ignore them, avoiding both silently omitted source and copied dependency trees. Immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
 
 ## Architecture
 
@@ -163,6 +163,7 @@ Run OCaml checks through Nix:
 
 ```bash
 nix develop . -c dune runtest --root ocaml
+nix develop . -c ./nix/test-mix-expo-source.sh
 nix build .#nixploy
 ```
 

@@ -314,17 +314,11 @@ let image_id_of_inspect output =
 let build_and_load ~connection ~source ~image_output =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
-    Process_runner.run ~working_directory:(Source.path source)
+    Process_runner.run ~working_directory:(Source.nix_root source)
       ~timeout:build_timeout ~max_output_bytes:max_output ~prog:"nix"
       ~args:
-        [
-          "build";
-          "--no-update-lock-file";
-          "--no-write-lock-file";
-          "path:.#" ^ image_output;
-          "--print-out-paths";
-          "--no-link";
-        ]
+        (Nix_command.build_args ~flake:(Source.nix_flake source)
+           ~output:image_output)
       ()
   in
   let%bind output_path =

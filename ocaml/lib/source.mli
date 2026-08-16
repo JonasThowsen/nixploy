@@ -21,11 +21,15 @@ val selection_is_local : selection -> bool
 
 val prepare :
   working_directory:string -> selection:selection -> t Deferred.Or_error.t
-(** Local selections retain the canonical source directory without cloning;
-    immutable selections materialize exactly the selected commit. *)
+(** Local selections materialize one stable snapshot of committed files, tracked
+    modifications, and intent-to-add files, while rejecting non-ignored
+    untracked files and excluding ignored build artifacts. Immutable selections
+    materialize exactly the selected commit. *)
 
 val cleanup : t -> unit Deferred.t
 val path : t -> string
+val nix_root : t -> string
+val nix_flake : t -> string
 val revision : t -> string
 val repository : t -> string
 val is_local : t -> bool

@@ -4,6 +4,8 @@ open Core
 type t = {
   workspace : string option;
   path : string;
+  nix_root : string;
+  subdirectory : string;
   revision : string;
   repository : string;
   is_local : bool;
@@ -18,6 +20,12 @@ type selection =
 let git_timeout = Time_ns.Span.of_min 2.
 let max_git_output = 262_144
 let path (source : t) = source.path
+let nix_root (source : t) = source.nix_root
+
+let nix_flake (source : t) =
+  if String.equal source.subdirectory "." then "."
+  else "path:.?dir=" ^ Uri.pct_encode source.subdirectory
+
 let revision (source : t) = source.revision
 let repository (source : t) = source.repository
 let is_local (source : t) = source.is_local
@@ -79,6 +87,31 @@ let describe ~working_directory revision =
   in
   Deferred.return (parse_commit output)
 
+let reject_non_ignored_untracked ~working_directory =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind output =
+    git ~working_directory [ "ls-files"; "--others"; "--exclude-standard" ]
+  in
+  match
+    String.split_lines output |> List.filter ~f:(Fn.non String.is_empty)
+  with
+  | [] -> Deferred.Or_error.return ()
+  | paths ->
+      let shown = List.take paths 10 |> String.concat ~sep:"\n  " in
+      let remainder = List.length paths - 10 in
+      let suffix =
+        if remainder > 0 then sprintf "\n  ... and %d more" remainder else ""
+      in
+      Deferred.Or_error.errorf
+        "local deployment contains non-ignored untracked files. Nixploy will \n\
+        \         not silently omit them; add intentional files to the Git \
+         index (git \n\
+        \         add -N -- FILE is sufficient) or ignore/remove them before \
+         deploying:\n\
+        \         \n\
+        \  %s%s"
+        shown suffix
+
 let preview_main ~working_directory =
   match canonical_directory working_directory with
   | Error error -> Deferred.return (Error error)
@@ -131,12 +164,8 @@ let cleanup t =
       in
       ()
 
-let prepare_immutable ~working_directory ~commit =
+let repository_layout ~working_directory =
   let open Deferred.Or_error.Let_syntax in
-  let%bind working_directory =
-    Deferred.return (canonical_directory working_directory)
-  in
-  let revision = commit.revision in
   let%bind repository_root =
     git ~working_directory [ "rev-parse"; "--show-toplevel" ]
   in
@@ -145,7 +174,7 @@ let prepare_immutable ~working_directory ~commit =
       (Or_error.try_with (fun () ->
            String.strip repository_root |> Filename_unix.realpath))
   in
-  let%bind subdirectory =
+  let%map subdirectory =
     if String.equal working_directory repository_root then
       Deferred.Or_error.return "."
     else
@@ -156,8 +185,63 @@ let prepare_immutable ~working_directory ~commit =
                 "working directory is outside the Git repository")
            ~f:Deferred.Or_error.return
   in
+  (repository_root, subdirectory)
+
+let reject_gitlinks ~repository_root =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind gitlinks =
+    git ~working_directory:repository_root [ "ls-files"; "--stage" ]
+  in
+  if
+    String.split_lines gitlinks
+    |> List.exists ~f:(fun line -> String.is_prefix line ~prefix:"160000 ")
+  then Deferred.Or_error.error_string "Git submodules are not supported"
+  else Deferred.Or_error.return ()
+
+let existing_path path =
+  match Core_unix.lstat path with
+  | _ -> true
+  | exception Caml_unix.Unix_error (Caml_unix.ENOENT, _, _) -> false
+
+let copy_tracked_files ~repository_root ~destination =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind output =
+    git ~working_directory:repository_root [ "ls-files"; "--cached"; "-z" ]
+  in
+  let paths =
+    String.split output ~on:'\000'
+    |> List.filter ~f:(fun path ->
+        (not (String.is_empty path))
+        && existing_path (Filename.concat repository_root path))
+  in
+  let%bind () =
+    Deferred.return (Or_error.try_with (fun () -> Core_unix.mkdir destination))
+  in
+  paths |> List.chunks_of ~length:128
+  |> Deferred.Or_error.List.iter ~how:`Sequential ~f:(fun paths ->
+      let%map _ =
+        Process_runner.run_stdout ~working_directory:repository_root
+          ~timeout:(Time_ns.Span.of_min 2.) ~max_output_bytes:max_git_output
+          ~prog:"cp"
+          ~args:
+            ([ "--parents"; "--no-dereference"; "--preserve=mode"; "--" ]
+            @ paths @ [ destination ])
+          ()
+      in
+      ())
+
+let prepare_immutable ~working_directory ~commit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_directory working_directory)
+  in
+  let revision = commit.revision in
+  let%bind repository_root, subdirectory =
+    repository_layout ~working_directory
+  in
   let%bind repository = repository_identity ~working_directory in
   let workspace = Filename_unix.temp_dir "nixploy-" "" in
+  let checkout_root = Filename.concat workspace "checkout" in
   let source_root = Filename.concat workspace "source" in
   let source_path =
     if String.equal subdirectory "." then source_root
@@ -167,6 +251,8 @@ let prepare_immutable ~working_directory ~commit =
     {
       workspace = Some workspace;
       path = source_path;
+      nix_root = source_root;
+      subdirectory;
       revision;
       repository;
       is_local = false;
@@ -182,28 +268,22 @@ let prepare_immutable ~working_directory ~commit =
           "--no-hardlinks";
           "--";
           repository_root;
-          source_root;
+          checkout_root;
         ]
     in
     let%bind _ =
-      git ~working_directory:source_root [ "checkout"; "--detach"; revision ]
+      git ~working_directory:checkout_root [ "checkout"; "--detach"; revision ]
     in
     let%bind dirty =
-      git ~working_directory:source_root [ "status"; "--porcelain" ]
+      git ~working_directory:checkout_root [ "status"; "--porcelain" ]
     in
     let%bind () =
       if String.is_empty (String.strip dirty) then Deferred.Or_error.return ()
       else Deferred.Or_error.error_string "materialized main checkout is dirty"
     in
-    let%bind gitlinks =
-      git ~working_directory:source_root [ "ls-files"; "--stage" ]
-    in
+    let%bind () = reject_gitlinks ~repository_root:checkout_root in
     let%bind () =
-      if
-        String.split_lines gitlinks
-        |> List.exists ~f:(fun line -> String.is_prefix line ~prefix:"160000 ")
-      then Deferred.Or_error.error_string "Git submodules are not supported"
-      else Deferred.Or_error.return ()
+      copy_tracked_files ~repository_root:checkout_root ~destination:source_root
     in
     let%bind () =
       if
@@ -223,6 +303,71 @@ let prepare_immutable ~working_directory ~commit =
       let%map.Deferred () = cleanup provisional in
       Error error
 
+let prepare_local ~working_directory ~selected_directory ~commit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_directory working_directory)
+  in
+  let%bind () =
+    if String.equal working_directory selected_directory then
+      Deferred.Or_error.return ()
+    else
+      Deferred.Or_error.error_string
+        "local source selection does not match the deployment directory"
+  in
+  let%bind repository_root, subdirectory =
+    repository_layout ~working_directory
+  in
+  let%bind () =
+    reject_non_ignored_untracked ~working_directory:repository_root
+  in
+  let%bind () = reject_gitlinks ~repository_root in
+  let%bind repository = repository_identity ~working_directory in
+  let workspace = Filename_unix.temp_dir "nixploy-local-" "" in
+  let source_root = Filename.concat workspace "source" in
+  let source_path =
+    if String.equal subdirectory "." then source_root
+    else Filename.concat source_root subdirectory
+  in
+  let provisional =
+    {
+      workspace = Some workspace;
+      path = source_path;
+      nix_root = source_root;
+      subdirectory;
+      revision = commit.revision;
+      repository;
+      is_local = true;
+    }
+  in
+  let prepare () =
+    let%bind () =
+      copy_tracked_files ~repository_root ~destination:source_root
+    in
+    let%bind () =
+      reject_non_ignored_untracked ~working_directory:repository_root
+    in
+    let%bind current = describe ~working_directory "HEAD^{commit}" in
+    let%bind () =
+      if String.equal current.revision commit.revision then
+        Deferred.Or_error.return ()
+      else
+        Deferred.Or_error.error_string
+          "local deployment HEAD changed while preparing its source snapshot"
+    in
+    if Sys_unix.file_exists_exn (Filename.concat source_path "flake.nix") then
+      Deferred.Or_error.return provisional
+    else
+      Deferred.Or_error.error_string
+        "local source snapshot does not contain flake.nix"
+  in
+  let%bind.Deferred result = Monitor.try_with_or_error prepare in
+  match Or_error.join result with
+  | Ok source -> Deferred.Or_error.return source
+  | Error error ->
+      let%map.Deferred () = cleanup provisional in
+      Error error
+
 let prepare ~working_directory ~selection =
   match selection with
   | Immutable { commit; repository_identity } ->
@@ -231,27 +376,4 @@ let prepare ~working_directory ~selection =
       Option.value_map repository_identity ~default:prepared
         ~f:(fun repository -> { prepared with repository })
   | Local { commit; working_directory = selected_directory } ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind path = Deferred.return (canonical_directory working_directory) in
-      let%bind () =
-        if String.equal path selected_directory then Deferred.Or_error.return ()
-        else
-          Deferred.Or_error.error_string
-            "local source selection does not match the deployment directory"
-      in
-      let%bind repository = repository_identity ~working_directory:path in
-      let%bind () =
-        if Sys_unix.file_exists_exn (Filename.concat path "flake.nix") then
-          Deferred.Or_error.return ()
-        else
-          Deferred.Or_error.error_string
-            "local source does not contain flake.nix"
-      in
-      Deferred.Or_error.return
-        {
-          workspace = None;
-          path;
-          revision = commit.revision;
-          repository;
-          is_local = true;
-        }
+      prepare_local ~working_directory ~selected_directory ~commit
