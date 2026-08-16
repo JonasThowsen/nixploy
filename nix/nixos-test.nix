@@ -100,6 +100,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("curl --silent --output /dev/null --write-out '%{http_code}\\n' http://127.0.0.1:18080/arbitrary-unknown-path | grep -Fx 404")
     machine.succeed("curl --fail --silent --output /tmp/nixploy-main.js http://127.0.0.1:18080/main.js && test -s /tmp/nixploy-main.js")
     machine.succeed("curl --fail --silent http://127.0.0.1:18080/app.css | grep -F ':root {'")
+    for font in ["ibm-plex-mono-400.ttf", "ibm-plex-mono-600.ttf"]:
+        machine.succeed(f"curl --fail --silent --dump-header /tmp/{font}.headers --output /tmp/{font} http://127.0.0.1:18080/fonts/{font} && test -s /tmp/{font} && grep -i '^content-type: font/ttf' /tmp/{font}.headers")
     machine.succeed("ss --listening --tcp --numeric | grep -E '127\\.0\\.0\\.1:18080([[:space:]]|$)'")
     machine.fail("ss --listening --tcp --numeric | grep -E '(^|[[:space:]])(0\\.0\\.0\\.0|\\[::\\]):18080([[:space:]]|$)'")
 

@@ -31,6 +31,11 @@
 
 (rule
  (targets embedded_files.ml embedded_files.mli)
- (deps %{bin:ocaml-embed-file} ../client/main.bc.js ../client/app.css)
+ (deps
+  %{bin:ocaml-embed-file}
+  ../client/main.bc.js
+  ../client/app.css
+  ../assets/fonts/ibm-plex-mono-400.ttf
+  ../assets/fonts/ibm-plex-mono-600.ttf)
  (action
   (bash "%{deps} -output embedded_files")))

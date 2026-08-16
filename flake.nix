@@ -124,6 +124,11 @@
 
             doCheck = true;
 
+            postInstall = ''
+              install -Dm644 web/assets/fonts/LICENSE-IBM-PLEX.txt \
+                $out/share/licenses/nixploy/LICENSE-IBM-PLEX.txt
+            '';
+
             postFixup = ''
               for executable in $out/bin/nixploy $out/bin/nixploy-web; do
                 wrapProgram "$executable" --prefix PATH : ${

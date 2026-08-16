@@ -220,7 +220,7 @@ let html =
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#315c46">
+    <meta name="theme-color" content="#242825">
     <title>Nixploy</title>
     <link rel="stylesheet" href="/app.css">
     <script defer src="/main.js"></script>
@@ -247,6 +247,16 @@ let http_handler ~authorization ~body:_ _address request =
   | "/app.css" ->
       if Authorization.authorized authorization request.headers then
         respond_string ~content_type:"text/css" Embedded_files.app_dot_css
+      else forbidden ()
+  | "/fonts/ibm-plex-mono-400.ttf" ->
+      if Authorization.authorized authorization request.headers then
+        respond_string ~content_type:"font/ttf"
+          Embedded_files.ibm_plex_mono_400_dot_ttf
+      else forbidden ()
+  | "/fonts/ibm-plex-mono-600.ttf" ->
+      if Authorization.authorized authorization request.headers then
+        respond_string ~content_type:"font/ttf"
+          Embedded_files.ibm_plex_mono_600_dot_ttf
       else forbidden ()
   | path when Static_route.serves_spa_shell path -> forbidden ()
   | _ -> respond_string ~content_type:"text/html" ~status:`Not_found not_found

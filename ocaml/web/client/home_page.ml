@@ -206,13 +206,9 @@ let render ~applications ~deployments ~metrics ~applications_stale
               Vdom.Node.p
                 ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
                 [ Vdom.Node.text "Operational overview" ];
-              Vdom.Node.h2 [ Vdom.Node.text "What needs attention now" ];
+              Vdom.Node.h2 [ Vdom.Node.text "Deployment overview" ];
               Vdom.Node.p
-                [
-                  Vdom.Node.text
-                    "Connection, runtime health, resource presence, and \
-                     deployment history are shown as separate signals.";
-                ];
+                [ Vdom.Node.text "Live deployment, runtime, and host state." ];
             ];
           Vdom.Node.div
             ~attrs:[ Vdom.Attr.class_ "intro-actions" ]

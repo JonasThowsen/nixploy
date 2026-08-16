@@ -11,11 +11,32 @@ async function firstApplicationKey(page: import("@playwright/test").Page) {
 }
 
 async function expectNoOverflow(page: import("@playwright/test").Page) {
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-    ),
-  ).toBe(true);
+  const overflowing = await page.evaluate(() =>
+    ["html", ".content-region", ".page"].flatMap((selector) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      return element && element.scrollWidth > element.clientWidth ? [selector] : [];
+    }),
+  );
+  expect(overflowing).toEqual([]);
+}
+
+async function expectVisibleKeyboardFocus(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await page.keyboard.press("Tab");
+  const focus = await page.evaluate(() => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement) || element === document.body) return null;
+    const style = getComputedStyle(element);
+    return {
+      outlineStyle: style.outlineStyle,
+      outlineWidth: Number.parseFloat(style.outlineWidth),
+    };
+  });
+  expect(focus).not.toBeNull();
+  expect(focus?.outlineStyle).not.toBe("none");
+  expect(focus?.outlineWidth ?? 0).toBeGreaterThan(0);
 }
 
 async function expectControlTargets(page: import("@playwright/test").Page) {
@@ -37,6 +58,12 @@ test("authorized shell routes, health, assets, and genuine 404s", async () => {
   expect(await (await client.get(`${baseURL}/healthz`)).text()).toBe("ok\n");
   expect((await client.get(`${baseURL}/main.js`)).status()).toBe(200);
   expect((await client.get(`${baseURL}/app.css`)).status()).toBe(200);
+  for (const font of ["ibm-plex-mono-400.ttf", "ibm-plex-mono-600.ttf"]) {
+    const response = await client.get(`${baseURL}/fonts/${font}`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("font/ttf");
+    expect((await response.body()).byteLength).toBeGreaterThan(100_000);
+  }
   expect((await client.get(`${baseURL}/arbitrary-unknown-path`)).status()).toBe(404);
   expect((await client.get(`${baseURL}/missing.js`)).status()).toBe(404);
 
@@ -45,13 +72,17 @@ test("authorized shell routes, health, assets, and genuine 404s", async () => {
   };
   const root = await client.get(`${baseURL}/`, { headers: invalidIdentityHeaders });
   const deep = await client.get(`${baseURL}/telemetry`, { headers: invalidIdentityHeaders });
+  const font = await client.get(`${baseURL}/fonts/ibm-plex-mono-400.ttf`, {
+    headers: invalidIdentityHeaders,
+  });
   expect(deep.status()).toBe(root.status());
+  expect(font.status()).toBe(root.status());
   await client.dispose();
 });
 
 test("direct routes and reload retain the selected application", async ({ page }) => {
   await page.goto(`${baseURL}/`);
-  await expect(page.getByRole("heading", { name: "What needs attention now" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Deployment overview" })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Host and application health" }),
   ).toBeVisible();
@@ -138,11 +169,27 @@ for (const viewport of [
   test(`${viewport.name} non-destructive operator workflows and layout`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const key = await firstApplicationKey(page);
-    await page.goto(`${baseURL}/apps/${key}`);
+    const routes = [
+      { path: "/", ready: [".rail-app", ".summary-grid"] },
+      { path: "/apps", ready: [".application-grid .application-item"] },
+      { path: "/telemetry", ready: [".telemetry-grid .telemetry-target"] },
+      { path: `/apps/${key}`, ready: [".application-hero"] },
+    ];
+    for (const route of routes) {
+      await page.goto(`${baseURL}${route.path}`);
+      await expect(page.locator("#page-heading")).toBeVisible();
+      for (const selector of route.ready) {
+        await expect(page.locator(selector).first()).toBeVisible({ timeout: 60_000 });
+      }
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+      });
+      await expectNoOverflow(page);
+      await expectControlTargets(page);
+      if (route.path === "/") await expectVisibleKeyboardFocus(page);
+    }
+
     await expect(page.getByText(/Connected|Connection stale/)).toBeVisible();
-    await expect(page.locator(".application-hero")).toBeVisible({ timeout: 60_000 });
-    await expectNoOverflow(page);
-    await expectControlTargets(page);
 
     await page.getByRole("button", { name: "Prune resources" }).click();
     const pruneConfirmation = page.getByRole("alertdialog", { name: new RegExp(`Application ${key}`, "i") });

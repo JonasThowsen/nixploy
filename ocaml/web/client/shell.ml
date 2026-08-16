@@ -16,19 +16,25 @@ let icon paths =
     (List.map paths ~f:(fun path ->
          Vdom.Node.create_svg "path" ~attrs:[ Vdom.Attr.create "d" path ] []))
 
-let home_icon () = icon [ "M3 11.5 12 4l9 7.5"; "M5.5 10v10h13V10" ]
-let apps_icon () = icon [ "M4 5h16v6H4z"; "M4 15h16v4H4z"; "M8 8h.01" ]
-let telemetry_icon () = icon [ "M4 19V9"; "M10 19V5"; "M16 19v-7"; "M22 19V3" ]
 let menu_icon () = icon [ "M4 7h16"; "M4 12h16"; "M4 17h16" ]
 let exact_active route target = Route.equal route target
 
-let nav_link ~route ~target ~navigate ~label ~icon_node ~section_active =
+let nav_contents ~index ~label =
+  [
+    Vdom.Node.span
+      ~attrs:
+        [ Vdom.Attr.class_ "nav-index"; Vdom.Attr.create "aria-hidden" "true" ]
+      [ Vdom.Node.text index ];
+    Vdom.Node.span [ Vdom.Node.text label ];
+  ]
+
+let nav_link ~route ~target ~navigate ~label ~index ~section_active =
   let exact = exact_active route target in
   Ui_helpers.route_link
     ~class_name:
       ("nav-link" ^ if exact || section_active then " nav-link-active" else "")
     ~route:target ~navigate
-    [ icon_node; Vdom.Node.span [ Vdom.Node.text label ] ]
+    (nav_contents ~index ~label)
   |> fun node ->
   if exact then
     Vdom.Node.a
@@ -38,7 +44,7 @@ let nav_link ~route ~target ~navigate ~label ~icon_node ~section_active =
             Vdom.Attr.class_ "nav-link nav-link-active";
             Vdom.Attr.create "aria-current" "page";
           ])
-      [ icon_node; Vdom.Node.span [ Vdom.Node.text label ] ]
+      (nav_contents ~index ~label)
   else node
 
 let application_link ~route ~application ~navigate =
@@ -114,8 +120,7 @@ let render ~route ~applications ~connection_label ~connection_class ~mobile_open
                 [ Vdom.Node.text "N" ];
               Vdom.Node.span
                 [
-                  Vdom.Node.strong [ Vdom.Node.text "nixploy" ];
-                  Vdom.Node.small [ Vdom.Node.text "Bonsai control plane" ];
+                  Vdom.Node.strong [ Vdom.Node.text "nixploy · control plane" ];
                 ];
             ];
           Vdom.Node.div
@@ -172,13 +177,12 @@ let render ~route ~applications ~connection_label ~connection_class ~mobile_open
                 ~attrs:[ Vdom.Attr.class_ "primary-links" ]
                 [
                   nav_link ~route ~target:Route.Home ~navigate ~label:"Home"
-                    ~icon_node:(home_icon ()) ~section_active:false;
+                    ~index:"01" ~section_active:false;
                   nav_link ~route ~target:Route.Apps ~navigate
-                    ~label:"Applications" ~icon_node:(apps_icon ())
+                    ~label:"Applications" ~index:"02"
                     ~section_active:(Route.is_apps_section route);
                   nav_link ~route ~target:Route.Telemetry ~navigate
-                    ~label:"Telemetry" ~icon_node:(telemetry_icon ())
-                    ~section_active:false;
+                    ~label:"Telemetry" ~index:"03" ~section_active:false;
                 ];
               Vdom.Node.div
                 ~attrs:[ Vdom.Attr.class_ "rail-applications" ]
