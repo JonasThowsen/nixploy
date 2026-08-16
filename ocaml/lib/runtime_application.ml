@@ -10,6 +10,10 @@ type t = {
   active_port : int option;
 }
 
+type deployed_identity = { revision : string; operation_id : string }
+
+let deployed_revision identity = identity.revision
+let deployed_operation_id identity = identity.operation_id
 let application t = t.application
 let target t = t.target
 let connection t = t.connection
@@ -17,7 +21,8 @@ let container t = t.container
 let caddy t = t.caddy
 let active_port t = t.active_port
 
-let resolve ?commit ?operation_id application =
+let resolve_internal ~verify_deployment_identity ?commit ?operation_id
+    application =
   let open Deferred.Or_error.Let_syntax in
   let working_directory = Managed_application.working_directory application in
   let%bind commit =
@@ -112,13 +117,15 @@ let resolve ?commit ?operation_id application =
             (container, Some caddy, Some active_port)
       in
       if
-        Option.equal String.equal
-          (Podman.runtime_container_revision container)
-          (Some (Source.commit_revision commit))
-        && Option.value_map operation_id ~default:true ~f:(fun operation_id ->
-            Option.equal String.equal
-              (Podman.runtime_container_operation_id container)
-              (Some operation_id))
+        (not verify_deployment_identity)
+        || Option.equal String.equal
+             (Podman.runtime_container_revision container)
+             (Some (Source.commit_revision commit))
+           && Option.value_map operation_id ~default:true
+                ~f:(fun operation_id ->
+                  Option.equal String.equal
+                    (Podman.runtime_container_operation_id container)
+                    (Some operation_id))
       then
         Deferred.Or_error.return
           { application; target; connection; container; caddy; active_port }
@@ -126,3 +133,24 @@ let resolve ?commit ?operation_id application =
         Deferred.Or_error.error_string
           "active container operation or revision does not match deployment \
            history")
+
+let resolve ?commit ?operation_id application =
+  resolve_internal ~verify_deployment_identity:true ?commit ?operation_id
+    application
+
+let discover_identity ~commit application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind runtime =
+    resolve_internal ~verify_deployment_identity:false ~commit application
+  in
+  let container = runtime.container in
+  match
+    ( Podman.runtime_container_revision container,
+      Podman.runtime_container_operation_id container )
+  with
+  | Some revision, Some operation_id
+    when not (String.is_empty revision || String.is_empty operation_id) ->
+      Deferred.Or_error.return { revision; operation_id }
+  | _ ->
+      Deferred.Or_error.error_string
+        "active container immutable identity is incomplete"

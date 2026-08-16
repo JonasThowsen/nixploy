@@ -1,6 +1,7 @@
 open Async
 
 type t
+type deployed_identity
 
 val resolve :
   ?commit:Source.commit ->
@@ -8,6 +9,16 @@ val resolve :
   Managed_application.t ->
   t Deferred.Or_error.t
 
+val discover_identity :
+  commit:Source.commit ->
+  Managed_application.t ->
+  deployed_identity Deferred.Or_error.t
+(** Uses current configuration only to locate a positively owned running
+    resource. The returned identity must be resolved again with [resolve] before
+    logs or metrics are read. *)
+
+val deployed_revision : deployed_identity -> string
+val deployed_operation_id : deployed_identity -> string
 val application : t -> Managed_application.t
 val target : t -> Configuration.Target.t
 val connection : t -> string

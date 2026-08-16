@@ -30,6 +30,27 @@ let runtime_container_revision container = container.revision
 let runtime_container_operation_id container = container.operation_id
 let runtime_container_started_at container = container.started_at
 
+let label fields name =
+  match List.Assoc.find fields ~equal:String.equal name with
+  | Some (`String value) when not (String.is_empty value) -> Some value
+  | _ -> None
+
+let repository_label labels =
+  let values =
+    List.filter_map
+      [
+        "io.nixploy.repository_identity";
+        "io.nixploy.repository";
+        "nixploy.repository";
+      ]
+      ~f:(label labels)
+    |> List.dedup_and_sort ~compare:String.compare
+  in
+  match values with
+  | [] -> Ok None
+  | [ repository ] -> Ok (Some repository)
+  | _ -> Or_error.error_string "container repository labels conflict"
+
 let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
   Process_runner.run ?stdin ?ignore_termination ~timeout
     ~max_output_bytes:max_output ~prog:"podman" ~args ()
@@ -61,31 +82,22 @@ let remote_ownerships_of_containers output =
   let%bind json =
     Or_error.try_with (fun () -> Yojson.Safe.from_string output)
   in
-  let label labels name =
-    match List.Assoc.find labels ~equal:String.equal name with
-    | Some (`String value) when not (String.is_empty value) -> Some value
-    | _ -> None
-  in
   match json with
   | `List containers ->
-      List.filter_map containers ~f:(function
-        | `Assoc container -> (
-            match List.Assoc.find container ~equal:String.equal "Labels" with
-            | Some (`Assoc labels) ->
-                label labels "io.nixploy.resource_key"
-                |> Option.map ~f:(fun remote_resource_key ->
-                    {
-                      remote_resource_key;
-                      remote_repository =
-                        Option.first_some
-                          (label labels "io.nixploy.repository_identity")
-                          (Option.first_some
-                             (label labels "io.nixploy.repository")
-                             (label labels "nixploy.repository"));
-                    })
-            | _ -> None)
-        | _ -> None)
-      |> Or_error.return
+      let%map ownerships =
+        List.map containers ~f:(function
+          | `Assoc container -> (
+              match List.Assoc.find container ~equal:String.equal "Labels" with
+              | Some (`Assoc labels) ->
+                  let%map remote_repository = repository_label labels in
+                  Option.map (label labels "io.nixploy.resource_key")
+                    ~f:(fun remote_resource_key ->
+                      { remote_resource_key; remote_repository })
+              | _ -> Ok None)
+          | _ -> Ok None)
+        |> Or_error.all
+      in
+      List.filter_opt ownerships
   | _ -> Or_error.error_string "remote Podman list must be a JSON array"
 
 let resource_keys_of_containers output =
@@ -357,11 +369,6 @@ let inspect_container ?ignore_termination ~connection name =
   run_ok ?ignore_termination
     [ "--connection"; connection; "inspect"; "--type"; "container"; name ]
 
-let label fields name =
-  match List.Assoc.find fields ~equal:String.equal name with
-  | Some (`String value) -> Some value
-  | _ -> None
-
 let has_label fields name =
   List.Assoc.find fields ~equal:String.equal name |> Option.is_some
 
@@ -483,15 +490,8 @@ let repository_owned output ~repository_identity =
       | Some (`Assoc config) -> (
           match List.Assoc.find config ~equal:String.equal "Labels" with
           | Some (`Assoc labels) ->
-              let repository =
-                Option.first_some
-                  (label labels "io.nixploy.repository_identity")
-                  (Option.first_some
-                     (label labels "io.nixploy.repository")
-                     (label labels "nixploy.repository"))
-              in
-              Ok
-                (Option.equal String.equal repository (Some repository_identity))
+              let%map repository = repository_label labels in
+              Option.equal String.equal repository (Some repository_identity)
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->
@@ -1026,11 +1026,9 @@ let runtime_container_of_inspect output ~project ~target ~resource_key
         in
         let revision = label labels "io.nixploy.revision" in
         let operation_id = label labels "io.nixploy.operation_id" in
+        let%bind repository = repository_label labels in
         let%bind () =
-          if
-            Option.equal String.equal
-              (label labels "io.nixploy.repository_identity")
-              (Some repository_identity)
+          if Option.equal String.equal repository (Some repository_identity)
           then Ok ()
           else
             Or_error.error_string

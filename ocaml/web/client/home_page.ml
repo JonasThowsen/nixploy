@@ -49,22 +49,6 @@ let route_for_key key =
   |> Or_error.ok
   |> Option.map ~f:(fun key -> Route.Application key)
 
-let target_identity target =
-  let applications =
-    List.map target.Protocol.Target_metrics.applications ~f:(fun application ->
-        application.Protocol.Application_metrics.application)
-    |> List.dedup_and_sort ~compare:String.compare
-  in
-  match applications with
-  | [] -> target.target
-  | applications ->
-      sprintf "%s · %s" (String.concat applications ~sep:", ") target.target
-
-let target_host_label target =
-  if String.equal target.Protocol.Target_metrics.host "unavailable" then
-    "Target configuration unavailable"
-  else target.host
-
 let attention_list ~navigate applications =
   let needing_attention =
     List.filter applications ~f:(fun application ->
@@ -159,16 +143,48 @@ let render ~applications ~deployments ~metrics ~applications_stale
     List.count metric_values ~f:(fun target ->
         Option.is_some target.Protocol.Target_metrics.error)
   in
-  let target_check_class, target_check_label =
+  let application_errors =
+    List.sum
+      (module Int)
+      metric_values
+      ~f:(fun target ->
+        List.count target.Protocol.Target_metrics.applications
+          ~f:(fun application ->
+            Option.is_some application.Protocol.Application_metrics.error))
+  in
+  let telemetry_class, telemetry_label, telemetry_detail =
     match metrics with
-    | None -> ("status-warning", "Checks pending")
-    | Some (Error _) -> ("status-danger", "Checks unavailable")
-    | Some (Ok []) -> ("status-muted", "No checks configured")
-    | Some (Ok _) when target_errors = 0 -> ("status-ok", "All checks passed")
-    | Some (Ok _) ->
+    | None ->
+        ("status-warning", "Checking telemetry", "Reading live runtime data…")
+    | Some (Error _) ->
         ( "status-danger",
-          sprintf "%d check%s failed" target_errors
-            (if target_errors = 1 then "" else "s") )
+          "Telemetry unavailable",
+          "Live runtime data could not be read." )
+    | Some (Ok []) ->
+        ( "status-muted",
+          "No telemetry",
+          "No deployment machines are configured." )
+    | Some (Ok targets) ->
+        let target_count = List.length targets in
+        let applications =
+          List.sum
+            (module Int)
+            targets
+            ~f:(fun target ->
+              List.length target.Protocol.Target_metrics.applications)
+        in
+        let detail =
+          sprintf "%d target%s · %d application%s · %d healthy" target_count
+            (if target_count = 1 then "" else "s")
+            applications
+            (if applications = 1 then "" else "s")
+            healthy
+        in
+        if target_errors + application_errors > 0 then
+          ("status-danger", "Telemetry incomplete", detail)
+        else if unhealthy + unavailable > 0 then
+          ("status-warning", "Attention needed", detail)
+        else ("status-ok", "Telemetry available", detail)
   in
   let activity = List.take deployment_values 8 in
   let body_state =
@@ -281,10 +297,9 @@ let render ~applications ~deployments ~metrics ~applications_stale
           Vdom.Node.section
             ~attrs:
               [
-                Vdom.Attr.class_ "surface";
-                Vdom.Attr.create "aria-labelledby" "observation-state";
+                Vdom.Attr.classes [ "surface"; "telemetry-summary" ];
+                Vdom.Attr.create "aria-labelledby" "telemetry-summary";
                 Vdom.Attr.create "aria-live" "polite";
-                Vdom.Attr.create "aria-atomic" "false";
               ]
             [
               Vdom.Node.header
@@ -294,66 +309,22 @@ let render ~applications ~deployments ~metrics ~applications_stale
                     [
                       Vdom.Node.p
                         ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                        [ Vdom.Node.text "Live infrastructure checks" ];
+                        [ Vdom.Node.text "Telemetry" ];
                       Vdom.Node.h3
-                        ~attrs:[ Vdom.Attr.id "observation-state" ]
-                        [ Vdom.Node.text "Deployment machines" ];
-                      Vdom.Node.p
-                        [
-                          Vdom.Node.text
-                            "Nixploy checks each configured target over SSH \
-                             for host capacity, container state, and health.";
-                        ];
+                        ~attrs:[ Vdom.Attr.id "telemetry-summary" ]
+                        [ Vdom.Node.text "Host and application health" ];
                     ];
-                  Ui_helpers.state_badge ~class_name:target_check_class
-                    ~label:target_check_label;
+                  Ui_helpers.state_badge ~class_name:telemetry_class
+                    ~label:telemetry_label;
                 ];
               Ui_helpers.polling_warning ~has_last_good:(Option.is_some metrics)
                 metrics_stale;
-              (match metrics with
-              | None ->
-                  Ui_helpers.text_panel ~kind:"loading"
-                    "Checking deployment machines…"
-              | Some (Error error) ->
-                  Ui_helpers.text_panel ~kind:"error"
-                    (Error.to_string_hum error)
-              | Some (Ok []) ->
-                  Ui_helpers.text_panel ~kind:"empty"
-                    "No deployment machine checks are available."
-              | Some (Ok targets) ->
-                  Vdom.Node.ul
-                    ~attrs:[ Vdom.Attr.class_ "target-summary-list" ]
-                    (List.map targets ~f:(fun target ->
-                         Vdom.Node.li
-                           [
-                             Vdom.Node.div
-                               [
-                                 Vdom.Node.strong
-                                   [ Vdom.Node.text (target_identity target) ];
-                                 Vdom.Node.code
-                                   [ Vdom.Node.text (target_host_label target) ];
-                               ];
-                             (match target.error with
-                             | None ->
-                                 Ui_helpers.state_badge ~class_name:"status-ok"
-                                   ~label:"Check passed"
-                             | Some _ ->
-                                 Ui_helpers.state_badge
-                                   ~class_name:"status-danger"
-                                   ~label:"Check failed");
-                             (match target.error with
-                             | None -> Vdom.Node.none
-                             | Some error ->
-                                 Vdom.Node.p
-                                   ~attrs:
-                                     [ Vdom.Attr.class_ "target-summary-error" ]
-                                   [
-                                     Vdom.Node.text ("Why it failed: " ^ error);
-                                   ]);
-                           ])));
+              Vdom.Node.p
+                ~attrs:[ Vdom.Attr.class_ "telemetry-summary-copy" ]
+                [ Vdom.Node.text telemetry_detail ];
               Ui_helpers.route_link ~class_name:"text-link"
                 ~route:Route.Telemetry ~navigate
-                [ Vdom.Node.text "View detailed telemetry" ];
+                [ Vdom.Node.text "Open telemetry" ];
             ];
         ];
       Vdom.Node.section

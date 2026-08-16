@@ -85,15 +85,17 @@ case "$*" in
   *"system connection list"*) printf '[]\n' ;;
   *" inspect --type container "*)
     for name in "$@"; do :; done
-    printf '[{"Id":"runtime-id","Name":"%%s","State":{"Running":true,"StartedAt":"2025-01-01T00:00:00Z"},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"example","io.nixploy.target":"production","io.nixploy.resource_key":"%%s","io.nixploy.repository_identity":"%s","io.nixploy.revision":"%s","io.nixploy.operation_id":"%%s"}}}]\n' "$name" "$name" "$NIXPLOY_RUNTIME_OPERATION" ;;
+    printf '[{"Id":"runtime-id","Name":"%%s","State":{"Running":true,"StartedAt":"2025-01-01T00:00:00Z"},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"example","io.nixploy.target":"production","io.nixploy.resource_key":"%%s","io.nixploy.repository":"%s"%%s,"io.nixploy.revision":"%%s","io.nixploy.operation_id":"%%s"}}}]\n' "$name" "$name" "$NIXPLOY_RUNTIME_EXTRA_LABEL" "$NIXPLOY_RUNTIME_REVISION" "$NIXPLOY_RUNTIME_OPERATION" ;;
   *" logs "*) printf '2025-01-01T00:00:00Z worker ready\n' ;;
   *" stats "*) printf '%%s\n' '[{"CPUPerc":"2.5%%","MemUsage":"4MiB / 1GiB"}]' ;;
   *) : ;;
 esac
 |}
-       repository_identity revision);
+       repository_identity);
   let old_path = Sys.getenv_exn "PATH" in
   Core_unix.putenv ~key:"PATH" ~data:(fake_bin ^ ":" ^ old_path);
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_EXTRA_LABEL" ~data:"";
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_REVISION" ~data:revision;
   Core_unix.putenv ~key:"NIXPLOY_RUNTIME_OPERATION" ~data:operation_id;
   let application =
     Nixploy.Managed_application.all_of_json
@@ -122,6 +124,38 @@ esac
     Nixploy.Runtime_application.resolve ~commit ~operation_id application
   in
   let runtime = assert_ok resolved in
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_OPERATION" ~data:"discovered-operation";
+  let%bind stale_identity =
+    Nixploy.Runtime_application.resolve ~commit ~operation_id application
+  in
+  assert (Result.is_error stale_identity);
+  let%bind discovered =
+    Nixploy.Runtime_application.discover_identity ~commit application
+  in
+  let discovered = assert_ok discovered in
+  [%test_eq: string] revision
+    (Nixploy.Runtime_application.deployed_revision discovered);
+  [%test_eq: string] "discovered-operation"
+    (Nixploy.Runtime_application.deployed_operation_id discovered);
+  let%bind rediscovered =
+    Nixploy.Runtime_application.resolve ~commit
+      ~operation_id:
+        (Nixploy.Runtime_application.deployed_operation_id discovered)
+      application
+  in
+  ignore (assert_ok rediscovered : Nixploy.Runtime_application.t);
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_EXTRA_LABEL"
+    ~data:",\"io.nixploy.repository_identity\":\"foreign/repository\"";
+  let%bind conflicting_repository =
+    Nixploy.Runtime_application.discover_identity ~commit application
+  in
+  assert (Result.is_error conflicting_repository);
+  assert (
+    Result.error conflicting_repository
+    |> Option.value_exn |> Error.to_string_hum
+    |> String.is_substring ~substring:"repository labels conflict");
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_EXTRA_LABEL" ~data:"";
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_OPERATION" ~data:operation_id;
   assert (Option.is_none (Nixploy.Runtime_application.caddy runtime));
   assert (Option.is_none (Nixploy.Runtime_application.active_port runtime));
   let container = Nixploy.Runtime_application.container runtime in
@@ -147,6 +181,12 @@ esac
   let%bind opened = Nixploy.Store.open_ ~path:state_path in
   let store = assert_ok opened in
   let target = Nixploy.Target_name.of_string "production" |> assert_ok in
+  let service = Nixploy.Application.create ~store () in
+  let%bind discovered_logs =
+    Nixploy.Application.application_logs service application
+  in
+  let discovered_logs = assert_ok discovered_logs in
+  [%test_eq: string] "worker ready" (List.hd_exn discovered_logs.lines).text;
   let%bind requested =
     Nixploy.Store.request store ~application_key:(Some "worker")
       ~working_directory:directory ~target ~commit
@@ -168,7 +208,6 @@ esac
       Present
   in
   assert_ok present;
-  let service = Nixploy.Application.create ~store () in
   let%bind service_logs =
     Nixploy.Application.application_logs service application
   in
@@ -184,8 +223,10 @@ esac
       Absent
   in
   assert_ok absent;
-  let%bind stale = Nixploy.Application.application_logs service application in
-  assert (Result.is_error stale);
+  let%bind observed_while_absent =
+    Nixploy.Application.application_logs service application
+  in
+  ignore (assert_ok observed_while_absent : Nixploy.Application.log_snapshot);
   let%bind present =
     Nixploy.Store.set_resource_state store ~working_directory:directory ~target
       Present
@@ -235,10 +276,20 @@ esac
   assert (Sqlite3.db_close db);
   Core_unix.putenv ~key:"NIXPLOY_RUNTIME_OPERATION"
     ~data:(Nixploy.Store.id local_success);
-  let%bind ignored_local =
+  let%bind discovered_after_external_deploy =
     Nixploy.Application.application_logs service application
   in
-  assert (Result.is_error ignored_local);
+  ignore
+    (assert_ok discovered_after_external_deploy
+      : Nixploy.Application.log_snapshot);
+  Core_unix.putenv ~key:"NIXPLOY_RUNTIME_OPERATION"
+    ~data:(Nixploy.Store.id newer);
+  git [ "update-ref"; "-d"; "refs/heads/main" ];
+  let persisted_only_service = Nixploy.Application.create ~store () in
+  let%bind persisted_without_main =
+    Nixploy.Application.application_logs persisted_only_service application
+  in
+  ignore (assert_ok persisted_without_main : Nixploy.Application.log_snapshot);
   Core_unix.putenv ~key:"PATH" ~data:old_path;
   let%map _ =
     Nixploy.Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 5.)

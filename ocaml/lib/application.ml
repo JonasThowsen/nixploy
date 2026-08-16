@@ -106,9 +106,8 @@ type mutation_lifecycle = {
 type cached_runtime = {
   working_directory : string;
   target : Target_name.t;
-  deployment_id : string;
+  resolution_id : string;
   mutation_id : string option;
-  resource_state : resource_state;
   mutable expires_at : Time_ns.t;
   value : Runtime_application.t Or_error.t Deferred.t;
 }
@@ -471,25 +470,20 @@ let resource_state t ~working_directory ~target =
   | Error error -> Deferred.return (Error error)
   | Ok scope -> resource_state_for_scope t ~scope
 
-let successful_runtime_identity t application =
+let persisted_runtime_identity t application =
   let open Deferred.Or_error.Let_syntax in
   let%bind scope = Deferred.return (managed_scope application) in
   let application_key = Managed_application.key application in
-  let%bind deployment =
+  let%map deployment =
     Store.latest_successful_for_application t.store ~application_key
       ~working_directory:scope.working_directory ~target:scope.target
   in
-  match deployment with
-  | None ->
-      Deferred.Or_error.error_string
-        "application has no exact persisted successful deployment identity"
-  | Some deployment -> (
-      match Store.revision deployment with
-      | None ->
-          Deferred.Or_error.error_string
-            "successful deployment has no immutable revision"
-      | Some revision ->
-          Deferred.Or_error.return (scope, revision, Store.id deployment))
+  let identity =
+    Option.bind deployment ~f:(fun deployment ->
+        Option.map (Store.revision deployment) ~f:(fun revision ->
+            (revision, Store.id deployment)))
+  in
+  (scope, identity)
 
 let runtime_cache_key application (scope : scope) =
   String.concat
@@ -501,52 +495,37 @@ let runtime_cache_key application (scope : scope) =
       Managed_application.repository_identity application;
     ]
 
-let resolve_runtime t application =
+let discover_runtime t application ~bootstrap_commit =
   let open Deferred.Or_error.Let_syntax in
-  let%bind scope, revision, deployment_id =
-    successful_runtime_identity t application
+  let%bind identity =
+    Runtime_application.discover_identity ~commit:bootstrap_commit application
   in
-  let%bind resource_state = resource_state_for_scope t ~scope in
-  let%bind latest_scope =
-    Store.list_for_scope t.store ~working_directory:scope.working_directory
-      ~target:scope.target ~limit:1
+  let revision = Runtime_application.deployed_revision identity in
+  let operation_id = Runtime_application.deployed_operation_id identity in
+  let%bind commit =
+    t.find_commit
+      ~working_directory:(Managed_application.working_directory application)
+      ~revision
   in
-  let mutation_id = List.hd latest_scope |> Option.map ~f:Store.id in
-  let%bind () =
-    match resource_state with
-    | Present -> Deferred.Or_error.return ()
-    | Unknown | Absent ->
-        Deferred.Or_error.error_string
-          "application resources are not persisted as present"
-  in
-  let key = runtime_cache_key application scope in
+  Runtime_application.resolve ~commit ~operation_id application
+
+let cached_runtime t ~(scope : scope) ~key ~resolution_id ~mutation_id ~resolve
+    =
   let now = Time_ns.now () in
   match Hashtbl.find t.runtime_cache key with
   | Some cached
-    when String.equal cached.deployment_id deployment_id
+    when String.equal cached.resolution_id resolution_id
          && Option.equal String.equal cached.mutation_id mutation_id
-         && [%equal: resource_state] cached.resource_state resource_state
          && Time_ns.compare now cached.expires_at < 0 ->
       cached.value
   | Some _ | None ->
-      let value =
-        let open Deferred.Or_error.Let_syntax in
-        let%bind commit =
-          t.find_commit
-            ~working_directory:
-              (Managed_application.working_directory application)
-            ~revision
-        in
-        Runtime_application.resolve ~commit ~operation_id:deployment_id
-          application
-      in
+      let value = resolve () in
       let cached =
         {
           working_directory = scope.working_directory;
           target = scope.target;
-          deployment_id;
+          resolution_id;
           mutation_id;
-          resource_state;
           expires_at = Time_ns.add now (Time_ns.Span.of_min 5.);
           value;
         }
@@ -558,6 +537,66 @@ let resolve_runtime t application =
                Time_ns.add (Time_ns.now ())
                  (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.))));
       value
+
+let resolve_runtime t application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind scope, persisted_identity =
+    persisted_runtime_identity t application
+  in
+  let%bind latest_scope =
+    Store.list_for_scope t.store ~working_directory:scope.working_directory
+      ~target:scope.target ~limit:1
+  in
+  let mutation_id = List.hd latest_scope |> Option.map ~f:Store.id in
+  let key = runtime_cache_key application scope in
+  let preview_main () =
+    t.preview_main
+      ~working_directory:(Managed_application.working_directory application)
+  in
+  match persisted_identity with
+  | None ->
+      let%bind bootstrap_commit = preview_main () in
+      let resolution_id =
+        "bootstrap:" ^ Source.commit_revision bootstrap_commit
+      in
+      cached_runtime t ~scope ~key ~resolution_id ~mutation_id
+        ~resolve:(fun () -> discover_runtime t application ~bootstrap_commit)
+  | Some (revision, deployment_id) ->
+      let resolution_id =
+        String.concat [ "persisted:"; deployment_id; ":"; revision ]
+      in
+      cached_runtime t ~scope ~key ~resolution_id ~mutation_id
+        ~resolve:(fun () ->
+          let exact =
+            let open Deferred.Or_error.Let_syntax in
+            let%bind commit =
+              t.find_commit
+                ~working_directory:
+                  (Managed_application.working_directory application)
+                ~revision
+            in
+            Runtime_application.resolve ~commit ~operation_id:deployment_id
+              application
+          in
+          let%bind.Deferred exact = exact in
+          match exact with
+          | Ok _ -> Deferred.return exact
+          | Error exact_error ->
+              let%bind.Deferred bootstrap = preview_main () in
+              let%bind.Deferred discovered =
+                match bootstrap with
+                | Error error -> Deferred.return (Error error)
+                | Ok bootstrap_commit ->
+                    discover_runtime t application ~bootstrap_commit
+              in
+              Deferred.return
+                (Result.map_error discovered ~f:(fun discovery_error ->
+                     Error.create_s
+                       [%message
+                         "persisted and discovered runtime identity checks \
+                          failed"
+                           (exact_error : Error.t)
+                           (discovery_error : Error.t)])))
 
 let application_logs t application =
   match t.logs_override with
