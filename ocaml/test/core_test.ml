@@ -280,9 +280,18 @@ let%test_unit
       {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"unknown":true}}}}|};
       {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","web":{"domain":"example.invalid","unknown":true}}}}|};
       {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[{"source":"/srv/data","destination":"/app/data","unknown":true}]}}}}|};
+      {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","tasks":{}}}}|};
       {|{"__schema":"v0.4","project":"first","project":"second","targets":{}}|};
     ] ~f:(fun json ->
-      assert (Result.is_error (Nixploy.Configuration.of_json json)))
+      assert (Result.is_error (Nixploy.Configuration.of_json json)));
+  ignore
+    (Nixploy.Configuration.of_json
+       {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"image","ip":"host","tasks":{}}}}|}
+     |> assert_ok
+      : Nixploy.Configuration.t);
+  Nixploy.Configuration.of_json
+    {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"image","ip":"host","tasks":{"vacuum":{"command":["/app/vacuum"]}}}}}|}
+  |> assert_error_containing "named operational tasks"
 
 let%test_unit
     "pre-start and application render identical mandatory read-only mounts" =

@@ -362,58 +362,36 @@ let secret_references ~field = function
              (name, path)))
   | _ -> Or_error.errorf "%s must be an object" field
 
-let validate_tasks ~field = function
-  | `Assoc tasks ->
-      let open Or_error.Let_syntax in
-      let%bind () = validate_map_members ~field tasks in
-      let%map _ =
-        Or_error.all
-          (List.map tasks ~f:(fun (name, task) ->
-               match task with
-               | `Assoc members ->
-                   validate_members
-                     ~field:(field ^ "." ^ name)
-                     ~allowed:
-                       (String.Set.of_list
-                          [
-                            "description";
-                            "command";
-                            "timeoutSeconds";
-                            "confirmation";
-                          ])
-                     members
-               | _ -> Or_error.errorf "%s.%s must be an object" field name))
-      in
-      ()
-  | _ -> Or_error.errorf "%s must be an object" field
-
 let parse_target ~schema (raw_name, json) =
   let open Or_error.Let_syntax in
   let field = "targets." ^ raw_name in
   let%bind name = Target_name.of_string raw_name in
   match json with
   | `Assoc fields ->
-      let%bind () =
-        validate_members ~field
-          ~allowed:
-            (String.Set.of_list
-               [
-                 "image";
-                 "ip";
-                 "user";
-                 "port";
-                 "identityFile";
-                 "run";
-                 "web";
-                 "tasks";
-                 "secrets";
-               ])
-          fields
+      let allowed =
+        String.Set.of_list
+          [
+            "image";
+            "ip";
+            "user";
+            "port";
+            "identityFile";
+            "run";
+            "web";
+            "secrets";
+          ]
+        |> fun allowed ->
+        if String.equal schema "v0.3" then Set.add allowed "tasks" else allowed
       in
+      let%bind () = validate_members ~field ~allowed fields in
       let%bind () =
-        optional fields "tasks"
-          (fun ~field:_ -> validate_tasks ~field:(field ^ ".tasks"))
-          ~default:()
+        match List.Assoc.find fields ~equal:String.equal "tasks" with
+        | None | Some (`Assoc []) -> Ok ()
+        | Some _ ->
+            Or_error.errorf
+              "%s.tasks declares named operational tasks, which are not \
+               supported by the OCaml application"
+              field
       in
       let%map image = required fields "image" non_empty_string
       and host = required fields "ip" non_empty_string

@@ -187,6 +187,31 @@ The OCaml parser continues to accept schemas `v0.2` and `v0.3` for deployments
 without this field. Supplying `readOnlyBinds` under either older schema is an
 error rather than a silently ignored mount requirement.
 
+## Updating an older nixploy input
+
+Existing project configuration for deploy, prune, web/non-web targets, runtime
+environment, ports, pre-start commands, secrets, and read-only binds remains
+source-compatible. Updating the input automatically evaluates that configuration
+as schema `v0.4`; the package outputs remain `packages.default` and
+`packages.nixploy`, and `nixployModules.default` remains available.
+
+```bash
+nix flake lock --update-input nixploy
+nix eval .#nixploy --json | jq -e '.__schema == "v0.4"'
+nix flake check
+```
+
+Remove any `tasks` declaration before updating. Named operational tasks belonged
+to a retired control-plane experiment and were never executed by the supported
+CLI; schema `v0.4` rejects them instead of silently accepting dead configuration.
+Older schema `v0.3` output containing the historical default `tasks = { }` is
+accepted by the new CLI, but non-empty task declarations fail explicitly.
+
+Project checks that intentionally pin `nixploy.lib.schema`, `config.__schema`, or
+the exact `flake.lock` revision must update those assertions to `v0.4` and the
+new lock revision. These assertions are expected coordination guards rather than
+runtime compatibility contracts.
+
 ## Useful commands
 
 Evaluate the normalized config:
