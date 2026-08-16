@@ -171,16 +171,20 @@ configuration. The executable itself hardcodes loopback binding. Managed
 applications serialize exactly the JSON accepted by `Managed_application`.
 
 Use `sshIdentityFile`, `sshKnownHostsFile`, `sopsAgeKeyFile`, and
-`sopsAgeSshKeyFile` for root-readable deployment credentials. SOPS private
-identity files must be absolute regular files with no symlink path components
-and no group/other permissions; they may be owned by the service effective UID,
-or by root when read-only as with systemd credentials. systemd copies
-them into the private service credential directory and the module sets only the
-environment names read by OCaml. A generated start wrapper reapplies or clears
-these credential names and the module-owned auth/origin/application names after
-systemd loads `environmentFile`, preventing that file from replacing the module
-security boundary. Repositories and any additional `readOnlyPaths` must be
-readable by the service Unix identity.
+`sopsAgeSshKeyFile` for root-readable deployment credentials. systemd first
+loads them into its root-owned service credential directory. Before exec, the
+generated start wrapper copies each configured private identity into the
+service's ephemeral runtime directory as a service-owned mode `0600` file;
+known-hosts data remains in the systemd credential directory. OCaml therefore
+receives private identity paths that satisfy its strict regular-file, ownership,
+symlink, and no-group/other-permissions validation without persisting secret
+contents. The wrapper reapplies or clears these credential names and the
+module-owned auth/origin/application names after systemd loads
+`environmentFile`, preventing that file from replacing the module security
+boundary or redirecting the ephemeral runtime directory. Root source
+credentials should remain read-only and protected.
+Repositories and any additional `readOnlyPaths` must be readable by the service
+Unix identity.
 
 Before switching generations, stop all Phoenix web and worker units. Never run
 the old and new deployment engines concurrently. Preserve the `nixploy` user,

@@ -8,6 +8,7 @@
 
 let
   cfg = config.services.nixploy;
+  runtimeDirectoryPath = "/run/${config.systemd.services.nixploy.serviceConfig.RuntimeDirectory}";
 
   publicApplications = lib.mapAttrs (_key: application: {
     inherit (application)
@@ -24,25 +25,30 @@ let
       source = cfg.sshIdentityFile;
       name = "ssh-identity";
       environment = "NIXPLOY_SSH_IDENTITY_FILE";
+      private = true;
     }
     {
       source = cfg.sshKnownHostsFile;
       name = "ssh-known-hosts";
       environment = "NIXPLOY_SSH_KNOWN_HOSTS_FILE";
+      private = false;
     }
     {
       source = cfg.sopsAgeKeyFile;
       name = "sops-age-key";
       environment = "SOPS_AGE_KEY_FILE";
+      private = true;
     }
     {
       source = cfg.sopsAgeSshKeyFile;
       name = "sops-age-ssh-key";
       environment = "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE";
+      private = true;
     }
   ];
 
   configuredCredentials = lib.filter (credential: credential.source != null) credentialDefinitions;
+  configuredPrivateCredentials = lib.filter (credential: credential.private) configuredCredentials;
   credentialEnvironment = lib.listToAttrs (
     map (credential: {
       name = credential.environment;
@@ -53,6 +59,7 @@ let
   moduleEnvironment = {
     NIXPLOY_AUTH_MODE = cfg.authMode;
     NIXPLOY_MANAGED_APPLICATIONS_JSON = builtins.toJSON publicApplications;
+    RUNTIME_DIRECTORY = runtimeDirectoryPath;
   }
   // lib.optionalAttrs (cfg.operatorEmail != null) {
     NIXPLOY_OPERATOR_EMAIL = cfg.operatorEmail;
@@ -72,6 +79,7 @@ let
     "SOPS_AGE_KEY_FILE"
     "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE"
     "SOPS_AGE_SSH_PRIVATE_KEY_FILE"
+    "RUNTIME_DIRECTORY"
   ];
 
   setProtectedEnvironment = lib.concatMapStringsSep "\n" (
@@ -82,11 +90,21 @@ let
       "unset ${name}"
   ) protectedEnvironmentNames;
 
+  installPrivateCredentials = lib.concatMapStringsSep "\n" (credential: ''
+    ${pkgs.coreutils}/bin/install --mode=0600 --no-target-directory -- \
+      ${lib.escapeShellArg "/run/credentials/nixploy.service/${credential.name}"} \
+      "$RUNTIME_DIRECTORY/${credential.name}"
+    export ${credential.environment}="$RUNTIME_DIRECTORY/${credential.name}"
+  '') configuredPrivateCredentials;
+
   startScript = pkgs.writeShellScript "nixploy-start" ''
     set -eu
     # systemd EnvironmentFile entries override Environment entries. Re-apply
     # every module-owned security and credential value in the child process.
     ${setProtectedEnvironment}
+    # LoadCredential files are root-owned mode 0440. Copy private values into
+    # the ephemeral service-owned directory before strict identity validation.
+    ${installPrivateCredentials}
     exec ${lib.escapeShellArg "${cfg.package}/bin/nixploy-web"} \
       --port ${lib.escapeShellArg (toString cfg.port)} \
       --state-db ${lib.escapeShellArg "/var/lib/nixploy/state.sqlite3"}
@@ -315,6 +333,8 @@ in
         TimeoutStopSec = 30;
         StateDirectory = "nixploy";
         StateDirectoryMode = "0700";
+        RuntimeDirectory = "nixploy";
+        RuntimeDirectoryMode = "0700";
         WorkingDirectory = "/var/lib/nixploy";
         UMask = "0077";
 

@@ -31,6 +31,10 @@ pkgs.testers.runNixOSTest {
       };
     };
 
+    # Prove private credential destinations follow the effective systemd
+    # runtime directory rather than a module-hardcoded path.
+    systemd.services.nixploy.serviceConfig.RuntimeDirectory = pkgs.lib.mkForce "nixploy-test-runtime";
+
     environment.etc = {
       "nixploy-test.env".text = ''
         NIXPLOY_AUTH_MODE=tailscale
@@ -42,6 +46,7 @@ pkgs.testers.runNixOSTest {
         SOPS_AGE_KEY_FILE=/tmp/attacker.age
         NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE=/tmp/attacker-sops-ssh
         SOPS_AGE_SSH_PRIVATE_KEY_FILE=/tmp/attacker-generic-sops-ssh
+        RUNTIME_DIRECTORY=/var/lib/nixploy/attacker-runtime
       '';
       "nixploy-test-ssh".text = "test ssh credential\n";
       "nixploy-test-known-hosts".text = "test known hosts credential\n";
@@ -111,13 +116,24 @@ pkgs.testers.runNixOSTest {
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")
+    machine.succeed(f"{service_environment} | grep -Fx RUNTIME_DIRECTORY=/run/nixploy-test-runtime")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_(OPERATOR_EMAIL|ALLOWED_ORIGIN)='")
     machine.succeed(f"{service_environment} | sed -n 's/^NIXPLOY_MANAGED_APPLICATIONS_JSON=//p' | jq -e '.example.repository == \"/var/lib/nixploy/repositories/example\"'")
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SSH_IDENTITY_FILE=/run/credentials/nixploy.service/ssh-identity")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SSH_IDENTITY_FILE=/run/nixploy-test-runtime/ssh-identity")
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SSH_KNOWN_HOSTS_FILE=/run/credentials/nixploy.service/ssh-known-hosts")
-    machine.succeed(f"{service_environment} | grep -Fx SOPS_AGE_KEY_FILE=/run/credentials/nixploy.service/sops-age-key")
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE=/run/credentials/nixploy.service/sops-age-ssh-key")
+    machine.succeed(f"{service_environment} | grep -Fx SOPS_AGE_KEY_FILE=/run/nixploy-test-runtime/sops-age-key")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE=/run/nixploy-test-runtime/sops-age-ssh-key")
     machine.fail(f"{service_environment} | grep -E '^SOPS_AGE_SSH_PRIVATE_KEY_FILE='")
+
+    machine.succeed("test $(systemctl show --property RuntimeDirectory --value nixploy.service) = nixploy-test-runtime")
+    machine.succeed("test $(stat --format='%a:%U:%G' /run/nixploy-test-runtime) = 700:nixploy:nixploy")
+    for source, copied in [
+        ("/etc/nixploy-test-ssh", "/run/nixploy-test-runtime/ssh-identity"),
+        ("/etc/nixploy-test.age", "/run/nixploy-test-runtime/sops-age-key"),
+        ("/etc/nixploy-test-sops-ssh", "/run/nixploy-test-runtime/sops-age-ssh-key"),
+    ]:
+        machine.succeed(f"cmp {source} {copied}")
+        machine.succeed(f"test $(stat --format='%a:%U:%G' {copied}) = 600:nixploy:nixploy")
 
     machine.succeed("pid=$(systemctl show --property MainPID --value nixploy.service); nsenter --target $pid --mount -- runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example rev-parse --is-inside-work-tree | grep -Fx true")
     machine.succeed("test $(systemctl list-unit-files 'nixploy*' --no-legend | wc -l) -eq 1")
