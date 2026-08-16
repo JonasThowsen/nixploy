@@ -95,6 +95,11 @@ pkgs.testers.runNixOSTest {
 
     machine.succeed("curl --fail --silent http://127.0.0.1:18080/healthz | grep -Fx ok")
     machine.succeed("curl --fail --silent http://127.0.0.1:18080/ | grep -F '<!doctype html>'")
+    for path in ["apps", "apps/example", "telemetry"]:
+        machine.succeed(f"curl --fail --silent http://127.0.0.1:18080/{path} | grep -F '<div id=\"app\"></div>'")
+    machine.succeed("curl --silent --output /dev/null --write-out '%{http_code}\\n' http://127.0.0.1:18080/arbitrary-unknown-path | grep -Fx 404")
+    machine.succeed("curl --fail --silent --output /tmp/nixploy-main.js http://127.0.0.1:18080/main.js && test -s /tmp/nixploy-main.js")
+    machine.succeed("curl --fail --silent http://127.0.0.1:18080/app.css | grep -F ':root {'")
     machine.succeed("ss --listening --tcp --numeric | grep -E '127\\.0\\.0\\.1:18080([[:space:]]|$)'")
     machine.fail("ss --listening --tcp --numeric | grep -E '(^|[[:space:]])(0\\.0\\.0\\.0|\\[::\\]):18080([[:space:]]|$)'")
 

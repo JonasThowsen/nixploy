@@ -2,952 +2,197 @@ open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
 module Deploy_state = Nixploy_web_client_state.Deploy_state
+module Last_good = Nixploy_web_client_state.Last_good
 module Prune_state = Nixploy_web_client_state.Prune_state
 
-let text_with_class class_name text =
-  Vdom.Node.div ~attrs:[ Vdom.Attr.class_ class_name ] [ Vdom.Node.text text ]
+let empty_poll_result () =
+  {
+    Rpc_effect.Poll_result.last_ok_response = None;
+    last_error = None;
+    inflight_query = None;
+    refresh = Effect.Ignore;
+  }
 
-let state_name = function
-  | Protocol.Deployment.State.Requested -> "QUEUED"
-  | Running -> "IN FLIGHT"
-  | Succeeded -> "VERIFIED"
-  | Failed -> "FAILED"
-  | Cancelled -> "CANCELLED"
-
-let state_class = function
-  | Protocol.Deployment.State.Requested -> "queued"
-  | Running -> "running"
-  | Succeeded -> "succeeded"
-  | Failed -> "failed"
-  | Cancelled -> "cancelled"
-
-let deployment_state_name deployment =
-  match deployment.Protocol.Deployment.state with
-  | (Requested | Running) when not deployment.can_cancel -> "INTERRUPTED"
-  | state -> state_name state
-
-let deployment_state_class deployment =
-  match deployment.Protocol.Deployment.state with
-  | (Requested | Running) when not deployment.can_cancel -> "interrupted"
-  | state -> state_class state
-
-let short_revision revision =
-  String.prefix revision (Int.min 12 (String.length revision))
-
-let format_time timestamp_ms =
-  timestamp_ms |> Int64.to_float |> Time_ns.Span.of_ms
-  |> Time_ns.of_span_since_epoch |> Time_ns.to_string_utc
-
-let format_duration deployment =
-  let open Protocol.Deployment in
-  match deployment.elapsed_ms with
-  | None -> "NOT STARTED"
-  | Some elapsed ->
-      let seconds = Int64.to_float elapsed /. 1000. in
-      if Float.(seconds < 60.) then sprintf "%.1fs" seconds
-      else sprintf "%.1fm" (seconds /. 60.)
-
-let format_bytes bytes =
-  let value = Int64.to_float bytes in
-  if Float.(value >= 1_073_741_824.) then
-    sprintf "%.1f GiB" (value /. 1_073_741_824.)
-  else if Float.(value >= 1_048_576.) then
-    sprintf "%.1f MiB" (value /. 1_048_576.)
-  else if Float.(value >= 1024.) then sprintf "%.1f KiB" (value /. 1024.)
-  else sprintf "%Ld B" bytes
-
-let format_percent = function
-  | None -> "UNAVAILABLE"
-  | Some value -> sprintf "%.1f%%" value
-
-let format_uptime = function
-  | None -> "UNAVAILABLE"
-  | Some seconds ->
-      let seconds = Int64.to_int_exn seconds in
-      let days = seconds / 86_400 in
-      let hours = seconds mod 86_400 / 3_600 in
-      if days > 0 then sprintf "%dd %dh" days hours
-      else sprintf "%dh %dm" hours (seconds mod 3_600 / 60)
-
-let polling_warning last_ok_response last_error =
-  match (last_ok_response, last_error) with
-  | Some _, Some (_, error) ->
-      text_with_class "stale-panel"
-        ("REFRESH FAILED; SHOWING LAST OBSERVATION: "
-       ^ Error.to_string_hum error)
-  | None, Some (_, error) ->
-      text_with_class "error-panel" (Error.to_string_hum error)
-  | _ -> Vdom.Node.none
-
-let commit_summary = function
-  | None -> ("NO REVISION", "Commit details unavailable")
-  | Some commit ->
-      (short_revision commit.Protocol.Commit.revision, commit.subject)
-
-let button ?(kind = "secondary") ?(disabled = false) ?(autofocus = false) ~label
-    ~on_click () =
-  Vdom.Node.button
-    ~attrs:
-      ([
-         Vdom.Attr.classes [ "button"; "button-" ^ kind ];
-         Vdom.Attr.create "type" "button";
-       ]
-      @ (if autofocus then [ Vdom.Attr.create "autofocus" "true" ] else [])
-      @
-      if disabled then [ Vdom.Attr.disabled ]
-      else [ Vdom.Attr.on_click (fun _ -> on_click) ])
-    [ Vdom.Node.text label ]
-
-let commit_confirmation ~application ~commit ~deploy_state ~dispatch_deploy
-    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
-    ~set_notice =
-  let pending = Deploy_state.is_pending deploy_state in
-  let confirm =
-    let%bind.Effect () =
-      Effect.Many
-        [
-          set_deploy_state
-            (Deploy_state.start_submission deploy_state ~key:application);
-          set_cancel_confirmation None;
-          set_prune_state Prune_state.Idle;
-        ]
-    in
-    let%bind.Effect response =
-      dispatch_deploy
-        {
-          Protocol.Deploy.Query.application;
-          revision = commit.Protocol.Commit.revision;
-        }
-    in
-    let finished =
-      set_deploy_state
-        (Deploy_state.finish_submission (Deploy_state.Submitting application)
-           ~key:application)
-    in
-    match response with
-    | Error error ->
-        Effect.Many
-          [
-            finished;
-            set_notice ("DEPLOY RPC FAILED: " ^ Error.to_string_hum error);
-          ]
-    | Ok (Error error) ->
-        Effect.Many
-          [
-            finished;
-            set_notice ("DEPLOYMENT REJECTED: " ^ Error.to_string_hum error);
-          ]
-    | Ok (Ok id) ->
-        Effect.Many
-          [
-            finished; set_preview None; set_notice ("DEPLOYMENT STARTED: " ^ id);
-          ]
-  in
-  Vdom.Node.section
-    ~attrs:
-      [
-        Vdom.Attr.class_ "confirmation";
-        Vdom.Attr.create "aria-label" "Confirm deployment commit";
-      ]
-    [
-      Vdom.Node.div
-        [
-          Vdom.Node.span
-            ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-            [ Vdom.Node.text "EXACT COMMIT" ];
-          Vdom.Node.strong [ Vdom.Node.text commit.subject ];
-          Vdom.Node.code [ Vdom.Node.text commit.revision ];
-          Vdom.Node.small [ Vdom.Node.text (format_time commit.timestamp_ms) ];
-        ];
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "button-row" ]
-        [
-          button ~kind:"primary" ~disabled:pending
-            ~label:
-              (if pending then "SUBMITTING DEPLOYMENT" else "DEPLOY THIS COMMIT")
-            ~on_click:confirm ();
-          button ~disabled:pending ~label:"CANCEL" ~on_click:(set_preview None)
-            ();
-        ];
-    ]
-
-let prune_route_notice = function
-  | Protocol.Prune_result.Route.Not_configured -> "NOT CONFIGURED"
-  | Missing -> "ALREADY ABSENT"
-  | Removed -> "REMOVED"
-
-let deployment_is_active = function
-  | None -> false
-  | Some deployment -> (
-      deployment.Protocol.Deployment.can_cancel
-      &&
-      match deployment.state with
-      | Requested | Running -> true
-      | Succeeded | Failed | Cancelled -> false)
-
-let id_component value =
-  String.concat_map value ~f:(fun character ->
-      sprintf "%02x" (Char.to_int character))
-
-let prune_confirmation ~application ~dispatch_prune ~prune_state
-    ~set_prune_state ~set_notice ~deployment_active =
-  let key = application.Protocol.Application.key in
-  let id_suffix = id_component key in
-  let title_id = "prune-dialog-title-" ^ id_suffix in
-  let description_id = "prune-dialog-description-" ^ id_suffix in
-  let pending =
-    match prune_state with
-    | Prune_state.Pending pending -> String.equal pending key
-    | Prune_state.Idle | Prune_state.Confirming _ -> false
-  in
-  let error =
-    match Prune_state.confirmation prune_state with
-    | Some (confirmation_key, error) when String.equal confirmation_key key ->
-        error
-    | _ -> None
-  in
-  let confirm =
-    let%bind.Effect () = set_prune_state (Prune_state.start prune_state ~key) in
-    let%bind.Effect response =
-      dispatch_prune { Protocol.Prune.Query.application = key }
-    in
-    match response with
-    | Error rpc_error ->
-        let error = "PRUNE RPC FAILED: " ^ Error.to_string_hum rpc_error in
-        Effect.Many
-          [
-            set_prune_state
-              (Prune_state.fail (Prune_state.Pending key) ~key ~error);
-            set_notice error;
-          ]
-    | Ok (Error application_error) ->
-        let error =
-          "PRUNE REJECTED: " ^ Error.to_string_hum application_error
-        in
-        Effect.Many
-          [
-            set_prune_state
-              (Prune_state.fail (Prune_state.Pending key) ~key ~error);
-            set_notice error;
-          ]
-    | Ok (Ok result) ->
-        let notice =
-          sprintf
-            "PRUNE COMPLETED FOR %s/%s: %d CONTAINERS REMOVED; %d SCOPED \
-             SECRETS REMOVED; CADDY ROUTE %s. RUNTIME OBSERVATIONS WILL \
-             REFRESH."
-            result.Protocol.Prune_result.project result.target
-            result.containers_removed result.secrets_removed
-            (prune_route_notice result.route)
-        in
-        Effect.Many
-          [
-            set_prune_state (Prune_state.succeed (Prune_state.Pending key) ~key);
-            set_notice notice;
-          ]
-  in
-  Vdom.Node.section
-    ~attrs:
-      [
-        Vdom.Attr.classes [ "confirmation"; "prune-confirmation" ];
-        Vdom.Attr.create "role" "alertdialog";
-        Vdom.Attr.create "aria-modal" "false";
-        Vdom.Attr.create "aria-labelledby" title_id;
-        Vdom.Attr.create "aria-describedby" description_id;
-      ]
-    [
-      Vdom.Node.div
-        [
-          Vdom.Node.span
-            ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-            [ Vdom.Node.text "DESTRUCTIVE RESOURCE PRUNE" ];
-          Vdom.Node.strong
-            ~attrs:[ Vdom.Attr.id title_id ]
-            [ Vdom.Node.text ("APPLICATION " ^ key) ];
-          Vdom.Node.p
-            ~attrs:[ Vdom.Attr.id description_id ]
-            [
-              Vdom.Node.text
-                ("Project " ^ application.project ^ " / target "
-               ^ application.target
-               ^ ". This removes owned containers, scoped secrets, and the \
-                  Caddy route. It causes downtime until resources are deployed \
-                  again.");
-            ];
-          (match error with
-          | None -> Vdom.Node.none
-          | Some error ->
-              Vdom.Node.p
-                ~attrs:
-                  [
-                    Vdom.Attr.class_ "prune-error";
-                    Vdom.Attr.create "role" "alert";
-                    Vdom.Attr.create "aria-live" "assertive";
-                  ]
-                [ Vdom.Node.text error ]);
-        ];
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "button-row" ]
-        [
-          button ~autofocus:(not pending) ~disabled:pending
-            ~label:"KEEP RESOURCES"
-            ~on_click:(set_prune_state (Prune_state.keep prune_state ~key))
-            ();
-          button ~kind:"danger"
-            ~disabled:(deployment_active || pending)
-            ~label:(if pending then "PRUNING RESOURCES" else "CONFIRM PRUNE")
-            ~on_click:confirm ();
-        ];
-    ]
-
-let application_card ~preview ~deploy_state ~cancel_confirmation ~prune_state
-    ~dispatch_preview ~dispatch_deploy ~dispatch_cancel ~dispatch_prune
-    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
-    ~set_deployment_filter ~set_selected_logs ~set_search ~set_current_match
-    ~set_follow ~set_paused_snapshot ~set_notice application =
-  let deployment = application.Protocol.Application.deployment in
-  let state, state_class =
-    match application.resource_state with
-    | Protocol.Resource_state.Unknown ->
-        ("RESOURCE STATE UNKNOWN", "interrupted")
-    | Protocol.Resource_state.Present -> ("RESOURCES PRESENT", "succeeded")
-    | Protocol.Resource_state.Absent -> ("PRUNED / ABSENT", "absent")
-  in
-  let stage, message, revision, subject =
-    match deployment with
-    | None ->
-        ( "awaiting first deployment",
-          "No deployment has been recorded for this application.",
-          "NO REVISION",
-          "Commit details unavailable" )
-    | Some deployment ->
-        let revision, subject = commit_summary deployment.commit in
-        ( deployment.stage,
-          Option.value deployment.error ~default:deployment.message,
-          revision,
-          subject )
-  in
-  let prune_busy = Prune_state.is_busy prune_state in
-  let deploy_busy = Deploy_state.is_busy deploy_state in
-  let previewing =
-    Deploy_state.is_previewing deploy_state ~key:application.key
-  in
-  let request_preview =
-    let%bind.Effect () =
-      Effect.Many
-        [
-          set_deploy_state
-            (Deploy_state.start_preview deploy_state ~key:application.key);
-          set_preview None;
-          set_cancel_confirmation None;
-          set_prune_state Prune_state.Idle;
-          set_notice ("READING MAIN: " ^ application.key);
-        ]
-    in
-    let%bind.Effect response =
-      dispatch_preview
-        { Protocol.Preview_deployment.Query.application = application.key }
-    in
-    let finished =
-      set_deploy_state
-        (Deploy_state.finish_preview (Deploy_state.Previewing application.key)
-           ~key:application.key)
-    in
-    match response with
-    | Error error ->
-        Effect.Many
-          [
-            finished;
-            set_notice ("PREVIEW RPC FAILED: " ^ Error.to_string_hum error);
-          ]
-    | Ok (Error error) ->
-        Effect.Many
-          [
-            finished;
-            set_notice ("COMMIT PREVIEW FAILED: " ^ Error.to_string_hum error);
-          ]
-    | Ok (Ok commit) ->
-        Effect.Many
-          [
-            finished;
-            set_preview (Some (application.key, commit));
-            set_notice "";
-          ]
-  in
-  let open_logs =
-    Effect.Many
-      [
-        set_selected_logs (Some application.key);
-        set_search "";
-        set_current_match 0;
-        set_follow true;
-        set_paused_snapshot None;
-      ]
-  in
-  let deployment_actions =
-    match deployment with
-    | Some deployment
-      when Option.is_some deployment.cancel_requested_at_ms
-           && ([%equal: Protocol.Deployment.State.t] deployment.state Requested
-              || [%equal: Protocol.Deployment.State.t] deployment.state Running
-              ) ->
-        button ~disabled:true ~label:"CANCELLING; CLEANUP IN PROGRESS"
-          ~on_click:Effect.Ignore ()
-    | Some deployment when deployment.can_cancel ->
-        if Option.equal String.equal cancel_confirmation (Some deployment.id)
-        then
-          let confirm_cancel =
-            let%bind.Effect response =
-              dispatch_cancel
-                {
-                  Protocol.Cancel_deployment_v1.Query.application =
-                    application.key;
-                  operation_id = deployment.id;
-                }
-            in
-            let notice =
-              match response with
-              | Error error -> "CANCEL RPC FAILED: " ^ Error.to_string_hum error
-              | Ok (Error error) ->
-                  "CANCELLATION REJECTED: " ^ Error.to_string_hum error
-              | Ok (Ok ()) -> "CANCELLATION REQUESTED; CLEANUP MAY CONTINUE"
-            in
-            Effect.Many [ set_cancel_confirmation None; set_notice notice ]
-          in
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "cancel-confirmation" ]
-            [
-              Vdom.Node.p
-                [
-                  Vdom.Node.text
-                    ("Cancel deployment " ^ deployment.id
-                   ^ "? Cleanup may continue briefly.");
-                ];
-              Vdom.Node.div
-                ~attrs:[ Vdom.Attr.class_ "button-row" ]
-                [
-                  button ~kind:"danger"
-                    ~disabled:(prune_busy || deploy_busy)
-                    ~label:"CONFIRM CANCELLATION" ~on_click:confirm_cancel ();
-                  button
-                    ~disabled:(prune_busy || deploy_busy)
-                    ~label:"KEEP RUNNING"
-                    ~on_click:(set_cancel_confirmation None)
-                    ();
-                ];
-            ]
-        else
-          button ~kind:"danger"
-            ~disabled:(prune_busy || deploy_busy)
-            ~label:"CANCEL DEPLOYMENT"
-            ~on_click:
-              (Effect.Many
-                 [
-                   set_preview None;
-                   set_prune_state Prune_state.Idle;
-                   set_cancel_confirmation (Some deployment.id);
-                 ])
-            ()
-    | _ ->
-        button ~kind:"primary"
-          ~disabled:(prune_busy || deploy_busy)
-          ~label:(if previewing then "READING MAIN" else "PREVIEW MAIN")
-          ~on_click:request_preview ()
-  in
-  let confirmation =
-    match preview with
-    | Some (key, commit) when String.equal key application.key && not prune_busy
-      ->
-        commit_confirmation ~application:key ~commit ~deploy_state
-          ~dispatch_deploy ~set_preview ~set_deploy_state
-          ~set_cancel_confirmation ~set_prune_state ~set_notice
-    | _ -> Vdom.Node.none
-  in
-  let deployment_active = deployment_is_active deployment in
-  let prune_confirmation_open =
-    match Prune_state.confirmation prune_state with
-    | Some (key, _) -> String.equal key application.key
-    | None -> false
-  in
-  let prune_operation_matches =
-    prune_confirmation_open
-    ||
-    match prune_state with
-    | Prune_state.Pending key -> String.equal key application.key
-    | Prune_state.Idle | Prune_state.Confirming _ -> false
-  in
-  let prune_confirmation =
-    if prune_operation_matches then
-      prune_confirmation ~application ~dispatch_prune ~prune_state
-        ~set_prune_state ~set_notice ~deployment_active
-    else Vdom.Node.none
-  in
-  let open_prune =
-    Effect.Many
-      [
-        set_preview None;
-        set_cancel_confirmation None;
-        set_prune_state (Prune_state.confirm prune_state ~key:application.key);
-      ]
-  in
-  let prune_action =
-    button ~kind:"danger-outline"
-      ~disabled:(deployment_active || prune_busy || deploy_busy)
-      ~label:"PRUNE RESOURCES" ~on_click:open_prune ()
-  in
-  Vdom.Node.create "article"
-    ~attrs:[ Vdom.Attr.class_ "application-card" ]
-    [
-      Vdom.Node.header
-        ~attrs:[ Vdom.Attr.class_ "card-heading" ]
-        [
-          Vdom.Node.div
-            [
-              Vdom.Node.span
-                ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                [ Vdom.Node.text application.key ];
-              Vdom.Node.h3 [ Vdom.Node.text application.project ];
-              Vdom.Node.p
-                ~attrs:[ Vdom.Attr.class_ "repository" ]
-                [ Vdom.Node.text application.repository ];
-            ];
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.classes [ "state"; state_class ] ]
-            [
-              Vdom.Node.span ~attrs:[ Vdom.Attr.class_ "state-light" ] [];
-              Vdom.Node.text state;
-            ];
-        ];
-      Vdom.Node.dl
-        ~attrs:[ Vdom.Attr.class_ "facts" ]
-        [
-          Vdom.Node.div
-            [
-              Vdom.Node.dt [ Vdom.Node.text "TARGET" ];
-              Vdom.Node.dd [ Vdom.Node.text application.target ];
-            ];
-          Vdom.Node.div
-            [
-              Vdom.Node.dt [ Vdom.Node.text "COMMIT" ];
-              Vdom.Node.dd [ Vdom.Node.text revision ];
-            ];
-          Vdom.Node.div
-            [
-              Vdom.Node.dt [ Vdom.Node.text "STAGE" ];
-              Vdom.Node.dd [ Vdom.Node.text stage ];
-            ];
-        ];
-      Vdom.Node.p
-        ~attrs:[ Vdom.Attr.class_ "commit-subject" ]
-        [ Vdom.Node.text subject ];
-      Vdom.Node.p
-        ~attrs:[ Vdom.Attr.class_ "operation-message" ]
-        [ Vdom.Node.text message ];
-      confirmation;
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "card-actions" ]
-        [
-          deployment_actions;
-          button ~label:"VIEW LOGS" ~on_click:open_logs ();
-          button ~label:"VIEW HISTORY"
-            ~on_click:
-              (Effect.Many
-                 [
-                   set_deployment_filter (Some application.key);
-                   set_notice ("SHOWING HISTORY: " ^ application.key);
-                 ])
-            ();
-          prune_action;
-        ];
-      prune_confirmation;
-    ]
-
-let deployment_row recent =
-  let deployment = recent.Protocol.Recent_deployment.deployment in
-  let revision, subject = commit_summary deployment.commit in
-  Vdom.Node.li
-    ~attrs:[ Vdom.Attr.class_ "deployment-row" ]
-    [
-      Vdom.Node.div
-        [
-          Vdom.Node.strong [ Vdom.Node.text recent.application ];
-          Vdom.Node.span
-            ~attrs:
-              [
-                Vdom.Attr.classes
-                  [ "state-text"; deployment_state_class deployment ];
-              ]
-            [ Vdom.Node.text (deployment_state_name deployment) ];
-        ];
-      Vdom.Node.div
-        [
-          Vdom.Node.code
-            ~attrs:
-              (Option.value_map deployment.commit ~default:[] ~f:(fun commit ->
-                   [ Vdom.Attr.title commit.revision ]))
-            [ Vdom.Node.text revision ];
-          Vdom.Node.span [ Vdom.Node.text subject ];
-        ];
-      Vdom.Node.div
-        [
-          Vdom.Node.span [ Vdom.Node.text deployment.stage ];
-          Vdom.Node.create "time"
-            [
-              Vdom.Node.text
-                (format_time
-                   (Option.value deployment.started_at_ms
-                      ~default:deployment.requested_at_ms));
-            ];
-          Vdom.Node.span [ Vdom.Node.text (format_duration deployment) ];
-        ];
-      (match deployment.error with
-      | None -> Vdom.Node.none
-      | Some error -> text_with_class "deployment-error" error);
-    ]
-
-let occurrences text pattern =
-  if String.is_empty pattern then 0
-  else
-    let rec count position total =
-      match String.substr_index text ~pos:position ~pattern with
-      | None -> total
-      | Some index -> count (index + String.length pattern) (total + 1)
-    in
-    count 0 0
-
-let highlighted_line ~query ~current ~first_index line =
-  if String.is_empty query then ([ Vdom.Node.text line ], 0)
-  else
-    let rec build position match_index nodes =
-      match String.substr_index line ~pos:position ~pattern:query with
-      | None ->
-          let suffix = String.drop_prefix line position in
-          (List.rev (Vdom.Node.text suffix :: nodes), match_index - first_index)
-      | Some index ->
-          let before = String.slice line position index in
-          let global_index = match_index in
-          let mark =
-            Vdom.Node.create "mark"
-              ~attrs:
-                ([
-                   Vdom.Attr.class_
-                     (if Int.equal global_index current then "active-match"
-                      else "");
-                 ]
-                @
-                if Int.equal global_index current then
-                  [ Vdom.Attr.id "active-log-match" ]
-                else [])
-              [ Vdom.Node.text query ]
-          in
-          build
-            (index + String.length query)
-            (match_index + 1)
-            (mark :: Vdom.Node.text before :: nodes)
-    in
-    build 0 first_index []
-
-let log_viewer ~selected ~search ~current_match ~follow ~paused_snapshot
-    ~set_search ~set_current_match ~set_follow ~set_paused_snapshot ~refresh
-    response =
-  match selected with
-  | None ->
-      text_with_class "empty-panel" "SELECT AN APPLICATION TO INSPECT LOGS"
-  | Some application ->
-      let for_application snapshot =
-        String.equal snapshot.Protocol.Log_snapshot.application application
-      in
-      let live_snapshot =
-        match response with
-        | Some
-            ((query : Protocol.Get_application_logs.Query.t), Ok (Some snapshot))
-          when Option.equal String.equal query.application (Some application)
-               && for_application snapshot ->
-            Some snapshot
-        | _ -> None
-      in
-      let paused_snapshot = Option.filter paused_snapshot ~f:for_application in
-      let snapshot : Protocol.Log_snapshot.t option =
-        if follow then live_snapshot
-        else Option.first_some paused_snapshot live_snapshot
-      in
-      let content =
-        match snapshot with
-        | None -> (
-            match response with
-            | Some (_, Error error) ->
-                text_with_class "error-panel" (Error.to_string_hum error)
-            | _ ->
-                text_with_class "loading-panel"
-                  "READING BOUNDED APPLICATION LOGS")
-        | Some snapshot ->
-            let total =
-              List.sum
-                (module Int)
-                snapshot.lines
-                ~f:(fun line -> occurrences line.Protocol.Log_line.text search)
-            in
-            let current_match =
-              if total = 0 then 0 else Int.min current_match (total - 1)
-            in
-            let _, line_nodes =
-              List.fold snapshot.lines ~init:(0, [])
-                ~f:(fun (first_index, nodes) line ->
-                  let highlighted, count =
-                    highlighted_line ~query:search ~current:current_match
-                      ~first_index line.Protocol.Log_line.text
-                  in
-                  let node =
-                    Vdom.Node.div
-                      ~attrs:[ Vdom.Attr.class_ "log-line" ]
-                      ((match line.timestamp with
-                         | None -> []
-                         | Some timestamp ->
-                             [
-                               Vdom.Node.create "time"
-                                 [ Vdom.Node.text timestamp ];
-                             ])
-                      @ [ Vdom.Node.code highlighted ])
-                  in
-                  (first_index + count, node :: nodes))
-            in
-            let pause =
-              if follow then
-                Effect.Many
-                  [ set_paused_snapshot (Some snapshot); set_follow false ]
-              else Effect.Many [ set_paused_snapshot None; set_follow true ]
-            in
-            Vdom.Node.div
-              [
-                Vdom.Node.div
-                  ~attrs:[ Vdom.Attr.class_ "log-toolbar" ]
-                  [
-                    Vdom.Node.label
-                      [
-                        Vdom.Node.span [ Vdom.Node.text "SEARCH LOGS" ];
-                        Vdom.Node.input
-                          ~attrs:
-                            [
-                              Vdom.Attr.create "type" "search";
-                              Vdom.Attr.value search;
-                              Vdom.Attr.placeholder "Literal text";
-                              Vdom.Attr.on_input (fun _ value ->
-                                  Effect.Many
-                                    [ set_search value; set_current_match 0 ]);
-                            ]
-                          ();
-                      ];
-                    Vdom.Node.div
-                      ~attrs:[ Vdom.Attr.class_ "log-controls" ]
-                      [
-                        Vdom.Node.span
-                          [ Vdom.Node.text (sprintf "%d MATCHES" total) ];
-                        button ~label:"PREVIOUS" ~disabled:(total = 0)
-                          ~on_click:
-                            (set_current_match
-                               (if total = 0 then 0
-                                else (current_match - 1 + total) mod total))
-                          ();
-                        button ~label:"NEXT" ~disabled:(total = 0)
-                          ~on_click:
-                            (set_current_match
-                               (if total = 0 then 0
-                                else (current_match + 1) mod total))
-                          ();
-                        button
-                          ~label:(if follow then "PAUSE" else "RESUME")
-                          ~on_click:pause ();
-                        button ~label:"REFRESH" ~on_click:refresh ();
-                      ];
-                  ];
-                Vdom.Node.div
-                  ~attrs:
-                    [
-                      Vdom.Attr.class_ "log-meta";
-                      Vdom.Attr.create "aria-live" "polite";
-                    ]
-                  [
-                    Vdom.Node.span [ Vdom.Node.text snapshot.container_name ];
-                    Vdom.Node.span
-                      [ Vdom.Node.text (format_time snapshot.observed_at_ms) ];
-                    Vdom.Node.span
-                      [
-                        Vdom.Node.text
-                          (if follow then "FOLLOWING" else "PAUSED");
-                      ];
-                    (if snapshot.truncated then
-                       Vdom.Node.span [ Vdom.Node.text "TRUNCATED" ]
-                     else Vdom.Node.none);
-                  ];
-                Vdom.Node.div
-                  ~attrs:
-                    [
-                      Vdom.Attr.class_ "log-output";
-                      Vdom.Attr.create "role" "log";
-                      Vdom.Attr.create "aria-label"
-                        (application ^ " recent logs");
-                    ]
-                  (List.rev line_nodes);
-              ]
-      in
-      Vdom.Node.div [ content ]
-
-let metric_value label value =
+let empty_page ~path ~navigate =
   Vdom.Node.div
+    ~attrs:[ Vdom.Attr.class_ "page not-found-page" ]
     [
-      Vdom.Node.dt [ Vdom.Node.text label ];
-      Vdom.Node.dd [ Vdom.Node.text value ];
+      Vdom.Node.p
+        ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
+        [ Vdom.Node.text "Route not found" ];
+      Vdom.Node.h2 [ Vdom.Node.text path ];
+      Vdom.Node.p
+        [
+          Vdom.Node.text
+            "This path is not part of the nixploy control plane. The URL has \
+             not been changed.";
+        ];
+      Ui_helpers.route_link ~class_name:"button button-primary"
+        ~route:Route.Home ~navigate
+        [ Vdom.Node.text "Return home" ];
     ]
-
-let metrics_panel response =
-  match response with
-  | None -> text_with_class "loading-panel" "READING TARGET HEALTH"
-  | Some (_, Error error) ->
-      text_with_class "error-panel" (Error.to_string_hum error)
-  | Some (_, Ok []) ->
-      text_with_class "empty-panel" "NO TARGET METRICS AVAILABLE"
-  | Some (_, Ok targets) ->
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "target-metrics-grid" ]
-        (List.map targets ~f:(fun target ->
-             Vdom.Node.create "article"
-               ~attrs:[ Vdom.Attr.class_ "target-metrics" ]
-               [
-                 Vdom.Node.header
-                   [
-                     Vdom.Node.h3
-                       [ Vdom.Node.text target.Protocol.Target_metrics.target ];
-                     Vdom.Node.code [ Vdom.Node.text target.host ];
-                   ];
-                 (match target.error with
-                 | None -> Vdom.Node.none
-                 | Some error -> text_with_class "deployment-error" error);
-                 Vdom.Node.dl
-                   ~attrs:[ Vdom.Attr.class_ "metric-list" ]
-                   [
-                     metric_value "HOST CPU" (format_percent target.cpu_percent);
-                     metric_value "MEMORY"
-                       (match
-                          (target.memory_used_bytes, target.memory_total_bytes)
-                        with
-                       | Some used, Some total ->
-                           format_bytes used ^ " / " ^ format_bytes total
-                       | _ -> "UNAVAILABLE");
-                     metric_value "FILESYSTEM"
-                       (match
-                          ( target.filesystem_used_bytes,
-                            target.filesystem_total_bytes )
-                        with
-                       | Some used, Some total ->
-                           format_bytes used ^ " / " ^ format_bytes total
-                       | _ -> "UNAVAILABLE");
-                     metric_value "LOAD"
-                       (match
-                          (target.load_1, target.load_5, target.load_15)
-                        with
-                       | Some one, Some five, Some fifteen ->
-                           sprintf "%.2f / %.2f / %.2f" one five fifteen
-                       | _ -> "UNAVAILABLE");
-                     metric_value "UPTIME" (format_uptime target.uptime_seconds);
-                   ];
-                 Vdom.Node.div
-                   ~attrs:[ Vdom.Attr.class_ "application-metrics" ]
-                   (List.map target.applications ~f:(fun application ->
-                        let health =
-                          match
-                            application.Protocol.Application_metrics.health
-                          with
-                          | Healthy -> "HEALTHY"
-                          | Unhealthy -> "UNHEALTHY"
-                          | Unavailable _ -> "UNAVAILABLE"
-                        in
-                        Vdom.Node.div
-                          [
-                            Vdom.Node.strong
-                              [ Vdom.Node.text application.application ];
-                            Vdom.Node.span [ Vdom.Node.text health ];
-                            Vdom.Node.span
-                              [
-                                Vdom.Node.text
-                                  ("CPU "
-                                  ^ format_percent application.cpu_percent);
-                              ];
-                            Vdom.Node.span
-                              [
-                                Vdom.Node.text
-                                  ("RAM "
-                                  ^ Option.value_map
-                                      application.memory_used_bytes
-                                      ~default:"UNAVAILABLE" ~f:format_bytes);
-                              ];
-                            Vdom.Node.span
-                              [
-                                Vdom.Node.text
-                                  ("HOST "
-                                  ^ format_percent
-                                      application.memory_host_percent);
-                              ];
-                            Vdom.Node.span
-                              [
-                                Vdom.Node.text
-                                  ("UP "
-                                  ^ format_uptime application.uptime_seconds);
-                              ];
-                            (match application.error with
-                            | None -> Vdom.Node.none
-                            | Some error ->
-                                text_with_class "deployment-error" error);
-                          ]));
-                 Vdom.Node.small
-                   [
-                     Vdom.Node.text
-                       ("OBSERVED " ^ format_time target.observed_at_ms);
-                   ];
-               ]))
 
 let component graph =
+  let route, set_route =
+    Bonsai.state (Browser_navigation.initial_route ()) graph
+  in
+  let mobile_open, set_mobile_open = Bonsai.state false graph in
   let preview, set_preview = Bonsai.state None graph in
   let deploy_state, set_deploy_state = Bonsai.state Deploy_state.Idle graph in
   let cancel_confirmation, set_cancel_confirmation = Bonsai.state None graph in
   let prune_state, set_prune_state = Bonsai.state Prune_state.Idle graph in
-  let deployment_filter, set_deployment_filter = Bonsai.state None graph in
-  let selected_logs, set_selected_logs = Bonsai.state None graph in
   let search, set_search = Bonsai.state "" graph in
   let current_match, set_current_match = Bonsai.state 0 graph in
   let follow, set_follow = Bonsai.state true graph in
   let paused_snapshot, set_paused_snapshot = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
-  let applications =
-    Rpc_effect.Rpc.poll Protocol.List_applications.t ~where_to_connect:Self
+  let applications_observations, inject_applications_observation =
+    Bonsai.state_machine0 ~default_model:Last_good.empty
+      ~apply_action:(fun _ observations (query, response) ->
+        Last_good.update ~equal_query:[%equal: unit] observations ~query
+          ~response)
+      ~sexp_of_model:(fun _ -> Sexp.Atom "application observations")
+      ~sexp_of_action:(fun _ -> Sexp.Atom "application observation")
+      graph
+  in
+  let on_applications_response =
+    let%arr inject = inject_applications_observation in
+    fun query response -> inject (query, response)
+  in
+  let _applications =
+    Rpc_effect.Rpc.poll ~clear_when_deactivated:false
+      ~on_response_received:on_applications_response
+      Protocol.List_applications.t ~where_to_connect:Self
       ~equal_query:[%equal: unit]
       ~equal_response:[%equal: Protocol.Application.t list Or_error.t]
       ~every:(Time_ns.Span.of_sec 1.) (Bonsai.return ()) graph
   in
-  let deployments_query =
-    let%arr deployment_filter = deployment_filter in
-    { Protocol.List_deployments.Query.application = deployment_filter }
+  let application_list =
+    let%arr observations = applications_observations in
+    Last_good.value ~equal_query:[%equal: unit] observations ~query:()
   in
-  let deployments =
-    Rpc_effect.Rpc.poll Protocol.List_deployments.t ~where_to_connect:Self
-      ~equal_query:[%equal: Protocol.List_deployments.Query.t]
-      ~equal_response:[%equal: Protocol.Recent_deployment.t list Or_error.t]
-      ~every:(Time_ns.Span.of_sec 1.) deployments_query graph
+  let deployments_query =
+    let%arr route = route in
+    {
+      Protocol.List_deployments.Query.application =
+        Option.map
+          (Route.application_key route)
+          ~f:Route.Application_key.to_string;
+    }
+  in
+  let deployments_observations, inject_deployments_observation =
+    Bonsai.state_machine0 ~default_model:Last_good.empty
+      ~apply_action:(fun _ observations (query, response) ->
+        Last_good.update
+          ~equal_query:[%equal: Protocol.List_deployments.Query.t] observations
+          ~query ~response)
+      ~sexp_of_model:(fun _ -> Sexp.Atom "deployment observations")
+      ~sexp_of_action:(fun _ -> Sexp.Atom "deployment observation")
+      graph
+  in
+  let on_deployments_response =
+    let%arr inject = inject_deployments_observation in
+    fun query response -> inject (query, response)
+  in
+  let deployments_page =
+    let%arr route = route and applications = application_list in
+    match route with
+    | Route.Home -> true
+    | Application key ->
+        Option.value_map applications ~default:true ~f:(fun applications ->
+            List.exists applications ~f:(fun application ->
+                String.equal application.Protocol.Application.key
+                  (Route.Application_key.to_string key)))
+    | Apps | Telemetry | Not_found _ -> false
+  in
+  let _deployments =
+    match%sub deployments_page with
+    | true ->
+        Rpc_effect.Rpc.poll ~clear_when_deactivated:false
+          ~on_response_received:on_deployments_response
+          Protocol.List_deployments.t ~where_to_connect:Self
+          ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+          ~equal_response:[%equal: Protocol.Recent_deployment.t list Or_error.t]
+          ~every:(Time_ns.Span.of_sec 1.) deployments_query graph
+    | false -> Bonsai.return (empty_poll_result ())
   in
   let logs_query =
-    let%arr selected_logs = selected_logs in
-    { Protocol.Get_application_logs.Query.application = selected_logs }
+    let%arr route = route in
+    {
+      Protocol.Get_application_logs.Query.application =
+        Option.map
+          (Route.application_key route)
+          ~f:Route.Application_key.to_string;
+    }
+  in
+  let logs_observations, inject_logs_observation =
+    Bonsai.state_machine0 ~default_model:Last_good.empty
+      ~apply_action:(fun _ observations (query, response) ->
+        Last_good.update
+          ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+          observations ~query ~response)
+      ~sexp_of_model:(fun _ -> Sexp.Atom "log observations")
+      ~sexp_of_action:(fun _ -> Sexp.Atom "log observation")
+      graph
+  in
+  let on_logs_response =
+    let%arr inject = inject_logs_observation in
+    fun query response -> inject (query, response)
+  in
+  let logs_page =
+    let%arr route = route and applications = application_list in
+    match route with
+    | Route.Application key ->
+        Option.value_map applications ~default:true ~f:(fun applications ->
+            List.exists applications ~f:(fun application ->
+                String.equal application.Protocol.Application.key
+                  (Route.Application_key.to_string key)))
+    | Home | Apps | Telemetry | Not_found _ -> false
   in
   let logs =
-    Rpc_effect.Rpc.poll Protocol.Get_application_logs.t ~where_to_connect:Self
-      ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
-      ~equal_response:[%equal: Protocol.Log_snapshot.t option Or_error.t]
-      ~every:(Time_ns.Span.of_sec 2.) logs_query graph
+    match%sub logs_page with
+    | true ->
+        Rpc_effect.Rpc.poll ~clear_when_deactivated:false
+          ~on_response_received:on_logs_response Protocol.Get_application_logs.t
+          ~where_to_connect:Self
+          ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+          ~equal_response:[%equal: Protocol.Log_snapshot.t option Or_error.t]
+          ~every:(Time_ns.Span.of_sec 2.) logs_query graph
+    | false -> Bonsai.return (empty_poll_result ())
   in
-  let metrics =
-    Rpc_effect.Rpc.poll Protocol.Get_metrics.t ~where_to_connect:Self
-      ~equal_query:[%equal: unit]
-      ~equal_response:[%equal: Protocol.Target_metrics.t list Or_error.t]
-      ~every:(Time_ns.Span.of_sec 10.) (Bonsai.return ()) graph
+  let metrics_observations, inject_metrics_observation =
+    Bonsai.state_machine0 ~default_model:Last_good.empty
+      ~apply_action:(fun _ observations (query, response) ->
+        Last_good.update ~equal_query:[%equal: unit] observations ~query
+          ~response)
+      ~sexp_of_model:(fun _ -> Sexp.Atom "metric observations")
+      ~sexp_of_action:(fun _ -> Sexp.Atom "metric observation")
+      graph
+  in
+  let on_metrics_response =
+    let%arr inject = inject_metrics_observation in
+    fun query response -> inject (query, response)
+  in
+  let metrics_page =
+    let%arr route = route and applications = application_list in
+    match route with
+    | Route.Home | Apps | Telemetry -> true
+    | Application key ->
+        Option.value_map applications ~default:true ~f:(fun applications ->
+            List.exists applications ~f:(fun application ->
+                String.equal application.Protocol.Application.key
+                  (Route.Application_key.to_string key)))
+    | Not_found _ -> false
+  in
+  let _metrics =
+    match%sub metrics_page with
+    | true ->
+        Rpc_effect.Rpc.poll ~clear_when_deactivated:false
+          ~on_response_received:on_metrics_response Protocol.Get_metrics.t
+          ~where_to_connect:Self ~equal_query:[%equal: unit]
+          ~equal_response:[%equal: Protocol.Target_metrics.t list Or_error.t]
+          ~every:(Time_ns.Span.of_sec 10.) (Bonsai.return ()) graph
+    | false -> Bonsai.return (empty_poll_result ())
   in
   let dispatch_preview =
     Rpc_effect.Rpc.dispatcher Protocol.Preview_deployment.t
@@ -963,10 +208,93 @@ let component graph =
   let dispatch_prune =
     Rpc_effect.Rpc.dispatcher Protocol.Prune.t ~where_to_connect:Self graph
   in
-  let%arr applications = applications
-  and deployments = deployments
+  let route_key =
+    let%arr route = route in
+    Option.map (Route.application_key route) ~f:Route.Application_key.to_string
+  in
+  let reset_transient =
+    let%arr deploy_state = deploy_state
+    and set_preview = set_preview
+    and set_deploy_state = set_deploy_state
+    and set_cancel_confirmation = set_cancel_confirmation
+    and set_prune_state = set_prune_state
+    and set_search = set_search
+    and set_current_match = set_current_match
+    and set_follow = set_follow
+    and set_paused_snapshot = set_paused_snapshot
+    and set_notice = set_notice in
+    fun _ ->
+      Effect.Many
+        [
+          set_preview None;
+          set_deploy_state (Deploy_state.reset_for_route_change deploy_state);
+          set_cancel_confirmation None;
+          set_prune_state Prune_state.Idle;
+          set_search "";
+          set_current_match 0;
+          set_follow true;
+          set_paused_snapshot None;
+          set_notice "";
+        ]
+  in
+  Bonsai.Edge.on_change route_key
+    ~equal:(Option.equal String.equal)
+    ~callback:reset_transient graph;
+  let observed_operation =
+    let%arr deploy_state = deploy_state and applications = application_list in
+    match (Deploy_state.awaiting_operation deploy_state, applications) with
+    | Some (key, operation_id), Some applications ->
+        List.find_map applications ~f:(fun application ->
+            if String.equal application.Protocol.Application.key key then
+              Option.bind application.deployment ~f:(fun deployment ->
+                  if String.equal deployment.Protocol.Deployment.id operation_id
+                  then Some (key, operation_id)
+                  else None)
+            else None)
+    | None, _ | Some _, None -> None
+  in
+  let finish_observed_operation =
+    let%arr deploy_state = deploy_state
+    and set_deploy_state = set_deploy_state in
+    function
+    | None -> Effect.Ignore
+    | Some (key, operation_id) ->
+        set_deploy_state
+          (Deploy_state.observe_operation deploy_state ~key ~operation_id)
+  in
+  Bonsai.Edge.on_change observed_operation
+    ~equal:
+      (Option.equal (fun (left_key, left_id) (right_key, right_id) ->
+           String.equal left_key right_key && String.equal left_id right_id))
+    ~callback:finish_observed_operation graph;
+  let sync_title =
+    let%arr () = Bonsai.return () in
+    fun route -> Browser_navigation.set_document_title route
+  in
+  Bonsai.Edge.on_change route ~equal:Route.equal ~callback:sync_title graph;
+  let activate =
+    let%arr set_route = set_route and set_mobile_open = set_mobile_open in
+    Browser_navigation.start ~on_route:set_route ~on_escape:(fun () ->
+        Effect.Many
+          [
+            set_mobile_open false; Browser_navigation.focus "mobile-menu-button";
+          ])
+  in
+  Bonsai.Edge.lifecycle ~on_activate:activate
+    ~on_deactivate:(Bonsai.return (Browser_navigation.cleanup ()))
+    graph;
+  let%arr route = route
+  and set_route = set_route
+  and mobile_open = mobile_open
+  and set_mobile_open = set_mobile_open
+  and applications_observations = applications_observations
+  and application_list = application_list
+  and deployments_observations = deployments_observations
+  and deployments_query = deployments_query
   and logs = logs
-  and metrics = metrics
+  and logs_observations = logs_observations
+  and logs_query = logs_query
+  and metrics_observations = metrics_observations
   and preview = preview
   and set_preview = set_preview
   and deploy_state = deploy_state
@@ -975,10 +303,6 @@ let component graph =
   and set_cancel_confirmation = set_cancel_confirmation
   and prune_state = prune_state
   and set_prune_state = set_prune_state
-  and deployment_filter = deployment_filter
-  and set_deployment_filter = set_deployment_filter
-  and selected_logs = selected_logs
-  and set_selected_logs = set_selected_logs
   and search = search
   and set_search = set_search
   and current_match = current_match
@@ -993,189 +317,114 @@ let component graph =
   and dispatch_deploy = dispatch_deploy
   and dispatch_cancel = dispatch_cancel
   and dispatch_prune = dispatch_prune in
-  let application_content =
-    match applications.last_ok_response with
-    | Some (_, Ok (_ :: _ as application_list)) ->
-        List.map application_list
-          ~f:
-            (application_card ~preview ~deploy_state ~cancel_confirmation
-               ~prune_state ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
-               ~dispatch_prune ~set_preview ~set_deploy_state
-               ~set_cancel_confirmation ~set_prune_state ~set_deployment_filter
-               ~set_selected_logs ~set_search ~set_current_match ~set_follow
-               ~set_paused_snapshot ~set_notice)
-    | Some (_, Ok []) ->
-        [ text_with_class "empty-panel" "NO APPLICATIONS ARE ALLOWLISTED" ]
-    | Some (_, Error error) ->
-        [ text_with_class "error-panel" (Error.to_string_hum error) ]
-    | None -> [ text_with_class "loading-panel" "READING CONTROL PLANE" ]
+  let navigate next =
+    let close = set_mobile_open false in
+    if Route.equal route next then
+      if mobile_open then
+        Effect.Many [ close; Browser_navigation.focus "main-content" ]
+      else close
+    else
+      let%bind.Effect () = Browser_navigation.push next in
+      Effect.Many
+        ([ set_route next; close ]
+        @
+        if mobile_open then [ Browser_navigation.focus "main-content" ] else []
+        )
   in
-  let deployment_content =
-    match deployments.last_ok_response with
-    | Some (_, Ok (_ :: _ as entries)) ->
-        Vdom.Node.ol
-          ~attrs:[ Vdom.Attr.class_ "deployment-list" ]
-          (List.map entries ~f:deployment_row)
-    | Some (_, Ok []) -> text_with_class "empty-panel" "NO DEPLOYMENTS RECORDED"
-    | Some (_, Error error) ->
-        text_with_class "error-panel" (Error.to_string_hum error)
-    | None -> text_with_class "loading-panel" "READING DEPLOYMENT HISTORY"
+  let close_mobile =
+    Effect.Many
+      [ set_mobile_open false; Browser_navigation.focus "mobile-menu-button" ]
   in
-  Vdom.Node.main
-    ~attrs:[ Vdom.Attr.class_ "shell" ]
-    [
-      Vdom.Node.header
-        ~attrs:[ Vdom.Attr.class_ "masthead" ]
-        [
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "wordmark" ]
-            [
-              Vdom.Node.span [ Vdom.Node.text "NIX" ];
-              Vdom.Node.span [ Vdom.Node.text "PLOY" ];
-            ];
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "masthead-copy" ]
-            [
-              Vdom.Node.p [ Vdom.Node.text "HOST RELEASE CONTROL" ];
-              Vdom.Node.h1 [ Vdom.Node.text "Operations" ];
-            ];
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "connection" ]
-            [
-              Vdom.Node.span [ Vdom.Node.text "RPC" ];
-              Vdom.Node.strong
-                [
-                  Vdom.Node.text
-                    (if Option.is_some applications.last_ok_response then
-                       "CONNECTED"
-                     else "CONNECTING");
-                ];
-            ];
-        ];
-      (if String.is_empty notice then Vdom.Node.none
-       else
-         Vdom.Node.div
-           ~attrs:
-             [
-               Vdom.Attr.class_ "notice";
-               Vdom.Attr.create "role" "status";
-               Vdom.Attr.create "aria-live" "polite";
-             ]
-           [ Vdom.Node.text notice ]);
-      Vdom.Node.section
-        ~attrs:
-          [
-            Vdom.Attr.class_ "section";
-            Vdom.Attr.create "aria-labelledby" "health-title";
-          ]
-        [
-          Vdom.Node.header
-            ~attrs:[ Vdom.Attr.class_ "section-heading" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.span
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                    [ Vdom.Node.text "REMOTE TARGETS" ];
-                  Vdom.Node.h2
-                    ~attrs:[ Vdom.Attr.id "health-title" ]
-                    [ Vdom.Node.text "Health and capacity" ];
-                ];
-            ];
-          polling_warning metrics.last_ok_response metrics.last_error;
-          metrics_panel
-            (Option.map metrics.last_ok_response ~f:(fun (query, response) ->
-                 (query, response)));
-        ];
-      Vdom.Node.section
-        ~attrs:
-          [
-            Vdom.Attr.class_ "section";
-            Vdom.Attr.create "aria-labelledby" "applications-title";
-          ]
-        [
-          Vdom.Node.header
-            ~attrs:[ Vdom.Attr.class_ "section-heading" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.span
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                    [ Vdom.Node.text "ALLOWLISTED SOURCES" ];
-                  Vdom.Node.h2
-                    ~attrs:[ Vdom.Attr.id "applications-title" ]
-                    [ Vdom.Node.text "Applications" ];
-                ];
-            ];
-          polling_warning applications.last_ok_response applications.last_error;
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "applications" ]
-            application_content;
-        ];
-      Vdom.Node.section
-        ~attrs:
-          [
-            Vdom.Attr.class_ "section";
-            Vdom.Attr.create "aria-labelledby" "deployments-title";
-          ]
-        [
-          Vdom.Node.header
-            ~attrs:[ Vdom.Attr.class_ "section-heading" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.span
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                    [ Vdom.Node.text "SQLITE LEDGER" ];
-                  Vdom.Node.h2
-                    ~attrs:[ Vdom.Attr.id "deployments-title" ]
-                    [
-                      Vdom.Node.text
-                        (Option.value_map deployment_filter
-                           ~default:"Latest deployments" ~f:(fun application ->
-                             application ^ " deployments"));
-                    ];
-                ];
-              (match deployment_filter with
-              | None -> Vdom.Node.none
-              | Some _ ->
-                  button ~label:"SHOW ALL"
-                    ~on_click:
-                      (Effect.Many [ set_deployment_filter None; set_notice "" ])
-                    ());
-            ];
-          polling_warning deployments.last_ok_response deployments.last_error;
-          deployment_content;
-        ];
-      Vdom.Node.section
-        ~attrs:
-          [
-            Vdom.Attr.class_ "section";
-            Vdom.Attr.create "aria-labelledby" "logs-title";
-          ]
-        [
-          Vdom.Node.header
-            ~attrs:[ Vdom.Attr.class_ "section-heading" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.span
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                    [ Vdom.Node.text "BOUNDED RUNTIME OUTPUT" ];
-                  Vdom.Node.h2
-                    ~attrs:[ Vdom.Attr.id "logs-title" ]
-                    [ Vdom.Node.text "Application logs" ];
-                ];
-            ];
-          polling_warning logs.last_ok_response logs.last_error;
-          log_viewer ~selected:selected_logs ~search ~current_match ~follow
-            ~paused_snapshot ~set_search ~set_current_match ~set_follow
-            ~set_paused_snapshot ~refresh:logs.refresh logs.last_ok_response;
-        ];
-      Vdom.Node.footer
-        [
-          Vdom.Node.span [ Vdom.Node.text "STATE: SQLITE" ];
-          Vdom.Node.span
-            [ Vdom.Node.text "SOURCE: LOCAL GIT / RUNTIME: REMOTE PODMAN" ];
-        ];
-    ]
+  let toggle_mobile =
+    if mobile_open then close_mobile
+    else
+      Effect.Many
+        [ set_mobile_open true; Browser_navigation.focus "primary-navigation" ]
+  in
+  let response value error =
+    match (value, error) with
+    | Some value, _ -> Some (Ok value)
+    | None, Some error -> Some (Error error)
+    | None, None -> None
+  in
+  let applications_error =
+    Last_good.error ~equal_query:[%equal: unit] applications_observations
+      ~query:()
+  in
+  let applications_response = response application_list applications_error in
+  let deployments_value =
+    Last_good.value ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+      deployments_observations ~query:deployments_query
+  in
+  let deployments_error =
+    Last_good.error ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+      deployments_observations ~query:deployments_query
+  in
+  let deployments_response = response deployments_value deployments_error in
+  let logs_value =
+    Last_good.value ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+      logs_observations ~query:logs_query
+  in
+  let logs_error =
+    Last_good.error ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+      logs_observations ~query:logs_query
+  in
+  let logs_response = response logs_value logs_error in
+  let metrics_value =
+    Last_good.value ~equal_query:[%equal: unit] metrics_observations ~query:()
+  in
+  let metrics_error =
+    Last_good.error ~equal_query:[%equal: unit] metrics_observations ~query:()
+  in
+  let metrics_response = response metrics_value metrics_error in
+  let connection_label, connection_class =
+    match (application_list, applications_error) with
+    | None, None -> ("Connecting", "status-working")
+    | None, Some _ -> ("Connection issue", "status-danger")
+    | Some _, Some _ -> ("Connection stale", "status-warning")
+    | Some _, None -> ("Connected", "status-ok")
+  in
+  let content =
+    match route with
+    | Route.Home ->
+        Home_page.render ~applications:applications_response
+          ~deployments:deployments_response ~metrics:metrics_response
+          ~applications_stale:applications_error
+          ~deployments_stale:deployments_error ~metrics_stale:metrics_error
+          ~connection_label ~navigate
+    | Apps ->
+        Apps_page.render ~applications:applications_response
+          ~metrics:metrics_response ~applications_stale:applications_error
+          ~metrics_stale:metrics_error ~navigate
+    | Application route_key ->
+        let key = Route.Application_key.to_string route_key in
+        let application_state =
+          match applications_response with
+          | None -> Application_page.Loading
+          | Some (Error error) -> Failed error
+          | Some (Ok applications) -> (
+              match
+                List.find applications ~f:(fun application ->
+                    String.equal application.Protocol.Application.key key)
+              with
+              | None -> Missing
+              | Some application -> Ready application)
+        in
+        Application_page.render ~key ~application_state
+          ~deployments:deployments_response ~logs:logs_response
+          ~metrics:metrics_response ~deployments_stale:deployments_error
+          ~logs_stale:logs_error ~metrics_stale:metrics_error ~preview
+          ~deploy_state ~cancel_confirmation ~prune_state ~search ~current_match
+          ~follow ~paused_snapshot ~dispatch_preview ~dispatch_deploy
+          ~dispatch_cancel ~dispatch_prune ~set_preview ~set_deploy_state
+          ~set_cancel_confirmation ~set_prune_state ~set_search
+          ~set_current_match ~set_follow ~set_paused_snapshot ~set_notice
+          ~refresh_logs:logs.refresh ~navigate
+    | Telemetry ->
+        Telemetry_page.render ~metrics:metrics_response ~stale:metrics_error
+          ~navigate
+    | Not_found path -> empty_page ~path ~navigate
+  in
+  Shell.render ~route ~applications:application_list ~connection_label
+    ~connection_class ~mobile_open ~navigate ~on_toggle_mobile:toggle_mobile
+    ~on_close_mobile:close_mobile ~notice ~content

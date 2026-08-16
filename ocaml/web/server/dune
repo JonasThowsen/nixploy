@@ -7,7 +7,8 @@
   deployment_start
   prune_request
   prune_response
-  resource_state_response)
+  resource_state_response
+  static_route)
  (libraries async cohttp core nixploy protocol)
  (preprocess
   (pps ppx_jane)))

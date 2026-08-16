@@ -119,21 +119,37 @@ authority: userinfo, paths, queries, fragments, missing/`null` origins, and
 suffix matches are rejected. Host names are case-insensitive and explicit
 standard ports are equivalent to their `http`/`https` defaults.
 
-The operator surface now previews and confirms an exact Git commit, lists recent
-deployments, cancels active deployments cooperatively, searches and follows
-bounded logs from the positively identified active container, and reports remote
-host health plus per-application resource usage. `Application` owns the active
-cancellation registry and runtime source/cache orchestration. Cancellation is
-scoped by managed application plus operation id; after a process restart,
-persisted interrupted state remains visible but cannot be signalled by the new
-process. These workflows use separate polling state so confirmation, filters,
-and log search remain stable while runtime observations refresh.
+The URL-driven operator surface is split into Home (`/`), recognized
+applications (`/apps`), one operational application workspace
+(`/apps/:key`), and point-in-time target telemetry (`/telemetry`). The browser
+parses the path before the first render, uses canonical anchors and the History
+API for same-origin navigation, and keeps Back/Forward, the active navigation,
+page heading, selected application, and document title synchronized. Authorized
+direct requests to these routes receive the same SPA shell; unrelated paths and
+missing assets remain genuine 404 responses. Unknown valid application keys keep
+their URL and render a not-found state after the server allowlist loads.
 
-The non-destructive Playwright specification checks open prune-confirmation
-layout, accessible controls, mobile overflow, and 44px hit areas. It requires an
-externally running control plane via `NIXPLOY_E2E_URL`; the repository does not
-currently provide a self-contained Playwright harness, so `dune runtest` and the
-package build do not execute it.
+The application workspace previews and confirms an exact Git commit, lists
+app-scoped deployment history, cancels active deployments cooperatively,
+searches and follows bounded logs from the positively identified active
+container, and reports remote host health plus per-application resource usage.
+`Application` owns the active cancellation registry and runtime source/cache
+orchestration. Cancellation is scoped by managed application plus operation id;
+after a process restart, persisted interrupted state remains visible but cannot
+be signalled by the new process. Resource presence remains independent from
+historical deployment success. Application, deployment, log, and metric polls
+retain independent per-query last-good observations and label refresh failures
+as stale without replacing usable data. Transient confirmations, notices, and
+log state are local to the selected application route and never enter the URL.
+
+The non-destructive Playwright specification covers direct routes, History API
+navigation, deep-link authorization parity, unknown applications,
+canonicalization, preview/prune dismissal, bounded log controls, mobile drawer
+focus, overflow, and 44px hit areas. It requires an externally running,
+configured control plane via `NIXPLOY_E2E_URL`; the repository does not provide
+a self-contained Playwright harness, so `dune runtest` and package builds do not
+execute it. Do not treat the browser suite as passed unless that external
+control plane was actually available.
 
 Build and test through the repository flake:
 

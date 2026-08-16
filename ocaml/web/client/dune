@@ -1,6 +1,14 @@
 (library
+ (name nixploy_web_route)
+ (wrapped false)
+ (modules route)
+ (libraries core)
+ (preprocess
+  (pps ppx_jane)))
+
+(library
  (name nixploy_web_client_state)
- (modules deploy_state prune_state)
+ (modules deploy_state last_good prune_state)
  (libraries core)
  (preprocess
   (pps ppx_jane)))
@@ -8,12 +16,23 @@
 (executable
  (name main)
  (modes js)
- (modules app main)
+ (modules
+  app
+  application_page
+  apps_page
+  browser_navigation
+  home_page
+  main
+  shell
+  telemetry_page
+  ui_helpers)
  (libraries
   async_js
   async_kernel
   bonsai.web
+  js_of_ocaml
   nixploy_web_client_state
+  nixploy_web_route
   protocol)
  (preprocess
   (pps bonsai.ppx_bonsai js_of_ocaml-ppx ppx_jane)))

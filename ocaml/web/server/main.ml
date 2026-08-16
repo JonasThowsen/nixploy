@@ -7,6 +7,7 @@ module Cancellation_request = Nixploy_rpc_mapping.Cancellation_request
 module Consumer_response = Nixploy_rpc_mapping.Consumer_response
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_request = Nixploy_rpc_mapping.Prune_request
+module Static_route = Nixploy_rpc_mapping.Static_route
 
 type state = {
   applications : Managed_application.t list;
@@ -219,8 +220,8 @@ let html =
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#171914">
-    <title>Nixploy / Deployment ledger</title>
+    <meta name="theme-color" content="#315c46">
+    <title>Nixploy</title>
     <link rel="stylesheet" href="/app.css">
     <script defer src="/main.js"></script>
   </head>
@@ -234,8 +235,9 @@ let not_found =
 let http_handler ~authorization ~body:_ _address request =
   match Uri.path (Cohttp.Request.uri request) with
   | "/healthz" -> respond_string ~content_type:"text/plain" "ok\n"
-  | ("" | "/" | "/index.html")
-    when Authorization.authorized authorization request.headers ->
+  | path
+    when Static_route.serves_spa_shell path
+         && Authorization.authorized authorization request.headers ->
       respond_string ~content_type:"text/html" html
   | "/main.js" ->
       if Authorization.authorized authorization request.headers then
@@ -246,7 +248,7 @@ let http_handler ~authorization ~body:_ _address request =
       if Authorization.authorized authorization request.headers then
         respond_string ~content_type:"text/css" Embedded_files.app_dot_css
       else forbidden ()
-  | "" | "/" | "/index.html" -> forbidden ()
+  | path when Static_route.serves_spa_shell path -> forbidden ()
   | _ -> respond_string ~content_type:"text/html" ~status:`Not_found not_found
 
 let should_process_request authorization origin_policy _address = function
