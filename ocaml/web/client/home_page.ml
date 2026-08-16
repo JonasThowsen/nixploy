@@ -49,6 +49,22 @@ let route_for_key key =
   |> Or_error.ok
   |> Option.map ~f:(fun key -> Route.Application key)
 
+let target_identity target =
+  let applications =
+    List.map target.Protocol.Target_metrics.applications ~f:(fun application ->
+        application.Protocol.Application_metrics.application)
+    |> List.dedup_and_sort ~compare:String.compare
+  in
+  match applications with
+  | [] -> target.target
+  | applications ->
+      sprintf "%s · %s" (String.concat applications ~sep:", ") target.target
+
+let target_host_label target =
+  if String.equal target.Protocol.Target_metrics.host "unavailable" then
+    "Target configuration unavailable"
+  else target.host
+
 let attention_list ~navigate applications =
   let needing_attention =
     List.filter applications ~f:(fun application ->
@@ -108,7 +124,7 @@ let render ~applications ~deployments ~metrics ~applications_stale
     match applications with
     | None -> ("Awaiting data", "Reading the managed allowlist", "tone-neutral")
     | Some (Error _) ->
-        ("Unavailable", "Managed allowlist observation failed", "tone-danger")
+        ("Unavailable", "Could not read recognized applications", "tone-danger")
     | Some (Ok _) ->
         ( Int.to_string app_count,
           sprintf "%d unknown · %d absent" unknown absent,
@@ -116,10 +132,9 @@ let render ~applications ~deployments ~metrics ~applications_stale
   in
   let runtime_summary =
     match metrics with
-    | None ->
-        ("Awaiting data", "Reading point-in-time runtime health", "tone-neutral")
+    | None -> ("Awaiting data", "Checking application runtimes", "tone-neutral")
     | Some (Error _) ->
-        ("Unavailable", "Runtime observation failed", "tone-danger")
+        ("Unavailable", "Runtime health check failed", "tone-danger")
     | Some (Ok _) ->
         ( sprintf "%d healthy" healthy,
           sprintf "%d unhealthy · %d unavailable" unhealthy unavailable,
@@ -132,7 +147,7 @@ let render ~applications ~deployments ~metrics ~applications_stale
     | None ->
         ("Awaiting data", "Reading recent deployment history", "tone-neutral")
     | Some (Error _) ->
-        ("Unavailable", "Deployment history observation failed", "tone-danger")
+        ("Unavailable", "Could not read deployment history", "tone-danger")
     | Some (Ok _) ->
         ( Int.to_string active,
           sprintf "%d recent failed, cancelled, or interrupted" failures,
@@ -143,6 +158,17 @@ let render ~applications ~deployments ~metrics ~applications_stale
   let target_errors =
     List.count metric_values ~f:(fun target ->
         Option.is_some target.Protocol.Target_metrics.error)
+  in
+  let target_check_class, target_check_label =
+    match metrics with
+    | None -> ("status-warning", "Checks pending")
+    | Some (Error _) -> ("status-danger", "Checks unavailable")
+    | Some (Ok []) -> ("status-muted", "No checks configured")
+    | Some (Ok _) when target_errors = 0 -> ("status-ok", "All checks passed")
+    | Some (Ok _) ->
+        ( "status-danger",
+          sprintf "%d check%s failed" target_errors
+            (if target_errors = 1 then "" else "s") )
   in
   let activity = List.take deployment_values 8 in
   let body_state =
@@ -210,7 +236,7 @@ let render ~applications ~deployments ~metrics ~applications_stale
               (let value, detail, tone = applications_summary in
                stat_card ~label:"Recognized applications" ~value ~detail ~tone);
               (let value, detail, tone = runtime_summary in
-               stat_card ~label:"Observed runtime health" ~value ~detail ~tone);
+               stat_card ~label:"Live application health" ~value ~detail ~tone);
               (let value, detail, tone = deployment_summary in
                stat_card ~label:"Active deployments" ~value ~detail ~tone);
             ];
@@ -257,6 +283,8 @@ let render ~applications ~deployments ~metrics ~applications_stale
               [
                 Vdom.Attr.class_ "surface";
                 Vdom.Attr.create "aria-labelledby" "observation-state";
+                Vdom.Attr.create "aria-live" "polite";
+                Vdom.Attr.create "aria-atomic" "false";
               ]
             [
               Vdom.Node.header
@@ -266,29 +294,32 @@ let render ~applications ~deployments ~metrics ~applications_stale
                     [
                       Vdom.Node.p
                         ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                        [ Vdom.Node.text "Remote observations" ];
+                        [ Vdom.Node.text "Live infrastructure checks" ];
                       Vdom.Node.h3
                         ~attrs:[ Vdom.Attr.id "observation-state" ]
-                        [ Vdom.Node.text "Targets and machines" ];
+                        [ Vdom.Node.text "Deployment machines" ];
+                      Vdom.Node.p
+                        [
+                          Vdom.Node.text
+                            "Nixploy checks each configured target over SSH \
+                             for host capacity, container state, and health.";
+                        ];
                     ];
-                  Ui_helpers.state_badge
-                    ~class_name:
-                      (if target_errors = 0 then "status-ok"
-                       else "status-danger")
-                    ~label:(sprintf "%d errors" target_errors);
+                  Ui_helpers.state_badge ~class_name:target_check_class
+                    ~label:target_check_label;
                 ];
               Ui_helpers.polling_warning ~has_last_good:(Option.is_some metrics)
                 metrics_stale;
               (match metrics with
               | None ->
                   Ui_helpers.text_panel ~kind:"loading"
-                    "Reading target observations…"
+                    "Checking deployment machines…"
               | Some (Error error) ->
                   Ui_helpers.text_panel ~kind:"error"
                     (Error.to_string_hum error)
               | Some (Ok []) ->
                   Ui_helpers.text_panel ~kind:"empty"
-                    "No target observations are available."
+                    "No deployment machine checks are available."
               | Some (Ok targets) ->
                   Vdom.Node.ul
                     ~attrs:[ Vdom.Attr.class_ "target-summary-list" ]
@@ -298,24 +329,31 @@ let render ~applications ~deployments ~metrics ~applications_stale
                              Vdom.Node.div
                                [
                                  Vdom.Node.strong
-                                   [
-                                     Vdom.Node.text
-                                       target.Protocol.Target_metrics.target;
-                                   ];
-                                 Vdom.Node.code [ Vdom.Node.text target.host ];
+                                   [ Vdom.Node.text (target_identity target) ];
+                                 Vdom.Node.code
+                                   [ Vdom.Node.text (target_host_label target) ];
                                ];
                              (match target.error with
                              | None ->
                                  Ui_helpers.state_badge ~class_name:"status-ok"
-                                   ~label:"Observed"
+                                   ~label:"Check passed"
                              | Some _ ->
                                  Ui_helpers.state_badge
                                    ~class_name:"status-danger"
-                                   ~label:"Observation error");
+                                   ~label:"Check failed");
+                             (match target.error with
+                             | None -> Vdom.Node.none
+                             | Some error ->
+                                 Vdom.Node.p
+                                   ~attrs:
+                                     [ Vdom.Attr.class_ "target-summary-error" ]
+                                   [
+                                     Vdom.Node.text ("Why it failed: " ^ error);
+                                   ]);
                            ])));
               Ui_helpers.route_link ~class_name:"text-link"
                 ~route:Route.Telemetry ~navigate
-                [ Vdom.Node.text "Inspect capacity and application metrics" ];
+                [ Vdom.Node.text "View detailed telemetry" ];
             ];
         ];
       Vdom.Node.section

@@ -52,6 +52,23 @@ test("authorized shell routes, health, assets, and genuine 404s", async () => {
 test("direct routes and reload retain the selected application", async ({ page }) => {
   await page.goto(`${baseURL}/`);
   await expect(page.getByRole("heading", { name: "What needs attention now" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Deployment machines" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "Nixploy checks each configured target over SSH for host capacity, container state, and health.",
+    ),
+  ).toBeVisible();
+  const firstMachineCheck = page.locator(".target-summary-list > li").first();
+  await expect(firstMachineCheck).toBeVisible();
+  await expect(firstMachineCheck.locator("strong")).toContainText(" · ");
+  await expect(firstMachineCheck.locator(".status-badge")).toContainText(
+    /Check (passed|failed)/,
+  );
+  if (await firstMachineCheck.getByText("Check failed").isVisible()) {
+    await expect(firstMachineCheck.locator(".target-summary-error")).toContainText(
+      "Why it failed:",
+    );
+  }
   await page.goto(`${baseURL}/apps`);
   await expect(page.getByRole("heading", { name: "Recognized applications" })).toBeVisible();
   await page.goto(`${baseURL}/telemetry`);

@@ -282,8 +282,20 @@ input:focus-visible,
 .attention-list a { min-width: 44px; min-height: 44px; display: flex; align-items: center; color: var(--accent); text-underline-offset: 3px; }
 .attention-list > li > span, .target-summary-list code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .target-summary-list li { grid-template-columns: minmax(0, 1fr) auto; }
-.target-summary-list strong, .target-summary-list code { display: block; }
+.target-summary-list strong, .target-summary-list code { display: block; overflow-wrap: anywhere; }
 .target-summary-list code { margin-top: 3px; }
+.target-summary-error {
+  grid-column: 1 / -1;
+  margin: -3px 0 8px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--danger);
+  background: var(--danger-soft);
+  color: #752f29;
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
 
 .application-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .application-item { display: block; min-height: 44px; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: inherit; text-decoration: none; box-shadow: 0 2px 8px rgba(32, 35, 31, .025); transition-property: border-color, box-shadow, translate, scale; transition-duration: 130ms; transition-timing-function: ease-out; }
