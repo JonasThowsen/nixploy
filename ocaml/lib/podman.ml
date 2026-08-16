@@ -263,6 +263,26 @@ let ensure_connection ~target ~resource_key =
   let%map _ = run_ok [ "--connection"; name; "info" ] in
   name
 
+let preflight_read_only_bind_sources ~target =
+  let open Deferred.Or_error.Let_syntax in
+  Configuration.Target.run target
+  |> Configuration.Run.read_only_binds
+  |> Deferred.Or_error.List.iter ~how:`Sequential ~f:(fun bind ->
+      let source = Configuration.Read_only_bind.source bind in
+      let%bind result =
+        Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 30.)
+          ~max_output_bytes:65_536 [ "test"; "-e"; source ]
+      in
+      match result.exit_status with
+      | Ok () -> Deferred.Or_error.return ()
+      | Error failure ->
+          Deferred.Or_error.errorf
+            "read-only bind source %s is missing or inaccessible on the remote \
+             host (%s): %s"
+            source
+            (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+            (String.strip result.stderr))
+
 let loaded_reference output =
   let prefixes = [ "Loaded image: "; "Loaded image(s): " ] in
   String.split_lines output
@@ -710,6 +730,16 @@ let install_secrets ~connection ~resource_key ~secrets =
       in
       { source = remote_name; target = Secrets.name secret })
 
+let read_only_bind_args run =
+  Configuration.Run.read_only_binds run
+  |> List.concat_map ~f:(fun bind ->
+      [
+        "--mount";
+        sprintf "type=bind,source=%s,destination=%s,ro=true"
+          (Configuration.Read_only_bind.source bind)
+          (Configuration.Read_only_bind.destination bind);
+      ])
+
 let runtime_args ?(include_ports = true) run ~port =
   let network =
     Configuration.Run.network run
@@ -732,6 +762,7 @@ let pre_start_argvs ~connection ~run:run_config ~port ~secret_args
   List.map (Configuration.Run.pre_start run_config) ~f:(fun command ->
       [ "--connection"; connection; "run"; "--rm" ]
       @ secret_args
+      @ read_only_bind_args run_config
       @ runtime_args ~include_ports:false run_config ~port
       @ [ image_reference ] @ command)
 
@@ -742,6 +773,7 @@ let runtime_argv ~connection ~name ~run:run_config ~port ~secret_args
   in
   [ "--connection"; connection; "run"; "-d"; "--name"; name ]
   @ secret_args
+  @ read_only_bind_args run_config
   @ runtime_args run_config ~port
   @ labels metadata @ [ image_reference ] @ command
 

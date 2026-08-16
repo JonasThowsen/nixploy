@@ -23,6 +23,28 @@ let optional fields name parse ~default =
   | None -> Ok default
   | Some value -> parse ~field:name value
 
+let validate_members ~field ~allowed fields =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | (name, _) :: rest ->
+        if Set.mem seen name then
+          Or_error.errorf "%s contains duplicate member %s" field name
+        else if not (Set.mem allowed name) then
+          Or_error.errorf "%s contains unknown member %s" field name
+        else loop (Set.add seen name) rest
+  in
+  loop String.Set.empty fields
+
+let validate_map_members ~field fields =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | (name, _) :: rest ->
+        if Set.mem seen name then
+          Or_error.errorf "%s contains duplicate member %s" field name
+        else loop (Set.add seen name) rest
+  in
+  loop String.Set.empty fields
+
 let int_value ~field = function
   | `Int value -> Ok value
   | _ -> Or_error.errorf "%s must be an integer" field
@@ -52,6 +74,70 @@ let nullable_argv ~field = function
   | `List [] -> Or_error.errorf "%s must not be empty when specified" field
   | json -> Or_error.map (argv ~field json) ~f:Option.some
 
+module Read_only_bind = struct
+  type t = { source : string; destination : string }
+
+  let source t = t.source
+  let destination t = t.destination
+
+  let safe_mount_path ~field = function
+    | `String path ->
+        let rec contains_unsafe_code_point index =
+          if index >= String.length path then false
+          else
+            let decoded = Stdlib.String.get_utf_8_uchar path index in
+            if not (Stdlib.Uchar.utf_decode_is_valid decoded) then true
+            else
+              let code_point =
+                Stdlib.Uchar.utf_decode_uchar decoded |> Stdlib.Uchar.to_int
+              in
+              code_point <= 0x1f
+              || (code_point >= 0x7f && code_point <= 0x9f)
+              || contains_unsafe_code_point
+                   (index + Stdlib.Uchar.utf_decode_length decoded)
+        in
+        let normalized_segments =
+          String.is_prefix path ~prefix:"/"
+          && (not (String.equal path "/"))
+          && String.split path ~on:'/' |> List.tl_exn
+             |> List.for_all ~f:(fun segment ->
+                 (not (String.is_empty segment))
+                 && (not (String.equal segment "."))
+                 && not (String.equal segment ".."))
+        in
+        if
+          normalized_segments
+          && (not (String.mem path ','))
+          && not (contains_unsafe_code_point 0)
+        then Ok path
+        else
+          Or_error.errorf
+            "%s must be a non-root absolute normalized Unix path without \
+             commas or control characters"
+            field
+    | _ -> Or_error.errorf "%s must be a string" field
+
+  let of_json ~field = function
+    | `Assoc fields ->
+        let open Or_error.Let_syntax in
+        let%bind () =
+          validate_members ~field
+            ~allowed:(String.Set.of_list [ "source"; "destination" ])
+            fields
+        in
+        let%bind source =
+          required fields "source" (fun ~field:_ json ->
+              safe_mount_path ~field:(field ^ ".source") json)
+        and destination =
+          required fields "destination" (fun ~field:_ json ->
+              safe_mount_path ~field:(field ^ ".destination") json)
+        in
+        if String.equal source destination then
+          Or_error.errorf "%s source and destination must differ" field
+        else Ok { source; destination }
+    | _ -> Or_error.errorf "%s must be an object" field
+end
+
 module Run = struct
   type t = {
     command : string list option;
@@ -59,6 +145,7 @@ module Run = struct
     pre_start : string list list;
     network : string option;
     ports : string list;
+    read_only_binds : Read_only_bind.t list;
   }
 
   let command t = t.command
@@ -66,6 +153,7 @@ module Run = struct
   let pre_start t = t.pre_start
   let network t = t.network
   let ports t = t.ports
+  let read_only_binds t = t.read_only_binds
 
   let rendered_environment t ~port =
     match port with
@@ -82,10 +170,13 @@ module Run = struct
       pre_start = [];
       network = None;
       ports = [];
+      read_only_binds = [];
     }
 
   let environment_value ~field = function
     | `Assoc values ->
+        let open Or_error.Let_syntax in
+        let%bind () = validate_map_members ~field values in
         Or_error.all
           (List.map values ~f:(fun (name, value) ->
                let open Or_error.Let_syntax in
@@ -108,16 +199,64 @@ module Run = struct
                | json -> argv ~field:(sprintf "%s[%d]" field index) json))
     | _ -> Or_error.errorf "%s must be a list of argv lists" field
 
-  let of_json ~field = function
+  let read_only_binds_value ~field = function
+    | `List binds ->
+        let open Or_error.Let_syntax in
+        let%bind binds =
+          Or_error.all
+            (List.mapi binds ~f:(fun index bind ->
+                 Read_only_bind.of_json
+                   ~field:(sprintf "%s[%d]" field index)
+                   bind))
+        in
+        let rec unique_destinations seen = function
+          | [] -> Ok binds
+          | bind :: rest ->
+              let destination = Read_only_bind.destination bind in
+              if Set.mem seen destination then
+                Or_error.errorf "%s contains duplicate destination %s" field
+                  destination
+              else unique_destinations (Set.add seen destination) rest
+        in
+        unique_destinations String.Set.empty binds
+    | _ -> Or_error.errorf "%s must be a list" field
+
+  let of_json ~schema ~field = function
     | `Assoc fields ->
         let open Or_error.Let_syntax in
+        let%bind () =
+          validate_members ~field
+            ~allowed:
+              (String.Set.of_list
+                 [
+                   "command";
+                   "environment";
+                   "preStart";
+                   "network";
+                   "ports";
+                   "readOnlyBinds";
+                 ])
+            fields
+        in
+        let%bind () =
+          match List.Assoc.find fields ~equal:String.equal "readOnlyBinds" with
+          | None -> Ok ()
+          | Some _ when String.equal schema "v0.4" -> Ok ()
+          | Some _ ->
+              Or_error.errorf
+                "%s.readOnlyBinds requires nixploy configuration schema v0.4"
+                field
+        in
         let%map command = optional fields "command" nullable_argv ~default:None
         and environment =
           optional fields "environment" environment_value ~default:[]
         and pre_start = optional fields "preStart" pre_start_value ~default:[]
         and network = optional fields "network" nullable_string ~default:None
-        and ports = optional fields "ports" non_empty_string_list ~default:[] in
-        { command; environment; pre_start; network; ports }
+        and ports = optional fields "ports" non_empty_string_list ~default:[]
+        and read_only_binds =
+          optional fields "readOnlyBinds" read_only_binds_value ~default:[]
+        in
+        { command; environment; pre_start; network; ports; read_only_binds }
     | _ -> Or_error.errorf "%s must be an object" field
 end
 
@@ -137,6 +276,11 @@ module Web = struct
   let of_json ~field = function
     | `Assoc fields ->
         let open Or_error.Let_syntax in
+        let%bind () =
+          validate_members ~field
+            ~allowed:(String.Set.of_list [ "domain"; "healthPath"; "slots" ])
+            fields
+        in
         let%bind domain = required fields "domain" non_empty_string in
         let%bind health_path =
           optional fields "healthPath" non_empty_string ~default:"/health"
@@ -148,7 +292,13 @@ module Web = struct
         let%bind slots =
           match List.Assoc.find fields ~equal:String.equal "slots" with
           | None -> Ok []
-          | Some (`Assoc slots) -> Ok slots
+          | Some (`Assoc slots) ->
+              let%map () =
+                validate_members ~field:(field ^ ".slots")
+                  ~allowed:(String.Set.of_list [ "blue"; "green" ])
+                  slots
+              in
+              slots
           | Some _ -> Or_error.error_string "web.slots must be an object"
         in
         let%bind blue_port = optional slots "blue" port_value ~default:8080
@@ -198,6 +348,8 @@ let targets t = t.targets
 
 let secret_references ~field = function
   | `Assoc references ->
+      let open Or_error.Let_syntax in
+      let%bind () = validate_map_members ~field references in
       Or_error.all
         (List.map references ~f:(fun (name, value) ->
              let open Or_error.Let_syntax in
@@ -210,26 +362,82 @@ let secret_references ~field = function
              (name, path)))
   | _ -> Or_error.errorf "%s must be an object" field
 
-let parse_target (name, json) =
+let validate_tasks ~field = function
+  | `Assoc tasks ->
+      let open Or_error.Let_syntax in
+      let%bind () = validate_map_members ~field tasks in
+      let%map _ =
+        Or_error.all
+          (List.map tasks ~f:(fun (name, task) ->
+               match task with
+               | `Assoc members ->
+                   validate_members
+                     ~field:(field ^ "." ^ name)
+                     ~allowed:
+                       (String.Set.of_list
+                          [
+                            "description";
+                            "command";
+                            "timeoutSeconds";
+                            "confirmation";
+                          ])
+                     members
+               | _ -> Or_error.errorf "%s.%s must be an object" field name))
+      in
+      ()
+  | _ -> Or_error.errorf "%s must be an object" field
+
+let parse_target ~schema (raw_name, json) =
   let open Or_error.Let_syntax in
-  let%bind name = Target_name.of_string name in
+  let field = "targets." ^ raw_name in
+  let%bind name = Target_name.of_string raw_name in
   match json with
   | `Assoc fields ->
+      let%bind () =
+        validate_members ~field
+          ~allowed:
+            (String.Set.of_list
+               [
+                 "image";
+                 "ip";
+                 "user";
+                 "port";
+                 "identityFile";
+                 "run";
+                 "web";
+                 "tasks";
+                 "secrets";
+               ])
+          fields
+      in
+      let%bind () =
+        optional fields "tasks"
+          (fun ~field:_ -> validate_tasks ~field:(field ^ ".tasks"))
+          ~default:()
+      in
       let%map image = required fields "image" non_empty_string
       and host = required fields "ip" non_empty_string
       and user = optional fields "user" non_empty_string ~default:"root"
       and port = optional fields "port" port_value ~default:22
       and identity_file =
         optional fields "identityFile" nullable_string ~default:None
-      and run = optional fields "run" Run.of_json ~default:Run.empty
+      and run =
+        optional fields "run"
+          (fun ~field:_ -> Run.of_json ~schema ~field:(field ^ ".run"))
+          ~default:Run.empty
       and web =
         optional fields "web"
-          (fun ~field -> function
+          (fun ~field:_ -> function
             | `Null -> Ok None
-            | json -> Or_error.map (Web.of_json ~field json) ~f:Option.some)
+            | json ->
+                Or_error.map
+                  (Web.of_json ~field:(field ^ ".web") json)
+                  ~f:Option.some)
           ~default:None
       and secret_references =
-        optional fields "secrets" secret_references ~default:[]
+        optional fields "secrets"
+          (fun ~field:_ -> secret_references ~field:(field ^ ".secrets"))
+          ~default:[]
       in
       {
         Target.name;
@@ -249,9 +457,15 @@ let of_json input =
   let%bind json = Or_error.try_with (fun () -> Yojson.Safe.from_string input) in
   match json with
   | `Assoc fields ->
+      let%bind () =
+        validate_members ~field:"nixploy configuration"
+          ~allowed:(String.Set.of_list [ "__schema"; "project"; "targets" ])
+          fields
+      in
       let%bind schema = required fields "__schema" non_empty_string in
       let%bind () =
-        if List.mem [ "v0.2"; "v0.3" ] schema ~equal:String.equal then Ok ()
+        if List.mem [ "v0.2"; "v0.3"; "v0.4" ] schema ~equal:String.equal then
+          Ok ()
         else
           Or_error.errorf "unsupported nixploy configuration schema %s" schema
       in
@@ -259,11 +473,15 @@ let of_json input =
       let%bind project = Project_name.of_string project_text in
       let%bind targets_json =
         match List.Assoc.find fields ~equal:String.equal "targets" with
-        | Some (`Assoc targets) -> Ok targets
+        | Some (`Assoc targets) ->
+            let%map () = validate_map_members ~field:"targets" targets in
+            targets
         | Some _ -> Or_error.error_string "targets must be an object"
         | None -> Or_error.error_string "targets is required"
       in
-      let%map targets = Or_error.all (List.map targets_json ~f:parse_target) in
+      let%map targets =
+        Or_error.all (List.map targets_json ~f:(parse_target ~schema))
+      in
       { project; targets }
   | _ -> Or_error.error_string "nixploy configuration must be an object"
 

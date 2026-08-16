@@ -24,6 +24,12 @@ val ensure_connection :
   resource_key:Resource_key.t ->
   string Deferred.Or_error.t
 
+val preflight_read_only_bind_sources :
+  target:Configuration.Target.t -> unit Deferred.Or_error.t
+(** Verifies every configured source exists on the remote host before any
+    deployment container is run. Missing or inaccessible sources fail closed;
+    nixploy never creates them. *)
+
 val build_and_load :
   connection:string ->
   source:Source.t ->

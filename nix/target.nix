@@ -1,5 +1,37 @@
 { lib, ... }:
 
+let
+  c1ControlStart = builtins.fromJSON ''"\u0080"'';
+  c1ControlEnd = builtins.fromJSON ''"\u009f"'';
+
+  isSafeMountPath =
+    path:
+    let
+      segments = lib.splitString "/" path;
+      hasC0OrDelControl = builtins.match ".*[[:cntrl:]].*" path != null;
+      hasC1Control = builtins.match (".*[${c1ControlStart}-${c1ControlEnd}].*") path != null;
+    in
+    lib.hasPrefix "/" path
+    && path != "/"
+    && !hasC0OrDelControl
+    && !hasC1Control
+    && !lib.hasInfix "," path
+    && lib.all (segment: segment != "" && segment != "." && segment != "..") (lib.tail segments);
+
+  mountPathType = lib.types.addCheck lib.types.str isSafeMountPath;
+
+  validateReadOnlyBinds =
+    binds:
+    let
+      destinations = map (bind: bind.destination) binds;
+    in
+    if lib.any (bind: bind.source == bind.destination) binds then
+      throw "run.readOnlyBinds source and destination must differ"
+    else if builtins.length destinations != builtins.length (lib.unique destinations) then
+      throw "run.readOnlyBinds destinations must be unique"
+    else
+      binds;
+in
 with lib;
 
 {
@@ -110,6 +142,40 @@ with lib;
               Port mappings passed to podman run with -p.
 
               Usually leave this empty when run.network = "host".
+            '';
+          };
+
+          readOnlyBinds = mkOption {
+            default = [ ];
+            apply = validateReadOnlyBinds;
+            type = types.listOf (
+              types.submodule {
+                options = {
+                  source = mkOption {
+                    type = mountPathType;
+                    example = "/srv/my-app/reference-data";
+                    description = "Absolute normalized path on the remote deployment host.";
+                  };
+
+                  destination = mkOption {
+                    type = mountPathType;
+                    example = "/app/reference-data";
+                    description = "Absolute normalized path inside every deployment container.";
+                  };
+                };
+              }
+            );
+            example = [
+              {
+                source = "/srv/my-app/reference-data";
+                destination = "/app/reference-data";
+              }
+            ];
+            description = ''
+              Existing remote-host paths mounted read-only into every pre-start
+              and application container. Nixploy checks each source on the
+              remote host before building or running the deployment and never
+              creates a missing source.
             '';
           };
         };

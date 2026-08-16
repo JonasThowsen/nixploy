@@ -1,5 +1,15 @@
 open Core
 
+module Read_only_bind : sig
+  type t
+  (** A read-only bind with non-root absolute normalized source and destination
+      paths. Values can only be constructed by validated configuration parsing.
+  *)
+
+  val source : t -> string
+  val destination : t -> string
+end
+
 module Run : sig
   type t
 
@@ -9,6 +19,7 @@ module Run : sig
   val pre_start : t -> string list list
   val network : t -> string option
   val ports : t -> string list
+  val read_only_binds : t -> Read_only_bind.t list
 end
 
 module Web : sig

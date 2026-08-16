@@ -4,6 +4,12 @@ let assert_ok = function
   | Ok value -> value
   | Error error -> failwith (Error.to_string_hum error)
 
+let assert_error_containing substring result =
+  match result with
+  | Ok _ -> failwith "expected an error"
+  | Error error ->
+      assert (String.is_substring (Error.to_string_hum error) ~substring)
+
 let%test_unit "termination state forces only a repeated signal" =
   assert (
     not
@@ -182,6 +188,156 @@ let%test_unit "configuration reads the current flake schema" =
   [%test_eq: string] "example.internal"
     (Nixploy.Configuration.Target.host target);
   [%test_eq: int] 2222 (Nixploy.Configuration.Target.port target)
+
+let%test_unit "configuration parses typed read-only binds only in schema v0.4" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{
+        "__schema":"v0.4",
+        "project":"sample",
+        "targets":{"worker":{"image":"image","ip":"host","run":{
+          "command":["/app/server"],
+          "preStart":[["/app/migrate"]],
+          "readOnlyBinds":[
+            {"source":"/srv/reference data","destination":"/app/reference data"},
+            {"source":"/srv/config","destination":"/app/config"}
+          ]
+        }}}
+      }|}
+    |> assert_ok
+  in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
+  let binds =
+    Nixploy.Configuration.Target.run target
+    |> Nixploy.Configuration.Run.read_only_binds
+  in
+  [%test_eq: string list]
+    [ "/srv/reference data"; "/srv/config" ]
+    (List.map binds ~f:Nixploy.Configuration.Read_only_bind.source);
+  [%test_eq: string list]
+    [ "/app/reference data"; "/app/config" ]
+    (List.map binds ~f:Nixploy.Configuration.Read_only_bind.destination)
+
+let%test_unit "configuration rejects unsafe or ambiguous read-only binds" =
+  let invalid_sources =
+    [
+      {|""|};
+      {|"relative"|};
+      {|"/"|};
+      {|"/srv//data"|};
+      {|"/srv/./data"|};
+      {|"/srv/../data"|};
+      {|"/srv/data/"|};
+      {|"/srv/data,ro=false"|};
+      {|"/srv/data\nother"|};
+      {|"/srv/data\u0000other"|};
+      {|"/srv/data\u007fother"|};
+      {|"/srv/data\u0085other"|};
+    ]
+  in
+  List.iter invalid_sources ~f:(fun source ->
+      sprintf
+        {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[{"source":%s,"destination":"/app/data"}]}}}}|}
+        source
+      |> Nixploy.Configuration.of_json
+      |> assert_error_containing "absolute normalized Unix path");
+  List.iter
+    [
+      {|{"source":"/same","destination":"/same"}|};
+      {|{"source":"/srv/data","destination":"relative"}|};
+      {|{"source":"/srv/data","destination":"/app/data","readOnly":false}|};
+      {|{"source":"/srv/data","destination":"/app/data","options":["rw"]}|};
+    ] ~f:(fun bind ->
+      assert (
+        Result.is_error
+          (sprintf
+             {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[%s]}}}}|}
+             bind
+          |> Nixploy.Configuration.of_json)));
+  Nixploy.Configuration.of_json
+    {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[{"source":"/srv/first","destination":"/app/data"},{"source":"/srv/second","destination":"/app/data"}]}}}}|}
+  |> assert_error_containing "duplicate destination"
+
+let%test_unit
+    "configuration rejects bind fields in old schemas and unknown members" =
+  List.iter [ "v0.1"; "v0.5" ] ~f:(fun schema ->
+      sprintf {|{"__schema":"%s","project":"sample","targets":{}}|} schema
+      |> Nixploy.Configuration.of_json
+      |> assert_error_containing "unsupported nixploy configuration schema");
+  List.iter [ "v0.2"; "v0.3" ] ~f:(fun schema ->
+      sprintf
+        {|{"__schema":"%s","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[]}}}}|}
+        schema
+      |> Nixploy.Configuration.of_json
+      |> assert_error_containing "requires nixploy configuration schema v0.4");
+  List.iter
+    [
+      {|{"__schema":"v0.4","project":"sample","targets":{},"unknown":true}|};
+      {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","unknown":true}}}|};
+      {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"unknown":true}}}}|};
+      {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","web":{"domain":"example.invalid","unknown":true}}}}|};
+      {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"image","ip":"host","run":{"readOnlyBinds":[{"source":"/srv/data","destination":"/app/data","unknown":true}]}}}}|};
+      {|{"__schema":"v0.4","project":"first","project":"second","targets":{}}|};
+    ] ~f:(fun json ->
+      assert (Result.is_error (Nixploy.Configuration.of_json json)))
+
+let%test_unit
+    "pre-start and application render identical mandatory read-only mounts" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{
+        "__schema":"v0.4",
+        "project":"sample",
+        "targets":{"worker":{"image":"image","ip":"host","run":{
+          "command":["/app/server"],
+          "environment":{"PORT":"{port}"},
+          "preStart":[["/app/migrate"]],
+          "network":"private",
+          "ports":["127.0.0.1:9000:9000"],
+          "readOnlyBinds":[{"source":"/srv/data;$(touch nope)","destination":"/app/input data"}]
+        }}}
+      }|}
+    |> assert_ok
+  in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let run =
+    Nixploy.Configuration.find_target configuration target_name
+    |> assert_ok |> Nixploy.Configuration.Target.run
+  in
+  let pre_start =
+    Nixploy.Podman.For_testing.pre_start_argvs ~connection:"connection" ~run
+      ~port:(Some 8080)
+      ~secret_args:[ "--secret"; "typed-secret" ]
+      ~image_reference:"image"
+    |> List.hd_exn
+  in
+  let runtime =
+    Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
+      ~name:"owned" ~run ~port:(Some 8080)
+      ~secret_args:[ "--secret"; "typed-secret" ]
+      ~labels:[] ~image_reference:"image"
+  in
+  let mount_tokens argv =
+    let rec collect mounts = function
+      | "--mount" :: value :: rest ->
+          collect (("--mount", value) :: mounts) rest
+      | _ :: rest -> collect mounts rest
+      | [] -> List.rev mounts
+    in
+    collect [] argv
+  in
+  let expected =
+    [
+      ( "--mount",
+        "type=bind,source=/srv/data;$(touch nope),destination=/app/input \
+         data,ro=true" );
+    ]
+  in
+  [%test_eq: (string * string) list] expected (mount_tokens pre_start);
+  [%test_eq: (string * string) list] expected (mount_tokens runtime)
 
 let%test_unit "configuration preserves empty environment and argv values" =
   let configuration =

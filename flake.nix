@@ -234,9 +234,15 @@
               }
             ];
           };
+          configContract = import ./nix/config-test.nix {
+            nixployLib = self.lib;
+          };
         in
         {
           nixploy = self.packages.${system}.nixploy;
+          config-contract =
+            assert configContract;
+            pkgs.runCommand "nixploy-config-contract" { } "touch $out";
           nixos-module =
             assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
             assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];

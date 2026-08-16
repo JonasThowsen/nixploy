@@ -57,7 +57,11 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$1" in
   eval)
-    if [ "${NIXPLOY_TEST_SECRETS:-}" = "1" ]; then
+    if [ "${NIXPLOY_TEST_BINDS:-}" = "1" ]; then
+      cat <<'JSON'
+{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"],"readOnlyBinds":[{"source":"/srv/reference data","destination":"/app/reference data"}]}}}}
+JSON
+    elif [ "${NIXPLOY_TEST_SECRETS:-}" = "1" ]; then
       secret_path=${NIXPLOY_TEST_SECRET_PATH:-config/secrets.env}
       printf '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker",""]},"secrets":{"app":"%s"}}}}\n' "$secret_path"
     elif [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
@@ -104,6 +108,12 @@ for argument in "$@"; do last="$argument"; done
 case "$last" in
   *"'podman' 'ps'"*) printf '[]\n' ;;
   "'true'") : ;;
+  "'test' '-e' '/srv/reference data'")
+    if [ "${NIXPLOY_TEST_MISSING_BIND:-}" = "1" ]; then
+      echo 'missing bind source' >&2
+      exit 1
+    fi
+    ;;
   *"'curl' '-fsS' '--max-time' '2'"*) : ;;
   *"'-X' 'GET'"*"/config/apps/http/servers/nixploy"*) printf '\n200' ;;
   *"'-X' 'POST'"*"/config/apps/http/servers/nixploy/routes"*)
@@ -244,6 +254,8 @@ exit 99
       "NIXPLOY_TEST_EXISTING_SINGLE";
       "NIXPLOY_TEST_FOREIGN_SINGLE";
       "NIXPLOY_TEST_FAIL_RETIREMENT";
+      "NIXPLOY_TEST_BINDS";
+      "NIXPLOY_TEST_MISSING_BIND";
       "NIXPLOY_TEST_SECRETS";
       "NIXPLOY_TEST_SECRET_PATH";
       "NIXPLOY_TEST_EXPECTED_SECRET";
@@ -270,6 +282,8 @@ exit 99
         "NIXPLOY_TEST_EXISTING_SINGLE";
         "NIXPLOY_TEST_FOREIGN_SINGLE";
         "NIXPLOY_TEST_FAIL_RETIREMENT";
+        "NIXPLOY_TEST_BINDS";
+        "NIXPLOY_TEST_MISSING_BIND";
         "NIXPLOY_TEST_SECRETS";
         "NIXPLOY_TEST_SECRET_PATH";
         "NIXPLOY_TEST_EXPECTED_SECRET";
@@ -401,6 +415,43 @@ exit 99
       assert (
         List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
       assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_BINDS" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_MISSING_BIND" "1";
+      let%bind missing_bind = deploy "operation-missing-bind" in
+      expect_error_containing missing_bind
+        "read-only bind source /srv/reference data is missing or inaccessible";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "'test' '-e' '/srv/reference data'");
+      [%test_eq: int] 0 (count lines "nix|build|");
+      [%test_eq: int] 0 (count lines "|run|--rm|");
+      [%test_eq: int] 0 (count lines "|run|-d|--name|");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_BINDS" "1";
+      let%bind mounted = deploy "operation-mounted" in
+      ignore (assert_ok mounted : Nixploy.Deployment.t);
+      let lines = In_channel.read_lines trace in
+      let source_preflight =
+        index_of lines
+          (String.is_substring ~substring:"'test' '-e' '/srv/reference data'")
+      in
+      let build = index_of lines (String.is_prefix ~prefix:"nix|build|") in
+      assert (source_preflight < build);
+      let container_runs =
+        List.filter lines ~f:(fun line ->
+            String.is_substring line ~substring:"|run|--rm|"
+            || String.is_substring line ~substring:"|run|-d|--name|")
+      in
+      [%test_eq: int] 3 (List.length container_runs);
+      let expected_mount =
+        "|--mount|type=bind,source=/srv/reference \
+         data,destination=/app/reference data,ro=true|"
+      in
+      List.iter container_runs ~f:(fun line ->
+          assert (String.is_substring line ~substring:expected_mount);
+          assert (not (String.is_substring line ~substring:"ro=false")));
 
       clear_scenario ();
       let stages = ref [] in

@@ -145,6 +145,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
         record_stage Connecting "Verifying the canonical Podman connection"
       in
       let%bind connection = Podman.ensure_connection ~target ~resource_key in
+      let%bind () = Podman.preflight_read_only_bind_sources ~target in
       let load_artifacts () =
         let open Deferred.Or_error.Let_syntax in
         let%bind () = record_stage Building "Building and loading the image" in
