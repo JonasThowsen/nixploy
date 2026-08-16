@@ -195,11 +195,18 @@ source-compatible. Updating the input automatically evaluates that configuration
 as schema `v0.4`; the package outputs remain `packages.default` and
 `packages.nixploy`, and `nixployModules.default` remains available.
 
+If the input URL already follows the default branch, update normally:
+
 ```bash
 nix flake lock --update-input nixploy
 nix eval .#nixploy --json | jq -e '.__schema == "v0.4"'
 nix flake check
 ```
+
+A URL pinned to a migration branch, such as
+`github:JonasThowsen/nixploy/rewrite/control-plane`, stays on that branch when
+only its lock is updated. Change it to `github:JonasThowsen/nixploy` first, then
+run the commands above to move back to `main`.
 
 Remove any `tasks` declaration before updating. Named operational tasks belonged
 to a retired control-plane experiment and were never executed by the supported
