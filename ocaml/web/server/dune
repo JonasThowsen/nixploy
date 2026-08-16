@@ -1,0 +1,35 @@
+(library
+ (name nixploy_rpc_mapping)
+ (modules
+  authorization
+  cancellation_request
+  consumer_response
+  deployment_start
+  prune_request
+  prune_response
+  resource_state_response)
+ (libraries async cohttp core nixploy protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name main)
+ (public_name nixploy-web)
+ (modules main embedded_files)
+ (libraries
+  async
+  async_rpc_websocket
+  cohttp-async
+  core
+  core_unix.command_unix
+  nixploy
+  nixploy_rpc_mapping
+  protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(rule
+ (targets embedded_files.ml embedded_files.mli)
+ (deps %{bin:ocaml-embed-file} ../client/main.bc.js ../client/app.css)
+ (action
+  (bash "%{deps} -output embedded_files")))

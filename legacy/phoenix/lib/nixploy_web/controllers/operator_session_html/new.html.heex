@@ -1,0 +1,61 @@
+<Layouts.app flash={@flash}>
+  <div class="mx-auto grid min-h-[65vh] max-w-5xl items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
+    <section class="space-y-6">
+      <p class="font-mono text-xs font-semibold uppercase tracking-[0.28em] text-primary">
+        Restricted control plane
+      </p>
+      <div class="space-y-3">
+        <h1 class="max-w-xl text-5xl font-bold tracking-tight sm:text-6xl">
+          Deploy with an accountable operator session.
+        </h1>
+        <p class="max-w-xl text-lg leading-relaxed text-base-content/65">
+          Deployment keys remain on workers. Sign in here to request and observe operations through the durable control-plane boundary.
+        </p>
+      </div>
+      <div class="flex items-center gap-3 font-mono text-xs text-base-content/50">
+        <span class="size-2 rounded-full bg-success shadow-[0_0_1rem] shadow-success/60"></span>
+        HTTP session · LiveView re-check · bcrypt credential
+      </div>
+    </section>
+
+    <section class="card border border-base-300 bg-base-100 shadow-xl">
+      <div class="card-body gap-6 p-7 sm:p-9">
+        <div>
+          <p class="font-mono text-xs uppercase tracking-[0.2em] text-base-content/45">
+            Operator
+          </p>
+          <h2 class="mt-1 text-2xl font-bold">Sign in</h2>
+        </div>
+
+        <.form
+          for={@form}
+          action={~p"/login"}
+          method="post"
+          id="operator-login-form"
+          class="space-y-4"
+        >
+          <.input
+            field={@form[:email]}
+            type="email"
+            label="Email"
+            autocomplete="username"
+            required
+            autofocus
+          />
+          <.input
+            field={@form[:password]}
+            type="password"
+            label="Password"
+            autocomplete="current-password"
+            required
+          />
+          <.button class="mt-2 w-full">Enter control plane</.button>
+        </.form>
+
+        <p class="border-t border-base-300 pt-5 text-xs leading-relaxed text-base-content/50">
+          Accounts are provisioned by an administrator. Public registration and password recovery are intentionally unavailable.
+        </p>
+      </div>
+    </section>
+  </div>
+</Layouts.app>

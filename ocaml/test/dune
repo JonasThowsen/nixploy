@@ -1,0 +1,143 @@
+(rule
+ (alias runtest)
+ (deps cli_contract_test.sh ../bin/main.exe)
+ (action
+  (run bash %{dep:cli_contract_test.sh} %{dep:../bin/main.exe})))
+
+(library
+ (name core_test)
+ (modules core_test)
+ (libraries nixploy core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name authorization_test)
+ (modules authorization_test)
+ (libraries core nixploy_rpc_mapping)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name application_test)
+ (modules application_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name application_observation_test)
+ (modules application_observation_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name deployment_test)
+ (modules deployment_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name deploy_state_test)
+ (modules deploy_state_test)
+ (libraries core nixploy_web_client_state)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name consumer_mapping_test)
+ (modules consumer_mapping_test)
+ (libraries
+  async
+  nixploy
+  nixploy_cli_mapping
+  nixploy_rpc_mapping
+  protocol
+  core)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name cancellation_request_test)
+ (modules cancellation_request_test)
+ (libraries
+  async
+  core
+  core_unix.command_unix
+  nixploy
+  nixploy_rpc_mapping
+  protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name prune_test)
+ (modules prune_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name prune_request_test)
+ (modules prune_request_test)
+ (libraries
+  async
+  core
+  core_unix.command_unix
+  nixploy
+  nixploy_rpc_mapping
+  protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name prune_state_test)
+ (modules prune_state_test)
+ (libraries core nixploy_web_client_state)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name process_runner_test)
+ (modules process_runner_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name store_test)
+ (modules store_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name status_test)
+ (modules status_test)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name source_test)
+ (modules source_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name runtime_application_test)
+ (modules runtime_application_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name rpc_probe)
+ (modules rpc_probe)
+ (libraries async async_rpc_websocket core core_unix.command_unix protocol)
+ (preprocess
+  (pps ppx_jane)))

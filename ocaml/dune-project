@@ -1,0 +1,6 @@
+(lang dune 3.18)
+(name nixploy)
+
+(package
+ (name nixploy)
+ (synopsis "Deploy Nix-built applications to Podman hosts"))

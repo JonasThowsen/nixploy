@@ -4,7 +4,7 @@ let
   c1ControlStart = builtins.fromJSON ''"\u0080"'';
   c1ControlEnd = builtins.fromJSON ''"\u009f"'';
 
-  isSafeRemotePath =
+  isSafeMountPath =
     path:
     let
       segments = lib.splitString "/" path;
@@ -18,7 +18,7 @@ let
     && !lib.hasInfix "," path
     && lib.all (segment: segment != "" && segment != "." && segment != "..") (lib.tail segments);
 
-  remotePathType = lib.types.addCheck lib.types.str isSafeRemotePath;
+  mountPathType = lib.types.addCheck lib.types.str isSafeMountPath;
 
   validateReadOnlyBinds =
     binds:
@@ -152,29 +152,30 @@ with lib;
               types.submodule {
                 options = {
                   source = mkOption {
-                    type = remotePathType;
-                    example = "/srv/my-app/data";
+                    type = mountPathType;
+                    example = "/srv/my-app/reference-data";
                     description = "Absolute normalized path on the remote deployment host.";
                   };
 
                   destination = mkOption {
-                    type = remotePathType;
-                    example = "/app/data";
-                    description = "Absolute normalized path inside the container.";
+                    type = mountPathType;
+                    example = "/app/reference-data";
+                    description = "Absolute normalized path inside every deployment container.";
                   };
                 };
               }
             );
             example = [
               {
-                source = "/srv/my-app/data";
-                destination = "/app/data";
+                source = "/srv/my-app/reference-data";
+                destination = "/app/reference-data";
               }
             ];
             description = ''
-              Bind mounts made available read-only to pre-start and application
-              containers. Source paths belong to the remote deployment host and
-              are not checked for local existence.
+              Existing remote-host paths mounted read-only into every pre-start
+              and application container. Nixploy checks each source on the
+              remote host before building or running the deployment and never
+              creates a missing source.
             '';
           };
         };
@@ -184,42 +185,44 @@ with lib;
     web = mkOption {
       default = null;
       description = "HTTP routing and blue/green deployment configuration.";
-      type = types.nullOr (types.submodule {
-        options = {
-          domain = mkOption {
-            type = types.str;
-            example = "app.example.com";
-            description = "Public domain Caddy should route to this target.";
-          };
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            domain = mkOption {
+              type = types.str;
+              example = "app.example.com";
+              description = "Public domain Caddy should route to this target.";
+            };
 
-          healthPath = mkOption {
-            type = types.str;
-            default = "/health";
-            example = "/health";
-            description = "HTTP path used to health-check a new slot before switching traffic.";
-          };
+            healthPath = mkOption {
+              type = types.str;
+              default = "/health";
+              example = "/health";
+              description = "HTTP path used to health-check a new slot before switching traffic.";
+            };
 
-          slots = mkOption {
-            type = types.submodule {
-              options = {
-                blue = mkOption {
-                  type = types.port;
-                  default = 8080;
-                  description = "Localhost port for the blue deployment slot.";
-                };
+            slots = mkOption {
+              type = types.submodule {
+                options = {
+                  blue = mkOption {
+                    type = types.port;
+                    default = 8080;
+                    description = "Localhost port for the blue deployment slot.";
+                  };
 
-                green = mkOption {
-                  type = types.port;
-                  default = 8081;
-                  description = "Localhost port for the green deployment slot.";
+                  green = mkOption {
+                    type = types.port;
+                    default = 8081;
+                    description = "Localhost port for the green deployment slot.";
+                  };
                 };
               };
+              default = { };
+              description = "Blue/green localhost ports used behind Caddy.";
             };
-            default = { };
-            description = "Blue/green localhost ports used behind Caddy.";
           };
-        };
-      });
+        }
+      );
     };
 
     secrets = mkOption {

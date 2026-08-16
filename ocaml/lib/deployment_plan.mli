@@ -1,0 +1,21 @@
+open Core
+
+type slot = Blue | Green [@@deriving compare, equal, sexp]
+
+type placement = Single_container | Web_slot of { slot : slot; port : int }
+[@@deriving compare, equal, sexp]
+
+type t
+
+val create :
+  target_kind:Configuration.Target.kind ->
+  active_port:int option ->
+  t Or_error.t
+
+val placement : t -> placement
+val web_placement : t -> (slot * int) Or_error.t
+val active_slot : t -> slot option
+val container_name : resource_key:Resource_key.t -> placement -> string
+val web_container_name : resource_key:Resource_key.t -> slot -> string
+val slot_name : slot -> string
+val runtime_port : placement -> int option

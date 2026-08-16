@@ -1,0 +1,979 @@
+<Layouts.app
+  flash={@flash}
+  current_operator={@current_operator}
+  current_path={nav_path(@live_action)}
+>
+  <section :if={@live_action == :overview} id="operations-overview" class="np-page-stack">
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Production</p>
+        <h1 class="np-page-title">Everything at a glance</h1>
+        <p class="np-page-description">
+          Managed remote targets, observation freshness, and recent deployment activity.
+        </p>
+      </div>
+      <.button
+        id="refresh-local-inventory"
+        phx-click="refresh_local_inventory"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
+        disabled={@local_inventory_status == :loading}
+      >
+        <.icon
+          name="hero-arrow-path"
+          class={[@local_inventory_status == :loading && "animate-spin", "size-4"]}
+        /> Refresh
+      </.button>
+    </header>
+
+    <div id="local-host-inventory" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <article class="np-stat">
+        <div class="flex items-center justify-between gap-3">
+          <p class="np-stat-label">Applications</p>
+          <span class="np-status-dot np-status-dot-success"></span>
+        </div>
+        <p class="np-stat-number">{managed_workload_count(@local_inventory)}</p>
+        <p class="np-stat-meta">managed in production</p>
+      </article>
+      <article class="np-stat">
+        <div class="flex items-center justify-between gap-3">
+          <p class="np-stat-label">Running</p>
+          <span class={[
+            "np-status-dot",
+            running_workload_count(@local_inventory) == managed_workload_count(@local_inventory) &&
+              "np-status-dot-success",
+            running_workload_count(@local_inventory) != managed_workload_count(@local_inventory) &&
+              "np-status-dot-warning"
+          ]}>
+          </span>
+        </div>
+        <p class="np-stat-number">{running_workload_count(@local_inventory)}</p>
+        <p class="np-stat-meta">verified remotely</p>
+      </article>
+      <article class="np-stat">
+        <div class="flex items-center justify-between gap-3">
+          <p class="np-stat-label">In progress</p>
+          <span class="np-status-dot np-status-dot-info"></span>
+        </div>
+        <p class="np-stat-number">
+          {active_deployment_count(application_deployments(@native_deployments, @local_inventory))}
+        </p>
+        <.link navigate={~p"/deployments"} class="np-stat-link">View deployments →</.link>
+      </article>
+      <article class={[
+        "np-stat",
+        failed_deployment_count(application_deployments(@native_deployments, @local_inventory)) >
+          0 && "border-error/35 bg-error/5"
+      ]}>
+        <div class="flex items-center justify-between gap-3">
+          <p class="np-stat-label">Needs attention</p>
+          <span class={[
+            "np-status-dot",
+            failed_deployment_count(
+              application_deployments(@native_deployments, @local_inventory)
+            ) == 0 && "np-status-dot-success",
+            failed_deployment_count(
+              application_deployments(@native_deployments, @local_inventory)
+            ) > 0 && "np-status-dot-error"
+          ]}>
+          </span>
+        </div>
+        <p class="np-stat-number">
+          {failed_deployment_count(application_deployments(@native_deployments, @local_inventory))}
+        </p>
+        <p class="np-stat-meta">application deployments</p>
+      </article>
+    </div>
+
+    <div :if={@local_inventory_error} id="local-inventory-error" class="alert alert-error">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>{@local_inventory_error}</span>
+    </div>
+
+    <div class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(19rem,0.65fr)]">
+      <section class="np-panel min-w-0 overflow-hidden">
+        <div class="np-panel-header">
+          <div>
+            <h2 class="np-panel-title">Applications</h2>
+            <p class="np-panel-description">Latest worker-observed managed target state.</p>
+          </div>
+          <.link navigate={~p"/applications"} class="btn btn-ghost btn-sm">View all</.link>
+        </div>
+        <div :if={@local_inventory_status == :loading} class="p-5 text-sm text-base-content/55">
+          <span class="loading loading-spinner loading-xs mr-2"></span> Reading runtime…
+        </div>
+        <div
+          :if={@local_inventory && managed_workload_count(@local_inventory) == 0}
+          class="np-empty"
+        >
+          No managed applications are visible.
+        </div>
+        <div :if={@local_inventory} class="divide-y divide-base-300">
+          <article
+            :for={workload <- Enum.filter(@local_inventory.workloads, & &1.managed?)}
+            id={"local-workload-#{workload.id}"}
+            class="grid min-w-0 gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+          >
+            <div class="min-w-0">
+              <div class="flex min-w-0 items-center gap-3">
+                <span class={[
+                  "np-status-dot shrink-0",
+                  workload.state in ["running", "Running"] && "np-status-dot-success",
+                  workload.state not in ["running", "Running"] && "np-status-dot-warning"
+                ]}>
+                </span>
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="truncate font-semibold">{workload.project || workload.name}</h3>
+                    <span :if={workload.slot} class="badge badge-ghost badge-sm">
+                      {workload.slot}
+                    </span>
+                  </div>
+                  <p class="mt-0.5 truncate text-xs text-base-content/50">
+                    {workload.target || "local"} · {workload.status || workload.state || "unknown"}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <.link
+              navigate={~p"/applications?application=#{workload.id}"}
+              class="btn btn-outline btn-sm min-h-10 w-full sm:w-auto"
+            >
+              Open application
+            </.link>
+          </article>
+        </div>
+      </section>
+
+      <aside class="np-panel overflow-hidden">
+        <div class="np-panel-header">
+          <div>
+            <h2 class="np-panel-title">Quick actions</h2>
+            <p class="np-panel-description">The shortest path to common work.</p>
+          </div>
+        </div>
+        <nav class="divide-y divide-base-300" aria-label="Operator actions">
+          <.link navigate={~p"/machine"} class="np-action-row">
+            <span class="np-action-icon"><.icon name="hero-server-stack" class="size-4" /></span>
+            <span>
+              <strong>Machine health</strong><small>CPU, memory, disk, load, and uptime</small>
+            </span>
+            <.icon name="hero-chevron-right" class="ml-auto size-4" />
+          </.link>
+          <.link navigate={~p"/releases"} class="np-action-row">
+            <span class="np-action-icon"><.icon name="hero-rocket-launch" class="size-4" /></span>
+            <span>
+              <strong>Deploy a release</strong><small>Choose a verified application release</small>
+            </span>
+            <.icon name="hero-chevron-right" class="ml-auto size-4" />
+          </.link>
+          <.link navigate={~p"/applications"} class="np-action-row">
+            <span class="np-action-icon"><.icon name="hero-chart-bar" class="size-4" /></span>
+            <span>
+              <strong>Inspect an application</strong><small>Health, RAM, CPU, and logs</small>
+            </span>
+            <.icon name="hero-chevron-right" class="ml-auto size-4" />
+          </.link>
+          <.link navigate={~p"/deployments"} class="np-action-row">
+            <span class="np-action-icon"><.icon name="hero-clock" class="size-4" /></span>
+            <span>
+              <strong>Deployment history</strong><small>Progress, failures, and rollback</small>
+            </span>
+            <.icon name="hero-chevron-right" class="ml-auto size-4" />
+          </.link>
+        </nav>
+      </aside>
+    </div>
+  </section>
+
+  <section :if={@live_action == :machine} id="machine-health-page" class="np-page-stack">
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Remote target</p>
+        <h1 class="np-page-title">Application host</h1>
+        <p class="np-page-description">
+          Worker-observed capacity and Podman health for the machine hosting managed applications.
+        </p>
+      </div>
+      <.button
+        id="refresh-machine-health"
+        phx-click="refresh_machine_health"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
+        disabled={@machine_health_status == :loading}
+      >
+        <.icon
+          name="hero-arrow-path"
+          class={[@machine_health_status == :loading && "animate-spin", "size-4"]}
+        /> Refresh target
+      </.button>
+    </header>
+
+    <div
+      :if={@machine_health_status in [:idle, :loading]}
+      id="machine-health-loading"
+      class="np-panel flex min-h-40 items-center justify-center p-6 text-sm text-base-content/55"
+    >
+      <span class="loading loading-spinner loading-sm mr-3"></span> Reading remote target…
+    </div>
+
+    <div :if={@machine_health_error} id="machine-health-error" class="alert alert-warning">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>{@machine_health_error}</span>
+    </div>
+
+    <div :if={health = @machine_health} class="space-y-5">
+      <section class="np-panel overflow-hidden">
+        <div class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <div class="flex items-center gap-3">
+            <span class={[
+              "grid size-11 shrink-0 place-items-center rounded-full",
+              machine_status(health) == :healthy && "bg-success/15 text-success",
+              machine_status(health) == :warning && "bg-warning/15 text-warning",
+              machine_status(health) == :critical && "bg-error/15 text-error"
+            ]}>
+              <.icon name="hero-server-stack" class="size-5" />
+            </span>
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-lg font-semibold">{health.hostname}</h2>
+                <span class={["badge badge-sm", machine_status_class(machine_status(health))]}>
+                  {machine_status(health)}
+                </span>
+              </div>
+              <p class="mt-1 font-mono text-xs text-base-content/50">
+                {health.target_host} · sampled {format_time(health.observed_at)}
+              </p>
+            </div>
+          </div>
+          <p class="text-sm text-base-content/55">Up {health.uptime}</p>
+        </div>
+      </section>
+
+      <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Remote machine vitals">
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">CPU capacity</p>
+            <.icon name="hero-cpu-chip" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-cpu" class="np-metric-number">{health.cpu_count}</p>
+          <p class="np-metric-meta">logical cores</p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Memory used</p>
+            <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-memory" class="np-metric-number">
+            {format_percent(health.memory_percent)}
+          </p>
+          <p class="np-metric-meta">
+            {format_bytes(health.memory_used_bytes)} of {format_bytes(health.memory_total_bytes)}
+          </p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Container storage</p>
+            <.icon name="hero-circle-stack" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-disk" class="np-metric-number">
+            {format_percent(health.storage_percent)}
+          </p>
+          <p class="np-metric-meta">{format_bytes(health.storage_available_bytes)} available</p>
+        </article>
+        <article class="np-metric">
+          <div class="flex items-center justify-between gap-3">
+            <p class="np-metric-label">Containers</p>
+            <.icon name="hero-cube" class="size-4 text-base-content/30" />
+          </div>
+          <p id="machine-containers" class="np-metric-number">{health.containers_running}</p>
+          <p class="np-metric-meta">running of {health.containers_total} total</p>
+        </article>
+      </section>
+
+      <div class="grid min-w-0 gap-5 lg:grid-cols-2">
+        <section class="np-panel overflow-hidden">
+          <div class="np-panel-header">
+            <div>
+              <h2 class="np-panel-title">Capacity</h2>
+              <p class="np-panel-description">Remote application-host headroom.</p>
+            </div>
+          </div>
+          <div class="space-y-5 p-4 sm:p-5">
+            <div>
+              <div class="flex items-center justify-between gap-3 text-sm">
+                <span class="font-medium">Memory</span>
+                <span class="font-mono text-xs text-base-content/50">
+                  {format_percent(health.memory_percent)}
+                </span>
+              </div>
+              <progress
+                class="progress progress-success mt-2 h-2 w-full"
+                value={health.memory_percent}
+                max="100"
+              >
+              </progress>
+              <p class="mt-2 text-xs text-base-content/45">
+                {format_bytes(health.memory_total_bytes - health.memory_used_bytes)} available · swap {format_bytes(
+                  health.swap_used_bytes
+                )} used
+              </p>
+            </div>
+            <div>
+              <div class="flex items-center justify-between gap-3 text-sm">
+                <span class="font-medium">Container storage</span>
+                <span class="font-mono text-xs text-base-content/50">
+                  {format_percent(health.storage_percent)}
+                </span>
+              </div>
+              <progress
+                class="progress progress-info mt-2 h-2 w-full"
+                value={health.storage_percent}
+                max="100"
+              >
+              </progress>
+              <p class="mt-2 text-xs text-base-content/45">
+                {format_bytes(health.storage_used_bytes)} used of {format_bytes(
+                  health.storage_total_bytes
+                )}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="np-panel overflow-hidden">
+          <div class="np-panel-header">
+            <div>
+              <h2 class="np-panel-title">Remote Podman</h2>
+              <p class="np-panel-description">
+                Runtime identity reported by the application host.
+              </p>
+            </div>
+          </div>
+          <dl class="divide-y divide-base-300 text-sm">
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Operating system</dt>
+              <dd class="text-right font-medium">
+                {health.distribution} {health.distribution_version}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Kernel / architecture</dt>
+              <dd class="text-right font-mono text-xs">
+                {health.kernel} · {health.architecture}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Podman</dt>
+              <dd class="text-right font-mono text-xs">
+                {health.podman_version} · {health.storage_driver}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Isolation</dt>
+              <dd class="text-right font-medium">
+                {if health.rootless, do: "Rootless", else: "Rootful"}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <dt class="text-base-content/55">Images</dt>
+              <dd class="text-right font-mono">{health.images_total}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <section :if={@live_action == :applications} id="applications-page" class="np-page-stack">
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Runtime</p>
+        <h1 class="np-page-title">Applications</h1>
+        <p class="np-page-description">
+          Worker-observed remote identity, freshness, health, resources, and logs.
+        </p>
+      </div>
+      <.button
+        id="refresh-local-inventory"
+        phx-click="refresh_local_inventory"
+        class="btn-outline btn-sm min-h-11 gap-2 self-start sm:self-auto"
+        disabled={@local_inventory_status == :loading}
+      >
+        <.icon
+          name="hero-arrow-path"
+          class={[@local_inventory_status == :loading && "animate-spin", "size-4"]}
+        /> Refresh all
+      </.button>
+    </header>
+
+    <div :if={@local_inventory_error} id="local-inventory-error" class="alert alert-error">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>{@local_inventory_error}</span>
+    </div>
+
+    <div id="local-host-inventory" class="grid min-w-0 gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
+      <aside class="np-panel min-w-0 self-start overflow-hidden lg:sticky lg:top-8">
+        <div class="np-panel-header">
+          <div>
+            <h2 class="np-panel-title">Managed targets</h2>
+            <p class="np-panel-description">
+              {if @local_inventory,
+                do: "#{managed_workload_count(@local_inventory)} applications",
+                else: "Loading applications"}
+            </p>
+          </div>
+        </div>
+        <div :if={@local_inventory_status == :loading} class="p-5 text-sm text-base-content/55">
+          <span class="loading loading-spinner loading-xs mr-2"></span> Connecting…
+        </div>
+        <div
+          :if={@local_inventory && managed_workload_count(@local_inventory) == 0}
+          id="empty-local-inventory"
+          class="np-empty"
+        >
+          No managed applications found.
+        </div>
+        <div :if={@local_inventory} class="divide-y divide-base-300">
+          <button
+            :for={workload <- Enum.filter(@local_inventory.workloads, & &1.managed?)}
+            id={"inspect-workload-#{workload.id}"}
+            type="button"
+            phx-click="inspect_local_workload"
+            phx-value-id={workload.id}
+            class={[
+              "flex min-h-16 w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition",
+              @selected_workload && @selected_workload.id == workload.id && "bg-base-200",
+              (!@selected_workload || @selected_workload.id != workload.id) &&
+                "hover:bg-base-200/60"
+            ]}
+          >
+            <span class={[
+              "np-status-dot shrink-0",
+              workload.state in ["running", "Running"] && "np-status-dot-success",
+              workload.state not in ["running", "Running"] && "np-status-dot-warning"
+            ]}>
+            </span>
+            <span class="min-w-0 flex-1">
+              <strong class="block truncate text-sm">{workload.project || workload.name}</strong>
+              <span class="mt-0.5 block truncate text-xs text-base-content/45">
+                {workload.target || "unknown target"} · {workload.slot || workload.status ||
+                  "not observed"}
+              </span>
+            </span>
+            <.icon name="hero-chevron-right" class="size-4 shrink-0 text-base-content/30" />
+          </button>
+        </div>
+        <details
+          :if={@local_inventory && Enum.any?(@local_inventory.workloads, &(not &1.managed?))}
+          class="border-t border-base-300"
+        >
+          <summary class="cursor-pointer px-4 py-3 text-xs text-base-content/50">
+            {Enum.count(@local_inventory.workloads, &(not &1.managed?))} infrastructure containers
+          </summary>
+          <div class="border-t border-base-300 px-4 py-3 text-xs text-base-content/45">
+            Unmanaged containers are excluded from remote inventory and application controls.
+          </div>
+        </details>
+      </aside>
+
+      <section id="local-workload-details" class="np-panel min-w-0 overflow-hidden">
+        <div
+          :if={is_nil(@selected_workload)}
+          class="grid min-h-[28rem] place-items-center p-8 text-center"
+        >
+          <div class="max-w-sm">
+            <span class="mx-auto grid size-12 place-items-center rounded-full bg-base-200">
+              <.icon name="hero-cursor-arrow-rays" class="size-6 text-base-content/35" />
+            </span>
+            <h2 class="mt-4 text-lg font-semibold">Choose an application</h2>
+            <p class="mt-1 text-sm text-base-content/50">
+              Its latest worker-observed target state and immutable release identity will appear here.
+            </p>
+          </div>
+        </div>
+
+        <div :if={@selected_workload}>
+          <header class="np-panel-header flex-col sm:flex-row sm:items-center">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class={[
+                  "np-status-dot",
+                  @selected_workload.state in ["running", "Running"] && "np-status-dot-success",
+                  @selected_workload.state not in ["running", "Running"] &&
+                    "np-status-dot-warning"
+                ]}>
+                </span>
+                <h2 class="truncate text-xl font-semibold">
+                  {@selected_workload.project || @selected_workload.name}
+                </h2>
+                <span class="badge badge-ghost badge-sm">
+                  {@selected_workload.target || "unknown target"}
+                </span>
+                <span
+                  :if={Map.get(@selected_workload, :stale?, false)}
+                  class="badge badge-warning badge-outline badge-sm"
+                >
+                  stale / unavailable
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-base-content/45">
+                {Map.get(@selected_workload, :connection_state, "local recovery")} · {@selected_workload.status ||
+                  @selected_workload.state} · slot {@selected_workload.slot ||
+                  "unknown"}
+              </p>
+            </div>
+            <div class="flex w-full gap-2 sm:w-auto">
+              <.button
+                id="probe-local-health"
+                phx-click="probe_local_health"
+                class="btn-outline btn-sm min-h-10 flex-1 sm:flex-none"
+                disabled={
+                  @local_health_status == :loading || @selected_workload.state == "unavailable"
+                }
+              >
+                Check health
+              </.button>
+              <.button
+                id="refresh-local-workload"
+                phx-click="refresh_local_workload"
+                class="btn-primary btn-sm min-h-10 flex-1 gap-2 sm:flex-none"
+                disabled={@workload_details_status == :loading}
+              >
+                <.icon
+                  name="hero-arrow-path"
+                  class={[@workload_details_status == :loading && "animate-spin", "size-4"]}
+                /> Refresh
+              </.button>
+            </div>
+          </header>
+
+          <div class="space-y-6 p-4 sm:p-5">
+            <div
+              :if={@workload_details_status == :loading}
+              class="flex min-h-36 items-center justify-center text-sm text-base-content/50"
+            >
+              <span class="loading loading-spinner loading-sm mr-3"></span>
+              Loading current application state…
+            </div>
+            <div
+              :if={@workload_details_error}
+              id="local-workload-details-error"
+              class="alert alert-error text-sm"
+            >
+              {@workload_details_error}
+            </div>
+
+            <div :if={details = @workload_details} class="space-y-6">
+              <section aria-labelledby="application-vitals-title">
+                <div class="mb-3 flex items-end justify-between gap-3">
+                  <div>
+                    <h3 id="application-vitals-title" class="text-sm font-semibold">
+                      Current vitals
+                    </h3>
+                    <p class="text-xs text-base-content/45">Point-in-time worker observation</p>
+                  </div>
+                  <time class="font-mono text-[0.68rem] text-base-content/40">
+                    {format_time(details.observed_at)}
+                  </time>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <article class="np-metric">
+                    <p class="np-metric-label">Health</p>
+                    <div class="mt-3 flex items-center gap-2">
+                      <span class={[
+                        "np-status-dot",
+                        @local_health_status == :healthy && "np-status-dot-success",
+                        @local_health_status in [:unhealthy, :failed] && "np-status-dot-error",
+                        @local_health_status in [:idle, :loading] && "np-status-dot-info"
+                      ]}>
+                      </span>
+                      <p class="np-metric-value">
+                        {if @local_health_status == :loading,
+                          do: "Checking",
+                          else: @local_health_status}
+                      </p>
+                    </div>
+                    <p class="np-metric-meta">
+                      {cond do
+                        @selected_workload.state == "unavailable" ->
+                          "No worker observation"
+
+                        @local_health_observation && @local_health_observation.status_code ->
+                          "HTTP #{@local_health_observation.status_code}"
+
+                        true ->
+                          details.health || "No result yet"
+                      end}
+                    </p>
+                  </article>
+                  <article class="np-metric">
+                    <p class="np-metric-label">CPU</p>
+                    <p class="np-metric-number">{details.cpu_percent || "—"}</p>
+                    <p class="np-metric-meta">current usage</p>
+                  </article>
+                  <article class="np-metric">
+                    <p class="np-metric-label">Memory</p>
+                    <p class="np-metric-value">{details.memory_percent || "—"}</p>
+                    <p class="np-metric-meta break-words">
+                      {details.memory_usage || "Unavailable"}
+                    </p>
+                  </article>
+                  <article class="np-metric">
+                    <p class="np-metric-label">Processes</p>
+                    <p class="np-metric-number">{details.pids || "—"}</p>
+                    <p class="np-metric-meta">container PIDs</p>
+                  </article>
+                </div>
+                <div
+                  :if={details.metrics_error}
+                  id="local-workload-metrics-error"
+                  class="mt-3 text-xs text-warning"
+                >
+                  {workload_metrics_error(details.metrics_error)}
+                </div>
+                <div
+                  :if={@local_health_error}
+                  id="local-health-error"
+                  class="mt-3 alert alert-error text-sm"
+                >
+                  {@local_health_error}
+                </div>
+                <div
+                  :if={health = @local_health_observation}
+                  id="local-health-observation"
+                  class="mt-3 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-field bg-base-200 px-3 py-2 text-xs"
+                >
+                  <span class="font-medium">{health.status}</span>
+                  <span>{health.container_state}</span>
+                  <span :if={health.status_code}>HTTP {health.status_code}</span>
+                  <span class="min-w-0 break-all font-mono text-base-content/50">
+                    {health.endpoint}
+                  </span>
+                  <span class="ml-auto text-base-content/45">
+                    {format_time(health.observed_at)}
+                  </span>
+                </div>
+              </section>
+
+              <% target_health = Map.get(details, :target_local_health) || %{} %>
+              <% public_health = Map.get(details, :public_health) || %{} %>
+              <section
+                id="remote-runtime-signals"
+                class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+              >
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Remote connection</p>
+                  <p class="mt-1 font-medium">{Map.get(details, :connection_state, "unknown")}</p>
+                  <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                    {Map.get(details, :target_user) || "—"}@{Map.get(details, :target_host) || "—"}:{Map.get(
+                      details,
+                      :target_port
+                    ) || "—"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Target-local health</p>
+                  <p class="mt-1 font-medium">
+                    {if target_health["healthy"], do: "healthy", else: "unhealthy / unavailable"}
+                  </p>
+                  <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                    {target_health["endpoint"] || "No worker observation"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Public HTTPS health</p>
+                  <p class="mt-1 font-medium">
+                    {if public_health["healthy"],
+                      do: "healthy",
+                      else: public_health["error"] || "unavailable"}
+                  </p>
+                  <p class="mt-1 font-mono text-xs text-base-content/45">
+                    {if public_health["status_code"],
+                      do: "HTTP #{public_health["status_code"]}",
+                      else: "No status"}
+                  </p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4 sm:col-span-2 xl:col-span-3">
+                  <p class="np-field-label">Caddy ingress</p>
+                  <p class="mt-1 break-all font-mono text-xs">
+                    {Map.get(details, :caddy_route_id) || "route unavailable"} → {Map.get(
+                      details,
+                      :caddy_upstream
+                    ) || "upstream unavailable"}
+                  </p>
+                </div>
+              </section>
+
+              <section class="grid gap-3 sm:grid-cols-2">
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Network I/O</p>
+                  <p class="font-mono text-sm">{details.network_io || "Unavailable"}</p>
+                </div>
+                <div class="rounded-box border border-base-300 p-4">
+                  <p class="np-field-label">Disk I/O</p>
+                  <p class="font-mono text-sm">{details.block_io || "Unavailable"}</p>
+                </div>
+              </section>
+
+              <section class="space-y-3">
+                <div class="flex flex-wrap items-end justify-between gap-2">
+                  <div>
+                    <h3 class="text-sm font-semibold">Recent logs</h3>
+                    <p class="text-xs text-base-content/45">
+                      Latest 200 lines, bounded to 64 KiB
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs text-base-content/45">
+                      {details.log_line_count || 0} lines{if Map.get(details, :logs_truncated),
+                        do: " · truncated"}
+                    </span>
+                    <.button
+                      id="fetch-runtime-logs"
+                      phx-click="fetch_runtime_logs"
+                      class="btn-outline btn-xs min-h-9"
+                      disabled={is_nil(Map.get(@selected_workload, :deployment_id))}
+                    >
+                      Fetch logs
+                    </.button>
+                  </div>
+                </div>
+                <div
+                  :if={details.logs_error}
+                  id="local-workload-logs-error"
+                  class="alert alert-error text-sm"
+                >
+                  {workload_logs_error(details.logs_error)}
+                </div>
+                <p
+                  :if={Map.get(details, :log_status) == :pending}
+                  class="text-xs text-base-content/45"
+                >
+                  Worker is reading an exact managed container…
+                </p>
+                <p
+                  :if={Map.get(details, :logs_fetched_at)}
+                  class="text-xs text-base-content/45"
+                >
+                  Ephemeral snapshot fetched {format_time(Map.get(details, :logs_fetched_at))}; expires after 5 minutes.
+                </p>
+                <pre :if={is_binary(details.logs)} id="local-workload-logs" class="np-log-view"><code>{details.logs}</code></pre>
+              </section>
+
+              <details class="np-technical-details">
+                <summary>Technical details</summary>
+                <dl class="mt-4 grid min-w-0 gap-px overflow-hidden rounded-box bg-base-300 sm:grid-cols-2">
+                  <div class="np-data-cell">
+                    <dt>State</dt>
+                    <dd>{details.state || "unknown"} · {details.status || "—"}</dd>
+                  </div>
+                  <div class="np-data-cell">
+                    <dt>Active slot</dt>
+                    <dd>{details.slot || "—"}</dd>
+                  </div>
+                  <div class="np-data-cell">
+                    <dt>Revision</dt>
+                    <dd class="font-mono">{short_commit(details.revision)}</dd>
+                  </div>
+                  <div class="np-data-cell">
+                    <dt>Started</dt>
+                    <dd>{format_time(details.started_at)}</dd>
+                  </div>
+                  <div class="np-data-cell sm:col-span-2">
+                    <dt>Image</dt>
+                    <dd class="break-all font-mono text-xs">
+                      {details.image}<br />{details.image_id}
+                    </dd>
+                  </div>
+                  <div class="np-data-cell sm:col-span-2">
+                    <dt>Managed resource</dt>
+                    <dd class="break-all font-mono text-xs">
+                      {Map.get(details, :resource_key) || "—"}<br />{Map.get(details, :connection) ||
+                        "—"}
+                    </dd>
+                  </div>
+                  <div class="np-data-cell sm:col-span-2">
+                    <dt>Published ports</dt>
+                    <dd>
+                      {case Enum.join(details.published_ports || [], ", ") do
+                        "" -> "none"
+                        ports -> ports
+                      end}
+                    </dd>
+                  </div>
+                </dl>
+              </details>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section :if={@live_action == :releases} id="releases-page" class="np-page-stack">
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Committed main</p>
+        <h1 class="np-page-title">Deploy</h1>
+        <p class="np-page-description">
+          Deploy each application's latest available committed main revision.
+        </p>
+      </div>
+    </header>
+
+    <section id="managed-applications" class="grid gap-4 lg:grid-cols-2">
+      <article
+        :for={application <- @managed_applications}
+        id={"managed-application-#{application.key}"}
+        class="np-panel overflow-hidden"
+      >
+        <% latest = latest_application_input(@deployment_inputs, application.key) %>
+        <div class="p-4 sm:p-5">
+          <div class="flex min-w-0 items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="truncate text-lg font-semibold">{application.project}</h2>
+                <span class="badge badge-ghost badge-sm">{application.target}</span>
+              </div>
+              <p class="mt-1 break-all font-mono text-xs text-base-content/45">
+                {application.repository_identity} · refs/heads/main
+              </p>
+            </div>
+            <span class={[
+              "badge badge-sm shrink-0",
+              latest && latest.state == :staged && "badge-success",
+              (!latest || latest.state != :staged) && "badge-ghost"
+            ]}>
+              {if latest && latest.state == :staged, do: "ready", else: "unavailable"}
+            </span>
+          </div>
+          <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+            <div>
+              <dt class="np-field-label">Committed main</dt>
+              <dd class="mt-1 font-mono">
+                {if latest, do: short_commit(latest.source_revision), else: "—"}
+              </dd>
+            </div>
+            <div>
+              <dt class="np-field-label">Available since</dt>
+              <dd class="mt-1">
+                {if latest,
+                  do: format_time(latest.resolved_at || latest.inserted_at),
+                  else: "Never"}
+              </dd>
+            </div>
+          </dl>
+          <.button
+            id={"deploy-application-#{application.key}"}
+            phx-click="deploy_application"
+            phx-value-application={application.key}
+            disabled={is_nil(latest) || latest.state != :staged}
+            class="btn btn-primary mt-4 min-h-11 w-full"
+            phx-disable-with="Starting…"
+          >
+            Deploy
+          </.button>
+        </div>
+      </article>
+    </section>
+
+    <div :if={@managed_applications == []} class="alert alert-warning">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>No applications are configured for deployment.</span>
+    </div>
+  </section>
+
+  <section :if={@live_action == :deployments} id="deployments-page" class="np-page-stack">
+    <% deployments = application_deployments(@native_deployments, @local_inventory) %>
+    <header class="np-page-header">
+      <div>
+        <p class="np-kicker">Activity</p>
+        <h1 class="np-page-title">Deployments</h1>
+        <p class="np-page-description">
+          Current progress, previous releases, failures, and rollback.
+        </p>
+      </div>
+      <.link
+        navigate={~p"/releases"}
+        class="btn btn-primary btn-sm min-h-11 gap-2 self-start sm:self-auto"
+      >
+        <.icon name="hero-rocket-launch" class="size-4" /> Deploy
+      </.link>
+    </header>
+
+    <div class="grid gap-3 sm:grid-cols-3">
+      <article class="np-stat">
+        <p class="np-stat-label">In progress</p>
+        <p class="np-stat-number">{active_deployment_count(deployments)}</p>
+      </article>
+      <article class="np-stat">
+        <p class="np-stat-label">Successful</p>
+        <p class="np-stat-number">{Enum.count(deployments, &(&1.state == :succeeded))}</p>
+      </article>
+      <article class="np-stat">
+        <p class="np-stat-label">Failed</p>
+        <p class="np-stat-number">{failed_deployment_count(deployments)}</p>
+      </article>
+    </div>
+
+    <section class="np-panel overflow-hidden">
+      <div class="np-panel-header">
+        <div>
+          <h2 class="np-panel-title">History</h2>
+          <p class="np-panel-description">Newest activity first.</p>
+        </div>
+        <span class="font-mono text-xs text-base-content/45">
+          {length(deployments)} deployments
+        </span>
+      </div>
+      <div :if={deployments == []} id="empty-native-deployments" class="np-empty">
+        No application deployments have been started yet.
+      </div>
+      <div class="divide-y divide-base-300">
+        <article
+          :for={deployment <- deployments}
+          id={"native-deployment-#{deployment.id}"}
+          class="grid min-w-0 gap-4 p-4 sm:p-5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center"
+        >
+          <span class={[
+            "grid size-10 place-items-center rounded-full",
+            deployment.state == :succeeded && "bg-success/15 text-success",
+            deployment.state == :failed && "bg-error/15 text-error",
+            deployment.state not in [:succeeded, :failed] && "bg-info/15 text-info"
+          ]}>
+            <.icon
+              name={
+                if deployment.operation_kind == :rollback,
+                  do: "hero-arrow-uturn-left",
+                  else: "hero-rocket-launch"
+              }
+              class="size-5"
+            />
+          </span>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="truncate font-semibold">{deployment.project}</h3>
+              <span class="text-sm text-base-content/35">to</span><span class="text-sm">{deployment.target}</span>
+              <span class={["badge badge-sm", state_class(deployment.state)]}>
+                {deployment.state}
+              </span>
+            </div>
+            <p class="mt-1 text-xs text-base-content/50">
+              {if deployment.operation_kind == :rollback, do: "Rollback", else: "Deployment"} · {deployment.current_stage} · {format_time(
+                deployment.inserted_at
+              )}
+            </p>
+            <p :if={deployment.failure} class="mt-2 line-clamp-2 break-words text-sm text-error">
+              {deployment.failure["message"]}
+            </p>
+          </div>
+          <.link
+            navigate={~p"/deployments/#{deployment.id}"}
+            class="btn btn-outline btn-sm min-h-10 w-full lg:w-auto"
+          >
+            View details
+          </.link>
+        </article>
+      </div>
+    </section>
+  </section>
+</Layouts.app>
