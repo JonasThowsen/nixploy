@@ -199,6 +199,7 @@
                   authMode = "tailscale";
                   operatorEmail = "operator@example.com";
                   port = 9090;
+                  stateDatabasePath = "/var/lib/nixploy/custom-state.sqlite3";
                   allowedOrigin = "https://nixploy.example.com";
                   environmentFile = "/run/keys/nixploy.env";
                   sshIdentityFile = "/run/keys/nixploy-ssh";
@@ -259,6 +260,8 @@
             assert service.serviceConfig.Group == "nixploy";
             assert service.serviceConfig.StateDirectory == "nixploy";
             assert service.serviceConfig.WorkingDirectory == "/var/lib/nixploy";
+            assert
+              evaluated.config.services.nixploy.stateDatabasePath == "/var/lib/nixploy/custom-state.sqlite3";
             assert service.serviceConfig.TimeoutStopSec == 30;
             assert service.serviceConfig.ProtectSystem == "strict";
             assert builtins.elem "/srv/nixploy/example" service.serviceConfig.ReadOnlyPaths;

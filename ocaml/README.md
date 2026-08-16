@@ -165,9 +165,12 @@ dune runtest --root ocaml
 
 Import `nixosModules.default` and configure `services.nixploy`. The module starts
 exactly one `nixploy.service` as the long-lived `nixploy` user, executes
-`bin/nixploy-web --port PORT --state-db /var/lib/nixploy/state.sqlite3`, and
-keeps HOME/XDG state under `/var/lib/nixploy` for durable Podman connection
-configuration. The executable itself hardcodes loopback binding. Managed
+`bin/nixploy-web` through its generated security wrapper, and defaults
+`stateDatabasePath` to `/var/lib/nixploy/state.sqlite3`. Set that option to an
+existing absolute path when preserving migration state, and ensure its parent is
+writable inside the service sandbox. The module keeps HOME/XDG state under
+`/var/lib/nixploy` for durable Podman connection configuration. The executable
+itself hardcodes loopback binding. Managed
 applications serialize exactly the JSON accepted by `Managed_application`.
 
 Use `sshIdentityFile`, `sshKnownHostsFile`, `sopsAgeKeyFile`, and

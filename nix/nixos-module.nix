@@ -107,7 +107,7 @@ let
     ${installPrivateCredentials}
     exec ${lib.escapeShellArg "${cfg.package}/bin/nixploy-web"} \
       --port ${lib.escapeShellArg (toString cfg.port)} \
-      --state-db ${lib.escapeShellArg "/var/lib/nixploy/state.sqlite3"}
+      --state-db ${lib.escapeShellArg cfg.stateDatabasePath}
   '';
 
   validApplicationKey = key: builtins.match "[a-z0-9][a-z0-9_-]{0,62}" key != null;
@@ -134,6 +134,15 @@ in
       type = lib.types.port;
       default = 8080;
       description = "Loopback-only HTTP and WebSocket listen port.";
+    };
+
+    stateDatabasePath = lib.mkOption {
+      type = lib.types.strMatching "^/.*";
+      default = "/var/lib/nixploy/state.sqlite3";
+      description = ''
+        Absolute SQLite state database path. Its parent directory must be
+        writable inside the service sandbox.
+      '';
     };
 
     applications = lib.mkOption {

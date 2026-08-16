@@ -17,6 +17,7 @@ pkgs.testers.runNixOSTest {
       package = nixployPackage;
       authMode = "unrestricted";
       port = 18080;
+      stateDatabasePath = "/var/lib/nixploy/test-state.sqlite3";
       environmentFile = "/etc/nixploy-test.env";
       sshIdentityFile = "/etc/nixploy-test-ssh";
       sshKnownHostsFile = "/etc/nixploy-test-known-hosts";
@@ -110,8 +111,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ss --listening --tcp --numeric | grep -E '127\\.0\\.0\\.1:18080([[:space:]]|$)'")
     machine.fail("ss --listening --tcp --numeric | grep -E '(^|[[:space:]])(0\\.0\\.0\\.0|\\[::\\]):18080([[:space:]]|$)'")
 
-    machine.wait_until_succeeds("test -s /var/lib/nixploy/state.sqlite3", timeout=120)
-    machine.succeed("sqlite3 /var/lib/nixploy/state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
+    machine.wait_until_succeeds("test -s /var/lib/nixploy/test-state.sqlite3", timeout=120)
+    machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
