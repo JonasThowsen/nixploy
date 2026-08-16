@@ -55,7 +55,11 @@ the owned Caddy route, and independently verifies the result. Every stage and
 terminal outcome is recorded in SQLite. Relative secret references are resolved
 against the evaluated source root, decrypted with SOPS, installed into remote
 Podman through stdin, and mounted as container environment secrets without
-placing values in argv or retained errors.
+placing values in argv or retained errors. Schema `v0.4` also carries typed
+`run.readOnlyBinds`; their absolute normalized paths become fixed `--mount`
+argv pairs ending in `ro=true` for both pre-start and application containers.
+The deployment checks every source on the remote host before building or
+running a container and fails without creating a missing path.
 
 This path has deployed Jomat production in both directions across its blue and
 green slots. The runs adopted its established legacy resource identity, ran two

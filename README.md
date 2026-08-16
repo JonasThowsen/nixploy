@@ -14,6 +14,7 @@ The active implementation is OCaml. Its application API is the single source of 
 - loads the image into remote Podman
 - installs SOPS dotenv secrets as Podman secrets
 - runs optional pre-start commands, such as migrations
+- mounts typed existing host paths read-only in pre-start and application containers
 - starts the long-running application container
 - optionally switches a Caddy route after a health check
 - scopes remote resources by project and target to avoid name conflicts
@@ -63,6 +64,12 @@ Add nixploy as an input and expose a `nixploy` output:
           };
           preStart = [
             [ "/app/bin/migrate" ]
+          ];
+          readOnlyBinds = [
+            {
+              source = "/srv/my-app/reference-data";
+              destination = "/app/reference-data";
+            }
           ];
         };
 
@@ -152,6 +159,33 @@ API_KEY=secret
 ```
 
 Secret names must be unique across all configured secret files for a target.
+
+## Read-only bind mounts
+
+Schema `v0.4` adds the typed `run.readOnlyBinds` list. Each entry contains only
+`source` and `destination`; nixploy always renders it as the two shell-free
+Podman arguments:
+
+```text
+--mount type=bind,source=/srv/my-app/reference-data,destination=/app/reference-data,ro=true
+```
+
+The same ordered bind arguments are applied to every pre-start container and
+the long-running application container. Writable mode, raw Podman arguments,
+and arbitrary mount options are intentionally unavailable.
+
+Both values must be non-root absolute normalized Unix paths. Empty, relative,
+trailing-slash, repeated-slash, dot, dot-dot, comma, and control-character paths
+are rejected, as are unknown bind fields, identical source/destination pairs,
+and duplicate destinations. Before building or running deployment containers,
+nixploy checks each source on the remote host with the configured SSH identity.
+A missing or inaccessible source fails the deployment; nixploy never creates
+it. Paths are checked lexically and remote symlink resolution remains the
+remote runtime's responsibility.
+
+The OCaml parser continues to accept schemas `v0.2` and `v0.3` for deployments
+without this field. Supplying `readOnlyBinds` under either older schema is an
+error rather than a silently ignored mount requirement.
 
 ## Useful commands
 

@@ -10,7 +10,7 @@ The original user-facing C# CLI on `main` is the capability reference for the OC
 
 - `deploy` and `prune`;
 - web and non-web targets;
-- flake configuration for images, runtime argv, environment, network, ports, pre-start commands, secrets, SSH, and Caddy;
+- flake configuration for images, runtime argv, environment, network, ports, pre-start commands, typed read-only bind mounts, secrets, SSH, and Caddy;
 - stable ownership of Podman connections, containers, secrets, and Caddy routes, with canonical identities bound to repository identity as well as project and target.
 
 Parity does not mean copying old bugs. The OCaml implementation should retain explicit failures, bounded diagnostics, exact managed-resource verification, immutable revision support, safe cancellation, and verified compensation.
