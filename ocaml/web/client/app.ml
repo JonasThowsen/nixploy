@@ -326,7 +326,7 @@ let component graph =
     else
       let%bind.Effect () = Browser_navigation.push next in
       Effect.Many
-        ([ set_route next; close ]
+        ([ set_route next; close; Browser_navigation.scroll_main_to_top () ]
         @
         if mobile_open then [ Browser_navigation.focus "main-content" ] else []
         )

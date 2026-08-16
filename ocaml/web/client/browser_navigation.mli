@@ -14,6 +14,7 @@ val start :
 val cleanup : unit -> unit Effect.t
 val push : Route.t -> unit Effect.t
 val set_document_title : Route.t -> unit Effect.t
+val scroll_main_to_top : unit -> unit Effect.t
 
 val link_attrs :
   Route.t -> on_navigate:(Route.t -> unit Effect.t) -> Vdom.Attr.t list

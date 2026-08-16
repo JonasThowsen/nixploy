@@ -71,6 +71,18 @@ let element_has_class id class_name =
          (Js.Unsafe.meth_call class_list "contains"
             [| Js.Unsafe.inject (Js.string class_name) |]))
 
+let schedule_main_scroll_to_top () =
+  let callback =
+    Js.wrap_callback (fun () ->
+        let element = element_by_id "main-content" in
+        if present element then Js.Unsafe.set element "scrollTop" 0)
+  in
+  ignore
+    (Js.Unsafe.meth_call
+       (Js.Unsafe.inject Dom_html.window)
+       "requestAnimationFrame"
+       [| Js.Unsafe.inject callback |])
+
 let history_call method_name path =
   let history = Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "history" in
   ignore
@@ -104,7 +116,8 @@ let start ~on_route ~on_escape =
             Int.incr route_epoch;
             let parsed = current_parsed () in
             canonicalize parsed;
-            dispatch (on_route parsed.route))
+            dispatch (on_route parsed.route);
+            schedule_main_scroll_to_top ())
       in
       listen window "popstate" popstate;
       let resize =
@@ -141,6 +154,11 @@ let push route =
 let set_document_title route =
   Effect.of_deferred_thunk (fun () ->
       set_document_title_now route;
+      Async_kernel.Deferred.return ())
+
+let scroll_main_to_top () =
+  Effect.of_deferred_thunk (fun () ->
+      schedule_main_scroll_to_top ();
       Async_kernel.Deferred.return ())
 
 let event_bool event name =

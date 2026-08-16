@@ -82,12 +82,12 @@ test("authorized shell routes, health, assets, and genuine 404s", async () => {
 
 test("direct routes and reload retain the selected application", async ({ page }) => {
   await page.goto(`${baseURL}/`);
-  await expect(page.getByRole("heading", { name: "Deployment overview" })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Host and application health" }),
-  ).toBeVisible();
-  await expect(page.locator(".telemetry-summary .target-summary-list")).toHaveCount(0);
-  await page.getByRole("link", { name: "Open telemetry" }).click();
+  await expect(page.locator(".home-heading h2")).toHaveText("Overview");
+  await expect(page.locator(".home-summary-grid .summary-card")).toHaveCount(4);
+  await expect(page.locator(".telemetry-summary h3")).toHaveText("Telemetry");
+  await expect(page.getByText("Resource presence", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".home-page .intro-actions")).toHaveCount(0);
+  await page.locator(".telemetry-summary").getByRole("link", { name: "Details" }).click();
   await expect(page).toHaveURL(`${baseURL}/telemetry`);
   await expect(
     page.getByRole("heading", { name: "Machine and application telemetry" }),
@@ -121,15 +121,35 @@ test("SPA navigation, Back, and Forward synchronize URL, navigation, and heading
   await expect(page).toHaveURL(`${baseURL}/apps/${key}`);
   await expect(page.locator("#page-heading")).toHaveText(key);
 
+  const applicationScrollTop = await page.locator("#main-content").evaluate((main) => {
+    main.scrollTop = main.scrollHeight;
+    return main.scrollTop;
+  });
+  expect(applicationScrollTop).toBeGreaterThan(0);
+
   await page.getByRole("link", { name: "Telemetry", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/telemetry`);
   await expect(page.locator("#page-heading")).toHaveText("Telemetry");
+  await expect
+    .poll(() => page.locator("#main-content").evaluate((main) => main.scrollTop))
+    .toBe(0);
   await expect(page).toHaveTitle("Telemetry · nixploy");
   expect(await page.evaluate(() => (window as typeof window & { __nixployProbe?: string }).__nixployProbe)).toBe("alive");
+
+  const telemetryScrollTop = await page.locator("#main-content").evaluate((main) => {
+    const telemetry = main.querySelector<HTMLElement>(".telemetry-page");
+    if (telemetry) telemetry.style.minHeight = "200vh";
+    main.scrollTop = main.scrollHeight;
+    return main.scrollTop;
+  });
+  expect(telemetryScrollTop).toBeGreaterThan(0);
 
   await page.goBack();
   await expect(page).toHaveURL(`${baseURL}/apps/${key}`);
   await expect(page.locator("#page-heading")).toHaveText(key);
+  await expect
+    .poll(() => page.locator("#main-content").evaluate((main) => main.scrollTop))
+    .toBe(0);
   await expect(page).toHaveTitle(`${key} · nixploy`);
   await expect(page.locator(`.rail-app[aria-current="page"]`)).toContainText(key);
 
@@ -186,7 +206,18 @@ for (const viewport of [
       });
       await expectNoOverflow(page);
       await expectControlTargets(page);
-      if (route.path === "/") await expectVisibleKeyboardFocus(page);
+      if (route.path === "/") {
+        await expectVisibleKeyboardFocus(page);
+        await expect(page.locator(".home-summary-grid .summary-card")).toHaveCount(4);
+        await expect(page.getByText("Resource presence", { exact: true })).toHaveCount(0);
+        await expect(page.locator(".home-page .intro-actions")).toHaveCount(0);
+        if (viewport.name === "mobile") {
+          const summaryColumns = await page.locator(".home-summary-grid").evaluate((summary) =>
+            getComputedStyle(summary).gridTemplateColumns.split(" ").filter(Boolean).length,
+          );
+          expect(summaryColumns).toBe(2);
+        }
+      }
     }
 
     await expect(page.getByText(/Connected|Connection stale/)).toBeVisible();
