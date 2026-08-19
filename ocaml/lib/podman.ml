@@ -372,6 +372,8 @@ let inspect_container ?ignore_termination ~connection name =
 let has_label fields name =
   List.Assoc.find fields ~equal:String.equal name |> Option.is_some
 
+let label_present fields key = has_label fields key
+
 let owned_container output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
   let%bind json =
@@ -428,51 +430,58 @@ let owned_operation output ~project ~target ~resource_key ~operation_id =
         Or_error.error_string
           "container inspect must contain exactly one container"
 
+let has_modern_labels labels =
+  List.exists
+    [
+      "io.nixploy.managed";
+      "io.nixploy.project";
+      "io.nixploy.target";
+      "io.nixploy.resource_key";
+    ]
+    ~f:(label_present labels)
+
+let has_legacy_labels labels =
+  label_present labels "nixploy.project" || label_present labels "nixploy.target"
+
 let owned_candidate_collision output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
   let%bind json =
     Or_error.try_with (fun () -> Yojson.Safe.from_string output)
   in
+  let project_str = Project_name.to_string project in
+  let target_str =
+    Configuration.Target.name target |> Target_name.to_string
+  in
+  let resource_str = Resource_key.to_string resource_key in
   match json with
   | `List [ `Assoc container ] -> (
       match List.Assoc.find container ~equal:String.equal "Config" with
       | Some (`Assoc config) -> (
           match List.Assoc.find config ~equal:String.equal "Labels" with
           | Some (`Assoc labels) ->
-              let modern_managed = label labels "io.nixploy.managed" in
-              let modern_project = label labels "io.nixploy.project" in
-              let modern_target = label labels "io.nixploy.target" in
-              let modern_resource = label labels "io.nixploy.resource_key" in
-              if
-                List.exists
-                  [
-                    "io.nixploy.managed";
-                    "io.nixploy.project";
-                    "io.nixploy.target";
-                    "io.nixploy.resource_key";
-                  ]
-                  ~f:(has_label labels)
-              then
+              if has_modern_labels labels then
                 Ok
-                  (Option.equal String.equal modern_managed (Some "true")
-                  && Option.equal String.equal modern_resource
-                       (Some (Resource_key.to_string resource_key))
-                  && Option.equal String.equal modern_project
-                       (Some (Project_name.to_string project))
-                  && Option.equal String.equal modern_target
-                       (Some
-                          (Configuration.Target.name target
-                          |> Target_name.to_string)))
-              else
+                  (Option.equal String.equal
+                     (label labels "io.nixploy.managed")
+                     (Some "true")
+                  && Option.equal String.equal
+                       (label labels "io.nixploy.project")
+                       (Some project_str)
+                  && Option.equal String.equal
+                       (label labels "io.nixploy.target")
+                       (Some target_str)
+                  && Option.equal String.equal
+                       (label labels "io.nixploy.resource_key")
+                       (Some resource_str))
+              else if has_legacy_labels labels then
                 Ok
                   (Option.equal String.equal
                      (label labels "nixploy.project")
-                     (Some (Project_name.to_string project))
+                     (Some project_str)
                   && Option.equal String.equal
                        (label labels "nixploy.target")
-                       (Some
-                          (Configuration.Target.name target
-                          |> Target_name.to_string)))
+                       (Some target_str))
+              else Ok false
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->

@@ -778,6 +778,37 @@ let%test_unit "modern ownership labels override contradictory legacy labels" =
          {|{"io.nixploy.project":"other","nixploy.project":"sample","nixploy.target":"worker"}|}));
   assert (owned {|{"nixploy.project":"sample","nixploy.target":"worker"}|})
 
+let%test_unit "legacy ownership labels with resource_key are recognized" =
+  let configuration =
+    Nixploy.Configuration.of_json
+      {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"worker-image","ip":"host"}}}|}
+    |> assert_ok
+  in
+  let project = Nixploy.Configuration.project configuration in
+  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
+  let target =
+    Nixploy.Configuration.find_target configuration target_name |> assert_ok
+  in
+  let resource_key =
+    Nixploy.Resource_key.derive ~project ~target:target_name
+      ~repository_identity:"git@example.invalid:sample.git"
+    |> assert_ok
+  in
+  let owned labels =
+    Nixploy.Podman.For_testing.owned_candidate_collision
+      (sprintf {|[{"Config":{"Labels":%s}}]|} labels)
+      ~project ~target ~resource_key
+    |> assert_ok
+  in
+  assert (
+    owned
+      (sprintf
+         {|{"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"%s"}|}
+         (Nixploy.Resource_key.to_string resource_key)));
+  assert (
+    not
+      (owned {|{"nixploy.project":"other","nixploy.target":"worker"}|}))
+
 let%test_unit "non-web command construction preserves ordering and options" =
   let configuration =
     Nixploy.Configuration.of_json
