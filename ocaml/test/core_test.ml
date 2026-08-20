@@ -553,7 +553,7 @@ let%test_unit "workload accepts current deployment labels" =
   [%test_eq: string option] (Some "0123456789abcdef0123456789abcdef01234567")
     (Nixploy.Workload.revision workload)
 
-let%test_unit "status workload readback rejects another repository" =
+let%test_unit "status workload readback requires complete modern ownership" =
   let project = Nixploy.Project_name.of_string "shared" |> assert_ok in
   let target = Nixploy.Target_name.of_string "production" |> assert_ok in
   let repository_identity = "git@example.invalid:requested.git" in
@@ -562,23 +562,43 @@ let%test_unit "status workload readback rejects another repository" =
     |> assert_ok
   in
   let name = Nixploy.Resource_key.to_string resource_key in
-  let json repository =
+  let parse labels =
+    Nixploy.Workload.all_owned_of_json ~project ~target ~resource_key
+      ~repository_identity ~expected_names:[ name ]
+      (sprintf {|[{"Names":["%s"],"Labels":%s}]|} name labels)
+  in
+  let valid =
     sprintf
-      {|[{"Names":["%s"],"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"%s"}}]|}
-      name name repository
+      {|{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"%s"}|}
+      name repository_identity
   in
-  let requested =
-    Nixploy.Workload.all_owned_of_json ~ownership:`Modern ~project ~target
-      ~resource_key ~repository_identity ~expected_names:[ name ]
-      (json repository_identity)
-    |> assert_ok
-  in
-  [%test_eq: int] 1 (List.length requested);
-  assert (
-    Result.is_error
-      (Nixploy.Workload.all_owned_of_json ~ownership:`Modern ~project ~target
-         ~resource_key ~repository_identity ~expected_names:[ name ]
-         (json "git@example.invalid:other.git")))
+  [%test_eq: int] 1 (parse valid |> assert_ok |> List.length);
+  List.iter
+    [
+      ( "legacy-only",
+        sprintf
+          {|{"nixploy.project":"shared","nixploy.target":"production","nixploy.resource_key":"%s","nixploy.repository":"%s"}|}
+          name repository_identity );
+      ( "mixed",
+        sprintf
+          {|{"io.nixploy.managed":"true","io.nixploy.project":"shared","nixploy.target":"production","nixploy.resource_key":"%s","io.nixploy.repository_identity":"%s"}|}
+          name repository_identity );
+      ( "partial",
+        sprintf
+          {|{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.repository_identity":"%s"}|}
+          repository_identity );
+      ( "wrong-resource-key",
+        sprintf
+          {|{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.resource_key":"wrong","io.nixploy.repository_identity":"%s"}|}
+          repository_identity );
+      ( "legacy-repository",
+        sprintf
+          {|{"io.nixploy.managed":"true","io.nixploy.project":"shared","io.nixploy.target":"production","io.nixploy.resource_key":"%s","nixploy.repository":"%s"}|}
+          name repository_identity );
+    ]
+    ~f:(fun (case, labels) ->
+      if Result.is_ok (parse labels) then
+        failwithf "status accepted %s ownership labels" case ())
 
 let%test_unit "connection resolution uses the target SSH endpoint, not its name"
     =
@@ -653,13 +673,17 @@ let%test_unit
   Core_unix.rmdir root
 
 let%test_unit "remote workload discovery deduplicates resource identities" =
+  let project = Nixploy.Project_name.of_string "jomat" |> assert_ok in
+  let target = Nixploy.Target_name.of_string "production" |> assert_ok in
   let keys =
     Nixploy.Podman.For_testing.resource_keys_of_containers
       {|[
-        {"Labels":{"io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
-        {"Labels":{"io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
-        {"Labels":{"io.nixploy.managed":"true"}}
+        {"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"jomat","io.nixploy.target":"production","io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
+        {"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"jomat","io.nixploy.target":"production","io.nixploy.resource_key":"nixploy-jomat-legacy-production"}},
+        {"Labels":{"io.nixploy.resource_key":"ignored-partial"}},
+        {"Labels":{"nixploy.project":"jomat","nixploy.target":"production","nixploy.resource_key":"ignored-legacy"}}
       ]|}
+      ~project ~target
     |> assert_ok
   in
   [%test_eq: string list] [ "nixploy-jomat-legacy-production" ] keys
@@ -740,7 +764,7 @@ let%test_unit "non-web targets select exact single-container placement" =
     (Nixploy.Deployment_plan.container_name ~resource_key
        (Nixploy.Deployment_plan.placement plan))
 
-let%test_unit "modern ownership labels override contradictory legacy labels" =
+let%test_unit "container collision requires complete modern ownership" =
   let configuration =
     Nixploy.Configuration.of_json
       {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"worker-image","ip":"host"}}}|}
@@ -756,44 +780,7 @@ let%test_unit "modern ownership labels override contradictory legacy labels" =
       ~repository_identity:"git@example.invalid:sample.git"
     |> assert_ok
   in
-  let owned labels =
-    Nixploy.Podman.For_testing.owned_candidate_collision
-      (sprintf {|[{"Config":{"Labels":%s}}]|} labels)
-      ~project ~target ~resource_key
-    |> assert_ok
-  in
-  assert (
-    not
-      (owned
-         {|{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"conflicting-resource","nixploy.project":"sample","nixploy.target":"worker"}|}));
-  assert (
-    not
-      (owned
-         (sprintf
-            {|{"io.nixploy.managed":"false","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","nixploy.project":"sample","nixploy.target":"worker"}|}
-            (Nixploy.Resource_key.to_string resource_key))));
-  assert (
-    not
-      (owned
-         {|{"io.nixploy.project":"other","nixploy.project":"sample","nixploy.target":"worker"}|}));
-  assert (owned {|{"nixploy.project":"sample","nixploy.target":"worker"}|})
-
-let%test_unit "legacy ownership labels with resource_key are recognized" =
-  let configuration =
-    Nixploy.Configuration.of_json
-      {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"worker-image","ip":"host"}}}|}
-    |> assert_ok
-  in
-  let project = Nixploy.Configuration.project configuration in
-  let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
-  let target =
-    Nixploy.Configuration.find_target configuration target_name |> assert_ok
-  in
-  let resource_key =
-    Nixploy.Resource_key.derive ~project ~target:target_name
-      ~repository_identity:"git@example.invalid:sample.git"
-    |> assert_ok
-  in
+  let resource_key_text = Nixploy.Resource_key.to_string resource_key in
   let owned labels =
     Nixploy.Podman.For_testing.owned_candidate_collision
       (sprintf {|[{"Config":{"Labels":%s}}]|} labels)
@@ -803,11 +790,27 @@ let%test_unit "legacy ownership labels with resource_key are recognized" =
   assert (
     owned
       (sprintf
-         {|{"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"%s"}|}
-         (Nixploy.Resource_key.to_string resource_key)));
-  assert (
-    not
-      (owned {|{"nixploy.project":"other","nixploy.target":"worker"}|}))
+         {|{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s"}|}
+         resource_key_text));
+  List.iter
+    [
+      ( "legacy-only",
+        sprintf
+          {|{"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"%s"}|}
+          resource_key_text );
+      ( "mixed",
+        sprintf
+          {|{"io.nixploy.managed":"true","io.nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"%s"}|}
+          resource_key_text );
+      ( "partial",
+        {|{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker"}|}
+      );
+      ( "wrong-resource-key",
+        {|{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"wrong"}|}
+      );
+    ]
+    ~f:(fun (case, labels) ->
+      if owned labels then failwithf "collision accepted %s labels" case ())
 
 let%test_unit "non-web command construction preserves ordering and options" =
   let configuration =

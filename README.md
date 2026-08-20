@@ -148,11 +148,15 @@ nixploy prune --target production
 nixploy prune -t production -C /srv/my-app
 ```
 
-Prune resolves the same canonical or adopted legacy resource identity as deploy.
-It checks ownership before removing the exact single, blue, and green container
-names, removes only secrets prefixed by that resource key, and deletes the exact
-Caddy route for web targets. Targets without `web` never contact Caddy. A name
-collision with missing or contradictory ownership labels fails closed.
+Prune resolves the same repository-bound resource identity as deploy. Under
+that scope, a container counts as owned only when it carries the complete modern
+`io.nixploy.managed=true`, project, target, and resource-key labels. Legacy
+`nixploy.*` ownership labels are not accepted. Prune checks
+ownership before removing the exact single, blue, and green container names,
+removes only secrets prefixed by that resource key, and deletes the exact Caddy
+route for web targets. Targets without `web` never contact Caddy. A name
+collision with missing, partial, legacy-only, or contradictory ownership labels
+fails closed.
 
 ## Secrets
 

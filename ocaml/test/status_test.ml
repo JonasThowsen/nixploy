@@ -78,7 +78,7 @@ last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
   *"'podman' 'ps'"*)
-    printf '[{"Labels":{"io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:sample.git"}}]\n' "$NIXPLOY_TEST_KEY"
+    printf '[{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:sample.git"}}]\n' "$NIXPLOY_TEST_KEY"
     ;;
   *) echo "unexpected ssh command: $last" >&2; exit 98 ;;
 esac
@@ -94,19 +94,32 @@ case "$*" in
     printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_KEY"
     ;;
   *" ps --all "*)
-    if [ "${NIXPLOY_TEST_LEGACY:-}" = "1" ]; then
-      case "$*" in
-        *"label=io.nixploy.managed=true"*) printf '[]\n' ;;
-        *"name=^$NIXPLOY_TEST_KEY\$"*)
-          printf '[{"Names":["%s"],"Image":"sample","State":"running","Labels":{"nixploy.project":"sample","nixploy.target":"worker","nixploy.repository":"git@example.invalid:sample.git"}}]\n' "$NIXPLOY_TEST_KEY"
-          ;;
-        *) printf '[]\n' ;;
-      esac
-    elif [ "${NIXPLOY_TEST_FOREIGN:-}" = "1" ]; then
-      printf '[{"Names":["%s"],"Image":"foreign","State":"running","Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:other.git"}}]\n' "$NIXPLOY_TEST_KEY" "$NIXPLOY_TEST_KEY"
-    else
-      printf '[{"Names":["%s"],"Image":"sample","State":"running","Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:sample.git"}}]\n' "$NIXPLOY_TEST_KEY" "$NIXPLOY_TEST_KEY"
-    fi
+    case "$*" in
+      *"name=^$NIXPLOY_TEST_KEY\$"*) ;;
+      *) printf '[]\n'; exit 0 ;;
+    esac
+    case "${NIXPLOY_TEST_LABEL_MODE:-valid}" in
+      valid)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"'"$NIXPLOY_TEST_KEY"'","io.nixploy.repository_identity":"git@example.invalid:sample.git"'
+        ;;
+      legacy)
+        labels='"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$NIXPLOY_TEST_KEY"'","nixploy.repository":"git@example.invalid:sample.git"'
+        ;;
+      mixed)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$NIXPLOY_TEST_KEY"'","io.nixploy.repository_identity":"git@example.invalid:sample.git"'
+        ;;
+      partial)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.repository_identity":"git@example.invalid:sample.git"'
+        ;;
+      wrong-resource)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"wrong","io.nixploy.repository_identity":"git@example.invalid:sample.git"'
+        ;;
+      foreign-repository)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"'"$NIXPLOY_TEST_KEY"'","io.nixploy.repository_identity":"git@example.invalid:other.git"'
+        ;;
+      *) echo "unexpected label mode" >&2; exit 96 ;;
+    esac
+    printf '[{"Names":["%s"],"Image":"sample","State":"running","Labels":{%s}}]\n' "$NIXPLOY_TEST_KEY" "$labels"
     ;;
   *) echo "unexpected podman command: $*" >&2; exit 99 ;;
 esac
@@ -117,8 +130,7 @@ esac
       "SSH_AUTH_SOCK";
       "NIXPLOY_TEST_TRACE";
       "NIXPLOY_TEST_KEY";
-      "NIXPLOY_TEST_FOREIGN";
-      "NIXPLOY_TEST_LEGACY";
+      "NIXPLOY_TEST_LABEL_MODE";
     ]
   in
   let old_environment =
@@ -129,8 +141,7 @@ esac
   Caml_unix.putenv "NIXPLOY_TEST_TRACE" trace;
   Caml_unix.putenv "NIXPLOY_TEST_KEY" resource_key;
   let clear_scenario () =
-    Core_unix.unsetenv "NIXPLOY_TEST_FOREIGN";
-    Core_unix.unsetenv "NIXPLOY_TEST_LEGACY";
+    Core_unix.unsetenv "NIXPLOY_TEST_LABEL_MODE";
     write trace ""
   in
   let cleanup () =
@@ -151,28 +162,24 @@ esac
       assert (String.is_substring rendered ~substring:"sample");
       let lines = In_channel.read_lines trace in
       assert (
-        List.exists lines ~f:(fun line ->
-            String.is_substring line
-              ~substring:
-                "|--filter|label=io.nixploy.managed=true|--filter|label=io.nixploy.resource_key="));
-
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_FOREIGN" "1";
-      let%bind foreign = Nixploy.Application.live_status application ~scope in
-      expect_error_containing foreign
-        "ownership does not match this repository and resource";
-
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_LEGACY" "1";
-      let%bind legacy = Nixploy.Application.live_status application ~scope in
-      [%test_eq: int] 1
-        (assert_ok legacy |> Nixploy.Application.status_workloads |> List.length);
-      let lines = In_channel.read_lines trace in
-      assert (
         List.exists lines
           ~f:
             (String.is_substring
                ~substring:("|--filter|name=^" ^ resource_key ^ "$|")));
+
+      let%bind () =
+        Deferred.List.iter
+          [
+            "legacy"; "mixed"; "partial"; "wrong-resource"; "foreign-repository";
+          ] ~how:`Sequential ~f:(fun mode ->
+            clear_scenario ();
+            Caml_unix.putenv "NIXPLOY_TEST_LABEL_MODE" mode;
+            let%map inspected =
+              Nixploy.Application.live_status application ~scope
+            in
+            expect_error_containing inspected
+              "ownership does not match this repository and resource")
+      in
       Deferred.unit)
 
 let () =

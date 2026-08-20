@@ -64,10 +64,9 @@ The deployment checks every source on the remote host before building or
 running a container and fails without creating a missing path.
 
 This path has deployed Jomat production in both directions across its blue and
-green slots. The runs adopted its established legacy resource identity, ran two
-secret-backed pre-start commands, switched the exact Caddy route, independently
-verified the result, retired the previous slot, and preserved public health
-throughout.
+green slots, ran two secret-backed pre-start commands, switched the exact Caddy
+route, independently verified the result, retired the previous slot, and
+preserved public health throughout.
 
 Live scoped inspection and deployment history are available through
 `nixploy status --target TARGET` and `nixploy history --target TARGET`. Both are
@@ -76,10 +75,13 @@ canonical working directory and target.
 
 Scoped cleanup is available through `nixploy prune --target TARGET`. It evaluates
 the selected local flake through `Application`, derives the same
-repository-bound canonical identity and safe OCaml/C# migration candidates as
-deployment, verifies exact container ownership,
-removes only resource-prefixed Podman secrets, and deletes the exact Caddy route
-for web targets. Non-web prune never contacts Caddy.
+repository-bound identity as deployment, and verifies exact container ownership
+before removing resource-prefixed Podman secrets or deleting the exact Caddy
+route for web targets. Ownership requires the complete modern
+`io.nixploy.managed=true`, project, target, and resource-key labels; legacy
+`nixploy.*` ownership labels and partial or mixed substitutes are not accepted.
+Deployment reconciliation and status also verify the canonical modern repository
+identity. Non-web prune never contacts Caddy.
 
 The Bonsai control-plane tracer is served by the second packaged executable:
 

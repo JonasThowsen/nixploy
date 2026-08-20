@@ -182,7 +182,13 @@ module For_testing : sig
     string list
 
   val loaded_reference : string -> string Or_error.t
-  val resource_keys_of_containers : string -> string list Or_error.t
+
+  val resource_keys_of_containers :
+    string ->
+    project:Project_name.t ->
+    target:Target_name.t ->
+    string list Or_error.t
+
   val parse_stats : string -> runtime_stats Or_error.t
   val bound_logs : string -> log_snapshot
 

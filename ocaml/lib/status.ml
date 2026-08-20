@@ -65,31 +65,13 @@ let load ~working_directory ~target:target_name =
         @ [ "--format"; "json" ])
       ()
   in
-  let%bind modern_output =
-    query
-      [
-        "label=io.nixploy.managed=true";
-        "label=io.nixploy.resource_key=" ^ resource_key_text;
-      ]
-  in
-  let%bind modern =
-    Deferred.return
-      (Workload.all_owned_of_json ~ownership:`Modern ~project
-         ~target:target_name ~resource_key ~repository_identity
-         ~expected_names:names modern_output)
-  in
   let%bind workloads =
-    if not (List.is_empty modern) then Deferred.Or_error.return modern
-    else
-      let%map legacy =
-        Deferred.Or_error.List.map names ~how:`Sequential ~f:(fun name ->
-            let open Deferred.Or_error.Let_syntax in
-            let%bind output = query [ "name=^" ^ name ^ "$" ] in
-            Deferred.return
-              (Workload.all_owned_of_json ~ownership:`Legacy ~project
-                 ~target:target_name ~resource_key ~repository_identity
-                 ~expected_names:[ name ] output))
-      in
-      List.concat legacy
+    Deferred.Or_error.List.map names ~how:`Sequential ~f:(fun name ->
+        let open Deferred.Or_error.Let_syntax in
+        let%bind output = query [ "name=^" ^ name ^ "$" ] in
+        Deferred.return
+          (Workload.all_owned_of_json ~project ~target:target_name ~resource_key
+             ~repository_identity ~expected_names:[ name ] output))
   in
+  let workloads = List.concat workloads in
   Deferred.Or_error.return { project; target; resource_key; workloads }

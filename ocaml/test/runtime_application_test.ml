@@ -85,7 +85,7 @@ case "$*" in
   *"system connection list"*) printf '[]\n' ;;
   *" inspect --type container "*)
     for name in "$@"; do :; done
-    printf '[{"Id":"runtime-id","Name":"%%s","State":{"Running":true,"StartedAt":"2025-01-01T00:00:00Z"},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"example","io.nixploy.target":"production","io.nixploy.resource_key":"%%s","io.nixploy.repository":"%s"%%s,"io.nixploy.revision":"%%s","io.nixploy.operation_id":"%%s"}}}]\n' "$name" "$name" "$NIXPLOY_RUNTIME_EXTRA_LABEL" "$NIXPLOY_RUNTIME_REVISION" "$NIXPLOY_RUNTIME_OPERATION" ;;
+    printf '[{"Id":"runtime-id","Name":"%%s","State":{"Running":true,"StartedAt":"2025-01-01T00:00:00Z"},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"example","io.nixploy.target":"production","io.nixploy.resource_key":"%%s","io.nixploy.repository_identity":"%s"%%s,"io.nixploy.revision":"%%s","io.nixploy.operation_id":"%%s"}}}]\n' "$name" "$name" "$NIXPLOY_RUNTIME_EXTRA_LABEL" "$NIXPLOY_RUNTIME_REVISION" "$NIXPLOY_RUNTIME_OPERATION" ;;
   *" logs "*) printf '2025-01-01T00:00:00Z worker ready\n' ;;
   *" stats "*) printf '%%s\n' '[{"CPUPerc":"2.5%%","MemUsage":"4MiB / 1GiB"}]' ;;
   *) : ;;
@@ -145,7 +145,7 @@ esac
   in
   ignore (assert_ok rediscovered : Nixploy.Runtime_application.t);
   Core_unix.putenv ~key:"NIXPLOY_RUNTIME_EXTRA_LABEL"
-    ~data:",\"io.nixploy.repository_identity\":\"foreign/repository\"";
+    ~data:",\"io.nixploy.repository\":\"foreign/repository\"";
   let%bind conflicting_repository =
     Nixploy.Runtime_application.discover_identity ~commit application
   in

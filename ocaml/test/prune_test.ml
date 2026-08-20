@@ -109,7 +109,7 @@ remote=${11}
 case "$remote" in
   *"'podman' 'ps'"*)
     if [ -n "${NIXPLOY_TEST_REMOTE_RESOURCE:-}" ]; then
-      printf '[{"Labels":{"io.nixploy.resource_key":"%s","io.nixploy.repository":"%s"}}]\n' "$NIXPLOY_TEST_REMOTE_RESOURCE" "${NIXPLOY_TEST_REMOTE_REPOSITORY:-git@example.invalid:sample.git}"
+      printf '[{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"%s"}}]\n' "$NIXPLOY_TEST_REMOTE_RESOURCE" "${NIXPLOY_TEST_REMOTE_REPOSITORY:-git@example.invalid:sample.git}"
     else
       printf '[]\n'
     fi
@@ -195,7 +195,25 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
   [ "$name" = "$NIXPLOY_TEST_KEY-blue" ] && id=blue-id
   resource=$NIXPLOY_TEST_KEY
   if [ "${NIXPLOY_TEST_UNOWNED_BLUE:-}" = "1" ] && [ "$name" = "$NIXPLOY_TEST_KEY-blue" ]; then resource=foreign-resource; fi
-  printf '[{"Id":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s"}}}]\n' "$id" "$resource"
+  case "${NIXPLOY_TEST_LABEL_MODE:-valid}" in
+    valid)
+      labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"'"$resource"'"'
+      ;;
+    legacy)
+      labels='"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$resource"'"'
+      ;;
+    mixed)
+      labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$resource"'"'
+      ;;
+    partial)
+      labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker"'
+      ;;
+    wrong-resource)
+      labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"wrong"'
+      ;;
+    *) echo "unexpected label mode" >&2; exit 91 ;;
+  esac
+  printf '[{"Id":"%s","Config":{"Labels":{%s}}}]\n' "$id" "$labels"
   exit 0
 fi
 if [ "${3:-}" = "secret" ] && [ "${4:-}" = "ls" ]; then
@@ -251,6 +269,7 @@ exit 99
       "NIXPLOY_TEST_FAIL_CONNECTION_REMOVE";
       "NIXPLOY_TEST_ROUTE_DOMAIN";
       "NIXPLOY_TEST_UNOWNED_BLUE";
+      "NIXPLOY_TEST_LABEL_MODE";
       "NIXPLOY_TEST_FAIL_SECRET_LIST";
       "NIXPLOY_TEST_CADDY_MISSING";
       "NIXPLOY_TEST_CADDY_INSPECT_ERROR";
@@ -355,6 +374,19 @@ exit 99
       assert (
         List.for_all lines
           ~f:(Fn.non (String.is_substring ~substring:"ish-unrelated")));
+
+      let%bind () =
+        Deferred.List.iter [ "legacy"; "mixed"; "partial"; "wrong-resource" ]
+          ~how:`Sequential ~f:(fun mode ->
+            clear_scenario canonical_key;
+            Caml_unix.putenv "NIXPLOY_TEST_LABEL_MODE" mode;
+            let%map rejected = prune () in
+            expect_error_containing rejected "not owned";
+            let lines = In_channel.read_lines trace in
+            assert (count lines "|rm|-f|" = 0);
+            assert (count lines "|secret|rm|" = 0);
+            assert (count lines "|secret|ls|" = 0))
+      in
 
       clear_scenario canonical_key;
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

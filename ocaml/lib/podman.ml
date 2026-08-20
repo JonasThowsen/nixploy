@@ -36,20 +36,11 @@ let label fields name =
   | _ -> None
 
 let repository_label labels =
-  let values =
-    List.filter_map
-      [
-        "io.nixploy.repository_identity";
-        "io.nixploy.repository";
-        "nixploy.repository";
-      ]
-      ~f:(label labels)
-    |> List.dedup_and_sort ~compare:String.compare
-  in
-  match values with
-  | [] -> Ok None
-  | [ repository ] -> Ok (Some repository)
-  | _ -> Or_error.error_string "container repository labels conflict"
+  let identity = Ownership_labels.repository_identity labels in
+  match (identity, label labels "io.nixploy.repository") with
+  | Some identity, Some alias when not (String.equal identity alias) ->
+      Or_error.error_string "container repository labels conflict"
+  | _ -> Ok identity
 
 let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
   Process_runner.run ?stdin ?ignore_termination ~timeout
@@ -77,7 +68,7 @@ type remote_ownership = {
   remote_repository : string option;
 }
 
-let remote_ownerships_of_containers output =
+let remote_ownerships_of_containers output ~project ~target =
   let open Or_error.Let_syntax in
   let%bind json =
     Or_error.try_with (fun () -> Yojson.Safe.from_string output)
@@ -90,8 +81,8 @@ let remote_ownerships_of_containers output =
               match List.Assoc.find container ~equal:String.equal "Labels" with
               | Some (`Assoc labels) ->
                   let%map remote_repository = repository_label labels in
-                  Option.map (label labels "io.nixploy.resource_key")
-                    ~f:(fun remote_resource_key ->
+                  Ownership_labels.resource_key labels ~project ~target
+                  |> Option.map ~f:(fun remote_resource_key ->
                       { remote_resource_key; remote_repository })
               | _ -> Ok None)
           | _ -> Ok None)
@@ -100,9 +91,11 @@ let remote_ownerships_of_containers output =
       List.filter_opt ownerships
   | _ -> Or_error.error_string "remote Podman list must be a JSON array"
 
-let resource_keys_of_containers output =
+let resource_keys_of_containers output ~project ~target =
   let open Or_error.Let_syntax in
-  let%map ownerships = remote_ownerships_of_containers output in
+  let%map ownerships =
+    remote_ownerships_of_containers output ~project ~target
+  in
   List.map ownerships ~f:(fun ownership -> ownership.remote_resource_key)
   |> List.dedup_and_sort ~compare:String.compare
 
@@ -127,7 +120,10 @@ let discover_remote_resource_keys ~project ~target =
       ]
   in
   match result.exit_status with
-  | Ok () -> Deferred.return (remote_ownerships_of_containers result.stdout)
+  | Ok () ->
+      Deferred.return
+        (remote_ownerships_of_containers result.stdout ~project
+           ~target:(Configuration.Target.name target))
   | Error failure ->
       Deferred.Or_error.errorf "remote Podman discovery failed (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
@@ -369,11 +365,6 @@ let inspect_container ?ignore_termination ~connection name =
   run_ok ?ignore_termination
     [ "--connection"; connection; "inspect"; "--type"; "container"; name ]
 
-let has_label fields name =
-  List.Assoc.find fields ~equal:String.equal name |> Option.is_some
-
-let label_present fields key = has_label fields key
-
 let owned_container output ~project ~target ~resource_key =
   let open Or_error.Let_syntax in
   let%bind json =
@@ -386,20 +377,9 @@ let owned_container output ~project ~target ~resource_key =
           match List.Assoc.find config ~equal:String.equal "Labels" with
           | Some (`Assoc labels) ->
               Ok
-                (Option.equal String.equal
-                   (label labels "io.nixploy.managed")
-                   (Some "true")
-                && Option.equal String.equal
-                     (label labels "io.nixploy.project")
-                     (Some (Project_name.to_string project))
-                && Option.equal String.equal
-                     (label labels "io.nixploy.target")
-                     (Some
-                        (Target_name.to_string
-                           (Configuration.Target.name target)))
-                && Option.equal String.equal
-                     (label labels "io.nixploy.resource_key")
-                     (Some (Resource_key.to_string resource_key)))
+                (Ownership_labels.exact labels ~project
+                   ~target:(Configuration.Target.name target)
+                   ~resource_key)
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->
@@ -430,63 +410,7 @@ let owned_operation output ~project ~target ~resource_key ~operation_id =
         Or_error.error_string
           "container inspect must contain exactly one container"
 
-let has_modern_labels labels =
-  List.exists
-    [
-      "io.nixploy.managed";
-      "io.nixploy.project";
-      "io.nixploy.target";
-      "io.nixploy.resource_key";
-    ]
-    ~f:(label_present labels)
-
-let has_legacy_labels labels =
-  label_present labels "nixploy.project" || label_present labels "nixploy.target"
-
-let owned_candidate_collision output ~project ~target ~resource_key =
-  let open Or_error.Let_syntax in
-  let%bind json =
-    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
-  in
-  let project_str = Project_name.to_string project in
-  let target_str =
-    Configuration.Target.name target |> Target_name.to_string
-  in
-  let resource_str = Resource_key.to_string resource_key in
-  match json with
-  | `List [ `Assoc container ] -> (
-      match List.Assoc.find container ~equal:String.equal "Config" with
-      | Some (`Assoc config) -> (
-          match List.Assoc.find config ~equal:String.equal "Labels" with
-          | Some (`Assoc labels) ->
-              if has_modern_labels labels then
-                Ok
-                  (Option.equal String.equal
-                     (label labels "io.nixploy.managed")
-                     (Some "true")
-                  && Option.equal String.equal
-                       (label labels "io.nixploy.project")
-                       (Some project_str)
-                  && Option.equal String.equal
-                       (label labels "io.nixploy.target")
-                       (Some target_str)
-                  && Option.equal String.equal
-                       (label labels "io.nixploy.resource_key")
-                       (Some resource_str))
-              else if has_legacy_labels labels then
-                Ok
-                  (Option.equal String.equal
-                     (label labels "nixploy.project")
-                     (Some project_str)
-                  && Option.equal String.equal
-                       (label labels "nixploy.target")
-                       (Some target_str))
-              else Ok false
-          | _ -> Ok false)
-      | _ -> Ok false)
-  | _ ->
-      Or_error.error_string
-        "container inspect must contain exactly one container"
+let owned_candidate_collision = owned_container
 
 let repository_owned output ~repository_identity =
   let open Or_error.Let_syntax in
@@ -794,10 +718,6 @@ let run_pre_start ~connection ~target ~placement ~image ~secrets ~secret_mounts
       let%map _ = run_ok ~redact:(Secrets.redact secrets) argv in
       ())
 
-let project_id repository =
-  Digestif.SHA256.digest_string repository |> Digestif.SHA256.to_hex
-  |> fun digest -> String.prefix digest 10
-
 let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
     ~operation_id ~name =
   let rec attempt remaining =
@@ -865,12 +785,6 @@ let start_candidate ~connection ~project ~target ~resource_key ~placement
   let repository = Source.repository source in
   let metadata =
     [
-      ("nixploy.project", project_name);
-      ("nixploy.project_id", project_id repository);
-      ("nixploy.target", target_name);
-      ("nixploy.repository", repository);
-      ("nixploy.git_commit", Source.revision source);
-      ("nixploy.deployed_at", deployed_at);
       ("io.nixploy.managed", "true");
       ("io.nixploy.project", project_name);
       ("io.nixploy.target", target_name);

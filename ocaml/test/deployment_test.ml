@@ -208,7 +208,25 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
       *-blue|*-green) old_id=old-slot-id ;;
       *) old_id=single-id ;;
     esac
-    printf '[{"Id":"%s","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:test.git"}}}]\n' "$old_id" "$name" "$resource"
+    case "${NIXPLOY_TEST_LABEL_MODE:-valid}" in
+      valid)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"'"$resource"'","io.nixploy.repository_identity":"git@example.invalid:test.git"'
+        ;;
+      legacy)
+        labels='"nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$resource"'","nixploy.repository":"git@example.invalid:test.git"'
+        ;;
+      mixed)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","nixploy.target":"worker","nixploy.resource_key":"'"$resource"'","io.nixploy.repository_identity":"git@example.invalid:test.git"'
+        ;;
+      partial)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.repository_identity":"git@example.invalid:test.git"'
+        ;;
+      wrong-resource)
+        labels='"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"wrong","io.nixploy.repository_identity":"git@example.invalid:test.git"'
+        ;;
+      *) echo "unexpected label mode" >&2; exit 95 ;;
+    esac
+    printf '[{"Id":"%s","Name":"%s","Config":{"Labels":{%s}}}]\n' "$old_id" "$name" "$labels"
   fi
   exit 0
 fi
@@ -256,6 +274,7 @@ exit 99
       "NIXPLOY_TEST_EXISTING_WEB";
       "NIXPLOY_TEST_EXISTING_SINGLE";
       "NIXPLOY_TEST_FOREIGN_SINGLE";
+      "NIXPLOY_TEST_LABEL_MODE";
       "NIXPLOY_TEST_FAIL_RETIREMENT";
       "NIXPLOY_TEST_BINDS";
       "NIXPLOY_TEST_MISSING_BIND";
@@ -284,6 +303,7 @@ exit 99
         "NIXPLOY_TEST_EXISTING_WEB";
         "NIXPLOY_TEST_EXISTING_SINGLE";
         "NIXPLOY_TEST_FOREIGN_SINGLE";
+        "NIXPLOY_TEST_LABEL_MODE";
         "NIXPLOY_TEST_FAIL_RETIREMENT";
         "NIXPLOY_TEST_BINDS";
         "NIXPLOY_TEST_MISSING_BIND";
@@ -517,10 +537,17 @@ exit 99
           "|-e|PORT={port}|";
           "|-p|127.0.0.1:9000:9000|";
           "|--label|io.nixploy.managed=true|";
+          "|--label|io.nixploy.project=sample|";
+          "|--label|io.nixploy.target=worker|";
+          "|--label|io.nixploy.resource_key=" ^ expected_name ^ "|";
+          "|--label|io.nixploy.repository_identity=git@example.invalid:test.git|";
           "|--label|io.nixploy.operation_id=operation-1|";
           "|loaded@sha256:immutable|/app/worker|--once";
-        ] ~f:(fun substring ->
+        ]
+        ~f:(fun substring ->
           assert (String.is_substring runtime_line ~substring));
+      assert (
+        not (String.is_substring runtime_line ~substring:"|--label|nixploy."));
       [%test_eq: Nixploy.Deployment.stage list]
         [
           Preparing_source;
@@ -678,6 +705,22 @@ exit 99
       assert (count lines "|inspect|--type|container|" = 1);
       assert (count lines "|rm|-f|" = 0);
       assert (count lines "|run|-d|--name|" = 0);
+
+      let%bind () =
+        Deferred.List.iter [ "legacy"; "mixed"; "partial"; "wrong-resource" ]
+          ~how:`Sequential ~f:(fun mode ->
+            clear_scenario ();
+            Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+            Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+            Caml_unix.putenv "NIXPLOY_TEST_LABEL_MODE" mode;
+            write route_state "8080\nworker.example.invalid\n";
+            let%map rejected = deploy ("operation-active-" ^ mode) in
+            expect_error_containing rejected "not owned by this repository";
+            let lines = In_channel.read_lines trace in
+            assert (count lines "nix|build|" = 0);
+            assert (count lines "|rm|-f|" = 0);
+            assert (count lines "|run|-d|--name|" = 0))
+      in
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_VERIFY_MISMATCH" "1";

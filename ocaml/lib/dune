@@ -1,7 +1,7 @@
 (library
  (name nixploy)
  (public_name nixploy)
- (private_modules prune prune_plan)
+ (private_modules ownership_labels prune prune_plan)
  (libraries digestif.c core async sqlite3 uri yojson)
  (preprocess
   (pps ppx_jane)))

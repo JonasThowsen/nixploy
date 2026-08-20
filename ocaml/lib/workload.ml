@@ -61,24 +61,10 @@ let all_of_json input =
   let%bind workloads = parse_json_array input in
   Or_error.all (List.map workloads ~f:of_json)
 
-let all_owned_of_json ~ownership ~project ~target ~resource_key
-    ~repository_identity ~expected_names input =
+let all_owned_of_json ~project ~target ~resource_key ~repository_identity
+    ~expected_names input =
   let open Or_error.Let_syntax in
   let%bind workloads = parse_json_array input in
-  let expected_project = Project_name.to_string project in
-  let expected_target = Target_name.to_string target in
-  let expected_resource_key = Resource_key.to_string resource_key in
-  let label labels name = optional_string labels name in
-  let modern_label_names =
-    [
-      "io.nixploy.managed";
-      "io.nixploy.project";
-      "io.nixploy.target";
-      "io.nixploy.resource_key";
-      "io.nixploy.repository";
-      "io.nixploy.repository_identity";
-    ]
-  in
   let validate workload =
     match workload with
     | `Assoc fields ->
@@ -96,32 +82,11 @@ let all_owned_of_json ~ownership ~project ~target ~resource_key
           | _ ->
               Or_error.errorf "container %s has no ownership labels" parsed.name
         in
-        let exact name expected =
-          Option.equal String.equal (label labels name) (Some expected)
-        in
-        let repository_label =
-          Option.first_some
-            (label labels "io.nixploy.repository_identity")
-            (Option.first_some
-               (label labels "io.nixploy.repository")
-               (label labels "nixploy.repository"))
-        in
         let owned =
-          match ownership with
-          | `Modern ->
-              exact "io.nixploy.managed" "true"
-              && exact "io.nixploy.project" expected_project
-              && exact "io.nixploy.target" expected_target
-              && exact "io.nixploy.resource_key" expected_resource_key
-              && Option.equal String.equal repository_label
-                   (Some repository_identity)
-          | `Legacy ->
-              (not
-                 (List.exists modern_label_names ~f:(fun name ->
-                      List.Assoc.mem labels ~equal:String.equal name)))
-              && exact "nixploy.project" expected_project
-              && exact "nixploy.target" expected_target
-              && exact "nixploy.repository" repository_identity
+          Ownership_labels.exact labels ~project ~target ~resource_key
+          && Option.equal String.equal
+               (Ownership_labels.repository_identity labels)
+               (Some repository_identity)
         in
         if owned then Ok parsed
         else
