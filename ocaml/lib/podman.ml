@@ -505,28 +505,37 @@ type prepared_prune = {
   prune_secret_names : string list;
 }
 
-let secret_names_of_json output =
-  let open Or_error.Let_syntax in
-  let%bind json =
-    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
-  in
-  let secret_name = function
-    | `Assoc fields -> (
-        match List.Assoc.find fields ~equal:String.equal "Name" with
-        | Some (`String name) when not (String.is_empty name) -> Ok name
-        | _ -> (
-            match List.Assoc.find fields ~equal:String.equal "Spec" with
-            | Some (`Assoc spec) -> (
-                match List.Assoc.find spec ~equal:String.equal "Name" with
-                | Some (`String name) when not (String.is_empty name) -> Ok name
-                | _ -> Or_error.error_string "Podman secret is missing its name"
-                )
-            | _ -> Or_error.error_string "Podman secret is missing its name"))
-    | _ -> Or_error.error_string "Podman secret list entry must be an object"
-  in
-  match json with
-  | `List secrets -> Or_error.all (List.map secrets ~f:secret_name)
-  | _ -> Or_error.error_string "Podman secret list must be a JSON array"
+let max_secret_name_bytes = 253
+let max_listed_secrets = 4_096
+
+let valid_secret_name_character = function
+  | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' | '.' | '-' -> true
+  | _ -> false
+
+let secret_names_of_output output =
+  if String.is_empty output then Ok []
+  else
+    let output =
+      if String.is_suffix output ~suffix:"\n" then String.drop_suffix output 1
+      else output
+    in
+    let names = String.split output ~on:'\n' in
+    if List.length names > max_listed_secrets then
+      Or_error.errorf "Podman secret list exceeds %d entries" max_listed_secrets
+    else
+      List.mapi names ~f:(fun index name ->
+          if String.is_empty name then
+            Or_error.errorf
+              "Podman secret list contains an empty name at line %d" (index + 1)
+          else if String.length name > max_secret_name_bytes then
+            Or_error.errorf "Podman secret name at line %d exceeds %d bytes"
+              (index + 1) max_secret_name_bytes
+          else if not (String.for_all name ~f:valid_secret_name_character) then
+            Or_error.errorf
+              "Podman secret name at line %d contains an invalid character"
+              (index + 1)
+          else Ok name)
+      |> Or_error.all
 
 let inspect_prune_container ~connection ~project ~target ~resource_key name =
   let open Deferred.Or_error.Let_syntax in
@@ -578,10 +587,11 @@ let preflight_prune_owned_resources ~connection ~project ~target ~resource_key =
       ~f:(inspect_prune_container ~connection ~project ~target ~resource_key)
   in
   let%bind listed =
-    run_ok [ "--connection"; connection; "secret"; "ls"; "--format"; "json" ]
+    run_ok
+      [ "--connection"; connection; "secret"; "ls"; "--format"; "{{.Name}}" ]
   in
   let%map all_secret_names =
-    Deferred.return (secret_names_of_json listed.stdout)
+    Deferred.return (secret_names_of_output listed.stdout)
   in
   {
     prune_connection = connection;
@@ -1229,5 +1239,6 @@ module For_testing = struct
   let resource_keys_of_containers = resource_keys_of_containers
   let parse_stats = parse_stats
   let bound_logs = bound_logs
+  let secret_names_of_output = secret_names_of_output
   let owned_candidate_collision = owned_candidate_collision
 end

@@ -942,6 +942,18 @@ let%test_unit "Podman load parser accepts current output variants" =
        "Loaded image(s): localhost/app:latest\n"
     |> assert_ok)
 
+let%test_unit "Podman secret names parse bounded line-oriented output" =
+  let parse = Nixploy.Podman.For_testing.secret_names_of_output in
+  [%test_eq: string list]
+    [ "nixploy-app-api"; "nixploy-app-DB_PASSWORD" ]
+    (parse "nixploy-app-api\nnixploy-app-DB_PASSWORD\n" |> assert_ok);
+  [%test_eq: string list] [] (parse "" |> assert_ok);
+  parse {|[{"Name":"nixploy-app-api"}]|}
+  |> assert_error_containing "invalid character";
+  parse "nixploy-app-api\n\n" |> assert_error_containing "empty name";
+  parse "nixploy-app-api\r\n" |> assert_error_containing "invalid character";
+  parse (String.make 254 'a') |> assert_error_containing "exceeds 253 bytes"
+
 let%test_unit "Podman runtime stats parse bounded numeric values" =
   let stats =
     Nixploy.Podman.For_testing.parse_stats

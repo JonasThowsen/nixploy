@@ -217,12 +217,19 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
   exit 0
 fi
 if [ "${3:-}" = "secret" ] && [ "${4:-}" = "ls" ]; then
+  [ "$#" -eq 6 ] && [ "${5:-}" = "--format" ] && [ "${6:-}" = "{{.Name}}" ] || {
+    echo "secret list must request the explicit name template" >&2
+    exit 41
+  }
   [ "${NIXPLOY_TEST_FAIL_SECRET_LIST:-}" = "1" ] && { echo "secret listing failed" >&2; exit 42; }
-  printf '['
-  separator=''
-  if [ ! -f "$NIXPLOY_TEST_REMOTE_STATE/secret-api" ]; then printf '%s{"Name":"%s-api"}' "$separator" "$NIXPLOY_TEST_KEY"; separator=,; fi
-  if [ ! -f "$NIXPLOY_TEST_REMOTE_STATE/secret-db" ]; then printf '%s{"Spec":{"Name":"%s-db"}}' "$separator" "$NIXPLOY_TEST_KEY"; separator=,; fi
-  printf '%s{"Name":"%sish-unrelated"},{"Name":"unrelated"}]\n' "$separator" "$NIXPLOY_TEST_KEY"
+  if [ "${NIXPLOY_TEST_MALFORMED_SECRET_LIST:-}" = "1" ]; then
+    printf '%s\n\n' "$NIXPLOY_TEST_KEY-api"
+    exit 0
+  fi
+  if [ "${NIXPLOY_TEST_EMPTY_SECRET_LIST:-}" = "1" ]; then exit 0; fi
+  if [ ! -f "$NIXPLOY_TEST_REMOTE_STATE/secret-api" ]; then printf '%s-api\n' "$NIXPLOY_TEST_KEY"; fi
+  if [ ! -f "$NIXPLOY_TEST_REMOTE_STATE/secret-db" ]; then printf '%s-db\n' "$NIXPLOY_TEST_KEY"; fi
+  printf '%sish-unrelated\nunrelated\n' "$NIXPLOY_TEST_KEY"
   exit 0
 fi
 if [ "${3:-}" = "rm" ] && [ "${4:-}" = "-f" ]; then
@@ -271,6 +278,8 @@ exit 99
       "NIXPLOY_TEST_UNOWNED_BLUE";
       "NIXPLOY_TEST_LABEL_MODE";
       "NIXPLOY_TEST_FAIL_SECRET_LIST";
+      "NIXPLOY_TEST_MALFORMED_SECRET_LIST";
+      "NIXPLOY_TEST_EMPTY_SECRET_LIST";
       "NIXPLOY_TEST_CADDY_MISSING";
       "NIXPLOY_TEST_CADDY_INSPECT_ERROR";
       "NIXPLOY_TEST_CADDY_DELETE_ERROR";
@@ -370,6 +379,7 @@ exit 99
       [%test_eq: int] 2 (count lines "|inspect|--type|container|");
       [%test_eq: int] 2 (count lines "|rm|-f|");
       [%test_eq: int] 2 (count lines "|secret|rm|");
+      assert (count lines "|secret|ls|--format|{{.Name}}" = 1);
       assert (count lines "curl" = 0);
       assert (
         List.for_all lines
@@ -398,7 +408,7 @@ exit 99
       let last_inspect =
         index_of lines ("|inspect|--type|container|" ^ canonical_key ^ "-blue")
       in
-      let secrets_list = index_of lines "|secret|ls|--format|json" in
+      let secrets_list = index_of lines "|secret|ls|--format|{{.Name}}" in
       let route_get =
         index_of lines
           ("'-X' 'GET' '--write-out' '\\n%{http_code}' \
@@ -529,6 +539,24 @@ exit 99
       expect_error_containing list_failure "secret listing failed";
       let lines = In_channel.read_lines trace in
       assert (count lines "|rm|-f|" = 0);
+      assert (count lines "|secret|rm|" = 0);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_MALFORMED_SECRET_LIST" "1";
+      let%bind malformed_list = prune () in
+      expect_error_containing malformed_list "empty name";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "'-X' 'DELETE'" = 0);
+      assert (count lines "|rm|-f|" = 0);
+      assert (count lines "|secret|rm|" = 0);
+
+      clear_scenario canonical_key;
+      Caml_unix.putenv "NIXPLOY_TEST_EMPTY_SECRET_LIST" "1";
+      let%bind empty_list = prune () in
+      let empty_list = assert_ok empty_list in
+      [%test_eq: int] 0 (Nixploy.Application.prune_secrets_removed empty_list);
+      let lines = In_channel.read_lines trace in
       assert (count lines "|secret|rm|" = 0);
 
       clear_scenario canonical_key;

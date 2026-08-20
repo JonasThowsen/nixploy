@@ -191,6 +191,7 @@ module For_testing : sig
 
   val parse_stats : string -> runtime_stats Or_error.t
   val bound_logs : string -> log_snapshot
+  val secret_names_of_output : string -> string list Or_error.t
 
   val owned_candidate_collision :
     string ->
