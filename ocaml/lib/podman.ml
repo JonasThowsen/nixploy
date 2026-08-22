@@ -412,7 +412,8 @@ let owned_operation output ~project ~target ~resource_key ~operation_id =
 
 let owned_candidate_collision = owned_container
 
-let repository_owned output ~repository_identity =
+let repository_owned ?(require_repository_label = false) output
+    ~repository_identity =
   let open Or_error.Let_syntax in
   let%bind json =
     Or_error.try_with (fun () -> Yojson.Safe.from_string output)
@@ -423,8 +424,13 @@ let repository_owned output ~repository_identity =
       | Some (`Assoc config) -> (
           match List.Assoc.find config ~equal:String.equal "Labels" with
           | Some (`Assoc labels) ->
-              let%map repository = repository_label labels in
-              Option.equal String.equal repository (Some repository_identity)
+              let%map canonical_identity = repository_label labels in
+              let repository = label labels "io.nixploy.repository" in
+              Option.equal String.equal canonical_identity
+                (Some repository_identity)
+              &&
+              ((not require_repository_label)
+              || Option.equal String.equal repository (Some repository_identity))
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->
@@ -537,7 +543,8 @@ let secret_names_of_output output =
           else Ok name)
       |> Or_error.all
 
-let inspect_prune_container ~connection ~project ~target ~resource_key name =
+let inspect_prune_container ~connection ~project ~target ~resource_key
+    ~repository_identity name =
   let open Deferred.Or_error.Let_syntax in
   let%bind exists =
     run [ "--connection"; connection; "container"; "exists"; name ]
@@ -552,12 +559,21 @@ let inspect_prune_container ~connection ~project ~target ~resource_key name =
       let%bind inspected = inspect_container ~connection name in
       let%bind owned =
         Deferred.return
-          (owned_candidate_collision inspected.stdout ~project ~target
-             ~resource_key)
+          (let open Or_error.Let_syntax in
+           let%bind target_owned =
+             owned_candidate_collision inspected.stdout ~project ~target
+               ~resource_key
+           in
+           let%map repository_owned =
+             repository_owned ~require_repository_label:true inspected.stdout
+               ~repository_identity
+           in
+           target_owned && repository_owned)
       in
       if not owned then
         Deferred.Or_error.errorf
-          "container %s exists but is not owned by this target" name
+          "container %s exists but is not owned by this repository and target"
+          name
       else
         let%bind json =
           Deferred.return
@@ -577,14 +593,17 @@ let inspect_prune_container ~connection ~project ~target ~resource_key name =
             Deferred.Or_error.errorf
               "container %s inspect must contain exactly one container" name)
 
-let preflight_prune_owned_resources ~connection ~project ~target ~resource_key =
+let preflight_prune_owned_resources ~connection ~project ~target ~resource_key
+    ~repository_identity =
   let open Deferred.Or_error.Let_syntax in
   let plan = Prune_plan.create ~resource_key in
   let%bind prune_containers =
     Deferred.Or_error.List.filter_map
       (Prune_plan.container_names plan)
       ~how:`Sequential
-      ~f:(inspect_prune_container ~connection ~project ~target ~resource_key)
+      ~f:
+        (inspect_prune_container ~connection ~project ~target ~resource_key
+           ~repository_identity)
   in
   let%bind listed =
     run_ok

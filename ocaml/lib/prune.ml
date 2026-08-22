@@ -53,7 +53,7 @@ let prune ?expected_project ?repository_identity ~working_directory
   let%bind connection = Podman.ensure_connection ~target ~resource_key in
   let%bind podman_preflight =
     Podman.preflight_prune_owned_resources ~connection ~project ~target
-      ~resource_key
+      ~resource_key ~repository_identity
   in
   let%bind caddy_preflight =
     match Configuration.Target.kind target with
