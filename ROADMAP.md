@@ -208,6 +208,15 @@ live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
    serialize; unrelated targets co-hosted on one machine do not take a
    host-global lock. An ambiguous or stale owner must never permit unsafe
    takeover.
+
+   **Tracer status: packaged broker journey implemented; lifecycle integration
+   remains missing.** `services.nixploy.targetLease` installs a dedicated
+   unprivileged Unix-socket broker with root-owned fixed authority, scope, and
+   Unix-user allowlists. Its packaged VM receipt proves peer-credential admission,
+   same-scope contention, independent scopes, clean release, and durable dirty
+   state after holder or broker interruption. The broker does not yet participate
+   in `Application` deploy/prune/reconciliation, clear dirty state, transport over
+   SSH, supervise mutations, provide fairness, or claim strict crash fencing.
 3. **P0 — Crash reconciliation (missing):** reconcile persisted intent with
    observed Podman, Caddy, secret, and lease state before another mutation.
 4. **P0 — Transactional secret generations (missing):** prepare, switch, verify,

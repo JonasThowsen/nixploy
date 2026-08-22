@@ -288,6 +288,11 @@
             nixployModule = self.nixosModules.default;
             nixployPackage = self.packages.${system}.nixploy;
           };
+          nixos-target-lease-vm = import ./nix/target-lease-test.nix {
+            inherit pkgs;
+            nixployModule = self.nixosModules.default;
+            nixployPackage = self.packages.${system}.nixploy;
+          };
         }
       );
 

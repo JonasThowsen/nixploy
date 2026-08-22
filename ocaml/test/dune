@@ -13,6 +13,13 @@
   (pps ppx_jane)))
 
 (test
+ (name target_lease_test)
+ (modules target_lease_test)
+ (libraries nixploy core)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name authorization_test)
  (modules authorization_test)
  (libraries core nixploy_rpc_mapping)

@@ -118,6 +118,14 @@ in
 {
   imports = [
     (lib.mkRenamedOptionModule [ "services" "nixploy-control-plane" ] [ "services" "nixploy" ])
+    (import ./target-lease-module.nix {
+      inherit
+        config
+        lib
+        pkgs
+        defaultPackage
+        ;
+    })
   ];
 
   options.services.nixploy = {

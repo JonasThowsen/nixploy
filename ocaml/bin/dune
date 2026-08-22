@@ -12,3 +12,19 @@
  (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
+
+(executable
+ (name target_lease_broker)
+ (public_name nixploy-target-lease-broker)
+ (modules target_lease_broker)
+ (libraries nixploy core core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
+ (name target_lease_client)
+ (public_name nixploy-target-lease-client)
+ (modules target_lease_client)
+ (libraries nixploy core core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))

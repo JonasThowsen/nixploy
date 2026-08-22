@@ -3,5 +3,8 @@
  (public_name nixploy)
  (private_modules ownership_labels prune prune_plan)
  (libraries digestif.c core async sqlite3 uri yojson)
+ (foreign_stubs
+  (language c)
+  (names target_lease_stubs))
  (preprocess
   (pps ppx_jane)))
