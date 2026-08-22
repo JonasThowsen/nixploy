@@ -213,7 +213,22 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
       ;;
     *) echo "unexpected label mode" >&2; exit 91 ;;
   esac
-  printf '[{"Id":"%s","Config":{"Labels":{%s}}}]\n' "$id" "$labels"
+  case "${NIXPLOY_TEST_REPOSITORY_LABEL_MODE:-valid}" in
+    valid)
+      repository_labels=',"io.nixploy.repository_identity":"git@example.invalid:sample.git","io.nixploy.repository":"git@example.invalid:sample.git"'
+      ;;
+    missing)
+      repository_labels=',"io.nixploy.repository_identity":"git@example.invalid:sample.git"'
+      ;;
+    different)
+      repository_labels=',"io.nixploy.repository_identity":"git@example.invalid:foreign.git","io.nixploy.repository":"git@example.invalid:foreign.git"'
+      ;;
+    conflicting)
+      repository_labels=',"io.nixploy.repository_identity":"git@example.invalid:sample.git","io.nixploy.repository":"git@example.invalid:foreign.git"'
+      ;;
+    *) echo "unexpected repository label mode" >&2; exit 91 ;;
+  esac
+  printf '[{"Id":"%s","Config":{"Labels":{%s%s}}}]\n' "$id" "$labels" "$repository_labels"
   exit 0
 fi
 if [ "${3:-}" = "secret" ] && [ "${4:-}" = "ls" ]; then
@@ -277,6 +292,7 @@ exit 99
       "NIXPLOY_TEST_ROUTE_DOMAIN";
       "NIXPLOY_TEST_UNOWNED_BLUE";
       "NIXPLOY_TEST_LABEL_MODE";
+      "NIXPLOY_TEST_REPOSITORY_LABEL_MODE";
       "NIXPLOY_TEST_FAIL_SECRET_LIST";
       "NIXPLOY_TEST_MALFORMED_SECRET_LIST";
       "NIXPLOY_TEST_EMPTY_SECRET_LIST";
@@ -396,6 +412,24 @@ exit 99
             assert (count lines "|rm|-f|" = 0);
             assert (count lines "|secret|rm|" = 0);
             assert (count lines "|secret|ls|" = 0))
+      in
+
+      let%bind () =
+        Deferred.List.iter [ "missing"; "different"; "conflicting" ]
+          ~how:`Sequential
+          ~f:(fun repository_label_mode ->
+            clear_scenario canonical_key;
+            Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+            Caml_unix.putenv "NIXPLOY_TEST_REPOSITORY_LABEL_MODE"
+              repository_label_mode;
+            let%map rejected = prune () in
+            assert (Result.is_error rejected);
+            let lines = In_channel.read_lines trace in
+            assert (count lines "|rm|-f|" = 0);
+            assert (count lines "|secret|rm|" = 0);
+            assert (count lines "|secret|ls|" = 0);
+            assert (count lines "curl" = 0);
+            assert (count lines "'-X' 'DELETE'" = 0))
       in
 
       clear_scenario canonical_key;
