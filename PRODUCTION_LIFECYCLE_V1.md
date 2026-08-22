@@ -89,9 +89,9 @@ mechanism and does not implement either mechanism.
      target domain without Nixploy implementing those jobs.
    - The current `Store` flock is local per SQLite path and cannot be shared with
      external actors, so it does not yet satisfy this gate.
-   - Loss, expiry, or an apparently stale owner never permits automatic unsafe
-     takeover; observed state must first be reconciled or an operator must make
-     an explicit, evidenced recovery decision.
+   - Loss of lease ownership or an apparently stale owner never permits
+     automatic unsafe takeover; observed state must first be reconciled or an
+     operator must make an explicit, evidenced recovery decision.
    - **Evidence:** packaged contention and interrupted-owner staging scenarios
      admit one actor in a declared domain and leave its competitors read-only
      and clearly blocked, while an unrelated co-hosted target remains
