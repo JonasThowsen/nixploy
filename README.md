@@ -259,9 +259,10 @@ presence is stored separately: deploy success is present, completed prune is
 absent, and prune in progress or failed is unknown, without deleting historical
 deployment outcomes. See
 [`ocaml/README.md`](ocaml/README.md) for implementation details,
-[`ROADMAP.md`](ROADMAP.md) for the deliberately narrow product backlog, and
-[`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive operator-interface
-requirements.
+[`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md) for the bounded V1
+operator contract, [`ROADMAP.md`](ROADMAP.md) for delivery order and completed
+receipts, and [`UI_DIRECTION.md`](UI_DIRECTION.md) for the responsive
+operator-interface requirements.
 
 Build and test the packaged implementation through Nix:
 
