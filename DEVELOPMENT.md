@@ -37,6 +37,11 @@ The application API represents source selection explicitly:
 
 Both policies resolve to one stable prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation snapshots the repository's committed files, tracked modifications, and intent-to-add files once, while excluding ignored build output; evaluation, secrets, and image building all consume that same snapshot. Ordinary non-ignored untracked files fail preflight with an instruction to add or ignore them, avoiding both silently omitted source and copied dependency trees. Immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
 
+Preview and any offline or read-only plan are operator advice, not mutation
+authority. After confirmation, the application must acquire the declared
+per-target coordination-domain lease and, while holding it, recompute or
+revalidate the authoritative plan from fresh observations before any mutation.
+
 ## Architecture
 
 ```text
@@ -183,6 +188,13 @@ one scheme-and-authority origin only; it does not accept userinfo, paths,
 queries, fragments, wildcard or suffix matching. Scheme/host case and default
 ports are normalized before exact comparison. Missing, `null`, malformed, or
 mismatched origins are rejected in every auth mode, including Tailscale.
+
+Origin validation does not establish a trusted-proxy boundary. Production V1
+Tailscale mode must reject direct requests. The trusted proxy strips any
+caller-supplied identity and injects only verified identity across an
+authenticated or otherwise protected proxy-to-service boundary that direct
+local clients cannot reach. A protected Unix socket is one possible boundary,
+but an equivalent design is acceptable; loopback TCP alone is insufficient.
 
 ## Agent delivery
 

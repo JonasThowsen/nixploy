@@ -320,9 +320,14 @@ credential variables after systemd loads that file, so it cannot override those
 security boundaries.
 
 For a deliberately trusted local-only installation, set
-`authMode = "unrestricted"`. Tailscale mode requires `operatorEmail` and should
-sit behind a proxy that removes untrusted client-supplied identity headers. The
-health endpoint is `GET /healthz`.
+`authMode = "unrestricted"`. Tailscale mode requires `operatorEmail`, but
+loopback TCP alone is not a trusted-proxy boundary because direct local clients
+can reach it. Production V1 requires direct requests in Tailscale mode to be
+rejected: the proxy must strip caller-supplied identity, inject only verified
+identity, and cross an authenticated or otherwise protected proxy-to-service
+boundary inaccessible to direct local clients. A protected Unix socket or an
+equivalent design can satisfy that requirement; the implementation choice is
+intentionally not fixed here. The health endpoint is `GET /healthz`.
 
 `services.nixploy-control-plane` is a rename alias for `services.nixploy` to
 make the namespace transition explicit. It does not restore the removed

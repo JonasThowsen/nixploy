@@ -3,8 +3,12 @@
 This document bounds the next production milestone. Nixploy is Kamal-like for
 Nix: project flakes keep application intent, while Nixploy gives applications as
 uniform an operator lifecycle and runtime shape as practical. The canonical
-shape is **preview → plan → lease → prepare → start → ready → switch/replace →
-verify → retire → record**, with explicit compensation and reconciliation.
+shape is **preview → advisory plan → confirm → lease → authoritative
+revalidation/plan → prepare → start → ready → switch/replace → verify → retire →
+record**, with explicit compensation and reconciliation. An offline or read-only
+plan informs the operator but cannot authorize later mutation. The authoritative
+plan is recomputed or revalidated from fresh observations while holding the
+declared per-target coordination-domain lease before any mutation.
 
 See [`DEVELOPMENT.md`](DEVELOPMENT.md) for architecture and
 [`ROADMAP.md`](ROADMAP.md) for dependency order and completed UI receipts.
@@ -17,10 +21,10 @@ exists but a named V1 safety property is absent.
 
 | # | Operator journey | Current status | Production V1 observable outcome |
 |---|---|---|---|
-| 1 | Preview the exact immutable source before acting | Complete | The application, repository, target, commit, and evaluated intent shown to the operator remain bound to the later plan and mutation. Expiry, eviction, restart, or cache failure requires a new preview. |
-| 2 | Review a read-only deploy, prune, or rollback plan | Missing | Without remote mutation, the operator sees exact owned-resource changes, prerequisites, readiness and availability effects, and a reasoned rollback eligibility result. |
+| 1 | Preview the exact immutable source before acting | Partial (commit-preview UI receipt complete) | The UI-proven commit SHA remains the materialized revision. Production V1 must additionally bind the application, repository, target, and evaluated intent server-side; expiry, eviction, restart, or cache failure requires a new preview. |
+| 2 | Review an advisory read-only deploy, prune, or rollback plan | Missing | Without remote mutation, the operator sees proposed owned-resource changes, prerequisites, readiness and availability effects, and reasoned rollback candidates. The advice cannot authorize mutation and may change after fresh under-lease observation. |
 | 3 | Deploy a web application and preserve its healthy route | Partial | A candidate uses one lifecycle, becomes ready, switches the exact owned route, is independently verified, and retires the prior slot; failure leaves or restores the last known-good route. |
-| 4 | Deploy a non-web application without false availability claims | Partial | Readiness is explicit. The plan and outcome state whether replacement is continuous or has a bounded interruption; no Caddy behavior is implied. |
+| 4 | Deploy a non-web application without false availability claims | Partial | Readiness is explicit. Advisory and authoritative plans plus the outcome state whether replacement is continuous or has a bounded interruption; no Caddy behavior is implied. |
 | 5 | Observe and control one operation | Complete | Status, history, stages, bounded logs and metrics remain honest; cancellation is scoped and reaches a terminal result only after compensation. |
 | 6 | Prune only one configured application's exact resources | Partial | Prune is derived from the selected managed application's exact repository identity and target, fails closed on ownership ambiguity, and cannot select a colliding checkout or retained writable data. |
 | 7 | Recover safely after control-plane or host interruption | Missing | Before new mutation, persisted intent is reconciled with observed containers, routes, secret generations, and lease ownership; ambiguity blocks rather than guesses. |
@@ -32,16 +36,17 @@ exists but a named V1 safety property is absent.
 
 | Boundary | Owns in V1 | Does not own |
 |---|---|---|
-| **Nixploy core** | Exact source/identity binding; read-only plans; deploy, rollback, and exact prune decisions; target-host mutation leases; crash reconciliation; transactional Podman secret generations; web and non-web readiness/verification; typed preflight of retained existing writable paths; recording and surfacing prerequisite evidence. | Application startup choreography, arbitrary commands, databases, backup execution, egress enforcement, or host-wide policy. |
+| **Nixploy core** | Exact source/identity binding; advisory read-only plans; authoritative under-lease deploy, rollback, and exact prune decisions; per-target coordination-domain leases; crash reconciliation; transactional Podman secret generations; web and non-web readiness/verification; typed preflight of retained existing writable paths; recording and surfacing bounded operator-supplied external backup/egress evidence references. | Application startup choreography, arbitrary commands, databases, backup execution, evidence-reference verification or attestation, egress enforcement, or host-wide policy. |
 | **Project flake and application** | Image, fixed argv/environment, declared pre-start commands, ports, readiness intent, secrets references, typed mounts, and application-specific compatibility/runbooks. | Mutating Nixploy's ownership rules or silently weakening host prerequisites. |
-| **NixOS and external operations** | Podman/Caddy/SSH/SOPS host setup, trusted reverse-proxy identity handoff, credential custody, immutable backup and restore-test evidence, egress enforcement, monitoring, and maintenance coordination through the shared lease boundary. | Implicitly authorizing Nixploy to take over ambiguous state. |
+| **NixOS and external operations** | Podman/Caddy/SSH/SOPS host setup, trusted reverse-proxy identity handoff, credential custody, immutable backup and restore testing, egress enforcement, monitoring, supplying bounded evidence references, and maintenance coordination through the declared per-target coordination domain. | Implicitly authorizing Nixploy to take over ambiguous state. |
 
 Sirkus Agio is the demanding acceptance fixture, not a source of one-off core
 abstractions. Its ordered gateway → ERP rollout remains a Sirkus runbook and
 application-compatibility concern until a second application proves a generic
-Nixploy need. Immutable external backup evidence and egress enforcement are
-activation prerequisites whose presence Nixploy surfaces or attests; Nixploy
-does not implement either mechanism.
+Nixploy need. Immutable external backup and egress controls are activation
+prerequisites. Nixploy records and surfaces a bounded operator-supplied external
+backup/egress evidence reference; it neither verifies nor attests the referenced
+mechanism and does not implement either mechanism.
 
 ## Dependency-ordered gates
 
@@ -50,33 +55,47 @@ does not implement either mechanism.
 0. **Safety corrections**
    - Prune resolves the exact allowlisted repository, subdirectory, project, and
      target used by the managed application and fails closed on any mismatch.
-   - Proxy-derived identity is accepted only through the configured trusted
-     handoff; direct or spoofable identity headers cannot authenticate an
-     operator.
-   - Preview authorization binds exact source and evaluated intent. Missing,
-     stale, evicted, or conflicting cache state can only force re-preview, never
-     fall through to mutation.
+   - In Tailscale mode, direct requests are rejected. The trusted proxy strips
+     caller-supplied identity and injects only verified identity across an
+     authenticated or otherwise protected proxy-to-service boundary that direct
+     local clients cannot reach. A protected Unix socket or equivalent may
+     provide that boundary; loopback TCP alone is insufficient.
+   - Preview authorization binds application, repository, target, exact source,
+     and evaluated intent server-side. Missing, stale, evicted, or conflicting
+     cache state can only force re-preview, never fall through to mutation.
    - **Evidence:** packaged negative-path staging checks demonstrate all three
      failures without target mutation.
 
-1. **Read-only lifecycle plan and rollback eligibility**
-   - Plan output identifies exact additions, replacements, switches,
+1. **Advisory read-only lifecycle plan and rollback eligibility**
+   - Advisory output identifies proposed additions, replacements, switches,
      retirements, and removals plus readiness, interruption, retained-data,
-     backup-evidence, egress, and lease prerequisites.
-   - Rollback eligibility names the immutable candidate or an actionable reason
-     it is unavailable.
-   - **Evidence:** repeated planning is mutation-free and deterministic for the
-     same prepared source and observations.
+     operator-supplied backup/egress evidence references, and lease
+     prerequisites.
+   - Rollback advice names candidate immutable revisions or an actionable reason
+     none appears available.
+   - Offline or read-only advice cannot authorize later mutation and is not
+     represented as the exact plan that will execute.
+   - **Evidence:** repeated advisory planning is mutation-free and deterministic
+     for the same prepared source and observations.
 
-2. **Target-host mutation lease**
-   - Deploy, rollback, prune, and reconciliation exclude concurrent mutation at
-     the target-host boundary. External backup and maintenance can participate
-     in the same narrow lease protocol without Nixploy implementing those jobs.
+2. **Per-target coordination-domain lease and authoritative revalidation**
+   - After operator confirmation, deploy, rollback, prune, and reconciliation
+     acquire the declared per-target coordination-domain lease. While holding
+     it, Nixploy recomputes or revalidates the authoritative plan from fresh
+     observations before any mutation.
+   - Only actors that declare the same durable coordination domain serialize.
+     Unrelated targets co-hosted on one machine do not take a host-global lock;
+     external backup or maintenance can participate by declaring the same
+     target domain without Nixploy implementing those jobs.
+   - The current `Store` flock is local per SQLite path and cannot be shared with
+     external actors, so it does not yet satisfy this gate.
    - Loss, expiry, or an apparently stale owner never permits automatic unsafe
      takeover; observed state must first be reconciled or an operator must make
      an explicit, evidenced recovery decision.
    - **Evidence:** packaged contention and interrupted-owner staging scenarios
-     admit one actor and leave all others read-only and clearly blocked.
+     admit one actor in a declared domain and leave its competitors read-only
+     and clearly blocked, while an unrelated co-hosted target remains
+     independent.
 
 3. **Crash reconciliation**
    - Startup and pre-mutation reconciliation compare persisted intent with exact
@@ -119,17 +138,19 @@ does not implement either mechanism.
      rollback, and prune; missing or unsafe paths fail before mutation.
 
 8. **Sirkus Agio offline/staging acceptance**
-   - Produce a reviewable offline preview/plan, then exercise the packaged V1
-     lifecycle against an isolated Sirkus staging target. Include failure and
-     rollback drills, retained-data proof, lease contention, crash recovery,
-     secret generation switching, and externally supplied immutable-backup and
-     egress-enforcement attestations.
+   - Produce a reviewable offline preview and advisory plan, then exercise the
+     packaged V1 lifecycle against an isolated Sirkus staging target. Include
+     failure and rollback drills, retained-data proof, lease contention, crash
+     recovery, secret generation switching, and bounded operator-supplied
+     external backup/egress evidence references. Nixploy records and surfaces
+     those references without verifying or attesting the external mechanisms.
    - Record exact package revision, application revision, target observations,
      commands/checks, and outcomes. Production activation is explicitly outside
      this milestone.
 
-P1 is required for V1 completion and begins only after P0. No feature is
-production-proven until both the packaged path and staged evidence exist.
+P1 is required for V1 completion and begins only after P0. No Production V1
+gate is production-proven until both its packaged path and staged evidence
+exist.
 
 ## Tracer contract
 
