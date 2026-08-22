@@ -10,19 +10,24 @@ let
   uuidType = lib.types.strMatching "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
   cfg = config.services.nixploy.targetLease;
   socketPath = "/run/nixploy-target-lease/target-lease.sock";
+  scopeUsers = lib.concatMap (scope: map (user: { inherit (scope) scope; inherit user; }) scope.users) cfg.scopes;
   brokerArguments = lib.concatStringsSep " " (
     [
       "--socket ${lib.escapeShellArg socketPath}"
       "--state-directory ${lib.escapeShellArg "/var/lib/nixploy-target-lease"}"
       "--authority ${lib.escapeShellArg cfg.authority}"
+      "--identity ${lib.escapeShellArg cfg.identity}"
     ]
-    ++ (map (scope: "--scope ${lib.escapeShellArg scope}") cfg.scopes)
-    ++ (map (user: "--allow-user ${lib.escapeShellArg user}") cfg.allowedUsers)
+    ++ (map (entry: "--scope-user ${lib.escapeShellArg "${entry.scope}:${entry.user}"}") scopeUsers)
   );
   startScript = pkgs.writeShellScript "nixploy-target-lease-start" ''
     set -eu
     exec ${lib.escapeShellArg "${cfg.package}/bin/nixploy-target-lease-broker"} ${brokerArguments}
   '';
+  unique = values: lib.length values == lib.length (lib.unique values);
+  configuredUser = user: builtins.hasAttr user config.users.users;
+  explicitlyInSocketGroup = user:
+    configuredUser user && builtins.elem cfg.group (config.users.users.${user}.extraGroups or [ ]);
 in
 {
   options.services.nixploy.targetLease = {
@@ -40,14 +45,25 @@ in
       description = "Fixed broker authority UUID. Clients must match exactly.";
     };
 
-    scopes = lib.mkOption {
-      type = lib.types.listOf uuidType;
-      description = "Fixed allowlisted coordination-domain UUIDs; dynamic scopes are not supported.";
+    identity = lib.mkOption {
+      type = uuidType;
+      description = "Fixed broker build/config identity that READY binds exactly.";
     };
 
-    allowedUsers = lib.mkOption {
-      type = lib.types.listOf lib.types.nonEmptyStr;
-      description = "Unix users allowed by SO_PEERCRED to request configured scopes.";
+    scopes = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          scope = lib.mkOption {
+            type = uuidType;
+            description = "Fixed coordination-domain UUID.";
+          };
+          users = lib.mkOption {
+            type = lib.types.listOf lib.types.nonEmptyStr;
+            description = "Existing host users allowed to acquire this exact scope.";
+          };
+        };
+      });
+      description = "Fixed per-scope peer ACLs; dynamic scopes and global grants are not supported.";
     };
 
     user = lib.mkOption {
@@ -59,13 +75,13 @@ in
     group = lib.mkOption {
       type = lib.types.str;
       default = "nixploy-target-lease";
-      description = "Socket group granted read/write access; its members cannot write the socket parent.";
+      description = "Socket group; peer users must be explicitly assigned to it by host configuration.";
     };
 
     manageUser = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Create the dedicated broker user and socket group.";
+      description = "Create only the dedicated broker user and socket group.";
     };
   };
 
@@ -73,25 +89,35 @@ in
     assertions = [
       {
         assertion = lib.length cfg.scopes > 0 && lib.length cfg.scopes <= 32;
-        message = "services.nixploy.targetLease.scopes must contain 1 to 32 fixed UUIDs";
+        message = "services.nixploy.targetLease.scopes must contain 1 to 32 fixed ACLs";
       }
       {
-        assertion = lib.length cfg.allowedUsers > 0 && lib.length cfg.allowedUsers <= 32;
-        message = "services.nixploy.targetLease.allowedUsers must contain 1 to 32 Unix users";
+        assertion = unique (map (entry: entry.scope) cfg.scopes);
+        message = "services.nixploy.targetLease.scopes must not contain duplicate scopes";
       }
       {
-        assertion = !cfg.manageUser || cfg.user != "root";
-        message = "services.nixploy.targetLease.manageUser cannot create root";
+        assertion = lib.all (entry: lib.length entry.users > 0 && lib.length entry.users <= 32 && unique entry.users) cfg.scopes;
+        message = "each services.nixploy.targetLease scope must have 1 to 32 unique users";
       }
       {
-        assertion = cfg.manageUser || builtins.hasAttr cfg.user config.users.users;
-        message = "services.nixploy.targetLease.manageUser = false requires the broker user to exist";
+        assertion = cfg.user != "root";
+        message = "services.nixploy.targetLease.user must never be root";
       }
       {
-        assertion = lib.all (
-          user: builtins.hasAttr user config.users.users || user == cfg.user
-        ) cfg.allowedUsers;
-        message = "services.nixploy.targetLease.allowedUsers must name NixOS users resolved at startup";
+        assertion = lib.all (entry: lib.all (user: user != cfg.user) entry.users) cfg.scopes;
+        message = "services.nixploy.targetLease broker user cannot be an allowed peer";
+      }
+      {
+        assertion = cfg.manageUser || (configuredUser cfg.user && builtins.hasAttr cfg.group config.users.groups);
+        message = "services.nixploy.targetLease.manageUser = false requires externally defined broker user and group";
+      }
+      {
+        assertion = lib.all (entry: lib.all configuredUser entry.users) cfg.scopes;
+        message = "services.nixploy.targetLease scope users must already exist in host configuration";
+      }
+      {
+        assertion = lib.all (entry: lib.all explicitlyInSocketGroup entry.users) cfg.scopes;
+        message = "services.nixploy.targetLease scope users must be explicitly in the socket group";
       }
     ];
 
@@ -99,17 +125,12 @@ in
       "${cfg.group}" = { };
     };
 
-    users.users = lib.mkMerge [
-      (lib.mkIf cfg.manageUser {
-        "${cfg.user}" = {
-          isSystemUser = true;
-          group = cfg.group;
-        };
-      })
-      (lib.genAttrs cfg.allowedUsers (_user: {
-        extraGroups = [ cfg.group ];
-      }))
-    ];
+    users.users = lib.mkIf cfg.manageUser {
+      "${cfg.user}" = {
+        isSystemUser = true;
+        group = cfg.group;
+      };
+    };
 
     systemd.services.nixploy-target-lease = {
       description = "nixploy fail-closed target lease broker";

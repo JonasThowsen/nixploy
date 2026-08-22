@@ -4,13 +4,23 @@ type uuid = string
 type request = { authority : uuid; scope : uuid; operation : uuid }
 type release = { operation : uuid; receipt : uuid }
 type client_message = Acquire of request | Release of release
-type response = Ready of uuid | Busy | Dirty | Denied | Released | Malformed
+
+type ready = {
+  authority : uuid;
+  scope : uuid;
+  operation : uuid;
+  receipt : uuid;
+  identity : uuid;
+}
+
+type response = Ready of ready | Busy | Dirty | Denied | Released | Malformed
 
 let max_line_bytes = 256
 
 let uuid_of_string value =
-  let valid_hex character =
-    Char.is_digit character || Char.is_lowercase character
+  let valid_hex = function
+    | '0' .. '9' | 'a' .. 'f' -> true
+    | _ -> false
   in
   if String.length value <> 36 then
     Or_error.error_string "UUID must be 36 bytes"
@@ -50,6 +60,26 @@ let parse_client_line line =
         Release { operation; receipt }
     | _ -> Or_error.error_string "malformed target-lease message"
 
+let parse_response_line line =
+  if String.length line > max_line_bytes then
+    Or_error.error_string "response is too long"
+  else
+    match words line with
+    | [ "V1"; "READY"; authority; scope; operation; receipt; identity ] ->
+        let open Or_error.Let_syntax in
+        let%bind authority = uuid_of_string authority in
+        let%bind scope = uuid_of_string scope in
+        let%bind operation = uuid_of_string operation in
+        let%bind receipt = uuid_of_string receipt in
+        let%map identity = uuid_of_string identity in
+        Ready { authority; scope; operation; receipt; identity }
+    | [ "V1"; "BUSY" ] -> Ok Busy
+    | [ "V1"; "DIRTY" ] -> Ok Dirty
+    | [ "V1"; "DENIED" ] -> Ok Denied
+    | [ "V1"; "RELEASED" ] -> Ok Released
+    | [ "V1"; "MALFORMED" ] -> Ok Malformed
+    | _ -> Or_error.error_string "malformed target-lease response"
+
 let render_client_message = function
   | Acquire { authority; scope; operation } ->
       String.concat ~sep:" " [ "V1"; "ACQUIRE"; authority; scope; operation ]
@@ -57,7 +87,9 @@ let render_client_message = function
       String.concat ~sep:" " [ "V1"; "RELEASE"; operation; receipt ]
 
 let render_response = function
-  | Ready receipt -> "V1 READY " ^ receipt
+  | Ready { authority; scope; operation; receipt; identity } ->
+      String.concat ~sep:" "
+        [ "V1"; "READY"; authority; scope; operation; receipt; identity ]
   | Busy -> "V1 BUSY"
   | Dirty -> "V1 DIRTY"
   | Denied -> "V1 DENIED"
