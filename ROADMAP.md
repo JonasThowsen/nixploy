@@ -63,10 +63,11 @@ The current OCaml path has been exercised against Jomat production and provides:
 - blue/green health verification, Caddy switching, independent readback, and
   retirement of the previous slot;
 - deployment compensation and safe process interruption;
-- SQLite operations, stage events, outcomes, and target leases;
+- SQLite operations, stage events, outcomes, and local target leases;
 - an authenticated Bonsai UI backed by the same tracked deployment function as
   the CLI;
-- Tailscale identity enforcement and a NixOS-packaged production service.
+- Tailscale-mode identity checks and a NixOS-packaged production service, with
+  the protected trusted-proxy boundary still a P0 gate.
 
 ## Completed UI delivery receipts
 
@@ -76,11 +77,13 @@ focused tests, and exercised against real runtime data.
 
 ### 1. Commit preview
 
-**Status:** implemented. Source metadata is previewed before confirmation and the
-confirmed full SHA is threaded through persistence and materialization. An
-automated Git test advances `main` after preview and verifies that the original
-commit is still materialized. The packaged mobile and desktop UI confirmation
-was exercised against Jomat.
+**Status: Partial (commit-preview UI receipt complete).** Source metadata is
+previewed before confirmation and the confirmed full SHA is threaded through
+persistence and materialization. An automated Git test advances `main` after
+preview and verifies that the original commit is still materialized. The
+packaged mobile and desktop UI confirmation was exercised against Jomat. This
+proves the displayed SHA materialization receipt; server-side binding of the
+application, repository, target, and evaluated intent remains a P0 gap.
 
 **Operator behavior:** Before deploying, an operator sees which commit from the
 application's local `refs/heads/main` will be deployed.
@@ -188,15 +191,23 @@ This order is dependency-bearing; later work must not bypass an earlier gate.
 The detailed journeys, ownership boundaries, exclusions, and evidence contract
 live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
 
-0. **P0 — Safety corrections (partial):** make prune repository-exact; fail
-   closed at the trusted-proxy/auth boundary; and close preview binding and cache
-   broken windows. No stale or fallback preview may authorize mutation.
-1. **P0 — Read-only lifecycle plan and rollback eligibility (missing):** show the
-   exact proposed changes, prerequisites, availability effect, and eligible prior
-   immutable revision before mutation.
-2. **P0 — Target-host mutation lease (partial):** replace target-only exclusion
-   with a host mutation lease that external backup or maintenance can share; an
-   ambiguous or stale owner must never permit an unsafe takeover.
+0. **P0 — Safety corrections (partial):** make prune repository-exact; reject
+   direct requests in Tailscale mode and fail closed at the protected
+   trusted-proxy/auth boundary; and complete server-side preview binding for the
+   application, repository, target, exact source, and evaluated intent. No stale
+   or fallback preview may authorize mutation.
+1. **P0 — Advisory read-only lifecycle plan and rollback eligibility
+   (missing):** show proposed changes, prerequisites, availability effect, and
+   candidate prior immutable revisions without mutation. The offline/read-only
+   result is operator advice only and cannot authorize later mutation.
+2. **P0 — Per-target coordination-domain lease and authoritative revalidation
+   (partial):** after confirmation, acquire the declared lease and recompute or
+   revalidate the authoritative plan from fresh observations while holding it
+   before mutation. The current `Store` flock is local per SQLite path and is not
+   externally shareable. Only actors declaring the same durable domain
+   serialize; unrelated targets co-hosted on one machine do not take a
+   host-global lock. An ambiguous or stale owner must never permit unsafe
+   takeover.
 3. **P0 — Crash reconciliation (missing):** reconcile persisted intent with
    observed Podman, Caddy, secret, and lease state before another mutation.
 4. **P0 — Transactional secret generations (missing):** prepare, switch, verify,
@@ -213,9 +224,10 @@ live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
    packaged lifecycle against the demanding fixture without production
    activation and retain the evidence.
 
-P1 remains required for Production V1; it follows the P0 safety foundation rather
-than weakening it. No capability is production-proven until its packaged path
-has staged evidence.
+P1 remains required for Production V1; it follows the P0 safety foundation
+rather than weakening it. The Jomat receipts above remain evidence for their
+delivered behavior, but no Production V1 gate is production-proven until its
+packaged path has staged evidence.
 
 ## Quality gates
 
