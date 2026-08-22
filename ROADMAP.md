@@ -6,16 +6,11 @@ nixploy is a small, self-hosted deployment control plane for applications whose
 deployment configuration lives in project flakes. The OCaml CLI and Bonsai web
 UI share the same deployment engine and SQLite operation store.
 
-The deployment path is already in production. Product work is now limited to
-making its essential operator workflows easier to understand and use:
-
-- view recent deployments;
-- see the exact Git commit before starting a deployment;
-- cancel a running deployment from the UI;
-- inspect and search bounded application logs;
-- see host health and each application's resource usage.
-
-Features outside that list are not part of the roadmap.
+The five completed UI tracers below make essential operator evidence easier to
+understand and use. They are receipts, not a permanent limit on lifecycle work.
+The remaining bounded scope is the dependency-ordered Production V1 contract in
+[`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md); it does not reopen
+generic control-plane expansion.
 
 ## Product principles
 
@@ -73,11 +68,11 @@ The current OCaml path has been exercised against Jomat production and provides:
   the CLI;
 - Tailscale identity enforcement and a NixOS-packaged production service.
 
-## Delivery order
+## Completed UI delivery receipts
 
-Each item is a small end-to-end tracer. It is complete only when the behavior is
-usable in the packaged browser UI at both a narrow mobile viewport and desktop,
-covered by focused tests, and exercised against real runtime data.
+Each completed item was delivered as a small end-to-end tracer: usable in the
+packaged browser UI at both a narrow mobile viewport and desktop, covered by
+focused tests, and exercised against real runtime data.
 
 ### 1. Commit preview
 
@@ -187,9 +182,44 @@ application on mobile and desktop, distinguish healthy, unhealthy, unavailable,
 and stale observations, and verify the displayed values against the remote host
 and Podman source commands.
 
+## Production V1 delivery order
+
+This order is dependency-bearing; later work must not bypass an earlier gate.
+The detailed journeys, ownership boundaries, exclusions, and evidence contract
+live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
+
+0. **P0 — Safety corrections (partial):** make prune repository-exact; fail
+   closed at the trusted-proxy/auth boundary; and close preview binding and cache
+   broken windows. No stale or fallback preview may authorize mutation.
+1. **P0 — Read-only lifecycle plan and rollback eligibility (missing):** show the
+   exact proposed changes, prerequisites, availability effect, and eligible prior
+   immutable revision before mutation.
+2. **P0 — Target-host mutation lease (partial):** replace target-only exclusion
+   with a host mutation lease that external backup or maintenance can share; an
+   ambiguous or stale owner must never permit an unsafe takeover.
+3. **P0 — Crash reconciliation (missing):** reconcile persisted intent with
+   observed Podman, Caddy, secret, and lease state before another mutation.
+4. **P0 — Transactional secret generations (missing):** prepare, switch, verify,
+   and retire secret generations without destroying the last known-good set on
+   failure.
+5. **P0 — Non-web readiness and availability (partial):** add an explicit
+   readiness gate and report the real availability consequence of replacement.
+6. **P0 — Narrow immutable rollback (missing):** allow rollback only to an
+   eligible, previously successful immutable deployment and verify the result.
+7. **P1 — Retained existing writable data (missing):** permit only a typed,
+   safely preflighted existing host path; Nixploy never creates, migrates,
+   backs up, restores, or prunes it.
+8. **P1 — Sirkus Agio offline/staging acceptance (missing):** exercise the
+   packaged lifecycle against the demanding fixture without production
+   activation and retain the evidence.
+
+P1 remains required for Production V1; it follows the P0 safety foundation rather
+than weakening it. No capability is production-proven until its packaged path
+has staged evidence.
+
 ## Quality gates
 
-Every slice must pass:
+Every UI slice must pass:
 
 1. `dune runtest --root ocaml` in the repository's Nix development environment.
 2. `nix build .#nixploy`.

@@ -3,6 +3,7 @@
 ## Product statement
 
 nixploy is a pragmatic way to deploy applications as containers built with Nix.
+It is Kamal-like for Nix: every application should follow as uniform an operator lifecycle and runtime shape as practical.
 
 A project flake declares an image and one or more deployment targets. nixploy builds that image, connects to Podman over SSH, installs referenced SOPS secrets, runs fixed pre-start commands, starts the application container, and optionally manages a Caddy blue/green route.
 
@@ -94,7 +95,7 @@ The active application facade owns:
 - lightweight deployment history and cancellation used by CLI and web;
 - runtime logs and metrics only where they remain small direct observations.
 
-Named operational tasks, release distribution, policy engines, generic remote commands, and queue-based orchestration are not active product scope.
+Named operational tasks, release distribution, policy engines, generic remote commands, and queue-based orchestration are not active product scope. The bounded Production V1 lifecycle contract is defined in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md) and ordered in [`ROADMAP.md`](ROADMAP.md).
 
 ## Delivery plan
 
