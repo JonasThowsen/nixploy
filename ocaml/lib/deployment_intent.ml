@@ -41,8 +41,17 @@ let destination_of_target target =
     | Web web -> (Managed_application.Web, Some (Configuration.Web.domain web))
   in
   let coordination_scope =
-    Configuration.Target.production target
-    |> Option.map ~f:Configuration.Production.coordination_scope
+    match
+      ( Configuration.Target.production target,
+        Configuration.Target.non_production target )
+    with
+    | Some production, None ->
+        Some (Configuration.Production.coordination_scope production)
+    | None, Some non_production ->
+        Some (Configuration.Non_production.coordination_scope non_production)
+    | None, None -> None
+    | Some _, Some _ ->
+        raise_s [%message "configuration profile invariant violated"]
   in
   {
     host = Configuration.Target.host target;
@@ -53,16 +62,14 @@ let destination_of_target target =
     coordination_scope;
   }
 
-let destination_of_contract contract ~production =
+let destination_of_contract contract =
   {
     host = Managed_application.destination_host contract;
     user = Managed_application.destination_user contract;
     port = Managed_application.destination_port contract;
     kind = Managed_application.destination_kind contract;
     domain = Managed_application.destination_domain contract;
-    coordination_scope =
-      (if production then Some (Managed_application.coordination_scope contract)
-       else None);
+    coordination_scope = Some (Managed_application.coordination_scope contract);
   }
 
 let configuration_digest json =
@@ -92,14 +99,14 @@ let create ~application ~source_authority ~revision ~configuration
         Managed_application.non_production_destination application )
     with
     | Some contract, None ->
-        let expected = destination_of_contract contract ~production:true in
+        let expected = destination_of_contract contract in
         if not (equal_destination actual_destination expected) then
           Or_error.error_string
             "production destination or coordination scope differs from the \
              root-managed authority"
         else Ok (expected, Canonical_only)
     | None, Some contract ->
-        let expected = destination_of_contract contract ~production:false in
+        let expected = destination_of_contract contract in
         if not (equal_destination actual_destination expected) then
           Or_error.error_string
             "non-production destination differs from the root-managed authority"
@@ -161,6 +168,42 @@ let create ~application ~source_authority ~revision ~configuration
     identity_policy;
   }
 
+let validate_application expected application =
+  let contract_matches =
+    match
+      ( expected.identity_policy,
+        Managed_application.production_destination application,
+        Managed_application.non_production_destination application )
+    with
+    | Canonical_only, Some contract, None ->
+        equal_destination expected.destination
+          (destination_of_contract contract)
+        && Option.equal String.equal expected.source_provenance
+             (Managed_application.repository_provenance application)
+        && Option.equal String.equal expected.source_reference
+             (Managed_application.repository_reference application)
+    | Migration_candidates, None, Some contract ->
+        equal_destination expected.destination
+          (destination_of_contract contract)
+        && Option.is_none expected.source_provenance
+        && Option.is_none expected.source_reference
+        && Option.is_none expected.source_evidence_digest
+    | Canonical_only, _, _ | Migration_candidates, _, _ -> false
+  in
+  if
+    String.equal expected.application_key (Managed_application.key application)
+    && Project_name.equal expected.project
+         (Managed_application.project application)
+    && Target_name.equal expected.target
+         (Managed_application.target application)
+    && String.equal expected.repository_identity
+         (Managed_application.repository_identity application)
+    && contract_matches
+  then Ok ()
+  else
+    Or_error.error_string
+      "deployment intent does not belong to this managed application"
+
 let validate_evaluated expected ~source_authority ~revision ~configuration
     ~configuration_json =
   let open Or_error.Let_syntax in
@@ -197,7 +240,7 @@ let production_intersects application ~project ~target_name actual_destination =
   match Managed_application.production_destination application with
   | None -> false
   | Some contract ->
-      let expected = destination_of_contract contract ~production:true in
+      let expected = destination_of_contract contract in
       let managed_identity =
         Project_name.equal project (Managed_application.project application)
         && Target_name.equal target_name
@@ -223,7 +266,7 @@ let exact_non_production application ~working_directory ~project ~target_name
   match Managed_application.non_production_destination application with
   | None -> false
   | Some contract ->
-      let expected = destination_of_contract contract ~production:false in
+      let expected = destination_of_contract contract in
       let managed_directory =
         Or_error.try_with (fun () ->
             Filename_unix.realpath
@@ -239,7 +282,10 @@ let exact_non_production application ~working_directory ~project ~target_name
           && equal_destination actual_destination expected)
 
 let authorize_local ~applications ~working_directory ~configuration ~target =
-  if List.is_empty applications then Ok Migration_candidates
+  if Option.is_some (Configuration.Target.production target) then
+    Or_error.error_string
+      "production-profile mutation requires managed RPC authority"
+  else if List.is_empty applications then Ok Migration_candidates
   else
     let project = Configuration.project configuration in
     let target_name = Configuration.Target.name target in

@@ -95,6 +95,7 @@ val preview_managed_deployment :
 
 val deployment_preview_commit : deployment_preview -> commit
 val deployment_preview_receipt : deployment_preview -> string
+val deployment_preview_prune_receipt : deployment_preview -> string
 
 val deploy_managed_preview :
   ?on_requested:(deployment -> unit) ->
@@ -104,6 +105,15 @@ val deploy_managed_preview :
   deployment Deferred.Or_error.t
 (** Consumes the server-held receipt and revalidates its exact evaluated intent
     inside deployment before any remote or secret mutation. *)
+
+val prune_managed_preview :
+  t ->
+  Managed_application.t ->
+  receipt:string ->
+  prune_result Deferred.Or_error.t
+(** Consumes a prune-only receipt and repeats exact protected source,
+    destination, intent, and canonical identity validation before state or
+    remote mutation. A deployment receipt is never prune authority. *)
 
 val resolve_commit :
   t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t

@@ -38,7 +38,7 @@ let resolve_internal ~verify_deployment_identity ?commit ?operation_id
     (fun () ->
       let open Deferred.Or_error.Let_syntax in
       let%bind evaluated =
-        Nix_configuration.load_evaluated
+        Nix_configuration.load_evaluated ~offline:false
           ~working_directory:(Source.nix_root source)
           ~flake:(Source.nix_flake source)
       in

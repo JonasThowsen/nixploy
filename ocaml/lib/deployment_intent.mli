@@ -15,6 +15,10 @@ val create :
 (** Builds immutable intent from one root-owned mutation contract and, for
     production, verified source custody evidence. *)
 
+val validate_application : t -> Managed_application.t -> unit Or_error.t
+(** Rejects pairing an intent with any application other than the exact
+    root-managed contract from which it was created. *)
+
 val validate_evaluated :
   t ->
   source_authority:Source_authority.t option ->

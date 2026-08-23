@@ -26,7 +26,8 @@ set +e
 parsed_output=$($executable prune --target "" --directory /tmp --state-db /tmp/nixploy-contract.sqlite 2>&1)
 parsed_status=$?
 set -e
-[ "$parsed_status" -eq 2 ]
+[ "$parsed_status" -eq 1 ]
+grep -F -- "standalone CLI has no protected mutation authority" <<<"$parsed_output" >/dev/null
 if grep -F -- "unknown flag" <<<"$parsed_output" >/dev/null; then
   exit 1
 fi

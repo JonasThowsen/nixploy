@@ -42,6 +42,10 @@ val commit_revision : commit -> string
 val commit_subject : commit -> string
 val commit_timestamp_ms : commit -> int64
 
+val commit_of_git_show : string -> commit Or_error.t
+(** Parses trusted [git show --format=%H%x00%s%x00%ct] output. The caller is
+    responsible for the Git process custody boundary. *)
+
 module For_testing : sig
   val commit :
     revision:string -> subject:string -> timestamp_ms:int64 -> commit Or_error.t

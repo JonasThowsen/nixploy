@@ -90,6 +90,17 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
+type managed_authorization = {
+  intent : Deployment_intent.t;
+  application : Managed_application.t;
+}
+
+let authorize_managed ~application ~intent =
+  let%map.Or_error () =
+    Deployment_intent.validate_application intent application
+  in
+  { intent; application }
+
 type prepared = {
   source : Source.t;
   project : Project_name.t;
@@ -102,10 +113,18 @@ type prepared = {
 
 let cleanup_prepared prepared = Source.cleanup prepared.source
 
-let prepare ?expected_project ?expected_intent ?managed_application
+let prepare ?expected_project ?managed_authorization
     ?(managed_applications = []) ~working_directory ~source:source_selection
     ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
+  let expected_intent =
+    Option.map managed_authorization ~f:(fun authorization ->
+        authorization.intent)
+  in
+  let managed_application =
+    Option.map managed_authorization ~f:(fun authorization ->
+        authorization.application)
+  in
   let%bind source_authority =
     match (expected_intent, managed_application) with
     | Some intent, Some application
@@ -132,6 +151,7 @@ let prepare ?expected_project ?expected_intent ?managed_application
     let open Deferred.Or_error.Let_syntax in
     let%bind evaluated =
       Nix_configuration.load_evaluated
+        ~offline:(Option.is_some source_authority)
         ~working_directory:(Source.nix_root source)
         ~flake:(Source.nix_flake source)
     in
@@ -256,7 +276,8 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
       let%bind image, secrets, secret_mounts = load_artifacts () in
       let verify candidate =
         Podman.verify_candidate ~connection ~project ~target ~resource_key
-          ~source ~configuration_digest ~operation_id ~image ~candidate
+          ~repository_identity ~source ~configuration_digest ~operation_id
+          ~image ~candidate
       in
       let%bind plan =
         Deferred.return (Deployment_plan.create ~target_kind ~active_port:None)
@@ -286,8 +307,9 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
       in
       let%bind candidate =
         Podman.start_candidate ~connection ~project ~target ~resource_key
-          ~placement ~source ~configuration_digest ~operation_id
-          ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
+          ~repository_identity ~placement ~source ~configuration_digest
+          ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
+          ~secret_mounts
       in
       let after_candidate =
         let open Deferred.Or_error.Let_syntax in
@@ -352,7 +374,8 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
       let%bind image, secrets, secret_mounts = load_artifacts () in
       let verify candidate =
         Podman.verify_candidate ~connection ~project ~target ~resource_key
-          ~source ~configuration_digest ~operation_id ~image ~candidate
+          ~repository_identity ~source ~configuration_digest ~operation_id
+          ~image ~candidate
       in
       let%bind () =
         record_stage Preparing_candidate "Removing only the owned inactive slot"
@@ -374,8 +397,9 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
       in
       let%bind candidate =
         Podman.start_candidate ~connection ~project ~target ~resource_key
-          ~placement ~source ~configuration_digest ~operation_id
-          ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
+          ~repository_identity ~placement ~source ~configuration_digest
+          ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
+          ~secret_mounts
       in
       let switched = ref false in
       let after_candidate =
@@ -484,12 +508,12 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
           restore_and_cleanup ~caddy ~previous ~connection ~candidate error
       | Error error -> cleanup_candidate ~connection candidate error)
 
-let deploy ?record_stage ?expected_project ?expected_intent ?managed_application
+let deploy ?record_stage ?expected_project ?managed_authorization
     ?managed_applications ~operation_id ~working_directory ~source ~target () =
   let open Deferred.Or_error.Let_syntax in
   let%bind prepared =
-    prepare ?expected_project ?expected_intent ?managed_application
-      ?managed_applications ~working_directory ~source ~target ()
+    prepare ?expected_project ?managed_authorization ?managed_applications
+      ~working_directory ~source ~target ()
   in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)

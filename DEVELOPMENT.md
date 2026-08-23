@@ -32,8 +32,9 @@ Legacy sources are archived under `legacy/` now that the OCaml API, package, and
 
 The application API represents source selection explicitly:
 
-- the CLI may deploy the current local flake, matching the pragmatic C# workflow;
-- the web UI deploys an explicitly previewed Git revision from an allowlisted repository.
+- library tests retain local-snapshot preparation for non-production compatibility;
+- the packaged standalone CLI refuses deploy and prune rather than self-attesting host authority;
+- the managed web/RPC daemon deploys or prunes only with an operation-bound receipt for an explicitly previewed Git revision from an allowlisted repository.
 
 Both policies resolve to one stable prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation snapshots the repository's committed files, tracked modifications, and intent-to-add files once, while excluding ignored build output; evaluation, secrets, and image building all consume that same snapshot. Ordinary non-ignored untracked files fail preflight with an instruction to add or ignore them, avoiding both silently omitted source and copied dependency trees. Immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
 
@@ -48,10 +49,15 @@ Confirmation supplies only an opaque single-use process-local receipt; expiry,
 bounded-cache eviction, replay, mismatch, or restart fails closed. Deployment
 consumes the receipt and, inside the target lease, revalidates source,
 configuration, and destination before resource-state/history writes and before
-Podman, SSH, SOPS, secret, or Caddy effects. The standalone CLI reads the same
-machine authority; on a managed host only an exact root-owned non-production
-contract permits local snapshots, and production-domain aliases fail closed. The receipt
-is freshness evidence only and has no lease or takeover semantics.
+Podman, SSH, SOPS, secret, or Caddy effects. The standalone packaged CLI cannot mutate. The root-started daemon may retain
+an explicitly configured non-production snapshot flow only under an exact
+root-owned non-production contract; production-domain aliases fail closed. A
+deploy receipt cannot authorize prune and a prune receipt cannot authorize
+deploy. The receipt is freshness evidence only and has no lease or takeover
+semantics. Protected Git admission performs no fetch, while protected Nix
+evaluation is offline/no-write-lock and therefore fails closed unless every
+immutable input is already realized. Deployment builds may still use configured
+Nix fetchers or substituters unless an external host policy forbids them.
 
 Preview and any offline or read-only plan are operator advice, not mutation
 authority. After confirmation, the application must acquire the declared

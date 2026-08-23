@@ -115,7 +115,7 @@ let prune_route_notice = function
   | Missing -> "already absent"
   | Removed -> "removed"
 
-let prune_confirmation ~application ~dispatch_prune ~prune_state
+let prune_confirmation ~application ~receipt ~dispatch_prune ~prune_state
     ~set_prune_state ~set_notice ~deployment_active =
   let key = application.Protocol.Application.key in
   let suffix = id_component key in
@@ -136,7 +136,7 @@ let prune_confirmation ~application ~dispatch_prune ~prune_state
     let%bind.Effect owner = Browser_navigation.application_owner key in
     let%bind.Effect () = set_prune_state (Prune_state.start prune_state ~key) in
     let%bind.Effect response =
-      dispatch_prune { Protocol.Prune.Query.application = key }
+      dispatch_prune { Protocol.Prune.Query.application = key; receipt }
     in
     if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
     else
@@ -641,21 +641,56 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
         | Idle | Confirming _ -> false)
   in
   let deployment_active = Ui_helpers.deployment_is_active deployment in
+  let prune_receipt =
+    match preview with
+    | Some (preview_key, deployment_preview) when String.equal preview_key key
+      ->
+        Some deployment_preview.Protocol.Deployment_preview.prune_receipt
+    | _ -> None
+  in
   let prune =
-    if prune_open then
-      prune_confirmation ~application ~dispatch_prune ~prune_state
-        ~set_prune_state ~set_notice
-        ~deployment_active:
-          (deployment_active || Deploy_state.is_busy deploy_state)
-    else Vdom.Node.none
+    match (prune_open, prune_receipt) with
+    | true, Some receipt ->
+        prune_confirmation ~application ~receipt ~dispatch_prune ~prune_state
+          ~set_prune_state ~set_notice
+          ~deployment_active:
+            (deployment_active || Deploy_state.is_busy deploy_state)
+    | true, None ->
+        Vdom.Node.p
+          ~attrs:[ Vdom.Attr.class_ "inline-error" ]
+          [
+            Vdom.Node.text
+              "Prune authority is unavailable; close and preview again.";
+          ]
+    | false, _ -> Vdom.Node.none
   in
   let open_prune =
-    Effect.Many
-      [
-        set_preview None;
-        set_cancel_confirmation None;
-        set_prune_state (Prune_state.confirm prune_state ~key);
-      ]
+    let%bind.Effect owner = Browser_navigation.application_owner key in
+    let%bind.Effect () =
+      Effect.Many
+        [
+          set_preview None;
+          set_cancel_confirmation None;
+          set_notice ("Validating prune authority for " ^ key ^ "…");
+        ]
+    in
+    let%bind.Effect response =
+      dispatch_preview { Protocol.Preview_deployment.Query.application = key }
+    in
+    if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
+    else
+      match response with
+      | Error error ->
+          set_notice ("Prune preview RPC failed: " ^ Error.to_string_hum error)
+      | Ok (Error error) ->
+          set_notice ("Prune preview rejected: " ^ Error.to_string_hum error)
+      | Ok (Ok deployment_preview) ->
+          Effect.Many
+            [
+              set_preview (Some (key, deployment_preview));
+              set_prune_state (Prune_state.confirm prune_state ~key);
+              set_notice "";
+            ]
   in
   Vdom.Node.div
     ~attrs:[ Vdom.Attr.class_ "page application-page" ]

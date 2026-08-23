@@ -33,7 +33,9 @@ let run_tests () =
     prune_calls := Nixploy.Managed_application.key application :: !prune_calls;
     Deferred.Or_error.return application_result
   in
-  let query = { Protocol.Prune.Query.application = "example" } in
+  let query =
+    { Protocol.Prune.Query.application = "example"; receipt = "receipt" }
+  in
   let%bind success = Prune_request.handle ~applications ~prune query in
   let success = assert_ok success in
   assert (String.equal success.project "example");
@@ -52,7 +54,7 @@ let run_tests () =
   assert (Result.is_error failure);
   let%map unknown =
     Prune_request.handle ~applications ~prune
-      { Protocol.Prune.Query.application = "unknown" }
+      { Protocol.Prune.Query.application = "unknown"; receipt = "receipt" }
   in
   assert (Result.is_error unknown);
   [%test_eq: int] 1 (List.length !prune_calls)

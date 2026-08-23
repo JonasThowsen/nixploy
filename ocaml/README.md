@@ -36,21 +36,14 @@ the Nix, OCaml, CLI, and existing-host identity path without mutating a running
 application. This path has been verified against an existing hosted
 application.
 
-The native deployment tracer adds:
-
-```console
-nixploy deploy --target production
-```
-
-The CLI evaluates and builds a Git-aware snapshot of the current local flake,
-including tracked working-tree changes and intent-to-add files while excluding
-ignored dependency and build output. It rejects ordinary non-ignored untracked
-files rather than silently omitting them; `git add -N -- PATH` marks an
-intentional new file without staging its contents. The web control plane instead
-requires an explicitly previewed full commit and materializes that exact
-immutable revision. Both selections are typed caller policies passed through
-`Application` to the same deployment engine. The local HEAD or immutable commit
-remains recorded as useful revision metadata.
+Local-snapshot preparation remains covered as a non-production library
+compatibility path, including tracked working-tree changes and intent-to-add
+files while excluding ignored output. The packaged standalone CLI, however,
+categorically refuses deploy and prune because a process launched by an
+unprivileged user or mount namespace cannot self-attest protected host authority.
+Managed mutation goes through the root-started web/RPC daemon with separate
+single-use deploy and prune receipts. The control plane requires an explicitly
+previewed full commit and materializes that exact immutable revision.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and
@@ -73,7 +66,7 @@ Live scoped inspection and deployment history are available through
 transport adapters over `Application`; history is bounded and scoped by the
 canonical working directory and target.
 
-Scoped cleanup is available through `nixploy prune --target TARGET`. It evaluates
+Scoped cleanup is available through the managed prune RPC. It evaluates
 the selected local flake through `Application`, derives the same
 repository-bound identity as deployment, and verifies exact container ownership
 before removing resource-prefixed Podman secrets or deleting the exact Caddy

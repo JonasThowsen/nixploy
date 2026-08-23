@@ -19,7 +19,8 @@ let%test_unit "Nix evaluation and builds use Git-aware local flake snapshots" =
       "--no-write-lock-file";
       ".#nixploy";
     ]
-    (Nixploy.Nix_command.evaluation_args ~flake:"." ~output:"nixploy");
+    (Nixploy.Nix_command.evaluation_args ~offline:false ~flake:"."
+       ~output:"nixploy");
   [%test_eq: string list]
     [
       "build";
@@ -163,9 +164,15 @@ let%test_unit "production managed applications require exact root-owned intent"
   let application =
     Nixploy.Managed_application.all_of_json valid |> assert_ok |> List.hd_exn
   in
-  assert (
-    Option.is_some
-      (Nixploy.Managed_application.production_destination application));
+  let destination =
+    Nixploy.Managed_application.production_destination application
+    |> Option.value_exn
+  in
+  [%test_eq: string] "production.example.invalid"
+    (Nixploy.Managed_application.destination_host destination);
+  [%test_eq: string] "app.example.invalid"
+    (Nixploy.Managed_application.destination_domain destination
+    |> Option.value_exn);
   List.iter
     [
       String.substr_replace_first valid ~pattern:"\"user\": \"deploy\""
@@ -470,7 +477,7 @@ let%test_unit
     {|{"__schema":"v0.4","project":"other","targets":{"alias":{"image":"image","ip":"elsewhere.invalid","user":"deploy","web":{"domain":"app.invalid"}}}}|}
   in
   let staging =
-    {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy"}}}|}
+    {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy","nonProduction":{"coordinationScope":"sample-staging"}}}}|}
   in
   assert (Result.is_error (authorize removed_profile "production"));
   assert (Result.is_error (authorize target_alias "alias"));

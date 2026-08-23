@@ -51,7 +51,7 @@ let valid_revision revision =
       Char.is_digit character
       || (Char.compare character 'a' >= 0 && Char.compare character 'f' <= 0))
 
-let parse_commit output =
+let commit_of_git_show output =
   match String.rstrip output |> String.split ~on:'\000' with
   | [ revision; subject; timestamp ] when valid_revision revision ->
       let open Or_error.Let_syntax in
@@ -101,7 +101,7 @@ let describe ~working_directory revision =
     git ~working_directory
       [ "show"; "--no-patch"; "--format=%H%x00%s%x00%ct"; revision; "--" ]
   in
-  Deferred.return (parse_commit output)
+  Deferred.return (commit_of_git_show output)
 
 let reject_non_ignored_untracked ~working_directory =
   let open Deferred.Or_error.Let_syntax in

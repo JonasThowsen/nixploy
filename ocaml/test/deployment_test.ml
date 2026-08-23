@@ -202,7 +202,7 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
     IFS='|' read -r runtime_name digest operation revision resource < "$NIXPLOY_TEST_STATE"
     image='sha256:image-id'
     if [ "${NIXPLOY_TEST_VERIFY_MISMATCH:-}" = "1" ]; then image='sha256:wrong-image'; fi
-    printf '[{"Id":"candidate-id","Name":"%s","Image":"%s","State":{"Running":true},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:test.git","io.nixploy.revision":"%s","io.nixploy.configuration_digest":"%s","io.nixploy.operation_id":"%s"}}}]\n' "$runtime_name" "$image" "$resource" "$revision" "$digest" "$operation"
+    printf '[{"Id":"candidate-id","Name":"%s","Image":"%s","State":{"Running":true},"Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository":"git@example.invalid:test.git","io.nixploy.repository_identity":"git@example.invalid:test.git","io.nixploy.revision":"%s","io.nixploy.configuration_digest":"%s","io.nixploy.operation_id":"%s"}}}]\n' "$runtime_name" "$image" "$resource" "$revision" "$digest" "$operation"
   elif [ "${NIXPLOY_TEST_UNOWNED:-}" = "1" ] || { [ "${NIXPLOY_TEST_FOREIGN_SINGLE:-}" = "1" ] && ! printf '%s' "$name" | grep -Eq -- '-(blue|green)$'; }; then
     printf '[{"Id":"foreign-id","Name":"%s","Config":{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"conflicting-modern-resource","io.nixploy.repository_identity":"git@example.invalid:foreign.git","nixploy.project":"sample","nixploy.target":"worker"}}}]\n' "$name"
   else
@@ -358,9 +358,19 @@ exit 99
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
       let deploy ?record_stage ?expected_project ?expected_intent
           ?managed_application ?managed_applications operation_id =
+        let managed_authorization =
+          match (expected_intent, managed_application) with
+          | Some intent, Some application ->
+              Some
+                (Nixploy.Deployment.authorize_managed ~application ~intent
+                |> assert_ok)
+          | None, None -> None
+          | Some _, None | None, Some _ ->
+              failwith "test managed authorization is incomplete"
+        in
         Nixploy.Deployment.deploy ?record_stage ?expected_project
-          ?expected_intent ?managed_application ?managed_applications
-          ~operation_id ~working_directory:repository
+          ?managed_authorization ?managed_applications ~operation_id
+          ~working_directory:repository
           ~source:(Nixploy.Source.immutable commit)
           ~target ()
       in
@@ -403,7 +413,7 @@ exit 99
       in
 
       let expected_configuration_json =
-        {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
+        {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","nonProduction":{"coordinationScope":"test-staging"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
       in
       let expected_configuration =
         Nixploy.Configuration.of_json expected_configuration_json |> assert_ok
@@ -430,6 +440,17 @@ exit 99
           ~configuration_json:expected_configuration_json
         |> assert_ok
       in
+      let other_managed =
+        Nixploy.Managed_application.all_of_json
+          (sprintf
+             {|{"other":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"owner/other","repositoryProvenance":"git@example.invalid:other.git","nonProduction":{"host":"other.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"other-staging"}}}|}
+             repository)
+        |> assert_ok |> List.hd_exn
+      in
+      assert (
+        Result.is_error
+          (Nixploy.Deployment.authorize_managed ~application:other_managed
+             ~intent:expected_intent));
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
       let%bind production_without_receipt =
@@ -437,8 +458,7 @@ exit 99
           "operation-production-without-receipt"
       in
       expect_error_containing production_without_receipt
-        "root-managed production authority requires a server-bound preview \
-         receipt";
+        "production-profile mutation requires managed RPC authority";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
       [%test_eq: int] 0 (count lines "nix|build|");

@@ -1,4 +1,5 @@
-val evaluation_args : flake:string -> output:string -> string list
+val evaluation_args :
+  offline:bool -> flake:string -> output:string -> string list
 (** Evaluate an output from the Git-aware flake rooted at the process working
     directory without changing its lock file. *)
 

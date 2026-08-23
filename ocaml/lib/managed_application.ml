@@ -90,9 +90,13 @@ let parse_destination fields field_name =
                [ "host"; "user"; "port"; "kind"; "domain"; "coordinationScope" ])
           fields
       in
-      let%bind host = required_string fields "host"
+      let%bind raw_host = required_string fields "host"
       and user = required_string fields "user"
-      and coordination_scope = required_string fields "coordinationScope" in
+      and raw_coordination_scope = required_string fields "coordinationScope" in
+      let%bind host = Endpoint_identity.host raw_host
+      and coordination_scope =
+        Endpoint_identity.coordination_scope raw_coordination_scope
+      in
       let%bind port =
         match List.Assoc.find fields ~equal:String.equal "port" with
         | Some (`Int port) when port >= 1 && port <= 65_535 -> Ok port
@@ -109,7 +113,7 @@ let parse_destination fields field_name =
         | Non_web, (None | Some `Null) -> Ok None
         | Web, Some (`String domain)
           when not (String.is_empty (String.strip domain)) ->
-            Ok (Some domain)
+            Or_error.map (Endpoint_identity.domain domain) ~f:Option.some
         | Non_web, Some _ ->
             Or_error.error_string
               "production non-web destination cannot declare domain"
@@ -120,6 +124,17 @@ let parse_destination fields field_name =
         Or_error.error_string "production destination SSH user must not be root"
       else Ok (Some { host; user; port; kind; domain; coordination_scope })
   | Some _ -> Or_error.errorf "%s must be an object" field_name
+
+let absolute_normalized_path ~field path =
+  let components = String.split path ~on:'/' in
+  if
+    (not (Filename.is_absolute path))
+    || String.is_suffix path ~suffix:"/"
+    || List.exists (List.tl_exn components) ~f:(fun component ->
+        String.is_empty component || String.equal component "."
+        || String.equal component "..")
+  then Or_error.errorf "%s must be an absolute normalized path" field
+  else Ok path
 
 let valid_key key =
   let valid_character = function
@@ -167,6 +182,10 @@ let parse (key, json) =
           required_string fields "target" >>= Target_name.of_string
         in
         let%bind repository = required_string fields "repository" in
+        let%bind repository =
+          absolute_normalized_path ~field:"managed application repository"
+            repository
+        in
         let repository_identity_is_explicit =
           Option.is_some
             (List.Assoc.find fields ~equal:String.equal "repositoryIdentity")
@@ -204,8 +223,10 @@ let parse (key, json) =
             List.Assoc.find fields ~equal:String.equal "repositoryEvidenceFile"
           with
           | None | Some `Null -> Ok None
-          | Some (`String value) when Filename.is_absolute value ->
-              Ok (Some value)
+          | Some (`String value) ->
+              Or_error.map
+                (absolute_normalized_path ~field:"repositoryEvidenceFile" value)
+                ~f:Option.some
           | Some _ ->
               Or_error.error_string
                 "repositoryEvidenceFile must be an absolute path"
@@ -245,9 +266,6 @@ let parse (key, json) =
             "production managed application requires explicit \
              repositoryIdentity, repositoryProvenance, repositoryReference, \
              and repositoryEvidenceFile"
-        else if not (Filename.is_absolute repository) then
-          Or_error.error_string
-            "managed application repository must be absolute"
         else if
           Filename.is_absolute subdirectory
           || List.mem
@@ -289,6 +307,35 @@ let canonical_working_directory application =
   |> Result.ok
   |> Option.value ~default:working_directory
 
+let destinations_intersect production non_production =
+  String.equal production.host non_production.host
+  || Option.equal String.equal production.domain non_production.domain
+     && Option.is_some production.domain
+  || String.equal production.coordination_scope
+       non_production.coordination_scope
+
+let cross_profile_intersection applications =
+  List.find_map applications ~f:(fun production_application ->
+      Option.bind production_application.production_destination
+        ~f:(fun production ->
+          List.find_map applications ~f:(fun non_production_application ->
+              Option.bind non_production_application.non_production_destination
+                ~f:(fun non_production ->
+                  let managed_identity =
+                    Project_name.equal production_application.project
+                      non_production_application.project
+                    && Target_name.equal production_application.target
+                         non_production_application.target
+                  in
+                  if
+                    managed_identity
+                    || destinations_intersect production non_production
+                  then
+                    Some
+                      ( production_application.key,
+                        non_production_application.key )
+                  else None))))
+
 let duplicate_identity applications =
   List.find_a_dup applications ~compare:(fun left right ->
       let by_directory =
@@ -320,6 +367,15 @@ let all_of_json input =
                %s"
               application.key
       in
+      let%bind () =
+        match cross_profile_intersection parsed with
+        | None -> Ok ()
+        | Some (production, non_production) ->
+            Or_error.errorf
+              "production application %s intersects nonProduction application \
+               %s"
+              production non_production
+      in
       Ok
         (List.sort parsed ~compare:(fun left right ->
              String.compare left.key right.key))
@@ -329,52 +385,99 @@ let authority_file = "/etc/nixploy/managed-applications.json"
 let maximum_authority_file_bytes = 262_144
 
 let load_authority_file () =
-  if not (Sys_unix.file_exists_exn authority_file) then Ok []
-  else
-    Or_error.try_with_join (fun () ->
-        let resolved = Filename_unix.realpath authority_file in
-        let link_stats = Caml_unix.lstat authority_file in
-        if not (Int.equal link_stats.st_uid 0) then
-          failwith "managed application authority link must be root-owned";
-        let descriptor =
-          Caml_unix.openfile resolved
-            [ Caml_unix.O_RDONLY; Caml_unix.O_CLOEXEC ]
-            0
+  Or_error.try_with_join (fun () ->
+      let rec validate_directory directory =
+        let stats = Caml_unix.lstat directory in
+        let nix_store_root =
+          String.equal directory "/nix/store"
+          && Int.equal stats.st_uid 0
+          && Int.equal (stats.st_perm land 0o1000) 0o1000
+          && Int.equal (stats.st_perm land 0o002) 0
         in
-        Exn.protect
-          ~finally:(fun () -> Caml_unix.close descriptor)
-          ~f:(fun () ->
-            let stats = Caml_unix.fstat descriptor in
-            if not (Poly.equal stats.st_kind Caml_unix.S_REG) then
-              Or_error.error_string
-                "managed application authority must be a regular file"
-            else if
-              not
-                (Int.equal stats.st_uid 0
+        if
+          Poly.equal stats.st_kind Caml_unix.S_DIR
+          && (nix_store_root
+             || Int.equal stats.st_uid 0
                 && Int.equal (stats.st_perm land 0o022) 0)
+        then
+          let parent = Filename.dirname directory in
+          if String.equal parent directory then Ok ()
+          else validate_directory parent
+        else
+          Or_error.errorf
+            "managed application authority directory %s must be root-owned, \
+             non-symlinked, and not group/other writable"
+            directory
+      in
+      let open Or_error.Let_syntax in
+      let%bind () = validate_directory (Filename.dirname authority_file) in
+      let link_stats = Caml_unix.lstat authority_file in
+      let%bind () =
+        if Int.equal link_stats.st_uid 0 then Ok ()
+        else
+          Or_error.error_string
+            "managed application authority path must be root-owned"
+      in
+      let resolved = Filename_unix.realpath authority_file in
+      let%bind () = validate_directory (Filename.dirname resolved) in
+      let path_stats = Caml_unix.lstat resolved in
+      let%bind () =
+        if
+          Poly.equal path_stats.st_kind Caml_unix.S_REG
+          && Int.equal path_stats.st_uid 0
+          && Int.equal (path_stats.st_perm land 0o022) 0
+        then Ok ()
+        else
+          Or_error.error_string
+            "managed application authority must resolve to a root-owned \
+             regular file that is not group/other writable"
+      in
+      let descriptor =
+        Caml_unix.openfile resolved
+          [ Caml_unix.O_RDONLY; Caml_unix.O_CLOEXEC ]
+          0
+      in
+      Exn.protect
+        ~finally:(fun () -> Caml_unix.close descriptor)
+        ~f:(fun () ->
+          let before = Caml_unix.fstat descriptor in
+          let open Or_error.Let_syntax in
+          let%bind () =
+            if
+              Int.equal path_stats.st_dev before.st_dev
+              && Int.equal path_stats.st_ino before.st_ino
+            then Ok ()
+            else
+              Or_error.error_string
+                "managed application authority was replaced while opening"
+          in
+          if before.st_size > maximum_authority_file_bytes then
+            Or_error.error_string
+              "managed application authority exceeds 262144 bytes"
+          else
+            let length = before.st_size in
+            let bytes = Bytes.create length in
+            let rec read_all offset =
+              if offset < length then
+                let count =
+                  Caml_unix.read descriptor bytes offset (length - offset)
+                in
+                if Int.equal count 0 then
+                  failwith
+                    "unexpected EOF while reading managed application authority"
+                else read_all (offset + count)
+            in
+            read_all 0;
+            let after = Caml_unix.fstat descriptor in
+            if
+              before.st_dev <> after.st_dev
+              || before.st_ino <> after.st_ino
+              || before.st_size <> after.st_size
+              || Float.(before.st_mtime <> after.st_mtime)
             then
               Or_error.error_string
-                "managed application authority must be root-owned and not \
-                 group/other writable"
-            else if stats.st_size > maximum_authority_file_bytes then
-              Or_error.error_string
-                "managed application authority exceeds 262144 bytes"
-            else
-              let length = stats.st_size in
-              let bytes = Bytes.create length in
-              let rec read_all offset =
-                if offset < length then
-                  let count =
-                    Caml_unix.read descriptor bytes offset (length - offset)
-                  in
-                  if Int.equal count 0 then
-                    failwith
-                      "unexpected EOF while reading managed application \
-                       authority"
-                  else read_all (offset + count)
-              in
-              read_all 0;
-              all_of_json (Bytes.to_string bytes)))
+                "managed application authority changed while being read"
+            else all_of_json (Bytes.to_string bytes)))
 
 let find applications key =
   match

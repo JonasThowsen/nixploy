@@ -131,19 +131,21 @@
 
             postFixup = ''
               for executable in $out/bin/nixploy $out/bin/nixploy-web; do
-                wrapProgram "$executable" --prefix PATH : ${
-                  lib.makeBinPath [
-                    pkgs.coreutils
-                    pkgs.curl
-                    pkgs.git
-                    pkgs.nix
-                    pkgs.openssh
-                    pkgs.podman
-                    pkgs.sops
-                    pkgs.ssh-to-age
-                    pkgs.util-linux
-                  ]
-                }
+                wrapProgram "$executable" \
+                  --set NIXPLOY_PROTECTED_GIT ${lib.escapeShellArg "${pkgs.git}/bin/git"} \
+                  --prefix PATH : ${
+                    lib.makeBinPath [
+                      pkgs.coreutils
+                      pkgs.curl
+                      pkgs.git
+                      pkgs.nix
+                      pkgs.openssh
+                      pkgs.podman
+                      pkgs.sops
+                      pkgs.ssh-to-age
+                      pkgs.util-linux
+                    ]
+                  }
               done
             '';
           };
@@ -164,27 +166,37 @@
             version = "0.1.0-ocaml";
             src = ./ocaml;
             duneVersion = "3";
-            nativeBuildInputs = with ocamlPackages; [
-              ocaml-embed-file
-              ppx_jane
-            ];
+            nativeBuildInputs =
+              (with ocamlPackages; [
+                ocaml-embed-file
+                ppx_jane
+              ])
+              ++ [ pkgs.makeWrapper ];
             propagatedBuildInputs = with ocamlPackages; [
               async
               async_rpc_kernel
               async_rpc_websocket
               core
               core_unix
+              digestif
+              ocaml_sqlite3
               ppx_jane
+              uri
+              yojson
             ];
             doCheck = false;
             buildPhase = ''
               runHook preBuild
-              dune build test/rpc_probe.exe
+              dune build test/rpc_probe.exe test/source_authority_probe.exe
               runHook postBuild
             '';
             installPhase = ''
               runHook preInstall
               install -Dm755 _build/default/test/rpc_probe.exe $out/bin/nixploy-rpc-probe
+              install -Dm755 _build/default/test/source_authority_probe.exe \
+                $out/bin/nixploy-source-authority-probe
+              wrapProgram $out/bin/nixploy-source-authority-probe \
+                --set NIXPLOY_PROTECTED_GIT ${lib.escapeShellArg "${pkgs.git}/bin/git"}
               runHook postInstall
             '';
           };
@@ -238,6 +250,53 @@
           mixExpoFixture = import ./nix/test-fixtures/mix-expo/package.nix {
             inherit pkgs;
           };
+          crossProfileAttempt = builtins.tryEval (
+            (lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  system.stateVersion = "26.05";
+                  services.nixploy = {
+                    enable = true;
+                    authMode = "unrestricted";
+                    applications = {
+                      production = {
+                        project = "production-app";
+                        target = "production";
+                        repository = "/srv/production";
+                        repositoryIdentity = "owner/production";
+                        repositoryProvenance = "provider:production";
+                        repositoryReference = "refs/heads/main";
+                        repositoryEvidenceFile = "/srv/production.evidence";
+                        production = {
+                          host = "HOST.EXAMPLE.INVALID.";
+                          user = "deploy";
+                          kind = "web";
+                          domain = "APP.EXAMPLE.INVALID.";
+                          coordinationScope = "SHARED-SCOPE";
+                        };
+                      };
+                      staging = {
+                        project = "staging-app";
+                        target = "staging";
+                        repository = "/srv/staging";
+                        repositoryIdentity = "owner/staging";
+                        repositoryProvenance = "provider:staging";
+                        nonProduction = {
+                          host = "host.example.invalid";
+                          user = "deploy";
+                          kind = "web";
+                          domain = "app.example.invalid";
+                          coordinationScope = "shared-scope";
+                        };
+                      };
+                    };
+                  };
+                }
+              ];
+            }).config.system.build.toplevel
+          );
         in
         {
           nixploy = self.packages.${system}.nixploy;
@@ -245,6 +304,9 @@
             assert configContract;
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";
           mix-expo-source = mixExpoFixture;
+          cross-profile-intersection-rejected =
+            assert !crossProfileAttempt.success;
+            pkgs.runCommand "nixploy-cross-profile-intersection-rejected" { } "touch $out";
           nixos-module =
             assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
             assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];

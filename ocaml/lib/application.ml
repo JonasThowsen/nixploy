@@ -69,7 +69,11 @@ type target_metrics = {
   applications : application_metrics list;
 }
 
-type deployment_preview = { commit : commit; receipt : string }
+type deployment_preview = {
+  commit : commit;
+  receipt : string;
+  prune_receipt : string;
+}
 
 type preview_payload = {
   commit : commit;
@@ -153,6 +157,7 @@ type t = {
   active : active_operation String.Table.t;
   runtime_cache : cached_runtime String.Table.t;
   deployment_receipts : preview_payload Deployment_receipt_store.t;
+  prune_receipts : preview_payload Deployment_receipt_store.t;
   managed_applications : Managed_application.t list;
   mutations : mutation_lifecycle;
 }
@@ -243,6 +248,7 @@ let create ?(managed_applications = []) ~store () =
     active = String.Table.create ();
     runtime_cache = String.Table.create ();
     deployment_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
+    prune_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
     managed_applications;
     mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
@@ -285,26 +291,43 @@ let account_mutation t operation =
 let open_ ~state_path =
   let open Deferred.Or_error.Let_syntax in
   let%bind managed_applications =
-    Deferred.return (Managed_application.load_authority_file ())
+    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
+      Deferred.return (Managed_application.load_authority_file ())
+    else Deferred.Or_error.return []
   in
   let%map store = Store.open_ ~path:state_path in
   create ~managed_applications ~store ()
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 
-let evaluate_managed_deployment_intent application commit =
+let evaluate_managed_deployment_intent ?verified_source_authority application
+    commit =
   let open Deferred.Or_error.Let_syntax in
   let working_directory = Managed_application.working_directory application in
   let%bind source_authority =
-    match Managed_application.production_destination application with
-    | Some _ ->
+    match
+      ( verified_source_authority,
+        Managed_application.production_destination application )
+    with
+    | Some authority, Some _
+      when String.equal
+             (Source_authority.revision authority)
+             (Source.commit_revision commit) ->
+        Deferred.Or_error.return (Some authority)
+    | Some _, Some _ ->
+        Deferred.Or_error.error_string
+          "verified source authority does not name the preview commit"
+    | None, Some _ ->
         let%map authority =
           Source_authority.verify
             ~expected_revision:(Source.commit_revision commit)
             application
         in
         Some authority
-    | None -> Deferred.Or_error.return None
+    | None, None -> Deferred.Or_error.return None
+    | Some _, None ->
+        Deferred.Or_error.error_string
+          "non-production preview unexpectedly carried source authority"
   in
   let%bind source =
     Source.prepare ~working_directory ~selection:(Source.immutable commit)
@@ -315,6 +338,7 @@ let evaluate_managed_deployment_intent application commit =
       let open Deferred.Or_error.Let_syntax in
       let%bind evaluated =
         Nix_configuration.load_evaluated
+          ~offline:(Option.is_some source_authority)
           ~working_directory:(Source.nix_root source)
           ~flake:(Source.nix_flake source)
       in
@@ -333,31 +357,48 @@ let preview_managed_deployment t requested_application =
   let%bind application =
     Deferred.return (authoritative_application t requested_application)
   in
-  let%bind commit =
+  let%bind commit, verified_source_authority =
     match Managed_application.production_destination application with
     | Some _ ->
         let%map authority = Source_authority.verify application in
-        Source_authority.commit authority
+        (Source_authority.commit authority, Some authority)
     | None ->
-        t.preview_main
-          ~working_directory:(Managed_application.working_directory application)
+        let%map commit =
+          t.preview_main
+            ~working_directory:
+              (Managed_application.working_directory application)
+        in
+        (commit, None)
   in
-  let%bind intent = evaluate_managed_deployment_intent application commit in
+  let%bind intent =
+    evaluate_managed_deployment_intent ?verified_source_authority application
+      commit
+  in
   let%bind working_directory =
     Deferred.return
       (canonical_working_directory
          (Managed_application.working_directory application))
   in
-  let%map receipt =
+  let payload = { commit; intent; working_directory } in
+  let%bind receipt =
     Deferred.return
       (Deployment_receipt_store.issue t.deployment_receipts
          ~application_key:(Managed_application.key application)
-         { commit; intent; working_directory })
+         payload)
   in
-  { commit; receipt }
+  let%map prune_receipt =
+    Deferred.return
+      (Deployment_receipt_store.issue t.prune_receipts
+         ~application_key:(Managed_application.key application)
+         payload)
+  in
+  { commit; receipt; prune_receipt }
 
 let deployment_preview_commit (preview : deployment_preview) = preview.commit
 let deployment_preview_receipt (preview : deployment_preview) = preview.receipt
+
+let deployment_preview_prune_receipt (preview : deployment_preview) =
+  preview.prune_receipt
 
 let resolve_commit t ~working_directory ~revision =
   t.find_commit ~working_directory ~revision
@@ -475,6 +516,66 @@ let deploy_managed_preview ?on_requested t requested_application ~receipt =
                     ~source:(Source.immutable commit)
                     ~target:(Managed_application.target application)
                     ())))
+
+let prune_managed_preview t requested_application ~receipt =
+  match authoritative_application t requested_application with
+  | Error error -> Deferred.return (Error error)
+  | Ok application -> (
+      match
+        Deployment_receipt_store.consume t.prune_receipts
+          ~application_key:(Managed_application.key application)
+          ~receipt
+      with
+      | Error error -> Deferred.return (Error error)
+      | Ok { commit; intent; working_directory } -> (
+          match
+            canonical_working_directory
+              (Managed_application.working_directory application)
+          with
+          | Error error -> Deferred.return (Error error)
+          | Ok current_working_directory
+            when not (String.equal working_directory current_working_directory)
+            ->
+              Deferred.Or_error.error_string
+                "prune preview checkout no longer matches the managed \
+                 application"
+          | Ok current_working_directory ->
+              account_mutation t (fun () ->
+                  invalidate_runtime_scope t
+                    ~working_directory:current_working_directory
+                    ~target:(Managed_application.target application);
+                  let%map result =
+                    Store.with_lease t.store
+                      ~working_directory:current_working_directory
+                      ~target:(Managed_application.target application)
+                      (fun () ->
+                        let open Deferred.Or_error.Let_syntax in
+                        let%bind prepared =
+                          Prune.prepare_managed ~application ~intent ~commit
+                        in
+                        Monitor.protect
+                          ~finally:(fun () -> Prune.cleanup_prepared prepared)
+                          (fun () ->
+                            let open Deferred.Or_error.Let_syntax in
+                            let%bind () =
+                              Store.set_resource_state t.store
+                                ~working_directory:current_working_directory
+                                ~target:(Managed_application.target application)
+                                Unknown
+                            in
+                            let%bind result = Prune.execute prepared in
+                            let%map () =
+                              Store.set_resource_state t.store
+                                ~working_directory:current_working_directory
+                                ~target:(Managed_application.target application)
+                                Absent
+                            in
+                            result))
+                  in
+                  invalidate_runtime_scope t
+                    ~working_directory:current_working_directory
+                    ~target:(Managed_application.target application);
+                  result)))
 
 let prune_unaccounted ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =
@@ -953,6 +1054,7 @@ module For_testing = struct
       runtime_cache = String.Table.create ();
       deployment_receipts =
         Deployment_receipt_store.create () |> Or_error.ok_exn;
+      prune_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
       managed_applications;
       mutations =
         { accepting = true; active_count = 0; drained = Ivar.create () };

@@ -64,10 +64,12 @@ mechanism and does not implement either mechanism.
      root-owned provenance/ref/object manifest, then separately binds application,
      stable ownership identity, target, exact source, production destination,
      canonical resource identity policy, coordination scope, and evaluated
-     configuration digest server-side. CLI and web read one root-owned machine
-     authority; local snapshots on a managed host require an exact non-production
-     contract and cannot alias a protected production domain. Confirmation
-     supplies only the opaque receipt. Missing, expired, evicted, replayed, restarted, mismatched, or
+     configuration digest server-side. The packaged standalone CLI refuses
+     mutation; the managed daemon consumes separate deploy- and prune-operation
+     receipts. An explicitly retained daemon non-production snapshot path
+     requires an exact non-production contract and cannot alias a protected
+     production domain. Confirmation supplies only the opaque operation-bound
+     receipt. Missing, expired, evicted, replayed, restarted, mismatched, or
      conflicting state can only force re-preview, never fall through to
      mutation. Receipt freshness has no lease or takeover semantics.
    - **Evidence:** packaged negative-path staging checks demonstrate all three

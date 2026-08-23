@@ -119,6 +119,39 @@ let
       --state-db ${lib.escapeShellArg cfg.stateDatabasePath}
   '';
 
+  safeIdentityValue =
+    value: builtins.match ".*[[:space:]/@].*" value == null && !(lib.hasSuffix ".." value);
+  canonicalEndpoint = value: lib.toLower (lib.removeSuffix "." value);
+  destinationIntersection =
+    productionApplication: nonProductionApplication:
+    let
+      production = productionApplication.production;
+      nonProduction = nonProductionApplication.nonProduction;
+      domainIntersection =
+        production.domain != null
+        && nonProduction.domain != null
+        && canonicalEndpoint production.domain == canonicalEndpoint nonProduction.domain;
+    in
+    (
+      productionApplication.project == nonProductionApplication.project
+      && productionApplication.target == nonProductionApplication.target
+    )
+    || canonicalEndpoint production.host == canonicalEndpoint nonProduction.host
+    || domainIntersection
+    || lib.toLower production.coordinationScope == lib.toLower nonProduction.coordinationScope;
+  productionApplications = lib.filter (application: application.production != null) (
+    lib.attrValues cfg.applications
+  );
+  nonProductionApplications = lib.filter (application: application.nonProduction != null) (
+    lib.attrValues cfg.applications
+  );
+  noCrossProfileIntersections = lib.all (
+    productionApplication:
+    lib.all (
+      nonProductionApplication: !(destinationIntersection productionApplication nonProductionApplication)
+    ) nonProductionApplications
+  ) productionApplications;
+
   validApplicationKey = key: builtins.match "[a-z0-9][a-z0-9_-]{0,62}" key != null;
   validSubdirectory =
     subdirectory:
@@ -126,6 +159,22 @@ let
   validProductionDestination =
     application:
     (application.production == null || application.nonProduction == null)
+    && (
+      application.production == null
+      || (
+        safeIdentityValue application.production.host
+        && safeIdentityValue application.production.coordinationScope
+        && (application.production.domain == null || safeIdentityValue application.production.domain)
+      )
+    )
+    && (
+      application.nonProduction == null
+      || (
+        safeIdentityValue application.nonProduction.host
+        && safeIdentityValue application.nonProduction.coordinationScope
+        && (application.nonProduction.domain == null || safeIdentityValue application.nonProduction.domain)
+      )
+    )
     && (
       application.production == null
       || (application.repositoryReference != null && application.repositoryEvidenceFile != null)
@@ -430,6 +479,10 @@ in
       {
         assertion = lib.all validProductionDestination (lib.attrValues cfg.applications);
         message = "services.nixploy production destinations require a non-root SSH user and kind-matched domain";
+      }
+      {
+        assertion = noCrossProfileIntersections;
+        message = "services.nixploy production and nonProduction applications must not intersect by project/target, SSH host, domain, or coordination scope";
       }
     ];
 

@@ -281,7 +281,8 @@ module Web = struct
             ~allowed:(String.Set.of_list [ "domain"; "healthPath"; "slots" ])
             fields
         in
-        let%bind domain = required fields "domain" non_empty_string in
+        let%bind raw_domain = required fields "domain" non_empty_string in
+        let%bind domain = Endpoint_identity.domain raw_domain in
         let%bind health_path =
           optional fields "healthPath" non_empty_string ~default:"/health"
         in
@@ -309,7 +310,7 @@ module Web = struct
     | _ -> Or_error.errorf "%s must be an object" field
 end
 
-module Production = struct
+module Coordination_profile = struct
   type t = { coordination_scope : string }
 
   let coordination_scope t = t.coordination_scope
@@ -322,12 +323,18 @@ module Production = struct
             ~allowed:(String.Set.of_list [ "coordinationScope" ])
             fields
         in
-        let%map coordination_scope =
+        let%bind raw_scope =
           required fields "coordinationScope" non_empty_string
+        in
+        let%map coordination_scope =
+          Endpoint_identity.coordination_scope raw_scope
         in
         { coordination_scope }
     | _ -> Or_error.errorf "%s must be an object" field
 end
+
+module Production = Coordination_profile
+module Non_production = Coordination_profile
 
 module Target = struct
   type kind = Non_web | Web of Web.t
@@ -343,6 +350,7 @@ module Target = struct
     web : Web.t option;
     secret_references : (string * string) list;
     production : Production.t option;
+    non_production : Non_production.t option;
   }
 
   let name t = t.name
@@ -355,6 +363,7 @@ module Target = struct
   let web t = t.web
   let secret_references t = t.secret_references
   let production t = t.production
+  let non_production t = t.non_production
   let kind t = Option.value_map t.web ~default:Non_web ~f:(fun web -> Web web)
 
   let require_web t =
@@ -402,6 +411,7 @@ let parse_target ~schema (raw_name, json) =
             "web";
             "secrets";
             "production";
+            "nonProduction";
           ]
         |> fun allowed ->
         if String.equal schema "v0.3" then Set.add allowed "tasks" else allowed
@@ -416,8 +426,8 @@ let parse_target ~schema (raw_name, json) =
                supported by the OCaml application"
               field
       in
-      let%map image = required fields "image" non_empty_string
-      and host = required fields "ip" non_empty_string
+      let%bind image = required fields "image" non_empty_string
+      and raw_host = required fields "ip" non_empty_string
       and user = optional fields "user" non_empty_string ~default:"root"
       and port = optional fields "port" port_value ~default:22
       and identity_file =
@@ -448,19 +458,34 @@ let parse_target ~schema (raw_name, json) =
                   (Production.of_json ~field:(field ^ ".production") json)
                   ~f:Option.some)
           ~default:None
+      and non_production =
+        optional fields "nonProduction"
+          (fun ~field:_ -> function
+            | `Null -> Ok None
+            | json ->
+                Or_error.map
+                  (Non_production.of_json ~field:(field ^ ".nonProduction") json)
+                  ~f:Option.some)
+          ~default:None
       in
-      {
-        Target.name;
-        image;
-        host;
-        user;
-        port;
-        identity_file;
-        run;
-        web;
-        secret_references;
-        production;
-      }
+      let%bind host = Endpoint_identity.host raw_host in
+      if Option.is_some production && Option.is_some non_production then
+        Or_error.errorf "%s cannot be both production and nonProduction" field
+      else
+        Ok
+          {
+            Target.name;
+            image;
+            host;
+            user;
+            port;
+            identity_file;
+            run;
+            web;
+            secret_references;
+            production;
+            non_production;
+          }
   | _ -> Or_error.error_string "target must be an object"
 
 let of_json input =

@@ -85,6 +85,7 @@ val start_candidate :
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
+  repository_identity:string ->
   placement:Deployment_plan.placement ->
   source:Source.t ->
   configuration_digest:string ->
@@ -100,6 +101,7 @@ val verify_candidate :
   project:Project_name.t ->
   target:Configuration.Target.t ->
   resource_key:Resource_key.t ->
+  repository_identity:string ->
   source:Source.t ->
   configuration_digest:string ->
   operation_id:string ->

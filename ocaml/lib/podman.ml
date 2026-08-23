@@ -428,9 +428,9 @@ let repository_owned ?(require_repository_label = false) output
               let repository = label labels "io.nixploy.repository" in
               Option.equal String.equal canonical_identity
                 (Some repository_identity)
-              &&
-              ((not require_repository_label)
-              || Option.equal String.equal repository (Some repository_identity))
+              && ((not require_repository_label)
+                 || Option.equal String.equal repository
+                      (Some repository_identity))
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->
@@ -804,27 +804,26 @@ let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
   in
   attempt 10
 
-let start_candidate ~connection ~project ~target ~resource_key ~placement
-    ~source ~configuration_digest ~operation_id ~deployed_at ~image ~secrets
-    ~secret_mounts =
+let start_candidate ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement ~source ~configuration_digest ~operation_id
+    ~deployed_at ~image ~secrets ~secret_mounts =
   let name = Deployment_plan.container_name ~resource_key placement in
   let port = Deployment_plan.runtime_port placement in
   let target_name = Configuration.Target.name target |> Target_name.to_string in
   let project_name = Project_name.to_string project in
-  let repository = Source.repository source in
   let metadata =
     [
       ("io.nixploy.managed", "true");
       ("io.nixploy.project", project_name);
       ("io.nixploy.target", target_name);
-      ("io.nixploy.repository", repository);
-      ("io.nixploy.repository_identity", repository);
+      ("io.nixploy.repository", repository_identity);
+      ("io.nixploy.repository_identity", repository_identity);
       ("io.nixploy.revision", Source.revision source);
       ("io.nixploy.deployed_at", deployed_at);
       ("io.nixploy.configuration_digest", configuration_digest);
       ("io.nixploy.operation_id", operation_id);
       ("io.nixploy.resource_key", Resource_key.to_string resource_key);
-      ("org.opencontainers.image.source", repository);
+      ("org.opencontainers.image.source", repository_identity);
       ("org.opencontainers.image.revision", Source.revision source);
     ]
   in
@@ -856,9 +855,9 @@ let start_candidate ~connection ~project ~target ~resource_key ~placement
           Error
             (Error.create_s [%message (primary : Error.t) (cleanup : Error.t)]))
 
-let verify_candidate ~connection ~project ~target ~resource_key ~source
-    ~configuration_digest ~operation_id ~(image : image)
-    ~(candidate : candidate) =
+let verify_candidate ~connection ~project ~target ~resource_key
+    ~repository_identity ~source ~configuration_digest ~operation_id
+    ~(image : image) ~(candidate : candidate) =
   let open Deferred.Or_error.Let_syntax in
   let%bind inspected = inspect_container ~connection candidate.name in
   let%bind json =
@@ -900,8 +899,17 @@ let verify_candidate ~connection ~project ~target ~resource_key ~source
             match List.Assoc.find config ~equal:String.equal "Labels" with
             | Some (`Assoc labels) ->
                 Option.equal String.equal
-                  (label labels "io.nixploy.revision")
-                  (Some (Source.revision source))
+                  (label labels "io.nixploy.repository_identity")
+                  (Some repository_identity)
+                && Option.equal String.equal
+                     (label labels "io.nixploy.repository")
+                     (Some repository_identity)
+                && Option.equal String.equal
+                     (label labels "io.nixploy.resource_key")
+                     (Some (Resource_key.to_string resource_key))
+                && Option.equal String.equal
+                     (label labels "io.nixploy.revision")
+                     (Some (Source.revision source))
                 && Option.equal String.equal
                      (label labels "io.nixploy.configuration_digest")
                      (Some configuration_digest)

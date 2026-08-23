@@ -8,17 +8,19 @@ let evaluation_timeout = Time_ns.Span.of_min 1.
 let configuration t = t.configuration
 let json t = t.json
 
-let load_evaluated ~working_directory ~flake =
+let load_evaluated ~offline ~working_directory ~flake =
   let open Deferred.Or_error.Let_syntax in
   let%bind json =
     Process_runner.run_stdout ~working_directory ~timeout:evaluation_timeout
       ~max_output_bytes:max_configuration_bytes ~prog:"nix"
-      ~args:(Nix_command.evaluation_args ~flake ~output:"nixploy")
+      ~args:(Nix_command.evaluation_args ~offline ~flake ~output:"nixploy")
       ()
   in
   let%map configuration = Deferred.return (Configuration.of_json json) in
   { configuration; json }
 
 let load ~working_directory =
-  let%map result = load_evaluated ~working_directory ~flake:"." in
+  let%map result =
+    load_evaluated ~offline:false ~working_directory ~flake:"."
+  in
   Or_error.map result ~f:configuration

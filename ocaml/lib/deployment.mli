@@ -1,4 +1,5 @@
 open Async
+open Core
 
 type stage =
   | Preparing_source
@@ -18,11 +19,17 @@ type stage =
 
 type t
 type prepared
+type managed_authorization
+
+val authorize_managed :
+  application:Managed_application.t ->
+  intent:Deployment_intent.t ->
+  managed_authorization Or_error.t
+(** Binds one intent to the exact managed application contract. *)
 
 val prepare :
   ?expected_project:Project_name.t ->
-  ?expected_intent:Deployment_intent.t ->
-  ?managed_application:Managed_application.t ->
+  ?managed_authorization:managed_authorization ->
   ?managed_applications:Managed_application.t list ->
   working_directory:string ->
   source:Source.selection ->
@@ -43,8 +50,7 @@ val execute :
 val deploy :
   ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
   ?expected_project:Project_name.t ->
-  ?expected_intent:Deployment_intent.t ->
-  ?managed_application:Managed_application.t ->
+  ?managed_authorization:managed_authorization ->
   ?managed_applications:Managed_application.t list ->
   operation_id:string ->
   working_directory:string ->

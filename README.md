@@ -331,17 +331,23 @@ scope. Preview materializes and evaluates the exact protected commit, binds
 these values plus the canonical resource key and configuration digest in
 bounded server memory, and returns only an opaque single-use receipt. Expiry,
 eviction, replay, mismatch, or service restart requires a new preview and fails
-before remote or secret mutation. CLI and web load the same root-owned
-`/etc/nixploy/managed-applications.json` authority. On a managed host, local
-snapshots are admitted only by an exact `nonProduction` contract and can never
-intersect a protected production project/target, SSH host, domain, or
-coordination scope. Deployment prepares and validates the source,
-configuration, and destination inside the target lease before resource-state or
-deployment-history writes. The receipt contains no secret or evaluated secret
-value and is preview freshness evidence, not mutation coordination. A separate
+before remote or secret mutation. The packaged standalone CLI exposes status and
+history but categorically refuses deploy and prune; protected mutation is
+available only through the managed control-plane RPC. Exact `nonProduction`
+contracts remain available to the root-started daemon and cannot intersect a
+protected production project/target, SSH host, domain, or coordination scope.
+Deployment prepares and validates source, configuration, and destination before
+resource-state or deployment-history writes. The current local SQLite `flock`
+only serializes processes sharing that state path; it is not the Production V1
+lifecycle target lease. The receipt contains no secret or evaluated secret value
+and is preview freshness evidence, not mutation coordination. A separate
 root-owned synchronizer must fetch/update the custody ref and atomically replace
-the evidence manifest only after the named commit object is durable; Nixploy
-never contacts a provider while admitting a preview. Credential options use
+the evidence manifest only after the named commit object is durable. Protected
+Git admission never fetches, and protected Nix evaluation uses `--offline` plus
+no-write-lock options: every immutable input must already be realized or preview
+fails closed. Ordinary local evaluation and deployment image builds can still
+consult configured Nix substituters or fetchers unless the host enforces a
+separate network/store policy. Credential options use
 systemd credentials and set the actual OCaml SSH/SOPS environment names.
 `readOnlyPaths` can expose additional Git credential-helper configuration while
 Unix ownership and file modes remain the access boundary. `environmentFile` is

@@ -13,14 +13,79 @@ type t = {
   route : route;
 }
 
-let project t = t.project
-let target t = t.target
-let resource_key t = t.resource_key
-let containers_removed t = t.containers_removed
-let secrets_removed t = t.secrets_removed
-let route t = t.route
+type prepared = {
+  project : Project_name.t;
+  target_name : Target_name.t;
+  target : Configuration.Target.t;
+  repository_identity : string;
+  candidates : Resource_key.t list;
+  cleanup : unit -> unit Deferred.t;
+}
 
-let prune ?expected_project ?repository_identity ~working_directory
+let project (t : t) = t.project
+let target (t : t) = t.target
+let resource_key (t : t) = t.resource_key
+let containers_removed (t : t) = t.containers_removed
+let secrets_removed (t : t) = t.secrets_removed
+let route (t : t) = t.route
+let cleanup_prepared prepared = prepared.cleanup ()
+
+let prepare_managed ~application ~intent ~commit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    Deferred.return (Deployment_intent.validate_application intent application)
+  in
+  let working_directory = Managed_application.working_directory application in
+  let%bind source_authority =
+    match Managed_application.production_destination application with
+    | Some _ ->
+        let%map authority =
+          Source_authority.verify
+            ~expected_revision:(Deployment_intent.revision intent)
+            application
+        in
+        Some authority
+    | None -> Deferred.Or_error.return None
+  in
+  let%bind source =
+    Source.prepare ~working_directory ~selection:(Source.immutable commit)
+  in
+  let validate () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind evaluated =
+      Nix_configuration.load_evaluated
+        ~offline:(Option.is_some source_authority)
+        ~working_directory:(Source.nix_root source)
+        ~flake:(Source.nix_flake source)
+    in
+    let configuration = Nix_configuration.configuration evaluated in
+    let configuration_json = Nix_configuration.json evaluated in
+    let%bind () =
+      Deferred.return
+        (Deployment_intent.validate_evaluated intent ~source_authority
+           ~revision:(Source.revision source) ~configuration ~configuration_json)
+    in
+    let target_name = Managed_application.target application in
+    let%map target =
+      Deferred.return (Configuration.find_target configuration target_name)
+    in
+    {
+      project = Configuration.project configuration;
+      target_name;
+      target;
+      repository_identity = Deployment_intent.repository_identity intent;
+      candidates = [ Deployment_intent.resource_key intent ];
+      cleanup = (fun () -> Source.cleanup source);
+    }
+  in
+  let%bind.Deferred result = Monitor.try_with_or_error validate in
+  match Or_error.join result with
+  | Ok prepared -> Deferred.Or_error.return prepared
+  | Error error ->
+      let%map.Deferred () = Source.cleanup source in
+      Error error
+
+let prepare_local ?expected_project ?repository_identity ~working_directory
     ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind configuration = Nix_configuration.load ~working_directory in
@@ -43,12 +108,28 @@ let prune ?expected_project ?repository_identity ~working_directory
     | Some repository_identity -> Deferred.Or_error.return repository_identity
     | None -> Source.repository_identity ~working_directory
   in
-  let%bind candidates =
+  let%map candidates =
     Deferred.return
       (Resource_key.candidates ~project ~target:target_name ~repository_identity)
   in
+  {
+    project;
+    target_name;
+    target;
+    repository_identity;
+    candidates;
+    cleanup = (fun () -> Deferred.unit);
+  }
+
+let execute prepared =
+  let open Deferred.Or_error.Let_syntax in
+  let project = prepared.project in
+  let target_name = prepared.target_name in
+  let target = prepared.target in
+  let repository_identity = prepared.repository_identity in
   let%bind resource_key =
-    Podman.select_resource_key ~project ~target ~repository_identity ~candidates
+    Podman.select_resource_key ~project ~target ~repository_identity
+      ~candidates:prepared.candidates
   in
   let%bind connection = Podman.ensure_connection ~target ~resource_key in
   let%bind podman_preflight =
@@ -81,6 +162,16 @@ let prune ?expected_project ?repository_identity ~working_directory
     secrets_removed;
     route;
   }
+
+let prune ?expected_project ?repository_identity ~working_directory ~target () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind prepared =
+    prepare_local ?expected_project ?repository_identity ~working_directory
+      ~target ()
+  in
+  Monitor.protect
+    ~finally:(fun () -> cleanup_prepared prepared)
+    (fun () -> execute prepared)
 
 module For_testing = struct
   let result ~project ~target ~resource_key ~containers_removed ~secrets_removed

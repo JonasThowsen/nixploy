@@ -47,8 +47,20 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
     ~working_directory ~source ~target () =
   let cancellation = Cancellation.current () in
   let open Deferred.Or_error.Let_syntax in
+  let%bind managed_authorization =
+    match (expected_intent, managed_application) with
+    | None, None -> Deferred.Or_error.return None
+    | Some intent, Some application ->
+        let%map authorization =
+          Deferred.return (Deployment.authorize_managed ~application ~intent)
+        in
+        Some authorization
+    | Some _, None | None, Some _ ->
+        Deferred.Or_error.error_string
+          "managed deployment requires one bound application and intent"
+  in
   let%bind prepared =
-    Deployment.prepare ?expected_project ?expected_intent ?managed_application
+    Deployment.prepare ?expected_project ?managed_authorization
       ~managed_applications ~working_directory ~source ~target ()
   in
   Monitor.protect

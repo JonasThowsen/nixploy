@@ -60,6 +60,7 @@ let preview_deployment state _connection_state query =
                 timestamp_ms = Application.commit_timestamp_ms commit;
               };
             receipt = Application.deployment_preview_receipt preview;
+            prune_receipt = Application.deployment_preview_prune_receipt preview;
           })
 
 let deploy state _connection_state query =
@@ -91,14 +92,8 @@ let deploy state _connection_state query =
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
     ~prune:(fun ~application ->
-      Application.prune
-        ~application_key:(Managed_application.key application)
-        ~expected_project:(Managed_application.project application)
-        ~repository_identity:
-          (Managed_application.repository_identity application)
-        state.application
-        ~working_directory:(Managed_application.working_directory application)
-        ~target:(Managed_application.target application))
+      Application.prune_managed_preview state.application application
+        ~receipt:query.Protocol.Prune.Query.receipt)
     query
 
 let cancel_deployment_v0 _state _connection_state _query =

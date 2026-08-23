@@ -7,7 +7,7 @@ module Commit : sig
 end
 
 module Deployment_preview : sig
-  type t = { commit : Commit.t; receipt : string }
+  type t = { commit : Commit.t; receipt : string; prune_receipt : string }
   [@@deriving bin_io, equal, sexp]
 end
 
@@ -123,7 +123,8 @@ end
 
 module Prune : sig
   module Query : sig
-    type t = { application : string } [@@deriving bin_io, equal, sexp]
+    type t = { application : string; receipt : string }
+    [@@deriving bin_io, equal, sexp]
   end
 
   val t : (Query.t, Prune_result.t Or_error.t) Rpc.Rpc.t

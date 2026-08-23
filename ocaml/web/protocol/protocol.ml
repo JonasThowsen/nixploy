@@ -7,7 +7,7 @@ module Commit = struct
 end
 
 module Deployment_preview = struct
-  type t = { commit : Commit.t; receipt : string }
+  type t = { commit : Commit.t; receipt : string; prune_receipt : string }
   [@@deriving bin_io, equal, sexp]
 end
 
@@ -147,11 +147,12 @@ end
 
 module Prune = struct
   module Query = struct
-    type t = { application : string } [@@deriving bin_io, equal, sexp]
+    type t = { application : string; receipt : string }
+    [@@deriving bin_io, equal, sexp]
   end
 
   let t =
-    Rpc.Rpc.create ~name:"prune-application" ~version:0
+    Rpc.Rpc.create ~name:"prune-application" ~version:1
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Prune_result.t Or_error.t]
       ~include_in_error_count:Or_error

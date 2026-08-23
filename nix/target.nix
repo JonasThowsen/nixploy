@@ -231,6 +231,8 @@ with lib;
         value:
         if value != null && config.user == "root" then
           throw "production nixploy targets must use a non-root SSH user"
+        else if value != null && config.nonProduction != null then
+          throw "nixploy targets cannot be both production and nonProduction"
         else
           value;
       description = ''
@@ -243,6 +245,31 @@ with lib;
           options.coordinationScope = mkOption {
             type = types.nonEmptyStr;
             description = "Durable per-target coordination scope reserved for lifecycle leases.";
+          };
+        }
+      );
+    };
+
+    nonProduction = mkOption {
+      default = null;
+      apply =
+        value:
+        if value != null && config.user == "root" then
+          throw "nonProduction nixploy targets must use a non-root SSH user"
+        else if value != null && config.production != null then
+          throw "nixploy targets cannot be both production and nonProduction"
+        else
+          value;
+      description = ''
+        Non-production coordination declaration. Local snapshots are admitted
+        only when the root-managed application contract names this exact scope
+        and destination.
+      '';
+      type = types.nullOr (
+        types.submodule {
+          options.coordinationScope = mkOption {
+            type = types.nonEmptyStr;
+            description = "Durable non-production coordination scope.";
           };
         }
       );

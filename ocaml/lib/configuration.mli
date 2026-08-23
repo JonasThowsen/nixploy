@@ -37,6 +37,12 @@ module Production : sig
   val coordination_scope : t -> string
 end
 
+module Non_production : sig
+  type t
+
+  val coordination_scope : t -> string
+end
+
 module Target : sig
   type t
   type kind = Non_web | Web of Web.t
@@ -51,6 +57,7 @@ module Target : sig
   val web : t -> Web.t option
   val secret_references : t -> (string * string) list
   val production : t -> Production.t option
+  val non_production : t -> Non_production.t option
   val kind : t -> kind
   val require_web : t -> Web.t Or_error.t
 end
