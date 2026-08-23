@@ -293,6 +293,34 @@
             nixployModule = self.nixosModules.default;
             nixployPackage = self.packages.${system}.nixploy;
           };
+          # Root must be rejected during Nix evaluation, not merely at runtime.
+          target-lease-root-peer-rejected =
+            let
+              attempted = builtins.tryEval (
+                (lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      system.stateVersion = "26.05";
+                      services.nixploy.targetLease = {
+                        enable = true;
+                        authority = "11111111-2222-3333-4444-555555555555";
+                        identity = "12345678-1234-4234-9234-123456789abc";
+                        scopes = [
+                          {
+                            scope = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+                            users = [ "root" ];
+                          }
+                        ];
+                      };
+                    }
+                  ];
+                }).config.system.build.toplevel
+              );
+            in
+              assert !attempted.success;
+              pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
         }
       );
 

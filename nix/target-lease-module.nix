@@ -104,6 +104,15 @@ in
         message = "services.nixploy.targetLease.user must never be root";
       }
       {
+        assertion = cfg.group != "root";
+        message = "services.nixploy.targetLease.group must never be root";
+      }
+      {
+        assertion =
+          lib.all (entry: lib.all (user: user != "root" && user != cfg.user) entry.users) cfg.scopes;
+        message = "services.nixploy.targetLease scope users must never include root or the broker identity";
+      }
+      {
         assertion = lib.all (entry: lib.all (user: user != cfg.user) entry.users) cfg.scopes;
         message = "services.nixploy.targetLease broker user cannot be an allowed peer";
       }
