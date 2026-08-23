@@ -14,6 +14,7 @@ type t = {
 }
 
 type prepared = {
+  authorization : Operation_receipt.prune;
   project : Project_name.t;
   target_name : Target_name.t;
   target : Configuration.Target.t;
@@ -30,10 +31,53 @@ let secrets_removed (t : t) = t.secrets_removed
 let route (t : t) = t.route
 let cleanup_prepared prepared = prepared.cleanup ()
 
-let prepare_managed ~application ~intent ~commit =
+let validate_managed_capability authorization application intent commit =
+  let open Or_error.Let_syntax in
+  let%bind () = Deployment_intent.validate_application intent application in
+  let%bind application_directory =
+    Or_error.try_with (fun () ->
+        Managed_application.working_directory application
+        |> Filename_unix.realpath)
+  in
+  let application_key_matches =
+    Option.value_map
+      (Operation_receipt.prune_application_key authorization)
+      ~default:false
+      ~f:(String.equal (Managed_application.key application))
+  in
+  let project_matches =
+    Option.value_map
+      (Operation_receipt.prune_expected_project authorization)
+      ~default:false
+      ~f:(Project_name.equal (Managed_application.project application))
+  in
+  let repository_matches =
+    Option.value_map
+      (Operation_receipt.prune_repository_identity authorization)
+      ~default:false
+      ~f:(String.equal (Managed_application.repository_identity application))
+  in
+  if
+    application_key_matches && project_matches && repository_matches
+    && String.equal application_directory
+         (Operation_receipt.prune_working_directory authorization)
+    && Target_name.equal
+         (Operation_receipt.prune_target authorization)
+         (Managed_application.target application)
+    && String.equal
+         (Source.commit_revision commit)
+         (Deployment_intent.revision intent)
+  then Ok ()
+  else
+    Or_error.error_string
+      "consumed prune capability does not match its application, source, or \
+       target"
+
+let prepare_managed ~authorization ~application ~intent ~commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
-    Deferred.return (Deployment_intent.validate_application intent application)
+    Deferred.return
+      (validate_managed_capability authorization application intent commit)
   in
   let working_directory = Managed_application.working_directory application in
   let%bind source_authority =
@@ -79,6 +123,7 @@ let prepare_managed ~application ~intent ~commit =
       Deferred.return (Configuration.find_target configuration target_name)
     in
     {
+      authorization;
       project = Configuration.project configuration;
       target_name;
       target;
@@ -94,9 +139,13 @@ let prepare_managed ~application ~intent ~commit =
       let%map.Deferred () = Source.cleanup source in
       Error error
 
-let prepare_local ?expected_project ?repository_identity ~working_directory
-    ~target:target_name () =
+let prepare_local ~authorization ?expected_project ?repository_identity
+    ~working_directory ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return
+      (Or_error.try_with (fun () -> Filename_unix.realpath working_directory))
+  in
   let%bind configuration = Nix_configuration.load ~working_directory in
   let project = Configuration.project configuration in
   let%bind () =
@@ -112,6 +161,16 @@ let prepare_local ?expected_project ?repository_identity ~working_directory
   let%bind target =
     Deferred.return (Configuration.find_target configuration target_name)
   in
+  let managed_applications =
+    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
+      Managed_application.load_authority_file () |> Or_error.ok_exn
+    else []
+  in
+  let%bind _identity_policy =
+    Deferred.return
+      (Deployment_intent.authorize_local ~applications:managed_applications
+         ~working_directory ~configuration ~target)
+  in
   let%bind repository_identity =
     match repository_identity with
     | Some repository_identity -> Deferred.Or_error.return repository_identity
@@ -122,6 +181,7 @@ let prepare_local ?expected_project ?repository_identity ~working_directory
       (Resource_key.candidates ~project ~target:target_name ~repository_identity)
   in
   {
+    authorization;
     project;
     target_name;
     target;
@@ -130,8 +190,39 @@ let prepare_local ?expected_project ?repository_identity ~working_directory
     cleanup = (fun () -> Deferred.unit);
   }
 
-let execute prepared =
+let prepare ~authorization =
   let open Deferred.Or_error.Let_syntax in
+  let%bind () = Deferred.return (Operation_receipt.claim_prune authorization) in
+  match
+    ( Operation_receipt.prune_application authorization,
+      Operation_receipt.prune_intent authorization,
+      Operation_receipt.prune_commit authorization )
+  with
+  | Some application, Some intent, Some commit ->
+      prepare_managed ~authorization ~application ~intent ~commit
+  | None, None, None ->
+      prepare_local ~authorization
+        ?expected_project:
+          (Operation_receipt.prune_expected_project authorization)
+        ?repository_identity:
+          (Operation_receipt.prune_repository_identity authorization)
+        ~working_directory:
+          (Operation_receipt.prune_working_directory authorization)
+        ~target:(Operation_receipt.prune_target authorization)
+        ()
+  | _ ->
+      Deferred.Or_error.error_string
+        "prune capability has incomplete managed-operation bindings"
+
+let execute ~authorization prepared =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    if phys_equal authorization prepared.authorization then
+      Deferred.Or_error.return ()
+    else
+      Deferred.Or_error.error_string
+        "prepared prune belongs to a different consumed capability"
+  in
   let project = prepared.project in
   let target_name = prepared.target_name in
   let target = prepared.target in
@@ -172,15 +263,16 @@ let execute prepared =
     route;
   }
 
-let prune ?expected_project ?repository_identity ~working_directory ~target () =
+let prune ?(on_authorized = fun () -> Deferred.Or_error.return ())
+    ~authorization () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind prepared =
-    prepare_local ?expected_project ?repository_identity ~working_directory
-      ~target ()
-  in
+  let%bind prepared = prepare ~authorization in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () -> execute prepared)
+    (fun () ->
+      let open Deferred.Or_error.Let_syntax in
+      let%bind () = on_authorized () in
+      execute ~authorization prepared)
 
 module For_testing = struct
   let result ~project ~target ~resource_key ~containers_removed ~secrets_removed

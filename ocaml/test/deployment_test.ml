@@ -356,23 +356,44 @@ exit 99
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
+      let deploy_receipts =
+        Nixploy.Operation_receipt.create_deploy_store () |> assert_ok
+      in
+      let authorization ?expected_project ?expected_intent ?managed_application
+          ?(managed_applications = []) source =
+        let application_key =
+          Option.map managed_application ~f:Nixploy.Managed_application.key
+        in
+        let expected_project =
+          Option.first_some expected_project
+            (Option.map managed_application
+               ~f:Nixploy.Managed_application.project)
+        in
+        let receipt =
+          Nixploy.Operation_receipt.issue_deploy deploy_receipts
+            ~application_key ~expected_project ~intent:expected_intent
+            ~application:managed_application ~managed_applications
+            ~working_directory:repository ~source ~target
+          |> assert_ok
+        in
+        Nixploy.Operation_receipt.consume_deploy deploy_receipts
+          ~application_key:
+            (Option.value application_key ~default:"non-production")
+          ~receipt
+        |> assert_ok
+      in
       let deploy ?record_stage ?expected_project ?expected_intent
           ?managed_application ?managed_applications operation_id =
-        let managed_authorization =
-          match (expected_intent, managed_application) with
-          | Some intent, Some application ->
-              Some
-                (Nixploy.Deployment.authorize_managed ~application ~intent
-                |> assert_ok)
-          | None, None -> None
-          | Some _, None | None, Some _ ->
-              failwith "test managed authorization is incomplete"
+        let authorization =
+          authorization ?expected_project ?expected_intent ?managed_application
+            ?managed_applications
+            (Nixploy.Source.immutable commit)
         in
-        Nixploy.Deployment.deploy ?record_stage ?expected_project
-          ?managed_authorization ?managed_applications ~operation_id
-          ~working_directory:repository
-          ~source:(Nixploy.Source.immutable commit)
-          ~target ()
+        Nixploy.Deployment.deploy ?record_stage ~authorization ~operation_id ()
+      in
+      let deploy_source operation_id source =
+        let authorization = authorization source in
+        Nixploy.Deployment.deploy ~authorization ~operation_id ()
       in
       let application_store_path = Filename.concat root "application.sqlite" in
       let%bind application_store =
@@ -394,7 +415,8 @@ exit 99
         in
         assert_ok marked_present;
         let%bind deployment =
-          Nixploy.Application.deploy application ~working_directory:repository
+          Nixploy.Application.deploy_non_production application
+            ~working_directory:repository
             ~source:(Nixploy.Application.immutable_source application_commit)
             ~target ()
         in
@@ -449,8 +471,8 @@ exit 99
       in
       assert (
         Result.is_error
-          (Nixploy.Deployment.authorize_managed ~application:other_managed
-             ~intent:expected_intent));
+          (Nixploy.Deployment_intent.validate_application expected_intent
+             other_managed));
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
       let%bind production_without_receipt =
@@ -503,7 +525,8 @@ exit 99
       in
       assert_ok marked_present;
       let%bind rejected_application =
-        Nixploy.Application.deploy ~expected_project:wrong_project application
+        Nixploy.Application.deploy_non_production
+          ~expected_project:wrong_project application
           ~working_directory:repository
           ~source:(Nixploy.Application.immutable_source application_commit)
           ~target ()
@@ -664,8 +687,7 @@ exit 99
       in
       let local_source = assert_ok local_source in
       let%bind local_deployment =
-        Nixploy.Deployment.deploy ~operation_id:"operation-local"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-local" local_source
       in
       ignore (assert_ok local_deployment : Nixploy.Deployment.t);
       let lines = In_channel.read_lines trace in
@@ -698,8 +720,7 @@ exit 99
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
       let%bind credential_deployment =
-        Nixploy.Deployment.deploy ~operation_id:"operation-private-identities"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-private-identities" local_source
       in
       ignore (assert_ok credential_deployment : Nixploy.Deployment.t);
       let lines = In_channel.read_lines trace in
@@ -715,8 +736,7 @@ exit 99
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
       let%bind insecure_age =
-        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-age"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-insecure-age" local_source
       in
       expect_error_containing insecure_age "group or other permissions";
       let lines = In_channel.read_lines trace in
@@ -730,8 +750,7 @@ exit 99
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
       let%bind insecure_ssh =
-        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-ssh"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-insecure-ssh" local_source
       in
       expect_error_containing insecure_ssh "group or other permissions";
       let lines = In_channel.read_lines trace in
@@ -742,8 +761,7 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "../outside.env";
       let%bind traversal =
-        Nixploy.Deployment.deploy ~operation_id:"operation-secret-traversal"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-secret-traversal" local_source
       in
       expect_error_containing traversal "relative secret path";
       [%test_eq: int] 0
@@ -762,8 +780,7 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "config/escape.env";
       let%bind symlink_escape =
-        Nixploy.Deployment.deploy ~operation_id:"operation-secret-symlink"
-          ~working_directory:repository ~source:local_source ~target ()
+        deploy_source "operation-secret-symlink" local_source
       in
       expect_error_containing symlink_escape "relative secret path";
       [%test_eq: int] 0
@@ -848,11 +865,12 @@ exit 99
         Int.incr observer_calls;
         raise_s [%message "observer failure"]
       in
+      let observer_authorization =
+        authorization (Nixploy.Source.immutable commit)
+      in
       let%bind observer_result =
-        Nixploy.Tracked_deployment.deploy ~on_stage ~store:observer_store
-          ~working_directory:repository
-          ~source:(Nixploy.Source.immutable commit)
-          ~target ()
+        Nixploy.Tracked_deployment.deploy ~on_stage
+          ~authorization:observer_authorization ~store:observer_store ()
       in
       let observer_result = assert_ok observer_result in
       assert (!observer_calls > 0);
@@ -871,11 +889,12 @@ exit 99
           Core_unix.mkdir failing_store_path);
         Deferred.unit
       in
+      let failing_authorization =
+        authorization (Nixploy.Source.immutable commit)
+      in
       let%bind persisted_stage_failure =
-        Nixploy.Tracked_deployment.deploy ~on_stage ~store:failing_store
-          ~working_directory:repository
-          ~source:(Nixploy.Source.immutable commit)
-          ~target ()
+        Nixploy.Tracked_deployment.deploy ~on_stage
+          ~authorization:failing_authorization ~store:failing_store ()
       in
       expect_error persisted_stage_failure;
       let lines = In_channel.read_lines trace in

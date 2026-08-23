@@ -1,5 +1,4 @@
 open Async
-open Core
 
 type stage =
   | Connecting
@@ -17,43 +16,26 @@ type stage =
 
 type t
 type prepared
-type managed_authorization
-
-val authorize_managed :
-  application:Managed_application.t ->
-  intent:Deployment_intent.t ->
-  managed_authorization Or_error.t
-(** Binds one intent to the exact managed application contract. *)
 
 val prepare :
-  ?expected_project:Project_name.t ->
-  ?managed_authorization:managed_authorization ->
-  ?managed_applications:Managed_application.t list ->
-  working_directory:string ->
-  source:Source.selection ->
-  target:Target_name.t ->
-  unit ->
-  prepared Deferred.Or_error.t
-(** Materializes, evaluates, and authorizes the exact deployment without remote,
-    resource-state, or deployment-history mutation. *)
+  authorization:Operation_receipt.deploy -> prepared Deferred.Or_error.t
+(** Claims one synchronously consumed deploy capability, then materializes,
+    evaluates, and revalidates every bound application, source, target,
+    destination, scope, and identity before mutation. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
 
 val execute :
   ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
+  authorization:Operation_receipt.deploy ->
   operation_id:string ->
   prepared ->
   t Deferred.Or_error.t
 
 val deploy :
   ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
-  ?expected_project:Project_name.t ->
-  ?managed_authorization:managed_authorization ->
-  ?managed_applications:Managed_application.t list ->
+  authorization:Operation_receipt.deploy ->
   operation_id:string ->
-  working_directory:string ->
-  source:Source.selection ->
-  target:Target_name.t ->
   unit ->
   t Deferred.Or_error.t
 

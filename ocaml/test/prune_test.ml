@@ -335,7 +335,7 @@ exit 99
         Nixploy.Application.create ~store:(assert_ok opened) ()
       in
       let prune ?expected_project () =
-        Nixploy.Application.prune ?expected_project application
+        Nixploy.Application.prune_non_production ?expected_project application
           ~working_directory:project_directory ~target:target_name
       in
 
@@ -361,7 +361,7 @@ exit 99
       in
       assert (
         [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
-          Unknown);
+          Present);
 
       clear_scenario canonical_key;
       Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" canonical_key;
@@ -416,8 +416,7 @@ exit 99
 
       let%bind () =
         Deferred.List.iter [ "missing"; "different"; "conflicting" ]
-          ~how:`Sequential
-          ~f:(fun repository_label_mode ->
+          ~how:`Sequential ~f:(fun repository_label_mode ->
             clear_scenario canonical_key;
             Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
             Caml_unix.putenv "NIXPLOY_TEST_REPOSITORY_LABEL_MODE"

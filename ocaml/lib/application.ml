@@ -75,12 +75,6 @@ type deployment_preview = {
   prune_receipt : string;
 }
 
-type preview_payload = {
-  commit : commit;
-  intent : Deployment_intent.t;
-  working_directory : string;
-}
-
 type deployment = {
   id : string;
   application_key : string option;
@@ -132,22 +126,12 @@ type t = {
   deploy_operation :
     on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
     on_requested:(deployment -> unit) ->
-    application_key:string option ->
-    expected_project:Project_name.t option ->
-    expected_intent:Deployment_intent.t option ->
-    managed_application:Managed_application.t option ->
-    managed_applications:Managed_application.t list ->
     on_authorized:(unit -> unit Deferred.Or_error.t) ->
-    working_directory:string ->
-    source:source ->
-    target:Target_name.t ->
-    unit ->
+    authorization:Operation_receipt.deploy ->
     deployment Deferred.Or_error.t;
   prune_operation :
-    expected_project:Project_name.t option ->
-    repository_identity:string option ->
-    working_directory:string ->
-    target:Target_name.t ->
+    on_authorized:(unit -> unit Deferred.Or_error.t) ->
+    authorization:Operation_receipt.prune ->
     prune_result Deferred.Or_error.t;
   load_status : scope:scope -> status Deferred.Or_error.t;
   logs_override :
@@ -156,8 +140,8 @@ type t = {
     (Managed_application.t -> target_metrics Deferred.t) option;
   active : active_operation String.Table.t;
   runtime_cache : cached_runtime String.Table.t;
-  deployment_receipts : preview_payload Deployment_receipt_store.t;
-  prune_receipts : preview_payload Deployment_receipt_store.t;
+  deployment_receipts : Operation_receipt.deploy_store;
+  prune_receipts : Operation_receipt.prune_store;
   managed_applications : Managed_application.t list;
   mutations : mutation_lifecycle;
 }
@@ -216,18 +200,13 @@ let same_scope (scope : scope) (deployment : deployment) =
   | None, None -> true
   | None, Some _ -> false
 
-let create ?(managed_applications = []) ~store () =
-  let deploy_operation ~on_stage ~on_requested ~application_key
-      ~expected_project ~expected_intent ~managed_application
-      ~managed_applications ~on_authorized ~working_directory ~source ~target ()
-      =
+let create_with_managed_applications ~managed_applications ~store () =
+  let deploy_operation ~on_stage ~on_requested ~on_authorized ~authorization =
     let open Deferred.Or_error.Let_syntax in
     Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
-      ~on_authorized ?application_key ?expected_project ?expected_intent
-      ?managed_application ~managed_applications ~store ~working_directory
-      ~source ~target ()
+      ~on_authorized ~authorization ~store ()
     >>| deployment_of_store
   in
   {
@@ -236,9 +215,8 @@ let create ?(managed_applications = []) ~store () =
     find_commit = Source.find_commit;
     deploy_operation;
     prune_operation =
-      (fun ~expected_project ~repository_identity ~working_directory ~target ->
-        Prune.prune ?expected_project ?repository_identity ~working_directory
-          ~target ());
+      (fun ~on_authorized ~authorization ->
+        Prune.prune ~on_authorized ~authorization ());
     load_status =
       (fun ~scope ->
         Status.load ~working_directory:scope.working_directory
@@ -247,11 +225,20 @@ let create ?(managed_applications = []) ~store () =
     metrics_override = None;
     active = String.Table.create ();
     runtime_cache = String.Table.create ();
-    deployment_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
-    prune_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
+    deployment_receipts =
+      Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
+    prune_receipts = Operation_receipt.create_prune_store () |> Or_error.ok_exn;
     managed_applications;
     mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
+
+let create ~store () =
+  let managed_applications =
+    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
+      Managed_application.load_authority_file () |> Or_error.ok_exn
+    else []
+  in
+  create_with_managed_applications ~managed_applications ~store ()
 
 let begin_shutdown t =
   if not t.mutations.accepting then Already_shutting_down
@@ -296,7 +283,7 @@ let open_ ~state_path =
     else Deferred.Or_error.return []
   in
   let%map store = Store.open_ ~path:state_path in
-  create ~managed_applications ~store ()
+  create_with_managed_applications ~managed_applications ~store ()
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 
@@ -389,18 +376,27 @@ let preview_managed_deployment t requested_application =
       (canonical_working_directory
          (Managed_application.working_directory application))
   in
-  let payload = { commit; intent; working_directory } in
+  let application_key = Managed_application.key application in
   let%bind receipt =
     Deferred.return
-      (Deployment_receipt_store.issue t.deployment_receipts
-         ~application_key:(Managed_application.key application)
-         payload)
+      (Operation_receipt.issue_deploy t.deployment_receipts
+         ~application_key:(Some application_key)
+         ~expected_project:(Some (Managed_application.project application))
+         ~intent:(Some intent) ~application:(Some application)
+         ~managed_applications:t.managed_applications ~working_directory
+         ~source:(Source.immutable commit)
+         ~target:(Managed_application.target application))
   in
   let%map prune_receipt =
     Deferred.return
-      (Deployment_receipt_store.issue t.prune_receipts
-         ~application_key:(Managed_application.key application)
-         payload)
+      (Operation_receipt.issue_prune t.prune_receipts
+         ~application_key:(Some application_key)
+         ~expected_project:(Some (Managed_application.project application))
+         ~repository_identity:
+           (Some (Managed_application.repository_identity application))
+         ~intent:(Some intent) ~application:(Some application)
+         ~commit:(Some commit) ~working_directory
+         ~target:(Managed_application.target application))
   in
   { commit; receipt; prune_receipt }
 
@@ -440,9 +436,15 @@ let invalidate_runtime_scope t ~working_directory ~target =
           Hashtbl.remove t.runtime_cache key
       | Some _ | None -> ())
 
-let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project ?expected_intent ?managed_application t
-    ~working_directory ~source ~target () =
+let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore) t
+    ~authorization =
+  let application_key =
+    Operation_receipt.deploy_application_key authorization
+  in
+  let working_directory =
+    Operation_receipt.deploy_working_directory authorization
+  in
+  let target = Operation_receipt.deploy_target authorization in
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -467,10 +469,7 @@ let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
                 in
                 let%bind deployment =
                   t.deploy_operation ~on_stage ~on_requested:requested
-                    ~application_key ~expected_project ~expected_intent
-                    ~managed_application
-                    ~managed_applications:t.managed_applications ~on_authorized
-                    ~working_directory ~source ~target ()
+                    ~on_authorized ~authorization
                 in
                 let%map () =
                   match deployment.state with
@@ -487,11 +486,30 @@ let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
       invalidate_runtime_scope t ~working_directory ~target;
       result
 
-let deploy ?on_stage ?on_requested ?application_key ?expected_project t
-    ~working_directory ~source ~target () =
-  account_mutation t (fun () ->
-      deploy_unaccounted ?on_stage ?on_requested ?application_key
-        ?expected_project t ~working_directory ~source ~target ())
+let deploy_non_production ?on_stage ?on_requested ?application_key
+    ?expected_project t ~working_directory ~source ~target () =
+  match canonical_working_directory working_directory with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory -> (
+      let receipt_key =
+        Option.value application_key ~default:"non-production"
+      in
+      match
+        Operation_receipt.issue_deploy t.deployment_receipts ~application_key
+          ~expected_project ~intent:None ~application:None
+          ~managed_applications:t.managed_applications ~working_directory
+          ~source ~target
+      with
+      | Error error -> Deferred.return (Error error)
+      | Ok receipt -> (
+          match
+            Operation_receipt.consume_deploy t.deployment_receipts
+              ~application_key:receipt_key ~receipt
+          with
+          | Error error -> Deferred.return (Error error)
+          | Ok authorization ->
+              account_mutation t (fun () ->
+                  deploy_unaccounted ?on_stage ?on_requested t ~authorization)))
 
 let deploy_managed_preview ?on_requested t requested_application ~receipt =
   let application = authoritative_application t requested_application in
@@ -499,97 +517,33 @@ let deploy_managed_preview ?on_requested t requested_application ~receipt =
   | Error error -> Deferred.return (Error error)
   | Ok application -> (
       match
-        Deployment_receipt_store.consume t.deployment_receipts
+        Operation_receipt.consume_deploy t.deployment_receipts
           ~application_key:(Managed_application.key application)
           ~receipt
       with
       | Error error -> Deferred.return (Error error)
-      | Ok { commit; intent; working_directory } -> (
-          match
-            canonical_working_directory
-              (Managed_application.working_directory application)
-          with
-          | Error error -> Deferred.return (Error error)
-          | Ok current_working_directory
-            when not (String.equal working_directory current_working_directory)
-            ->
-              Deferred.Or_error.error_string
-                "deployment preview checkout no longer matches the managed \
-                 application"
-          | Ok current_working_directory ->
-              account_mutation t (fun () ->
-                  deploy_unaccounted ?on_requested
-                    ~application_key:(Managed_application.key application)
-                    ~expected_project:(Managed_application.project application)
-                    ~expected_intent:intent ~managed_application:application t
-                    ~working_directory:current_working_directory
-                    ~source:(Source.immutable commit)
-                    ~target:(Managed_application.target application)
-                    ())))
+      | Ok authorization ->
+          account_mutation t (fun () ->
+              deploy_unaccounted ?on_requested t ~authorization))
 
-let prune_managed_preview t requested_application ~receipt =
+let rec prune_managed_preview t requested_application ~receipt =
   match authoritative_application t requested_application with
   | Error error -> Deferred.return (Error error)
   | Ok application -> (
       match
-        Deployment_receipt_store.consume t.prune_receipts
+        Operation_receipt.consume_prune t.prune_receipts
           ~application_key:(Managed_application.key application)
           ~receipt
       with
       | Error error -> Deferred.return (Error error)
-      | Ok { commit; intent; working_directory } -> (
-          match
-            canonical_working_directory
-              (Managed_application.working_directory application)
-          with
-          | Error error -> Deferred.return (Error error)
-          | Ok current_working_directory
-            when not (String.equal working_directory current_working_directory)
-            ->
-              Deferred.Or_error.error_string
-                "prune preview checkout no longer matches the managed \
-                 application"
-          | Ok current_working_directory ->
-              account_mutation t (fun () ->
-                  invalidate_runtime_scope t
-                    ~working_directory:current_working_directory
-                    ~target:(Managed_application.target application);
-                  let%map result =
-                    Store.with_lease t.store
-                      ~working_directory:current_working_directory
-                      ~target:(Managed_application.target application)
-                      (fun () ->
-                        let open Deferred.Or_error.Let_syntax in
-                        let%bind prepared =
-                          Prune.prepare_managed ~application ~intent ~commit
-                        in
-                        Monitor.protect
-                          ~finally:(fun () -> Prune.cleanup_prepared prepared)
-                          (fun () ->
-                            let open Deferred.Or_error.Let_syntax in
-                            let%bind () =
-                              Store.set_resource_state t.store
-                                ~working_directory:current_working_directory
-                                ~target:(Managed_application.target application)
-                                Unknown
-                            in
-                            let%bind result = Prune.execute prepared in
-                            let%map () =
-                              Store.set_resource_state t.store
-                                ~working_directory:current_working_directory
-                                ~target:(Managed_application.target application)
-                                Absent
-                            in
-                            result))
-                  in
-                  invalidate_runtime_scope t
-                    ~working_directory:current_working_directory
-                    ~target:(Managed_application.target application);
-                  result)))
+      | Ok authorization ->
+          account_mutation t (fun () -> prune_unaccounted t ~authorization))
 
-let prune_unaccounted ?application_key ?expected_project ?repository_identity t
-    ~working_directory ~target =
-  ignore application_key;
+and prune_unaccounted t ~authorization =
+  let working_directory =
+    Operation_receipt.prune_working_directory authorization
+  in
+  let target = Operation_receipt.prune_target authorization in
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -597,14 +551,11 @@ let prune_unaccounted ?application_key ?expected_project ?repository_identity t
       let%map result =
         Store.with_lease t.store ~working_directory ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
-            let%bind () =
+            let on_authorized () =
               Store.set_resource_state t.store ~working_directory ~target
                 Unknown
             in
-            let%bind result =
-              t.prune_operation ~expected_project ~repository_identity
-                ~working_directory ~target
-            in
+            let%bind result = t.prune_operation ~on_authorized ~authorization in
             let%map () =
               Store.set_resource_state t.store ~working_directory ~target Absent
             in
@@ -613,11 +564,29 @@ let prune_unaccounted ?application_key ?expected_project ?repository_identity t
       invalidate_runtime_scope t ~working_directory ~target;
       result
 
-let prune ?application_key ?expected_project ?repository_identity t
-    ~working_directory ~target =
-  account_mutation t (fun () ->
-      prune_unaccounted ?application_key ?expected_project ?repository_identity
-        t ~working_directory ~target)
+let prune_non_production ?application_key ?expected_project ?repository_identity
+    t ~working_directory ~target =
+  match canonical_working_directory working_directory with
+  | Error error -> Deferred.return (Error error)
+  | Ok working_directory -> (
+      let receipt_key =
+        Option.value application_key ~default:"non-production"
+      in
+      match
+        Operation_receipt.issue_prune t.prune_receipts ~application_key
+          ~expected_project ~repository_identity ~intent:None ~application:None
+          ~commit:None ~working_directory ~target
+      with
+      | Error error -> Deferred.return (Error error)
+      | Ok receipt -> (
+          match
+            Operation_receipt.consume_prune t.prune_receipts
+              ~application_key:receipt_key ~receipt
+          with
+          | Error error -> Deferred.return (Error error)
+          | Ok authorization ->
+              account_mutation t (fun () -> prune_unaccounted t ~authorization))
+      )
 
 let live_status t ~scope = t.load_status ~scope
 let status_project = Status.project
@@ -1063,8 +1032,9 @@ module For_testing = struct
       active = String.Table.create ();
       runtime_cache = String.Table.create ();
       deployment_receipts =
-        Deployment_receipt_store.create () |> Or_error.ok_exn;
-      prune_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
+        Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
+      prune_receipts =
+        Operation_receipt.create_prune_store () |> Or_error.ok_exn;
       managed_applications;
       mutations =
         { accepting = true; active_count = 0; drained = Ivar.create () };

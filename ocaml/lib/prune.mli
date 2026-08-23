@@ -6,28 +6,22 @@ type route = Not_configured | Missing | Removed
 type t
 type prepared
 
-val prepare_managed :
-  application:Managed_application.t ->
-  intent:Deployment_intent.t ->
-  commit:Source.commit ->
-  prepared Deferred.Or_error.t
-(** Revalidates the exact managed application, protected source evidence,
-    immutable configuration, destination, and canonical resource key without
-    remote or local state mutation. *)
+val prepare :
+  authorization:Operation_receipt.prune -> prepared Deferred.Or_error.t
+(** Claims one synchronously consumed prune capability and revalidates its exact
+    managed or non-production source, destination, and resource identity before
+    mutation. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
-val execute : prepared -> t Deferred.Or_error.t
+
+val execute :
+  authorization:Operation_receipt.prune -> prepared -> t Deferred.Or_error.t
 
 val prune :
-  ?expected_project:Project_name.t ->
-  ?repository_identity:string ->
-  working_directory:string ->
-  target:Target_name.t ->
+  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
+  authorization:Operation_receipt.prune ->
   unit ->
   t Deferred.Or_error.t
-(** Compatibility entry point for non-managed tests and library consumers. The
-    packaged CLI does not expose local mutation. Managed RPC prune uses
-    [prepare_managed] and [execute]. *)
 
 val project : t -> Project_name.t
 val target : t -> Target_name.t

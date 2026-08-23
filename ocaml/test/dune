@@ -4,6 +4,16 @@
  (action
   (run bash %{dep:cli_contract_test.sh} %{dep:../bin/main.exe})))
 
+(rule
+ (alias runtest)
+ (deps lower_mutation_interface_test.sh ../lib/nixploy.cma)
+ (action
+  (run
+   bash
+   %{dep:lower_mutation_interface_test.sh}
+   %{bin:ocamlfind}
+   %{dep:../lib/nixploy.cma})))
+
 (library
  (name core_test)
  (modules core_test)

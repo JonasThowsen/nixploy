@@ -68,8 +68,9 @@ type target_metrics = {
   applications : application_metrics list;
 }
 
-val create :
-  ?managed_applications:Managed_application.t list -> store:Store.t -> unit -> t
+val create : store:Store.t -> unit -> t
+(** Loads the host authority file when present; a linked caller cannot replace
+    it with an empty allowlist. *)
 
 val open_ : state_path:string -> t Deferred.Or_error.t
 
@@ -124,7 +125,7 @@ val source_revision : source -> string
 val source_subject : source -> string
 val source_is_local : source -> bool
 
-val deploy :
+val deploy_non_production :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(deployment -> unit) ->
   ?application_key:string ->
@@ -135,8 +136,11 @@ val deploy :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
+(** Explicit non-production mutation. The lower boundary claims a consumed
+    operation capability, production-profile targets are rejected, and any
+    installed host authority is loaded rather than caller-supplied. *)
 
-val prune :
+val prune_non_production :
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   ?repository_identity:string ->
@@ -222,22 +226,12 @@ module For_testing : sig
     deploy:
       (on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
       on_requested:(deployment -> unit) ->
-      application_key:string option ->
-      expected_project:Project_name.t option ->
-      expected_intent:Deployment_intent.t option ->
-      managed_application:Managed_application.t option ->
-      managed_applications:Managed_application.t list ->
       on_authorized:(unit -> unit Deferred.Or_error.t) ->
-      working_directory:string ->
-      source:source ->
-      target:Target_name.t ->
-      unit ->
+      authorization:Operation_receipt.deploy ->
       deployment Deferred.Or_error.t) ->
     prune:
-      (expected_project:Project_name.t option ->
-      repository_identity:string option ->
-      working_directory:string ->
-      target:Target_name.t ->
+      (on_authorized:(unit -> unit Deferred.Or_error.t) ->
+      authorization:Operation_receipt.prune ->
       prune_result Deferred.Or_error.t) ->
     unit ->
     t

@@ -86,18 +86,8 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-type managed_authorization = {
-  intent : Deployment_intent.t;
-  application : Managed_application.t;
-}
-
-let authorize_managed ~application ~intent =
-  let%map.Or_error () =
-    Deployment_intent.validate_application intent application
-  in
-  { intent; application }
-
 type prepared = {
+  authorization : Operation_receipt.deploy;
   source : Source.t;
   project : Project_name.t;
   target_name : Target_name.t;
@@ -109,17 +99,75 @@ type prepared = {
 
 let cleanup_prepared prepared = Source.cleanup prepared.source
 
-let prepare ?expected_project ?managed_authorization
-    ?(managed_applications = []) ~working_directory ~source:source_selection
-    ~target:target_name () =
-  let open Deferred.Or_error.Let_syntax in
-  let expected_intent =
-    Option.map managed_authorization ~f:(fun authorization ->
-        authorization.intent)
+let validate_managed_capability authorization intent application =
+  let open Or_error.Let_syntax in
+  let%bind () = Deployment_intent.validate_application intent application in
+  let%bind application_directory =
+    Or_error.try_with (fun () ->
+        Managed_application.working_directory application
+        |> Filename_unix.realpath)
   in
+  let application_key_matches =
+    Option.value_map
+      (Operation_receipt.deploy_application_key authorization)
+      ~default:false
+      ~f:(String.equal (Managed_application.key application))
+  in
+  let project_matches =
+    Option.value_map
+      (Operation_receipt.deploy_expected_project authorization)
+      ~default:false
+      ~f:(Project_name.equal (Managed_application.project application))
+  in
+  if
+    application_key_matches && project_matches
+    && String.equal application_directory
+         (Operation_receipt.deploy_working_directory authorization)
+    && Target_name.equal
+         (Operation_receipt.deploy_target authorization)
+         (Managed_application.target application)
+    && String.equal
+         (Source.selection_commit
+            (Operation_receipt.deploy_source authorization)
+         |> Source.commit_revision)
+         (Deployment_intent.revision intent)
+  then Ok ()
+  else
+    Or_error.error_string
+      "consumed deploy capability does not match its application, source, or \
+       target"
+
+let prepare ~authorization =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    Deferred.return (Operation_receipt.claim_deploy authorization)
+  in
+  let expected_project =
+    Operation_receipt.deploy_expected_project authorization
+  in
+  let expected_intent = Operation_receipt.deploy_intent authorization in
   let managed_application =
-    Option.map managed_authorization ~f:(fun authorization ->
-        authorization.application)
+    Operation_receipt.deploy_application authorization
+  in
+  let managed_applications =
+    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
+      Managed_application.load_authority_file () |> Or_error.ok_exn
+    else Operation_receipt.deploy_managed_applications authorization
+  in
+  let working_directory =
+    Operation_receipt.deploy_working_directory authorization
+  in
+  let source_selection = Operation_receipt.deploy_source authorization in
+  let target_name = Operation_receipt.deploy_target authorization in
+  let%bind () =
+    match (expected_intent, managed_application) with
+    | Some intent, Some application ->
+        Deferred.return
+          (validate_managed_capability authorization intent application)
+    | None, None -> Deferred.Or_error.return ()
+    | Some _, None | None, Some _ ->
+        Deferred.Or_error.error_string
+          "deploy capability has incomplete managed-operation bindings"
   in
   let%bind source_authority =
     match (expected_intent, managed_application) with
@@ -217,6 +265,7 @@ let prepare ?expected_project ?managed_authorization
                ~repository_identity)
     in
     {
+      authorization;
       source;
       project;
       target_name;
@@ -233,8 +282,16 @@ let prepare ?expected_project ?managed_authorization
       let%map.Deferred () = Source.cleanup source in
       Error error
 
-let execute ?(record_stage = no_stage) ~operation_id prepared =
+let execute ?(record_stage = no_stage) ~authorization ~operation_id prepared =
   let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    if phys_equal authorization prepared.authorization then
+      Deferred.return
+        (Operation_receipt.validate_deploy_operation authorization ~operation_id)
+    else
+      Deferred.Or_error.error_string
+        "prepared deployment belongs to a different consumed capability"
+  in
   let source = prepared.source in
   let project = prepared.project in
   let target_name = prepared.target_name in
@@ -514,13 +571,13 @@ let execute ?(record_stage = no_stage) ~operation_id prepared =
           restore_and_cleanup ~caddy ~previous ~connection ~candidate error
       | Error error -> cleanup_candidate ~connection candidate error)
 
-let deploy ?record_stage ?expected_project ?managed_authorization
-    ?managed_applications ~operation_id ~working_directory ~source ~target () =
+let deploy ?record_stage ~authorization ~operation_id () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind prepared =
-    prepare ?expected_project ?managed_authorization ?managed_applications
-      ~working_directory ~source ~target ()
+  let%bind prepared = prepare ~authorization in
+  let%bind () =
+    Deferred.return
+      (Operation_receipt.bind_deploy_operation authorization ~operation_id)
   in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () -> execute ?record_stage ~operation_id prepared)
+    (fun () -> execute ?record_stage ~authorization ~operation_id prepared)

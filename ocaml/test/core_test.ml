@@ -391,6 +391,75 @@ let%test_unit
       (Nixploy.Deployment_receipt_store.consume restarted ~application_key:"app"
          ~receipt:before_restart))
 
+let%test_unit "operation capabilities are single-use and operation bound" =
+  let commit =
+    Nixploy.Source.For_testing.commit ~revision:(String.make 40 'a')
+      ~subject:"Capability" ~timestamp_ms:1L
+    |> assert_ok
+  in
+  let source = Nixploy.Source.immutable commit in
+  let target = Nixploy.Target_name.of_string "staging" |> assert_ok in
+  let deploy_store =
+    Nixploy.Operation_receipt.create_deploy_store () |> assert_ok
+  in
+  let issue_deploy () =
+    Nixploy.Operation_receipt.issue_deploy deploy_store
+      ~application_key:(Some "app") ~expected_project:None ~intent:None
+      ~application:None ~managed_applications:[] ~working_directory:"/tmp"
+      ~source ~target
+    |> assert_ok
+  in
+  let mismatched = issue_deploy () in
+  assert (
+    Result.is_error
+      (Nixploy.Operation_receipt.consume_deploy deploy_store
+         ~application_key:"other" ~receipt:mismatched));
+  assert (
+    Result.is_error
+      (Nixploy.Operation_receipt.consume_deploy deploy_store
+         ~application_key:"app" ~receipt:mismatched));
+  let receipt = issue_deploy () in
+  let authorization =
+    Nixploy.Operation_receipt.consume_deploy deploy_store ~application_key:"app"
+      ~receipt
+    |> assert_ok
+  in
+  assert (
+    Result.is_error
+      (Nixploy.Operation_receipt.consume_deploy deploy_store
+         ~application_key:"app" ~receipt));
+  assert_ok (Nixploy.Operation_receipt.claim_deploy authorization);
+  assert (Result.is_error (Nixploy.Operation_receipt.claim_deploy authorization));
+  assert_ok
+    (Nixploy.Operation_receipt.bind_deploy_operation authorization
+       ~operation_id:"deploy-1");
+  assert_ok
+    (Nixploy.Operation_receipt.validate_deploy_operation authorization
+       ~operation_id:"deploy-1");
+  assert (
+    Result.is_error
+      (Nixploy.Operation_receipt.validate_deploy_operation authorization
+         ~operation_id:"deploy-2"));
+  let prune_store =
+    Nixploy.Operation_receipt.create_prune_store () |> assert_ok
+  in
+  let prune_receipt =
+    Nixploy.Operation_receipt.issue_prune prune_store
+      ~application_key:(Some "app") ~expected_project:None
+      ~repository_identity:None ~intent:None ~application:None ~commit:None
+      ~working_directory:"/tmp" ~target
+    |> assert_ok
+  in
+  ignore
+    (Nixploy.Operation_receipt.consume_prune prune_store ~application_key:"app"
+       ~receipt:prune_receipt
+     |> assert_ok
+      : Nixploy.Operation_receipt.prune);
+  assert (
+    Result.is_error
+      (Nixploy.Operation_receipt.consume_prune prune_store
+         ~application_key:"app" ~receipt:prune_receipt))
+
 let%test_unit "managed application count and operational identities are bounded"
     =
   let entry index =

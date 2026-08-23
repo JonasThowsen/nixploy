@@ -42,27 +42,18 @@ let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
                   (Error.to_string_hum failure_error)))
 
 let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?(on_authorized = no_authorized) ?application_key ?expected_project
-    ?expected_intent ?managed_application ?(managed_applications = []) ~store
-    ~working_directory ~source ~target () =
+    ?(on_authorized = no_authorized) ~authorization ~store () =
   let cancellation = Cancellation.current () in
   let open Deferred.Or_error.Let_syntax in
-  let%bind managed_authorization =
-    match (expected_intent, managed_application) with
-    | None, None -> Deferred.Or_error.return None
-    | Some intent, Some application ->
-        let%map authorization =
-          Deferred.return (Deployment.authorize_managed ~application ~intent)
-        in
-        Some authorization
-    | Some _, None | None, Some _ ->
-        Deferred.Or_error.error_string
-          "managed deployment requires one bound application and intent"
+  let working_directory =
+    Operation_receipt.deploy_working_directory authorization
   in
-  let%bind prepared =
-    Deployment.prepare ?expected_project ?managed_authorization
-      ~managed_applications ~working_directory ~source ~target ()
+  let source = Operation_receipt.deploy_source authorization in
+  let target = Operation_receipt.deploy_target authorization in
+  let application_key =
+    Operation_receipt.deploy_application_key authorization
   in
+  let%bind prepared = Deployment.prepare ~authorization in
   Monitor.protect
     ~finally:(fun () -> Deployment.cleanup_prepared prepared)
     (fun () ->
@@ -71,6 +62,11 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
       let%bind operation =
         Store.request store ~application_key ~working_directory ~target
           ~commit:(Source.selection_commit source)
+      in
+      let%bind () =
+        Deferred.return
+          (Operation_receipt.bind_deploy_operation authorization
+             ~operation_id:(Store.id operation))
       in
       on_requested operation;
       let record_stage stage message =
@@ -85,8 +81,8 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
       in
       let%bind.Deferred execution =
         Monitor.try_with_or_error (fun () ->
-            Deployment.execute ~record_stage ~operation_id:(Store.id operation)
-              prepared)
+            Deployment.execute ~record_stage ~authorization
+              ~operation_id:(Store.id operation) prepared)
       in
       let result = Or_error.join execution in
       let terminalize execution_error =
@@ -121,11 +117,12 @@ module For_testing = struct
   let terminalize_cancelled = terminalize_cancelled
 end
 
-let deploy ?on_stage ?on_requested ?on_authorized ?application_key
-    ?expected_project ?expected_intent ?managed_application
-    ?managed_applications ~store ~working_directory ~source ~target () =
-  let working_directory = Filename_unix.realpath working_directory in
+let deploy ?on_stage ?on_requested ?on_authorized ~authorization ~store () =
+  let working_directory =
+    Operation_receipt.deploy_working_directory authorization
+    |> Filename_unix.realpath
+  in
+  let target = Operation_receipt.deploy_target authorization in
   Store.with_lease store ~working_directory ~target (fun () ->
-      deploy_within_lease ?on_stage ?on_requested ?on_authorized
-        ?application_key ?expected_project ?expected_intent ?managed_application
-        ?managed_applications ~store ~working_directory ~source ~target ())
+      deploy_within_lease ?on_stage ?on_requested ?on_authorized ~authorization
+        ~store ())

@@ -95,20 +95,12 @@ let run_tests () =
         Deferred.Or_error.return commit)
       ~find_commit:(fun ~working_directory:_ ~revision:_ ->
         Deferred.Or_error.return commit)
-      ~deploy:(fun
-          ~on_stage:_
-          ~on_requested
-          ~application_key
-          ~expected_project:_
-          ~expected_intent:_
-          ~managed_application:_
-          ~managed_applications:_
-          ~on_authorized
-          ~working_directory
-          ~source:_
-          ~target
-          ()
-        ->
+      ~deploy:(fun ~on_stage:_ ~on_requested ~on_authorized ~authorization ->
+        let application_key =
+          Nixploy.Operation_receipt.deploy_application_key authorization
+        and working_directory =
+          Nixploy.Operation_receipt.deploy_working_directory authorization
+        and target = Nixploy.Operation_receipt.deploy_target authorization in
         let open Deferred.Or_error.Let_syntax in
         let%bind () = on_authorized () in
         let%bind stored =
@@ -140,12 +132,8 @@ let run_tests () =
           (Nixploy.Application.For_testing.deployment ?application_key
              ~working_directory ~target ~id:(Nixploy.Store.id stored)
              ~state:Cancelled ~revision ()))
-      ~prune:(fun
-          ~expected_project:_
-          ~repository_identity:_
-          ~working_directory:_
-          ~target:_
-        -> Deferred.Or_error.error_string "unused prune")
+      ~prune:(fun ~on_authorized:_ ~authorization:_ ->
+        Deferred.Or_error.error_string "unused prune")
       ()
   in
   let scope = Nixploy.Application.managed_scope application |> assert_ok in
@@ -164,7 +152,7 @@ let run_tests () =
   [%test_eq: string list] [ "example" ] (List.rev !log_calls);
   [%test_eq: string list] [ "example" ] (List.rev !metric_calls);
   let running =
-    Nixploy.Application.deploy ~application_key:"example" fake
+    Nixploy.Application.deploy_non_production ~application_key:"example" fake
       ~working_directory:directory ~source ~target ()
   in
   let%bind operation = Ivar.read started in
