@@ -89,13 +89,20 @@ mechanism and does not implement either mechanism.
      target domain without Nixploy implementing those jobs.
    - The current `Store` flock is local per SQLite path and cannot be shared with
      external actors, so it does not yet satisfy this gate.
-   - Loss of lease ownership or an apparently stale owner never permits
-     automatic unsafe takeover; observed state must first be reconciled or an
-     operator must make an explicit, evidenced recovery decision.
-   - **Evidence:** packaged contention and interrupted-owner staging scenarios
-     admit one actor in a declared domain and leave its competitors read-only
-     and clearly blocked, while an unrelated co-hosted target remains
-     independent.
+    - Loss of lease ownership or an apparently stale owner never permits
+      automatic unsafe takeover; observed state must first be reconciled or an
+      operator must make an explicit, evidenced recovery decision.
+    - **Evidence:** packaged contention and interrupted-owner staging scenarios
+      admit one actor in a declared domain and leave its competitors read-only
+      and clearly blocked, while an unrelated co-hosted target remains
+      independent. The packaged target-lease VM additionally proves a
+      generation-scoped dirty/clean-receipt protocol that survives broker
+      interruption as blocked state, fails closed on corrupt, partial,
+      mismatched, or ambiguous durable evidence, treats durability faults as
+      process-fatal within one select-loop cycle, bounds connection saturation,
+      and keeps accept floods from starving an existing holder. Strict crash
+      fencing remains blocked until every remote mutating process is
+      broker-supervised or independent recovery proves stopped orphans.
 
 3. **Crash reconciliation**
    - Startup and pre-mutation reconciliation compare persisted intent with exact

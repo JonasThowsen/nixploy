@@ -175,6 +175,40 @@ nix build .#nixploy
 
 Protect pure domain rules with focused tests. At process boundaries, assert fixed argv, stdin, environment, output bounds, and compensation. For each tracer, exercise a packaged consumer rather than treating compilation as completion.
 
+## Target-lease durable state protocol
+
+The packaged target-lease broker (`services.nixploy.targetLease`) owns one
+durable evidence file pair per coordination scope inside its private `0700`
+state directory (see `ocaml/lib/target_lease_state.mli`):
+
+```text
+Absent --mark_dirty--> Dirty --write_clean_receipt--> Receipted --retire_dirty--> Clean
+scope-<scope>.dirty   contains exactly "dirty <generation>\n"
+scope-<scope>.clean   contains exactly "clean <generation>\n"
+```
+
+Invariants:
+
+- the dirty marker is created before a lease is granted and is never removed or
+  rewritten except by `retire_dirty` with the exact matching generation, after
+  an independently fsynced clean receipt exists;
+- every creation step is file-fsynced and directory-fsynced before the next
+  step begins; failures leave existing evidence untouched and are process-
+  fatal while serving — no further admissions, accepts, or dispatch happen in
+  that select-loop cycle before a nonzero exit;
+- after a crash only these outcomes exist: neither file (unused), dirty only
+  (blocked owner; every acquire is refused with `V1 DIRTY`), clean only
+  (release completed), or both files (ambiguous — the broker refuses to start).
+  No path can misrepresent uncertainty as clean, and automatic systemd restart
+  cannot clear evidence;
+- startup rejects unexpected filenames, non-regular or foreign-owned entries,
+  malformed/partial contents, and ambiguous pairs. Resolving durable dirty or
+  blocked evidence is an explicit operator action on broker-owned files.
+
+A fixed per-cycle accept budget keeps connection floods from starving existing
+clients, and client connections use nonblocking connect plus single absolute
+`CLOCK_MONOTONIC` deadlines verified by `SO_ERROR`.
+
 ## Control-plane browser origin policy
 
 Static control-plane HTTP requests use `NIXPLOY_AUTH_MODE` and, in Tailscale
