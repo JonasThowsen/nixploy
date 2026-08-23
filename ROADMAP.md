@@ -77,13 +77,20 @@ focused tests, and exercised against real runtime data.
 
 ### 1. Commit preview
 
-**Status: Partial (commit-preview UI receipt complete).** Source metadata is
-previewed before confirmation and the confirmed full SHA is threaded through
-persistence and materialization. An automated Git test advances `main` after
-preview and verifies that the original commit is still materialized. The
-packaged mobile and desktop UI confirmation was exercised against Jomat. This
-proves the displayed SHA materialization receipt; server-side binding of the
-application, repository, target, and evaluated intent remains a P0 gap.
+**Status: Implemented for source-and-intent binding.** Source metadata is previewed
+before confirmation and the exact commit is immutably materialized and evaluated.
+The server validates root-managed repository provenance and stable ownership,
+project, target, production destination, canonical resource identity policy,
+coordination scope, and configuration digest, then retains them behind an opaque
+single-use bounded-memory receipt. Confirmation supplies no SHA, target, or
+destination; expiry, eviction, replay, mismatch, or restart requires a new
+preview, and deployment revalidates the evaluated intent before remote or secret
+effects. The packaged VM proves exact production-profile preview plus forged
+receipt rejection with no deployment row; focused boundary tests cover
+provenance, SHA, target, destination and digest mismatch before Podman/SSH, and
+receipt tests cover expiry, eviction, replay, restart and application mismatch.
+The receipt is preview freshness only, not the still-missing lifecycle lease or
+authoritative fresh remote plan.
 
 **Operator behavior:** Before deploying, an operator sees which commit from the
 application's local `refs/heads/main` will be deployed.
@@ -193,9 +200,10 @@ live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
 
 0. **P0 — Safety corrections (partial):** make prune repository-exact; reject
    direct requests in Tailscale mode and fail closed at the protected
-   trusted-proxy/auth boundary; and complete server-side preview binding for the
-   application, repository, target, exact source, and evaluated intent. No stale
-   or fallback preview may authorize mutation.
+   trusted-proxy/auth boundary. Server-side preview binding for the application,
+   repository provenance and ownership, target, exact source, production
+   destination, and evaluated intent is complete; no stale or fallback preview
+   authorizes mutation.
 1. **P0 — Advisory read-only lifecycle plan and rollback eligibility
    (missing):** show proposed changes, prerequisites, availability effect, and
    candidate prior immutable revisions without mutation. The offline/read-only

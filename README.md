@@ -53,9 +53,10 @@ Add nixploy as an input and expose a `nixploy` output:
       targets.production = {
         image = "docker"; # builds .#docker
         ip = "203.0.113.10";
-        user = "root";
+        user = "deploy";
         port = 22;
         identityFile = "~/.ssh/id_ed25519";
+        production.coordinationScope = "my-app-production";
 
         run = {
           network = "host";
@@ -91,7 +92,7 @@ Add nixploy as an input and expose a `nixploy` output:
 }
 ```
 
-The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names.
+The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names. A target with a `production` declaration must use a non-root SSH user and can deploy only through a matching root-managed browser preview receipt; local CLI deployment remains available for targets that do not opt into that profile. Its coordination scope is bound into preview intent now and is reserved for the authoritative lifecycle lease integration; a preview receipt is not a lease and never permits takeover.
 
 When `identityFile` points at a passphrase-protected key, load it into `ssh-agent` before deploying:
 
@@ -297,7 +298,16 @@ publish the loopback endpoint.
       target = "production";
       repository = "/srv/nixploy/my-app";
       repositoryIdentity = "owner/my-app";
+      repositoryProvenance = "git@github.com:owner/my-app.git";
       subdirectory = ".";
+      production = {
+        host = "203.0.113.10";
+        user = "deploy";
+        port = 22;
+        kind = "web";
+        domain = "app.example.com";
+        coordinationScope = "my-app-production";
+      };
     };
 
     sshIdentityFile = "/run/keys/nixploy-ssh";
@@ -308,9 +318,17 @@ publish the loopback endpoint.
 ```
 
 `repository` must be an absolute existing local Git checkout readable by the
-service user. The module passes only the fields accepted by OCaml
-`Managed_application`: `project`, `target`, `repository`,
-`repositoryIdentity`, and relative `subdirectory`. Credential options use
+service user. Every browser-managed application requires an exact
+`repositoryProvenance` matching Git `remote.origin.url`; production applications
+also require a root-owned `production` destination matching the evaluated
+target's host, non-root user, port, web/non-web kind, domain, and coordination
+scope. Preview materializes and
+evaluates the exact commit, binds these values plus the canonical resource key
+and configuration digest in bounded server memory, and returns only an opaque
+single-use receipt. Expiry, eviction, replay, mismatch, or service restart
+requires a new preview and fails before remote or secret mutation. The receipt
+contains no secret or evaluated secret value and is preview freshness evidence,
+not mutation coordination. Credential options use
 systemd credentials and set the actual OCaml SSH/SOPS environment names.
 `readOnlyPaths` can expose additional Git credential-helper configuration while
 Unix ownership and file modes remain the access boundary. `environmentFile` is

@@ -21,7 +21,7 @@ exists but a named V1 safety property is absent.
 
 | # | Operator journey | Current status | Production V1 observable outcome |
 |---|---|---|---|
-| 1 | Preview the exact immutable source before acting | Partial (commit-preview UI receipt complete) | The UI-proven commit SHA remains the materialized revision. Production V1 must additionally bind the application, repository, target, and evaluated intent server-side; expiry, eviction, restart, or cache failure requires a new preview. |
+| 1 | Preview the exact immutable source before acting | Implemented tracer | The UI-proven commit is immutably materialized and evaluated. A bounded process-local single-use receipt binds the root-managed application, exact repository provenance and stable ownership, target, production destination, canonical resource identity policy, coordination scope, exact SHA, and configuration digest. Expiry, eviction, replay, mismatch, or restart requires a new preview and fails before remote or secret effects. |
 | 2 | Review an advisory read-only deploy, prune, or rollback plan | Missing | Without remote mutation, the operator sees proposed owned-resource changes, prerequisites, readiness and availability effects, and reasoned rollback candidates. The advice cannot authorize mutation and may change after fresh under-lease observation. |
 | 3 | Deploy a web application and preserve its healthy route | Partial | A candidate uses one lifecycle, becomes ready, switches the exact owned route, is independently verified, and retires the prior slot; failure leaves or restores the last known-good route. |
 | 4 | Deploy a non-web application without false availability claims | Partial | Readiness is explicit. Advisory and authoritative plans plus the outcome state whether replacement is continuous or has a bounded interruption; no Caddy behavior is implied. |
@@ -60,9 +60,13 @@ mechanism and does not implement either mechanism.
      authenticated or otherwise protected proxy-to-service boundary that direct
      local clients cannot reach. A protected Unix socket or equivalent may
      provide that boundary; loopback TCP alone is insufficient.
-   - Preview authorization binds application, repository, target, exact source,
-     and evaluated intent server-side. Missing, stale, evicted, or conflicting
-     cache state can only force re-preview, never fall through to mutation.
+   - Preview authorization binds application, exact repository provenance and
+     stable ownership identity, target, exact source, production destination,
+     canonical resource identity policy, coordination scope, and evaluated
+     configuration digest server-side. Confirmation supplies only the opaque
+     receipt. Missing, expired, evicted, replayed, restarted, mismatched, or
+     conflicting state can only force re-preview, never fall through to
+     mutation. Receipt freshness has no lease or takeover semantics.
    - **Evidence:** packaged negative-path staging checks demonstrate all three
      failures without target mutation.
 
