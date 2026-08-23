@@ -94,9 +94,10 @@ interrupt active subprocess groups so compensation can unwind, and allow up to
 25 seconds for admitted mutations to drain. A second signal forces immediate
 shutdown. The NixOS unit allows 30 seconds before systemd forcefully stops it.
 
-It binds to loopback, reads the NixOS-owned
-`NIXPLOY_MANAGED_APPLICATIONS_JSON` allowlist, displays the latest persisted
-deployment for each application, and sends deploy and prune requests through
+It binds to loopback, reads the root-owned
+`/etc/nixploy/managed-applications.json` machine authority shared with the CLI,
+displays the latest persisted deployment for each application, and sends deploy
+and prune requests through
 the same shared `Application` operations as the CLI. CLI and web mutations share
 a cross-process target lease rooted beside the SQLite state database. Persisted
 requested/running rows from an interrupted process remain deployment history;
@@ -188,8 +189,11 @@ module-owned auth/origin/application names after systemd loads
 `environmentFile`, preventing that file from replacing the module security
 boundary or redirecting the ephemeral runtime directory. Root source
 credentials should remain read-only and protected.
-Repositories and any additional `readOnlyPaths` must be readable by the service
-Unix identity.
+Production repositories are root-protected Git custody trees and require a
+root-owned bounded-fresh evidence manifest binding provenance, a full branch ref,
+and its exact commit object. They and any additional `readOnlyPaths` must be
+readable by the service Unix identity. Exact root-owned `nonProduction`
+contracts are the only local-snapshot exception on a managed host.
 
 Before switching generations, stop all Phoenix web and worker units. Never run
 the old and new deployment engines concurrently. Preserve the `nixploy` user,

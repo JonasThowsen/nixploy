@@ -37,13 +37,20 @@ The application API represents source selection explicitly:
 
 Both policies resolve to one stable prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation snapshots the repository's committed files, tracked modifications, and intent-to-add files once, while excluding ignored build output; evaluation, secrets, and image building all consume that same snapshot. Ordinary non-ignored untracked files fail preflight with an instruction to add or ignore them, avoiding both silently omitted source and copied dependency trees. Immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
 
-Browser preview materializes and evaluates the exact commit and validates the
-root-managed repository provenance, stable ownership identity,
-target destination, canonical resource key, configuration digest, and declared
-coordination scope. Confirmation supplies only an opaque single-use
-process-local receipt; expiry, bounded-cache eviction, replay, mismatch, or
-restart fails closed. Deployment consumes the receipt and revalidates the exact
-evaluated intent before Podman, SSH, SOPS, secret, or Caddy effects. The receipt
+Browser preview reads one root-owned machine authority file, verifies a
+root-protected Git custody repository plus a bounded fresh manifest naming the
+provenance identifier, full ref, and exact commit object, then materializes and
+evaluates that exact commit. Mutable `remote.origin.url` is diagnostic only and
+never provenance authority. Stable ownership identity remains separate from
+observed source evidence. Preview also validates target destination, canonical
+resource key, configuration digest, and declared coordination scope.
+Confirmation supplies only an opaque single-use process-local receipt; expiry,
+bounded-cache eviction, replay, mismatch, or restart fails closed. Deployment
+consumes the receipt and, inside the target lease, revalidates source,
+configuration, and destination before resource-state/history writes and before
+Podman, SSH, SOPS, secret, or Caddy effects. The standalone CLI reads the same
+machine authority; on a managed host only an exact root-owned non-production
+contract permits local snapshots, and production-domain aliases fail closed. The receipt
 is freshness evidence only and has no lease or takeover semantics.
 
 Preview and any offline or read-only plan are operator advice, not mutation

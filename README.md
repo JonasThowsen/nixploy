@@ -299,6 +299,9 @@ publish the loopback endpoint.
       repository = "/srv/nixploy/my-app";
       repositoryIdentity = "owner/my-app";
       repositoryProvenance = "git@github.com:owner/my-app.git";
+      repositoryReference = "refs/heads/main";
+      repositoryEvidenceFile = "/var/lib/nixploy-custody/my-app.evidence.json";
+      repositoryEvidenceMaxAgeSeconds = 900;
       subdirectory = ".";
       production = {
         host = "203.0.113.10";
@@ -317,25 +320,35 @@ publish the loopback endpoint.
 }
 ```
 
-`repository` must be an absolute existing local Git checkout readable by the
-service user. Every browser-managed application requires an exact
-`repositoryProvenance` matching Git `remote.origin.url`; production applications
-also require a root-owned `production` destination matching the evaluated
+`repository` must be an absolute root-owned Git custody checkout whose Git
+common directory is root-owned and not group/other writable. Production also
+requires a root-owned freshness evidence manifest binding
+`repositoryProvenance`, `repositoryReference`, an exact commit object, and a
+bounded observation time. Nixploy never treats mutable `remote.origin.url` as
+provenance. The root-owned `production` destination must match the evaluated
 target's host, non-root user, port, web/non-web kind, domain, and coordination
-scope. Preview materializes and
-evaluates the exact commit, binds these values plus the canonical resource key
-and configuration digest in bounded server memory, and returns only an opaque
-single-use receipt. Expiry, eviction, replay, mismatch, or service restart
-requires a new preview and fails before remote or secret mutation. The receipt
-contains no secret or evaluated secret value and is preview freshness evidence,
-not mutation coordination. Credential options use
+scope. Preview materializes and evaluates the exact protected commit, binds
+these values plus the canonical resource key and configuration digest in
+bounded server memory, and returns only an opaque single-use receipt. Expiry,
+eviction, replay, mismatch, or service restart requires a new preview and fails
+before remote or secret mutation. CLI and web load the same root-owned
+`/etc/nixploy/managed-applications.json` authority. On a managed host, local
+snapshots are admitted only by an exact `nonProduction` contract and can never
+intersect a protected production project/target, SSH host, domain, or
+coordination scope. Deployment prepares and validates the source,
+configuration, and destination inside the target lease before resource-state or
+deployment-history writes. The receipt contains no secret or evaluated secret
+value and is preview freshness evidence, not mutation coordination. A separate
+root-owned synchronizer must fetch/update the custody ref and atomically replace
+the evidence manifest only after the named commit object is durable; Nixploy
+never contacts a provider while admitting a preview. Credential options use
 systemd credentials and set the actual OCaml SSH/SOPS environment names.
 `readOnlyPaths` can expose additional Git credential-helper configuration while
 Unix ownership and file modes remain the access boundary. `environmentFile` is
 optional and is intended only for additional process environment. A generated
-start wrapper reapplies module-owned authentication, origin, application, and
-credential variables after systemd loads that file, so it cannot override those
-security boundaries.
+start wrapper reapplies module-owned authentication, origin, and credential
+variables after systemd loads that file, while application mutation authority
+comes only from the root-owned machine file.
 
 For a deliberately trusted local-only installation, set
 `authMode = "unrestricted"`. Tailscale mode requires `operatorEmail`, but

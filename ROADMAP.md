@@ -79,16 +79,22 @@ focused tests, and exercised against real runtime data.
 
 **Status: Implemented for source-and-intent binding.** Source metadata is previewed
 before confirmation and the exact commit is immutably materialized and evaluated.
-The server validates root-managed repository provenance and stable ownership,
+The server verifies a root-protected Git custody repository and bounded fresh
+root-owned manifest that binds the configured provenance identifier, full ref,
+and exact commit object; mutable Git origin configuration is not authority and
+stable resource ownership never overwrites observed evidence. It validates
 project, target, production destination, canonical resource identity policy,
 coordination scope, and configuration digest, then retains them behind an opaque
 single-use bounded-memory receipt. Confirmation supplies no SHA, target, or
 destination; expiry, eviction, replay, mismatch, or restart requires a new
-preview, and deployment revalidates the evaluated intent before remote or secret
-effects. The packaged VM proves exact production-profile preview plus forged
-receipt rejection with no deployment row; focused boundary tests cover
-provenance, SHA, target, destination and digest mismatch before Podman/SSH, and
-receipt tests cover expiry, eviction, replay, restart and application mismatch.
+preview. Inside the target lease, deployment revalidates and prepares the full
+intent before resource-state/history writes and before remote or secret effects.
+The packaged VM proves exact production preview, forged receipt rejection, and
+standalone-CLI rejection of tracked production changes, stanza removal, and
+endpoint aliases with zero deployment/resource rows. Focused tests cover stale
+or mismatched source evidence, provenance, SHA, target, destination and digest
+mismatch before Podman/SSH, while receipt tests cover expiry, eviction, replay,
+restart and application mismatch.
 The receipt is preview freshness only, not the still-missing lifecycle lease or
 authoritative fresh remote plan.
 
@@ -201,9 +207,10 @@ live in [`PRODUCTION_LIFECYCLE_V1.md`](PRODUCTION_LIFECYCLE_V1.md).
 0. **P0 — Safety corrections (partial):** make prune repository-exact; reject
    direct requests in Tailscale mode and fail closed at the protected
    trusted-proxy/auth boundary. Server-side preview binding for the application,
-   repository provenance and ownership, target, exact source, production
-   destination, and evaluated intent is complete; no stale or fallback preview
-   authorizes mutation.
+   protected source custody, repository provenance and separately represented
+   ownership, target, exact source, production destination, and evaluated intent
+   is complete. The shared root-owned CLI/web authority prevents local production
+   downgrade or alias bypasses; no stale or fallback preview authorizes mutation.
 1. **P0 — Advisory read-only lifecycle plan and rollback eligibility
    (missing):** show proposed changes, prerequisites, availability effect, and
    candidate prior immutable revisions without mutation. The offline/read-only
