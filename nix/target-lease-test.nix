@@ -248,39 +248,85 @@ pkgs.testers.runNixOSTest {
     machine.succeed("pkill -f '[s]ocat -t 25' || true; sleep 1")
     machine.succeed(f"sh -c '{clean_probe} > /tmp/recovered-slots 2>&1'")
 
-    # An accept flood cannot starve an existing holder's clean release.
+    # Issue #7: this is connection churn, not a queue-saturation claim. Each
+    # socat gets EOF immediately, so the proof must not depend on arbitrary
+    # scheduling delays while a timed holder happens to remain live.  The
+    # explicit client release barrier makes the dirty marker authoritative:
+    # after READY, it cannot be retired unless this test creates the signal.
+    flood_release_signal = "/tmp/flood-holder.release"
+    flood_operation = "99999999-8888-7777-6666-555555555557"
+    flood_holder_script = "/tmp/flood-holder-run"
+    flood_holder_pid = "/tmp/flood-holder.client.pid"
     machine.succeed(
-        f"sh -c '{deploy_hold} > /tmp/flood-holder 2>&1 & echo $! > /tmp/flood-holder.pid'"
+        "cat > "
+        + flood_holder_script
+        + " <<'EOF'\n"
+        + "echo $$ > "
+        + flood_holder_pid
+        + "\nexec "
+        + client
+        + " "
+        + args
+        + " --scope "
+        + scope_one
+        + " --operation "
+        + flood_operation
+        + " --release-signal "
+        + flood_release_signal
+        + "\nEOF\nchmod 755 "
+        + flood_holder_script
     )
-    machine.wait_until_succeeds(f"grep -E '^V1 READY {authority} {scope_one} 99999999-8888-7777-6666-555555555555 ' /tmp/flood-holder", timeout=30)
+    flood_holder = f"runuser -u deploy -- {flood_holder_script}"
+    machine.succeed(
+        f"rm -f {flood_release_signal} {flood_holder_pid} /tmp/flood-holder /tmp/flood-holder.pid"
+    )
+    machine.succeed(
+        f"sh -c '{flood_holder} > /tmp/flood-holder 2>&1 & echo $! > /tmp/flood-holder.pid'"
+    )
+    # READY is emitted after mark_dirty. The absent release signal prevents a
+    # clean release, so seeing both files is a deterministic holder barrier.
+    machine.wait_until_succeeds(
+        f"test ! -e {flood_release_signal}"
+        f" && test $(cat {flood_holder_pid}) -gt 1"
+        f" && grep -E '^V1 READY {authority} {scope_one} {flood_operation} ' /tmp/flood-holder"
+        f" && test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty",
+        timeout=30,
+    )
     machine.succeed(
         "for i in $(seq 50); do (timeout 5 runuser -u intruder -- socat -t 4 - UNIX-CONNECT:"
         + socket
         + " </dev/null >/dev/null 2>&1 &); done"
     )
-    machine.sleep(1)
-    # During the flood an unrelated allowed peer still completes cleanly.
+    # During the churn an unrelated allowed peer still completes cleanly.
     machine.succeed(f"sh -c '{other_scope} > /tmp/flood-fairness 2>&1'")
     machine.succeed("grep -Fx 'V1 RELEASED' /tmp/flood-fairness")
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
-    # Killing the flooded-out holder leaves durable blocked evidence, never a
-    # clean scope.
-    machine.succeed("pkill -9 -f '[s]ocat -t 4' || true; sleep 1")
-    machine.succeed("pkill -9 -f '[n]ixploy-target-lease-client' || true")
-    machine.wait_until_succeeds(f"test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty", timeout=30)
-
-    for _ in range(10):
-        machine.execute(
-            f"runuser -u backup -- sh -c '{client} {args} --scope {scope_one} --operation 99999999-8888-7777-6666-555555555557' > /tmp/flood-dirty 2>&1"
-        )
-        _out = machine.execute("cat /tmp/flood-dirty")[1]
-        if "V1 DIRTY" in _out:
-            break
-        time.sleep(2)
-    else:
-        raise RuntimeError("post-flood scope never reported V1 DIRTY: %r" % _out)
+    # Killing the barrier-held client must leave the already-observed marker in
+    # place. Creating the signal here would make this assertion fail, proving
+    # the check is wired to the dirty-marker invariant rather than a timeout.
+    machine.succeed("pkill -9 -f '[s]ocat -t 4' || true")
+    # The holder script writes the PID immediately before [exec], so this
+    # kills the lease client itself rather than only its runuser wrapper.
+    machine.succeed(f"kill -9 $(cat {flood_holder_pid}) || true")
+    machine.succeed(f"test ! -e {flood_release_signal}")
+    machine.succeed(f"test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty")
+    # The broker may need one select cycle to observe the killed holder's EOF.
+    # Poll its authoritative protocol state, rather than sleeping or mistaking
+    # the transient BUSY response for a missing dirty marker.
+    flood_dirty_probe = (
+        f"runuser -u backup -- sh -c '{client} {args} --scope {scope_one} "
+        f"--operation {flood_operation}' > /tmp/flood-dirty 2>&1 || true; "
+        "grep -Fx 'V1 DIRTY' /tmp/flood-dirty"
+    )
+    machine.wait_until_succeeds(flood_dirty_probe, timeout=30)
     machine.succeed("rm -f /var/lib/nixploy-target-lease/scope-*.dirty && systemctl restart nixploy-target-lease.service")
     machine.wait_until_succeeds("systemctl is-active --quiet nixploy-target-lease.service", timeout=60)
+    # Negative control: after the intentionally removed marker permits READY,
+    # the exact DIRTY assertion above fails. This proves the flood check is
+    # tied to durable evidence, not merely to the client or its timeout.
+    machine.fail(
+        f"sh -c '{backup_busy} > /tmp/removed-marker-dirty 2>&1 && grep -Fx \"V1 DIRTY\" /tmp/removed-marker-dirty'"
+    )
     machine.succeed(f"sh -c '{clean_probe} > /tmp/final-probe 2>&1'")
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
   '';

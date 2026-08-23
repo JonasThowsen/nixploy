@@ -36,7 +36,24 @@ let exchange session message =
 let fail_terminal _response =
   Or_error.error_string "broker did not make the scope mutation-ready"
 
-let run ~socket_path ~authority ~scope ~operation ~identity ~hold_seconds =
+(* Test harnesses can use a file as an explicit release barrier: once READY is
+   printed, this client cannot retire the dirty marker until the file exists.
+   Unlike a duration, VM scheduling delay cannot accidentally clean the lease
+   before a test observes its durable evidence. *)
+let release_signal_exists path =
+  try
+    Caml_unix.access path [ Caml_unix.F_OK ];
+    true
+  with Caml_unix.Unix_error (Caml_unix.ENOENT, _, _) -> false
+
+let rec wait_for_release_signal path =
+  if release_signal_exists path then ()
+  else (
+    ignore (Caml_unix.select [] [] [] 0.05 : _ * _ * _);
+    wait_for_release_signal path)
+
+let run ~socket_path ~authority ~scope ~operation ~identity ~hold_seconds
+    ~release_signal =
   let open Or_error.Let_syntax in
   let%bind request =
     Nixploy.Target_lease.request_of_strings ~authority ~scope ~operation
@@ -69,6 +86,7 @@ let run ~socket_path ~authority ~scope ~operation ~identity ~hold_seconds =
                && same_uuid ready.operation request.operation
                && same_uuid ready.identity expected_identity
                && not (same_uuid ready.receipt request.operation) -> (
+            Option.iter release_signal ~f:wait_for_release_signal;
             if hold_seconds > 0 then Caml_unix.sleep hold_seconds;
             let%bind released =
               exchange session
@@ -113,14 +131,21 @@ let command =
        flag "--hold-seconds"
          (optional_with_default 0 int)
          ~doc:"SECONDS keep the live session open (0-60)"
+     and release_signal =
+       flag "--release-signal" (optional string)
+         ~doc:"PATH wait for this test barrier before cleanly releasing"
      in
      fun () ->
        if hold_seconds < 0 || hold_seconds > 60 then (
          eprintf "--hold-seconds must be 0 to 60\n%!";
          exit 2)
+       else if Option.is_some release_signal && hold_seconds <> 0 then (
+         eprintf "--release-signal cannot be combined with --hold-seconds\n%!";
+         exit 2)
        else
          match
            run ~socket_path ~authority ~scope ~operation ~identity ~hold_seconds
+             ~release_signal
          with
          | Ok () -> ()
          | Error error ->
