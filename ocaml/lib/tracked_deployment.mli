@@ -6,6 +6,7 @@ val deploy :
   ?on_requested:(Store.deployment -> unit) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
+  ?expected_intent:Deployment_intent.t ->
   store:Store.t ->
   working_directory:string ->
   source:Source.selection ->
@@ -18,6 +19,7 @@ val deploy_within_lease :
   ?on_requested:(Store.deployment -> unit) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
+  ?expected_intent:Deployment_intent.t ->
   store:Store.t ->
   working_directory:string ->
   source:Source.selection ->

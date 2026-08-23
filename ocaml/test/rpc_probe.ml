@@ -12,13 +12,37 @@ let deployment_state application =
       | Failed -> "failed"
       | Cancelled -> "cancelled")
 
+let preview_application connection application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind response =
+    Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
+      { Protocol.Preview_deployment.Query.application }
+  in
+  let%map preview = Deferred.return response in
+  let commit = preview.Protocol.Deployment_preview.commit in
+  printf "preview %s %s\n%!" commit.revision commit.subject
+
+let reject_forged_receipt connection application =
+  let%map.Deferred response =
+    Rpc.Rpc.dispatch Protocol.Deploy.t connection
+      { Protocol.Deploy.Query.application; receipt = String.make 64 '0' }
+  in
+  match response with
+  | Error transport_error -> Error transport_error
+  | Ok (Error _) ->
+      printf "forged receipt rejected\n%!";
+      Ok ()
+  | Ok (Ok operation) ->
+      Or_error.errorf "forged receipt started deployment %s" operation
+
 let inspect_application connection application =
   let open Deferred.Or_error.Let_syntax in
   let%bind commit =
     Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
       { Protocol.Preview_deployment.Query.application }
   in
-  let%bind commit = Deferred.return commit in
+  let%bind preview = Deferred.return commit in
+  let commit = preview.Protocol.Deployment_preview.commit in
   printf "preview %s %s\n%!" commit.revision commit.subject;
   let%bind logs =
     Rpc.Rpc.dispatch Protocol.Get_application_logs.t connection
@@ -112,7 +136,7 @@ let origin_of_uri uri =
     Or_error.errorf "unsupported URI scheme %S" scheme
   else Ok (Uri.make ~scheme ~host ?port:(Uri.port uri) () |> Uri.to_string)
 
-let run ~uri ~inspect ~deploy ~cancel_started =
+let run ~uri ~preview ~reject_forged ~inspect ~deploy ~cancel_started =
   let open Deferred.Or_error.Let_syntax in
   let uri = Uri.of_string uri in
   let%bind origin = origin_of_uri uri |> Deferred.return in
@@ -131,6 +155,16 @@ let run ~uri ~inspect ~deploy ~cancel_started =
       printf "%s %s\n%!" application.Protocol.Application.key
         (deployment_state application));
   let%bind () =
+    match preview with
+    | None -> Deferred.Or_error.return ()
+    | Some application -> preview_application connection application
+  in
+  let%bind () =
+    match reject_forged with
+    | None -> Deferred.Or_error.return ()
+    | Some application -> reject_forged_receipt connection application
+  in
+  let%bind () =
     match inspect with
     | None -> Deferred.Or_error.return ()
     | Some application -> inspect_application connection application
@@ -142,11 +176,12 @@ let run ~uri ~inspect ~deploy ~cancel_started =
         Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
           { Protocol.Preview_deployment.Query.application }
       in
-      let%bind commit = Deferred.return commit in
+      let%bind preview = Deferred.return commit in
+      let commit = preview.Protocol.Deployment_preview.commit in
       printf "preview %s %s\n%!" commit.revision commit.subject;
       let%bind operation =
         Rpc.Rpc.dispatch Protocol.Deploy.t connection
-          { Protocol.Deploy.Query.application; revision = commit.revision }
+          { Protocol.Deploy.Query.application; receipt = preview.receipt }
       in
       let%bind operation = Deferred.return operation in
       printf "started %s\n%!" operation;
@@ -172,6 +207,12 @@ let command =
      and deploy =
        flag "--deploy" (optional string)
          ~doc:"APPLICATION deploy one managed application"
+     and preview =
+       flag "--preview" (optional string)
+         ~doc:"APPLICATION preview one managed application"
+     and reject_forged =
+       flag "--reject-forged-receipt" (optional string)
+         ~doc:"APPLICATION prove forged deployment receipt rejection"
      and inspect =
        flag "--inspect" (optional string)
          ~doc:"APPLICATION preview and inspect runtime reads"
@@ -179,6 +220,6 @@ let command =
        flag "--cancel-started" no_arg
          ~doc:" cancel a deployment immediately after it starts"
      in
-     fun () -> run ~uri ~inspect ~deploy ~cancel_started)
+     fun () -> run ~uri ~preview ~reject_forged ~inspect ~deploy ~cancel_started)
 
 let () = Command_unix.run command

@@ -211,6 +211,7 @@
                     target = "production";
                     repository = "/srv/nixploy/example";
                     repositoryIdentity = "owner/example";
+                    repositoryProvenance = "git@example.invalid:example.git";
                     subdirectory = "deploy";
                   };
                 };
@@ -224,7 +225,9 @@
               target = "production";
               repository = "/srv/nixploy/example";
               repositoryIdentity = "owner/example";
+              repositoryProvenance = "git@example.invalid:example.git";
               subdirectory = "deploy";
+              production = null;
             };
           };
           renamed = lib.nixosSystem {

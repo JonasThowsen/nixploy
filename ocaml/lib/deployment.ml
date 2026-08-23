@@ -90,9 +90,15 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
-    ~working_directory ~source:source_selection ~target:target_name () =
+let deploy ?(record_stage = no_stage) ?expected_project ?expected_intent
+    ~operation_id ~working_directory ~source:source_selection
+    ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
+  let%bind repository_origin =
+    match expected_intent with
+    | None -> Deferred.Or_error.return None
+    | Some _ -> Source.repository_origin ~working_directory
+  in
   let%bind () =
     record_stage Preparing_source
       (if Source.selection_is_local source_selection then
@@ -129,19 +135,43 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
       let%bind target =
         Deferred.return (Configuration.find_target configuration target_name)
       in
+      let%bind () =
+        match (Configuration.Target.production target, expected_intent) with
+        | Some _, None ->
+            Deferred.Or_error.error_string
+              "production-profile deployment requires a managed preview receipt"
+        | Some _, Some _ | None, _ -> Deferred.Or_error.return ()
+      in
       let repository_identity = Source.repository source in
+      let configuration_json = Nix_configuration.json evaluated in
+      let configuration_digest =
+        configuration_json |> Digestif.SHA256.digest_string
+        |> Digestif.SHA256.to_hex
+      in
+      let%bind () =
+        match expected_intent with
+        | None -> Deferred.Or_error.return ()
+        | Some expected ->
+            Deferred.return
+              (Deployment_intent.validate_evaluated expected ~repository_origin
+                 ~revision:(Source.revision source) ~configuration
+                 ~configuration_json)
+      in
       let%bind candidates =
-        Deferred.return
-          (Resource_key.candidates ~project ~target:target_name
-             ~repository_identity)
+        match expected_intent with
+        | Some expected
+          when [%equal: Deployment_intent.identity_policy]
+                 (Deployment_intent.identity_policy expected)
+                 Deployment_intent.Canonical_only ->
+            Deferred.Or_error.return [ Deployment_intent.resource_key expected ]
+        | Some _ | None ->
+            Deferred.return
+              (Resource_key.candidates ~project ~target:target_name
+                 ~repository_identity)
       in
       let%bind resource_key =
         Podman.select_resource_key ~project ~target ~repository_identity
           ~candidates
-      in
-      let configuration_digest =
-        Nix_configuration.json evaluated
-        |> Digestif.SHA256.digest_string |> Digestif.SHA256.to_hex
       in
       let%bind () =
         record_stage Connecting "Verifying the canonical Podman connection"

@@ -137,6 +137,129 @@ let%test_unit "managed applications preserve host-owned deployment identity" =
            }
          }|}))
 
+let%test_unit "production managed applications require exact root-owned intent"
+    =
+  let valid =
+    {|{
+      "app": {
+        "project": "sample",
+        "target": "production",
+        "repository": "/srv/sample",
+        "repositoryIdentity": "owner/sample",
+        "repositoryProvenance": "ssh://git@example.invalid/sample.git",
+        "production": {
+          "host": "production.example.invalid",
+          "user": "deploy",
+          "port": 2222,
+          "kind": "web",
+          "domain": "app.example.invalid",
+          "coordinationScope": "sample-production"
+        }
+      }
+    }|}
+  in
+  let application =
+    Nixploy.Managed_application.all_of_json valid |> assert_ok |> List.hd_exn
+  in
+  assert (
+    Option.is_some
+      (Nixploy.Managed_application.production_destination application));
+  List.iter
+    [
+      String.substr_replace_first valid ~pattern:"\"user\": \"deploy\""
+        ~with_:"\"user\": \"root\"";
+      String.substr_replace_first valid
+        ~pattern:
+          "\"repositoryProvenance\": \"ssh://git@example.invalid/sample.git\","
+        ~with_:"";
+      String.substr_replace_first valid
+        ~pattern:"\"repositoryIdentity\": \"owner/sample\"," ~with_:"";
+    ]
+    ~f:(fun json ->
+      assert (Result.is_error (Nixploy.Managed_application.all_of_json json)))
+
+let%test_unit
+    "deployment preview receipts fail closed across every cache boundary" =
+  let now = ref 10. in
+  let random_value = ref 0 in
+  let random_bytes length =
+    let value = !random_value in
+    Int.incr random_value;
+    Ok
+      (String.init length ~f:(fun index ->
+           Char.of_int_exn ((value + index) land 255)))
+  in
+  let create ?(capacity = 2) () =
+    Nixploy.Deployment_receipt_store.create ~capacity ~ttl_seconds:5.
+      ~now:(fun () -> !now)
+      ~random_bytes ()
+    |> assert_ok
+  in
+  let store = create () in
+  let first =
+    Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 1
+    |> assert_ok
+  in
+  [%test_eq: int] 64 (String.length first);
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+         ~receipt:(String.make 64 '0')));
+  [%test_eq: int] 1
+    (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+       ~receipt:first
+    |> assert_ok);
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+         ~receipt:first));
+  let mismatched =
+    Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 2
+    |> assert_ok
+  in
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"other"
+         ~receipt:mismatched));
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+         ~receipt:mismatched));
+  let expired =
+    Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 3
+    |> assert_ok
+  in
+  now := 15.;
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+         ~receipt:expired));
+  let evicted =
+    Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 4
+    |> assert_ok
+  in
+  ignore
+    (Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 5
+     |> assert_ok
+      : string);
+  ignore
+    (Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 6
+     |> assert_ok
+      : string);
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume store ~application_key:"app"
+         ~receipt:evicted));
+  let before_restart =
+    Nixploy.Deployment_receipt_store.issue store ~application_key:"app" 7
+    |> assert_ok
+  in
+  let restarted = create () in
+  assert (
+    Result.is_error
+      (Nixploy.Deployment_receipt_store.consume restarted ~application_key:"app"
+         ~receipt:before_restart))
+
 let%test_unit "managed application count and operational identities are bounded"
     =
   let entry index =
@@ -178,6 +301,95 @@ let%test_unit "managed application count and operational identities are bounded"
   Core_unix.unlink alias;
   Core_unix.rmdir repository;
   Core_unix.rmdir root
+
+let%test_unit
+    "production deployment intent binds source, config, and destination" =
+  let application =
+    Nixploy.Managed_application.all_of_json
+      {|{
+        "app": {
+          "project": "sample",
+          "target": "production",
+          "repository": "/srv/sample",
+          "repositoryIdentity": "owner/sample",
+          "repositoryProvenance": "ssh://git@example.invalid/sample.git",
+          "production": {
+            "host": "production.example.invalid",
+            "user": "deploy",
+            "port": 2222,
+            "kind": "web",
+            "domain": "app.example.invalid",
+            "coordinationScope": "sample-production"
+          }
+        }
+      }|}
+    |> assert_ok |> List.hd_exn
+  in
+  let configuration_json =
+    {|{
+      "__schema":"v0.4",
+      "project":"sample",
+      "targets":{
+        "production":{
+          "image":"docker",
+          "ip":"production.example.invalid",
+          "user":"deploy",
+          "port":2222,
+          "web":{"domain":"app.example.invalid"},
+          "production":{"coordinationScope":"sample-production"}
+        }
+      }
+    }|}
+  in
+  let configuration =
+    Nixploy.Configuration.of_json configuration_json |> assert_ok
+  in
+  let revision = String.make 40 'a' in
+  let origin = Some "ssh://git@example.invalid/sample.git" in
+  let intent =
+    Nixploy.Deployment_intent.create ~application ~repository_origin:origin
+      ~revision ~configuration ~configuration_json
+    |> assert_ok
+  in
+  assert (
+    [%equal: Nixploy.Deployment_intent.identity_policy]
+      (Nixploy.Deployment_intent.identity_policy intent)
+      Nixploy.Deployment_intent.Canonical_only);
+  assert_ok
+    (Nixploy.Deployment_intent.validate_evaluated intent
+       ~repository_origin:origin ~revision ~configuration ~configuration_json);
+  let changed replacements =
+    List.fold replacements ~init:configuration_json
+      ~f:(fun json (pattern, with_) ->
+        String.substr_replace_first json ~pattern ~with_)
+  in
+  let reject ?(repository_origin = origin) ?(revision = revision)
+      configuration_json =
+    let configuration =
+      Nixploy.Configuration.of_json configuration_json |> assert_ok
+    in
+    assert (
+      Result.is_error
+        (Nixploy.Deployment_intent.validate_evaluated intent ~repository_origin
+           ~revision ~configuration ~configuration_json))
+  in
+  reject ~revision:(String.make 40 'b') configuration_json;
+  reject ~repository_origin:(Some "ssh://git@example.invalid/forged.git")
+    configuration_json;
+  reject (changed [ ("\"project\":\"sample\"", "\"project\":\"other\"") ]);
+  reject (changed [ ("\"production\":{", "\"staging\":{") ]);
+  reject
+    (changed
+       [
+         ( "\"ip\":\"production.example.invalid\"",
+           "\"ip\":\"other.example.invalid\"" );
+       ]);
+  reject
+    (changed
+       [
+         ( "\"domain\":\"app.example.invalid\"",
+           "\"domain\":\"other.example.invalid\"" );
+       ])
 
 let%test_unit "configuration reads the current flake schema" =
   let json =

@@ -18,7 +18,7 @@ val render :
   deployments_stale:Error.t option ->
   logs_stale:Error.t option ->
   metrics_stale:Error.t option ->
-  preview:(string * Protocol.Commit.t) option ->
+  preview:(string * Protocol.Deployment_preview.t) option ->
   deploy_state:Deploy_state.t ->
   cancel_confirmation:string option ->
   prune_state:Prune_state.t ->
@@ -28,7 +28,7 @@ val render :
   paused_snapshot:Protocol.Log_snapshot.t option ->
   dispatch_preview:
     (Protocol.Preview_deployment.Query.t ->
-    Protocol.Commit.t Or_error.t Or_error.t Effect.t) ->
+    Protocol.Deployment_preview.t Or_error.t Or_error.t Effect.t) ->
   dispatch_deploy:
     (Protocol.Deploy.Query.t -> string Or_error.t Or_error.t Effect.t) ->
   dispatch_cancel:
@@ -37,7 +37,7 @@ val render :
   dispatch_prune:
     (Protocol.Prune.Query.t ->
     Protocol.Prune_result.t Or_error.t Or_error.t Effect.t) ->
-  set_preview:((string * Protocol.Commit.t) option -> unit Effect.t) ->
+  set_preview:((string * Protocol.Deployment_preview.t) option -> unit Effect.t) ->
   set_deploy_state:(Deploy_state.t -> unit Effect.t) ->
   set_cancel_confirmation:(string option -> unit Effect.t) ->
   set_prune_state:(Prune_state.t -> unit Effect.t) ->

@@ -6,6 +6,11 @@ module Commit = struct
   [@@deriving bin_io, equal, sexp]
 end
 
+module Deployment_preview = struct
+  type t = { commit : Commit.t; receipt : string }
+  [@@deriving bin_io, equal, sexp]
+end
+
 module Deployment = struct
   module State = struct
     type t = Requested | Running | Succeeded | Failed | Cancelled
@@ -59,9 +64,9 @@ module Preview_deployment = struct
   end
 
   let t =
-    Rpc.Rpc.create ~name:"preview-deployment" ~version:0
+    Rpc.Rpc.create ~name:"preview-deployment" ~version:1
       ~bin_query:[%bin_type_class: Query.t]
-      ~bin_response:[%bin_type_class: Commit.t Or_error.t]
+      ~bin_response:[%bin_type_class: Deployment_preview.t Or_error.t]
       ~include_in_error_count:Or_error
 end
 
@@ -75,12 +80,12 @@ end
 
 module Deploy = struct
   module Query = struct
-    type t = { application : string; revision : string }
+    type t = { application : string; receipt : string }
     [@@deriving bin_io, equal, sexp]
   end
 
   let t =
-    Rpc.Rpc.create ~name:"start-deployment" ~version:0
+    Rpc.Rpc.create ~name:"start-deployment" ~version:1
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: string Or_error.t]
       ~include_in_error_count:Or_error

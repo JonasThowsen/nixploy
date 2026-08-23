@@ -16,7 +16,9 @@ let
       target
       repository
       repositoryIdentity
+      repositoryProvenance
       subdirectory
+      production
       ;
   }) cfg.applications;
 
@@ -114,6 +116,16 @@ let
   validSubdirectory =
     subdirectory:
     !(lib.hasPrefix "/" subdirectory) && !(lib.elem ".." (lib.splitString "/" subdirectory));
+  validProductionDestination =
+    application:
+    application.production == null
+    || (
+      application.production.user != "root"
+      && (
+        (application.production.kind == "web" && application.production.domain != null)
+        || (application.production.kind == "non-web" && application.production.domain == null)
+      )
+    );
 in
 {
   imports = [
@@ -179,10 +191,47 @@ in
               type = lib.types.nonEmptyStr;
               description = "Stable repository identity used in managed-resource ownership.";
             };
+            repositoryProvenance = lib.mkOption {
+              type = lib.types.nonEmptyStr;
+              description = "Exact expected Git remote.origin.url used for immutable preview admission.";
+            };
             subdirectory = lib.mkOption {
               type = lib.types.str;
               default = ".";
               description = "Relative flake directory within repository; parent traversal is rejected.";
+            };
+            production = lib.mkOption {
+              default = null;
+              description = ''
+                Root-owned exact production destination intent. It must match
+                the evaluated target before a preview receipt can authorize
+                deployment.
+              '';
+              type = lib.types.nullOr (
+                lib.types.submodule {
+                  options = {
+                    host = lib.mkOption { type = lib.types.nonEmptyStr; };
+                    user = lib.mkOption { type = lib.types.nonEmptyStr; };
+                    port = lib.mkOption {
+                      type = lib.types.port;
+                      default = 22;
+                    };
+                    kind = lib.mkOption {
+                      type = lib.types.enum [
+                        "non-web"
+                        "web"
+                      ];
+                    };
+                    domain = lib.mkOption {
+                      type = lib.types.nullOr lib.types.nonEmptyStr;
+                      default = null;
+                    };
+                    coordinationScope = lib.mkOption {
+                      type = lib.types.nonEmptyStr;
+                    };
+                  };
+                }
+              );
             };
           };
         }
@@ -307,6 +356,10 @@ in
           lib.attrValues cfg.applications
         );
         message = "services.nixploy application subdirectories must be relative and cannot traverse parents";
+      }
+      {
+        assertion = lib.all validProductionDestination (lib.attrValues cfg.applications);
+        message = "services.nixploy production destinations require a non-root SSH user and kind-matched domain";
       }
     ];
 

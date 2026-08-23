@@ -5,6 +5,7 @@ type t
 type commit
 type source
 type deployment
+type deployment_preview
 type prune_result
 type status
 type scope
@@ -84,6 +85,23 @@ val managed_scope : Managed_application.t -> scope Or_error.t
 
 val preview_main_commit :
   t -> working_directory:string -> commit Deferred.Or_error.t
+
+val preview_managed_deployment :
+  t -> Managed_application.t -> deployment_preview Deferred.Or_error.t
+(** Materializes and evaluates the exact main commit, validates root-managed
+    production intent, and returns a process-local opaque receipt. *)
+
+val deployment_preview_commit : deployment_preview -> commit
+val deployment_preview_receipt : deployment_preview -> string
+
+val deploy_managed_preview :
+  ?on_requested:(deployment -> unit) ->
+  t ->
+  Managed_application.t ->
+  receipt:string ->
+  deployment Deferred.Or_error.t
+(** Consumes the server-held receipt and revalidates its exact evaluated intent
+    inside deployment before any remote or secret mutation. *)
 
 val resolve_commit :
   t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t
@@ -193,6 +211,7 @@ module For_testing : sig
       on_requested:(deployment -> unit) ->
       application_key:string option ->
       expected_project:Project_name.t option ->
+      expected_intent:Deployment_intent.t option ->
       working_directory:string ->
       source:source ->
       target:Target_name.t ->

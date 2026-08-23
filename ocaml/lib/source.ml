@@ -61,7 +61,7 @@ let parse_commit output =
 let canonical_directory working_directory =
   Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
 
-let repository_identity ~working_directory =
+let repository_origin ~working_directory =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =
     Deferred.return (canonical_directory working_directory)
@@ -76,8 +76,16 @@ let repository_identity ~working_directory =
   | Error error -> Deferred.return (Error error)
   | Ok { exit_status = Ok (); stdout; _ }
     when not (String.is_empty (String.strip stdout)) ->
-      Deferred.Or_error.return (String.strip stdout)
-  | Ok _ -> Deferred.Or_error.return working_directory
+      Deferred.Or_error.return (Some (String.strip stdout))
+  | Ok _ -> Deferred.Or_error.return None
+
+let repository_identity ~working_directory =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_directory working_directory)
+  in
+  let%map origin = repository_origin ~working_directory in
+  Option.value origin ~default:working_directory
 
 let describe ~working_directory revision =
   let open Deferred.Or_error.Let_syntax in

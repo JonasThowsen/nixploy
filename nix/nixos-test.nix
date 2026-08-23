@@ -12,6 +12,11 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     imports = [ nixployModule ];
 
+    nix.settings.experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
+
     services.nixploy = {
       enable = true;
       package = nixployPackage;
@@ -28,7 +33,15 @@ pkgs.testers.runNixOSTest {
         target = "production";
         repository = "/var/lib/nixploy/repositories/example";
         repositoryIdentity = "owner/example";
+        repositoryProvenance = "ssh://git@example.invalid/example.git";
         subdirectory = ".";
+        production = {
+          host = "production.example.invalid";
+          user = "deploy";
+          port = 2222;
+          kind = "non-web";
+          coordinationScope = "example-production";
+        };
       };
     };
 
@@ -73,9 +86,29 @@ pkgs.testers.runNixOSTest {
         runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example init --initial-branch=main
         runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example config user.name "NixOS test"
         runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example config user.email "nixos-test@example.com"
-        echo smoke > /var/lib/nixploy/repositories/example/README
-        chown nixploy:nixploy /var/lib/nixploy/repositories/example/README
-        runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example add README
+        runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example config remote.origin.url "ssh://git@example.invalid/example.git"
+        cat > /var/lib/nixploy/repositories/example/flake.nix <<'EOF'
+        {
+          outputs = _: {
+            nixploy = {
+              __schema = "v0.4";
+              project = "example";
+              targets.production = {
+                image = "unused";
+                ip = "production.example.invalid";
+                user = "deploy";
+                port = 2222;
+                production.coordinationScope = "example-production";
+              };
+            };
+          };
+        }
+        EOF
+        cat > /var/lib/nixploy/repositories/example/flake.lock <<'EOF'
+        {"nodes":{"root":{}},"root":"root","version":7}
+        EOF
+        chown nixploy:nixploy /var/lib/nixploy/repositories/example/flake.nix /var/lib/nixploy/repositories/example/flake.lock
+        runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example add flake.nix flake.lock
         runuser -u nixploy -- git -C /var/lib/nixploy/repositories/example commit -m smoke
       '';
       serviceConfig.Type = "oneshot";
@@ -114,6 +147,9 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test -s /var/lib/nixploy/test-state.sqlite3", timeout=120)
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
+    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example | grep -E '^preview [0-9a-f]{40} smoke$'")
+    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --reject-forged-receipt example | grep -Fx 'forged receipt rejected'")
+    machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")

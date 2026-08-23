@@ -41,8 +41,8 @@ let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
                   (Error.to_string_hum failure_error)))
 
 let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project ~store ~working_directory ~source ~target
-    () =
+    ?application_key ?expected_project ?expected_intent ~store
+    ~working_directory ~source ~target () =
   let cancellation = Cancellation.current () in
   let open Deferred.Or_error.Let_syntax in
   let%bind operation =
@@ -60,7 +60,7 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
   in
   let%bind.Deferred execution =
     Monitor.try_with_or_error (fun () ->
-        Deployment.deploy ~record_stage ?expected_project
+        Deployment.deploy ~record_stage ?expected_project ?expected_intent
           ~operation_id:(Store.id operation) ~working_directory ~source ~target
           ())
   in
@@ -97,9 +97,10 @@ module For_testing = struct
   let terminalize_cancelled = terminalize_cancelled
 end
 
-let deploy ?on_stage ?on_requested ?application_key ?expected_project ~store
-    ~working_directory ~source ~target () =
+let deploy ?on_stage ?on_requested ?application_key ?expected_project
+    ?expected_intent ~store ~working_directory ~source ~target () =
   let working_directory = Filename_unix.realpath working_directory in
   Store.with_lease store ~working_directory ~target (fun () ->
       deploy_within_lease ?on_stage ?on_requested ?application_key
-        ?expected_project ~store ~working_directory ~source ~target ())
+        ?expected_project ?expected_intent ~store ~working_directory ~source
+        ~target ())

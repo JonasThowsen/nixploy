@@ -25,9 +25,10 @@ let fact label value =
       Vdom.Node.dd [ Vdom.Node.text value ];
     ]
 
-let commit_confirmation ~application ~commit ~deploy_state ~dispatch_deploy
+let commit_confirmation ~application ~preview ~deploy_state ~dispatch_deploy
     ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
     ~set_notice =
+  let commit = preview.Protocol.Deployment_preview.commit in
   let pending = Deploy_state.is_pending deploy_state in
   let confirm =
     let%bind.Effect owner = Browser_navigation.application_owner application in
@@ -44,7 +45,7 @@ let commit_confirmation ~application ~commit ~deploy_state ~dispatch_deploy
       dispatch_deploy
         {
           Protocol.Deploy.Query.application;
-          revision = commit.Protocol.Commit.revision;
+          receipt = preview.Protocol.Deployment_preview.receipt;
         }
     in
     if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
@@ -354,9 +355,9 @@ let deployment_action ~application ~deployment ~deploy_state ~prune_state
                   set_notice
                     ("Commit preview failed: " ^ Error.to_string_hum error);
                 ]
-          | Ok (Ok commit) ->
+          | Ok (Ok preview) ->
               Effect.Many
-                [ finished; set_preview (Some (key, commit)); set_notice "" ]
+                [ finished; set_preview (Some (key, preview)); set_notice "" ]
       in
       Ui_helpers.button ~id:primary_action_id ~kind:"primary"
         ~disabled:(prune_busy || deploy_busy)
@@ -623,11 +624,11 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
   in
   let deploy_confirmation =
     match preview with
-    | Some (preview_key, commit)
+    | Some (preview_key, deployment_preview)
       when String.equal preview_key key && not (Prune_state.is_busy prune_state)
       ->
-        commit_confirmation ~application:key ~commit ~deploy_state
-          ~dispatch_deploy ~set_preview ~set_deploy_state
+        commit_confirmation ~application:key ~preview:deployment_preview
+          ~deploy_state ~dispatch_deploy ~set_preview ~set_deploy_state
           ~set_cancel_confirmation ~set_prune_state ~set_notice
     | _ -> Vdom.Node.none
   in

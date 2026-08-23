@@ -48,59 +48,45 @@ let preview_deployment state _connection_state query =
   | Error _ as error -> Deferred.return error
   | Ok application ->
       let%map preview =
-        Application.preview_main_commit state.application
-          ~working_directory:(Managed_application.working_directory application)
+        Application.preview_managed_deployment state.application application
       in
-      Or_error.map preview ~f:(fun commit ->
+      Or_error.map preview ~f:(fun preview ->
+          let commit = Application.deployment_preview_commit preview in
           {
-            Protocol.Commit.revision = Application.commit_revision commit;
-            subject = Application.commit_subject commit;
-            timestamp_ms = Application.commit_timestamp_ms commit;
+            Protocol.Deployment_preview.commit =
+              {
+                Protocol.Commit.revision = Application.commit_revision commit;
+                subject = Application.commit_subject commit;
+                timestamp_ms = Application.commit_timestamp_ms commit;
+              };
+            receipt = Application.deployment_preview_receipt preview;
           })
 
 let deploy state _connection_state query =
   match find_application state query.Protocol.Deploy.Query.application with
   | Error _ as error -> Deferred.return error
-  | Ok managed -> (
-      let working_directory = Managed_application.working_directory managed in
-      let%bind commit =
-        Application.resolve_commit state.application ~working_directory
-          ~revision:query.Protocol.Deploy.Query.revision
+  | Ok managed ->
+      let started = Ivar.create () in
+      let execution =
+        Application.deploy_managed_preview
+          ~on_requested:(fun operation ->
+            Ivar.fill_if_empty started (Deployment_start.operation_id operation))
+          state.application managed ~receipt:query.Protocol.Deploy.Query.receipt
       in
-      match commit with
-      | Error _ as error -> Deferred.return error
-      | Ok commit ->
-          let started = Ivar.create () in
-          let execution =
-            Application.deploy
-              ~on_requested:(fun operation ->
-                Ivar.fill_if_empty started
-                  (Deployment_start.operation_id operation))
-              ~application_key:(Managed_application.key managed)
-              ~expected_project:(Deployment_start.expected_project managed)
-              state.application ~working_directory
-              ~source:
-                (Application.immutable_source
-                   ~repository_identity:
-                     (Managed_application.repository_identity managed)
-                   commit)
-              ~target:(Managed_application.target managed)
-              ()
-          in
-          don't_wait_for
-            (let%map result = execution in
-             match result with
-             | Ok _ -> ()
-             | Error error ->
-                 eprintf "Deployment task failed: %s\n%!"
-                   (Error.to_string_hum error));
-          Deferred.choose
-            [
-              Deferred.choice (Ivar.read started) Or_error.return;
-              Deferred.choice execution (function
-                | Error error -> Error error
-                | Ok deployment -> Ok (Deployment_start.operation_id deployment));
-            ])
+      don't_wait_for
+        (let%map result = execution in
+         match result with
+         | Ok _ -> ()
+         | Error error ->
+             eprintf "Deployment task failed: %s\n%!"
+               (Error.to_string_hum error));
+      Deferred.choose
+        [
+          Deferred.choice (Ivar.read started) Or_error.return;
+          Deferred.choice execution (function
+            | Error error -> Error error
+            | Ok deployment -> Ok (Deployment_start.operation_id deployment));
+        ]
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications

@@ -64,6 +64,10 @@ JSON
     elif [ "${NIXPLOY_TEST_SECRETS:-}" = "1" ]; then
       secret_path=${NIXPLOY_TEST_SECRET_PATH:-config/secrets.env}
       printf '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker",""]},"secrets":{"app":"%s"}}}}\n' "$secret_path"
+    elif [ "${NIXPLOY_TEST_PRODUCTION:-}" = "1" ]; then
+      cat <<'JSON'
+{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","production":{"coordinationScope":"sample-worker"}}}}
+JSON
     elif [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
       cat <<'JSON'
 {"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
@@ -271,6 +275,7 @@ exit 99
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
+      "NIXPLOY_TEST_PRODUCTION";
       "NIXPLOY_TEST_EXISTING_WEB";
       "NIXPLOY_TEST_EXISTING_SINGLE";
       "NIXPLOY_TEST_FOREIGN_SINGLE";
@@ -300,6 +305,7 @@ exit 99
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
+        "NIXPLOY_TEST_PRODUCTION";
         "NIXPLOY_TEST_EXISTING_WEB";
         "NIXPLOY_TEST_EXISTING_SINGLE";
         "NIXPLOY_TEST_FOREIGN_SINGLE";
@@ -350,9 +356,9 @@ exit 99
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let deploy ?record_stage ?expected_project operation_id =
-        Nixploy.Deployment.deploy ?record_stage ?expected_project ~operation_id
-          ~working_directory:repository
+      let deploy ?record_stage ?expected_project ?expected_intent operation_id =
+        Nixploy.Deployment.deploy ?record_stage ?expected_project
+          ?expected_intent ~operation_id ~working_directory:repository
           ~source:(Nixploy.Source.immutable commit)
           ~target ()
       in
@@ -393,6 +399,55 @@ exit 99
           [%equal: Nixploy.Application.resource_state]
             (assert_ok resource_state) Unknown)
       in
+
+      let expected_configuration_json =
+        {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
+      in
+      let expected_configuration =
+        Nixploy.Configuration.of_json expected_configuration_json |> assert_ok
+      in
+      let managed =
+        Nixploy.Managed_application.all_of_json
+          (sprintf
+             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git"}}|}
+             repository)
+        |> assert_ok |> List.hd_exn
+      in
+      let expected_intent =
+        Nixploy.Deployment_intent.create ~application:managed
+          ~repository_origin:(Some "git@example.invalid:test.git")
+          ~revision:(Nixploy.Source.commit_revision commit)
+          ~configuration:expected_configuration
+          ~configuration_json:expected_configuration_json
+        |> assert_ok
+      in
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
+      let%bind production_without_receipt =
+        deploy "operation-production-without-receipt"
+      in
+      expect_error_containing production_without_receipt
+        "production-profile deployment requires a managed preview receipt";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "nix|eval|");
+      [%test_eq: int] 0 (count lines "nix|build|");
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      let%bind intent_mismatch =
+        deploy ~expected_intent "operation-intent-mismatch"
+      in
+      expect_error_containing intent_mismatch
+        "deployment preview intent no longer matches";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "nix|eval|");
+      [%test_eq: int] 0 (count lines "nix|build|");
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
 
       let wrong_project =
         Nixploy.Project_name.of_string "another-project" |> assert_ok

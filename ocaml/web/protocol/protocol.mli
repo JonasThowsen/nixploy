@@ -6,6 +6,11 @@ module Commit : sig
   [@@deriving bin_io, equal, sexp]
 end
 
+module Deployment_preview : sig
+  type t = { commit : Commit.t; receipt : string }
+  [@@deriving bin_io, equal, sexp]
+end
+
 module Deployment : sig
   module State : sig
     type t = Requested | Running | Succeeded | Failed | Cancelled
@@ -58,7 +63,7 @@ module Preview_deployment : sig
     type t = { application : string } [@@deriving bin_io, equal, sexp]
   end
 
-  val t : (Query.t, Commit.t Or_error.t) Rpc.Rpc.t
+  val t : (Query.t, Deployment_preview.t Or_error.t) Rpc.Rpc.t
 end
 
 module List_applications : sig
@@ -67,7 +72,7 @@ end
 
 module Deploy : sig
   module Query : sig
-    type t = { application : string; revision : string }
+    type t = { application : string; receipt : string }
     [@@deriving bin_io, equal, sexp]
   end
 

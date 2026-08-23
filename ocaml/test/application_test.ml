@@ -57,6 +57,7 @@ let run_tests () =
           ~on_requested
           ~application_key
           ~expected_project
+          ~expected_intent:_
           ~working_directory
           ~source
           ~target:_

@@ -309,6 +309,26 @@ module Web = struct
     | _ -> Or_error.errorf "%s must be an object" field
 end
 
+module Production = struct
+  type t = { coordination_scope : string }
+
+  let coordination_scope t = t.coordination_scope
+
+  let of_json ~field = function
+    | `Assoc fields ->
+        let open Or_error.Let_syntax in
+        let%bind () =
+          validate_members ~field
+            ~allowed:(String.Set.of_list [ "coordinationScope" ])
+            fields
+        in
+        let%map coordination_scope =
+          required fields "coordinationScope" non_empty_string
+        in
+        { coordination_scope }
+    | _ -> Or_error.errorf "%s must be an object" field
+end
+
 module Target = struct
   type kind = Non_web | Web of Web.t
 
@@ -322,6 +342,7 @@ module Target = struct
     run : Run.t;
     web : Web.t option;
     secret_references : (string * string) list;
+    production : Production.t option;
   }
 
   let name t = t.name
@@ -333,6 +354,7 @@ module Target = struct
   let run t = t.run
   let web t = t.web
   let secret_references t = t.secret_references
+  let production t = t.production
   let kind t = Option.value_map t.web ~default:Non_web ~f:(fun web -> Web web)
 
   let require_web t =
@@ -379,6 +401,7 @@ let parse_target ~schema (raw_name, json) =
             "run";
             "web";
             "secrets";
+            "production";
           ]
         |> fun allowed ->
         if String.equal schema "v0.3" then Set.add allowed "tasks" else allowed
@@ -416,6 +439,15 @@ let parse_target ~schema (raw_name, json) =
         optional fields "secrets"
           (fun ~field:_ -> secret_references ~field:(field ^ ".secrets"))
           ~default:[]
+      and production =
+        optional fields "production"
+          (fun ~field:_ -> function
+            | `Null -> Ok None
+            | json ->
+                Or_error.map
+                  (Production.of_json ~field:(field ^ ".production") json)
+                  ~f:Option.some)
+          ~default:None
       in
       {
         Target.name;
@@ -427,6 +459,7 @@ let parse_target ~schema (raw_name, json) =
         run;
         web;
         secret_references;
+        production;
       }
   | _ -> Or_error.error_string "target must be an object"
 

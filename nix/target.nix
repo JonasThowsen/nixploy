@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, config, ... }:
 
 let
   c1ControlStart = builtins.fromJSON ''"\u0080"'';
@@ -220,6 +220,29 @@ with lib;
               default = { };
               description = "Blue/green localhost ports used behind Caddy.";
             };
+          };
+        }
+      );
+    };
+
+    production = mkOption {
+      default = null;
+      apply =
+        value:
+        if value != null && config.user == "root" then
+          throw "production nixploy targets must use a non-root SSH user"
+        else
+          value;
+      description = ''
+        Production-profile coordination declaration. Production targets must
+        use a non-root SSH user and are admitted by the root-managed
+        application destination allowlist before deployment.
+      '';
+      type = types.nullOr (
+        types.submodule {
+          options.coordinationScope = mkOption {
+            type = types.nonEmptyStr;
+            description = "Durable per-target coordination scope reserved for lifecycle leases.";
           };
         }
       );

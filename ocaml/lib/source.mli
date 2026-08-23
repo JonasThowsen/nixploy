@@ -14,6 +14,11 @@ val repository_identity : working_directory:string -> string Deferred.Or_error.t
 (** Returns the configured [remote.origin.url], or the canonical working
     directory when the repository has no origin. *)
 
+val repository_origin :
+  working_directory:string -> string option Deferred.Or_error.t
+(** Returns only an explicit Git origin. Production preview admission rejects
+    the canonical-directory fallback used by local compatibility flows. *)
+
 val local : working_directory:string -> selection Deferred.Or_error.t
 val immutable : ?repository_identity:string -> commit -> selection
 val selection_commit : selection -> commit

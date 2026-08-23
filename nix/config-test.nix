@@ -14,6 +14,10 @@ let
     };
 
   defaultConfig = evaluate { };
+  productionConfigured = evaluate {
+    user = "deploy";
+    production.coordinationScope = "test-app-production";
+  };
   configured = evaluate {
     run.readOnlyBinds = [
       {
@@ -81,6 +85,10 @@ in
 assert nixployLib.schema == "v0.4";
 assert defaultConfig.__schema == "v0.4";
 assert defaultConfig.targets.production.run.readOnlyBinds == [ ];
+assert defaultConfig.targets.production.production == null;
+assert
+  productionConfigured.targets.production.production.coordinationScope == "test-app-production";
+assert rejects { production.coordinationScope = "test-app-production"; };
 assert !(builtins.hasAttr "tasks" defaultConfig.targets.production);
 assert legacyStyle.targets.production.user == "deploy";
 assert legacyStyle.targets.production.port == 2222;
