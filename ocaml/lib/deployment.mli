@@ -2,8 +2,6 @@ open Async
 open Core
 
 type stage =
-  | Preparing_source
-  | Evaluating
   | Connecting
   | Building
   | Planning

@@ -262,6 +262,10 @@ rather than weakening it. The Jomat receipts above remain evidence for their
 delivered behavior, but no Production V1 gate is production-proven until its
 packaged path has staged evidence.
 
+Lifecycle tracking issues #7–#11 remain open. In particular, this source/intent
+tracer does not implement partial leases, rollback, readiness, or global staging
+retirement/vacancy, and it must not be treated as a production-readiness claim.
+
 ## Quality gates
 
 Every UI slice must pass:

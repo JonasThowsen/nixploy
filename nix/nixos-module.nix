@@ -121,7 +121,49 @@ let
 
   safeIdentityValue =
     value: builtins.match ".*[[:space:]/@].*" value == null && !(lib.hasSuffix ".." value);
-  canonicalEndpoint = value: lib.toLower (lib.removeSuffix "." value);
+  stripLeadingZeros =
+    value:
+    if builtins.stringLength value > 1 && lib.hasPrefix "0" value then
+      stripLeadingZeros (builtins.substring 1 (builtins.stringLength value - 1) value)
+    else
+      value;
+  canonicalIpv4Octet =
+    value:
+    if builtins.match "[0-9]+" value == null then
+      null
+    else
+      let
+        number = builtins.fromJSON (stripLeadingZeros value);
+      in
+      if number <= 255 then toString number else null;
+  canonicalEndpoint =
+    value:
+    let
+      lowered = lib.toLower value;
+      dns = lib.removeSuffix "." lowered;
+      ipv4Parts = lib.splitString "." lowered;
+      ipv4Octets = map canonicalIpv4Octet ipv4Parts;
+    in
+    if lib.hasSuffix ".." lowered then
+      null
+    else if builtins.match "[0-9.]+" lowered != null then
+      if builtins.length ipv4Parts == 4 && lib.all (octet: octet != null) ipv4Octets then
+        lib.concatStringsSep "." ipv4Octets
+      else
+        null
+    else if lib.hasInfix ":" lowered then
+      null
+    else if builtins.match "[a-z0-9.-]+" dns == null then
+      null
+    else
+      dns;
+  endpointsIntersect =
+    left: right:
+    let
+      canonicalLeft = canonicalEndpoint left;
+      canonicalRight = canonicalEndpoint right;
+    in
+    canonicalLeft == null || canonicalRight == null || canonicalLeft == canonicalRight;
   destinationIntersection =
     productionApplication: nonProductionApplication:
     let
@@ -130,13 +172,13 @@ let
       domainIntersection =
         production.domain != null
         && nonProduction.domain != null
-        && canonicalEndpoint production.domain == canonicalEndpoint nonProduction.domain;
+        && endpointsIntersect production.domain nonProduction.domain;
     in
     (
       productionApplication.project == nonProductionApplication.project
       && productionApplication.target == nonProductionApplication.target
     )
-    || canonicalEndpoint production.host == canonicalEndpoint nonProduction.host
+    || endpointsIntersect production.host nonProduction.host
     || domainIntersection
     || lib.toLower production.coordinationScope == lib.toLower nonProduction.coordinationScope;
   productionApplications = lib.filter (application: application.production != null) (

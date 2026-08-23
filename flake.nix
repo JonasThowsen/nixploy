@@ -250,53 +250,82 @@
           mixExpoFixture = import ./nix/test-fixtures/mix-expo/package.nix {
             inherit pkgs;
           };
-          crossProfileAttempt = builtins.tryEval (
-            (lib.nixosSystem {
-              inherit system;
-              modules = [
-                self.nixosModules.default
-                {
-                  system.stateVersion = "26.05";
-                  services.nixploy = {
-                    enable = true;
-                    authMode = "unrestricted";
-                    applications = {
-                      production = {
-                        project = "production-app";
-                        target = "production";
-                        repository = "/srv/production";
-                        repositoryIdentity = "owner/production";
-                        repositoryProvenance = "provider:production";
-                        repositoryReference = "refs/heads/main";
-                        repositoryEvidenceFile = "/srv/production.evidence";
+          crossProfileAttemptFor =
+            {
+              productionHost ? "production-host.example.invalid",
+              nonProductionHost ? "staging-host.example.invalid",
+              productionDomain ? "production-app.example.invalid",
+              nonProductionDomain ? "staging-app.example.invalid",
+              productionScope ? "production-scope",
+              nonProductionScope ? "staging-scope",
+            }:
+            builtins.tryEval (
+              (lib.nixosSystem {
+                inherit system;
+                modules = [
+                  self.nixosModules.default
+                  {
+                    system.stateVersion = "26.05";
+                    services.nixploy = {
+                      enable = true;
+                      authMode = "unrestricted";
+                      applications = {
                         production = {
-                          host = "HOST.EXAMPLE.INVALID.";
-                          user = "deploy";
-                          kind = "web";
-                          domain = "APP.EXAMPLE.INVALID.";
-                          coordinationScope = "SHARED-SCOPE";
+                          project = "production-app";
+                          target = "production";
+                          repository = "/srv/production";
+                          repositoryIdentity = "owner/production";
+                          repositoryProvenance = "provider:production";
+                          repositoryReference = "refs/heads/main";
+                          repositoryEvidenceFile = "/srv/production.evidence";
+                          production = {
+                            host = productionHost;
+                            user = "deploy";
+                            kind = "web";
+                            domain = productionDomain;
+                            coordinationScope = productionScope;
+                          };
                         };
-                      };
-                      staging = {
-                        project = "staging-app";
-                        target = "staging";
-                        repository = "/srv/staging";
-                        repositoryIdentity = "owner/staging";
-                        repositoryProvenance = "provider:staging";
-                        nonProduction = {
-                          host = "host.example.invalid";
-                          user = "deploy";
-                          kind = "web";
-                          domain = "app.example.invalid";
-                          coordinationScope = "shared-scope";
+                        staging = {
+                          project = "staging-app";
+                          target = "staging";
+                          repository = "/srv/staging";
+                          repositoryIdentity = "owner/staging";
+                          repositoryProvenance = "provider:staging";
+                          nonProduction = {
+                            host = nonProductionHost;
+                            user = "deploy";
+                            kind = "web";
+                            domain = nonProductionDomain;
+                            coordinationScope = nonProductionScope;
+                          };
                         };
                       };
                     };
-                  };
-                }
-              ];
-            }).config.system.build.toplevel
-          );
+                  }
+                ];
+              }).config.system.build.toplevel
+            );
+          dnsHostIntersection = crossProfileAttemptFor {
+            productionHost = "HOST.EXAMPLE.INVALID.";
+            nonProductionHost = "host.example.invalid";
+          };
+          ipv4HostIntersection = crossProfileAttemptFor {
+            productionHost = "192.168.001.010";
+            nonProductionHost = "192.168.1.10";
+          };
+          ipv6HostIntersection = crossProfileAttemptFor {
+            productionHost = "2001:db8::1";
+            nonProductionHost = "2001:0DB8:0:0:0:0:0:1";
+          };
+          domainIntersection = crossProfileAttemptFor {
+            productionDomain = "APP.EXAMPLE.INVALID.";
+            nonProductionDomain = "app.example.invalid";
+          };
+          coordinationScopeIntersection = crossProfileAttemptFor {
+            productionScope = "SHARED-SCOPE";
+            nonProductionScope = "shared-scope";
+          };
         in
         {
           nixploy = self.packages.${system}.nixploy;
@@ -305,7 +334,11 @@
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";
           mix-expo-source = mixExpoFixture;
           cross-profile-intersection-rejected =
-            assert !crossProfileAttempt.success;
+            assert !dnsHostIntersection.success;
+            assert !ipv4HostIntersection.success;
+            assert !ipv6HostIntersection.success;
+            assert !domainIntersection.success;
+            assert !coordinationScopeIntersection.success;
             pkgs.runCommand "nixploy-cross-profile-intersection-rejected" { } "touch $out";
           nixos-module =
             assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;

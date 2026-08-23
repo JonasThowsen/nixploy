@@ -2,8 +2,6 @@ open Async
 open Core
 
 type stage =
-  | Preparing_source
-  | Evaluating
   | Connecting
   | Building
   | Planning
@@ -40,8 +38,6 @@ let placement t = t.placement
 let warning t = t.warning
 
 let stage_name = function
-  | Preparing_source -> "preparing-source"
-  | Evaluating -> "evaluating"
   | Connecting -> "connecting"
   | Building -> "building"
   | Planning -> "planning"

@@ -193,6 +193,96 @@ let%test_unit "production managed applications require exact root-owned intent"
     ~f:(fun json ->
       assert (Result.is_error (Nixploy.Managed_application.all_of_json json)))
 
+let%test_unit "destination identity canonicalizes numeric and DNS aliases" =
+  let host value = Nixploy.Endpoint_identity.host value |> assert_ok in
+  [%test_eq: string] "192.168.1.10" (host "192.168.001.010");
+  [%test_eq: string] "2001:db8::1" (host "2001:0DB8:0:0:0:0:0:1");
+  [%test_eq: string] "2001:db8::1" (host "[2001:db8::1]");
+  [%test_eq: string] "host.example.invalid" (host "HOST.EXAMPLE.INVALID.");
+  [%test_eq: string] "app.example.invalid"
+    (Nixploy.Endpoint_identity.domain "APP.EXAMPLE.INVALID." |> assert_ok);
+  [%test_eq: string] "sample:production"
+    (Nixploy.Endpoint_identity.coordination_scope "Sample:PRODUCTION"
+    |> assert_ok);
+  assert (not (String.equal (host "2001:db8::1") (host "2001:db8::2")));
+  List.iter [ "[2001:db8::1"; "2001:db8::1]"; "fe80::1%eth0"; "999.1.1.1" ]
+    ~f:(fun value ->
+      assert (Result.is_error (Nixploy.Endpoint_identity.host value)));
+  assert (
+    Result.is_error (Nixploy.Endpoint_identity.domain "app.example.invalid.."));
+  assert (
+    Result.is_error
+      (Nixploy.Endpoint_identity.coordination_scope " shared-scope"))
+
+let%test_unit "managed profile intersections use semantic destination identity"
+    =
+  let application ~key ~profile ~host ~domain ~scope =
+    let source_fields =
+      if String.equal profile "production" then
+        [
+          ("repositoryIdentity", `String ("owner/" ^ key));
+          ("repositoryProvenance", `String ("provider:" ^ key));
+          ("repositoryReference", `String "refs/heads/main");
+          ("repositoryEvidenceFile", `String ("/srv/" ^ key ^ ".evidence"));
+        ]
+      else [ ("repositoryIdentity", `String ("owner/" ^ key)) ]
+    in
+    let fields =
+      [
+        ("project", `String (key ^ "-project"));
+        ("target", `String (key ^ "-target"));
+        ("repository", `String ("/srv/" ^ key));
+      ]
+      @ source_fields
+      @ [
+          ( profile,
+            `Assoc
+              [
+                ("host", `String host);
+                ("user", `String "deploy");
+                ("port", `Int 22);
+                ("kind", `String "web");
+                ("domain", `String domain);
+                ("coordinationScope", `String scope);
+              ] );
+        ]
+    in
+    (key, `Assoc fields)
+  in
+  let rejects (production_host, production_domain, production_scope)
+      (non_production_host, non_production_domain, non_production_scope) =
+    let result =
+      `Assoc
+        [
+          application ~key:"production" ~profile:"production"
+            ~host:production_host ~domain:production_domain
+            ~scope:production_scope;
+          application ~key:"staging" ~profile:"nonProduction"
+            ~host:non_production_host ~domain:non_production_domain
+            ~scope:non_production_scope;
+        ]
+      |> Yojson.Safe.to_string |> Nixploy.Managed_application.all_of_json
+    in
+    assert (Result.is_error result)
+  in
+  rejects
+    ("2001:db8::1", "production.example.invalid", "production-scope")
+    ("2001:0DB8:0:0:0:0:0:1", "staging.example.invalid", "staging-scope");
+  rejects
+    ("192.168.001.010", "production.example.invalid", "production-scope")
+    ("192.168.1.10", "staging.example.invalid", "staging-scope");
+  rejects
+    ("HOST.EXAMPLE.INVALID.", "production.example.invalid", "production-scope")
+    ("host.example.invalid", "staging.example.invalid", "staging-scope");
+  rejects
+    ("production-host.invalid", "APP.EXAMPLE.INVALID.", "production-scope")
+    ("staging-host.invalid", "app.example.invalid", "staging-scope");
+  rejects
+    ( "production-host.invalid",
+      "production.example.invalid",
+      "Sample:PRODUCTION" )
+    ("staging-host.invalid", "staging.example.invalid", "sample:production")
+
 let%test_unit "production source evidence is bounded, exact, and fresh" =
   let valid =
     {|{"version":1,"provenance":"owner/repository","reference":"refs/heads/main","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observedAtUnixSeconds":1000}|}

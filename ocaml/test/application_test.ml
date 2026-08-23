@@ -89,9 +89,7 @@ let run_tests () =
                 revision,
                 Nixploy.Application.source_is_local source )
               :: !deployed;
-            let%map () =
-              on_stage Nixploy.Deployment.Preparing_source revision
-            in
+            let%map () = on_stage Nixploy.Deployment.Connecting revision in
             on_requested deployment;
             Ok deployment)
       ~prune:(fun
@@ -163,7 +161,7 @@ let run_tests () =
     ]
     (List.rev !deployed);
   [%test_eq: (Nixploy.Deployment.stage * string) list]
-    [ (Preparing_source, main_revision); (Preparing_source, selected_revision) ]
+    [ (Connecting, main_revision); (Connecting, selected_revision) ]
     (List.rev !stages);
   [%test_eq: string list]
     [ "deployment-a"; "deployment-b" ]

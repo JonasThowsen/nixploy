@@ -1,6 +1,6 @@
 # nixploy
 
-nixploy is a small deployment CLI for shipping Nix-built OCI/Docker images to servers running Podman.
+nixploy is a small deployment control plane for shipping Nix-built OCI/Docker images to servers running Podman. Its packaged standalone CLI is read-only; deploy and prune are admitted only by the managed browser/RPC service.
 
 The goal is to keep deployment configuration next to your app in `flake.nix`, so the same image can be deployed to multiple targets such as dev, staging, and production. nixploy builds the configured flake image output, loads it into remote Podman over SSH, starts the container, and can optionally manage Caddy blue/green HTTP routing.
 
@@ -21,13 +21,13 @@ The active implementation is OCaml. Its application API is the single source of 
 
 ## Requirements
 
-Local machine:
+Control-plane host:
 
 - Nix
-- nixploy CLI
+- the packaged nixploy service and read-only CLI
 - Podman client
 - SSH access to the target server
-- `ssh-agent` with your deploy key loaded when using passphrase-protected keys
+- `ssh-agent` when the managed service uses a passphrase-protected deploy key
 - `sops`, if using secrets
 
 Target server:
@@ -92,7 +92,7 @@ Add nixploy as an input and expose a `nixploy` output:
 }
 ```
 
-The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names. A target with a `production` declaration must use a non-root SSH user and can deploy only through a matching root-managed browser preview receipt; local CLI deployment remains available for targets that do not opt into that profile. Its coordination scope is bound into preview intent now and is reserved for the authoritative lifecycle lease integration; a preview receipt is not a lease and never permits takeover.
+The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names. A target with a `production` declaration must use a non-root SSH user and can deploy only through a matching root-managed browser preview receipt. An exact root-owned `nonProduction` contract retains daemon-side local-snapshot compatibility, but the packaged CLI never mutates either profile. The coordination scope is bound into preview intent now and is reserved for the authoritative lifecycle lease integration; a preview receipt is not a lease and never permits takeover.
 
 When `identityFile` points at a passphrase-protected key, load it into `ssh-agent` before deploying:
 
@@ -112,20 +112,9 @@ Containers also receive labels with the project, target, git commit, and deploym
 
 ## Deploy
 
-From the app flake directory:
+Deploy through the managed browser/RPC confirmation flow. The service previews an exact commit and evaluated destination, returns an opaque single-use deploy receipt, and consumes that receipt synchronously when the operator confirms.
 
-```bash
-nixploy deploy --target production
-# or
-nixploy deploy -t production
-```
-
-Local deployment uses Git-aware flake source semantics: committed files,
-tracked modifications, and intent-to-add files are eligible, while ignored build
-artifacts such as `deps/`, `_build/`, and `node_modules/` are excluded. Nixploy
-rejects ordinary non-ignored untracked files rather than silently deploying
-without them. Add an intentional new file to the index first (`git add -N --
-PATH` is sufficient).
+The packaged `nixploy deploy` command exits nonzero before creating deployment or resource-state rows. It cannot self-attest protected host authority. For an exact root-owned `nonProduction` contract, the daemon may use Git-aware local-snapshot semantics: committed files, tracked modifications, and intent-to-add files are eligible, while ignored build artifacts such as `deps/`, `_build/`, and `node_modules/` are excluded. Ordinary non-ignored untracked files are rejected rather than silently omitted.
 
 For a `web` target, nixploy uses blue/green deployment:
 
@@ -141,15 +130,9 @@ does not contact Caddy.
 
 ## Prune
 
-Remove the resources owned by one configured target:
+Prune through the managed browser/RPC confirmation flow using its distinct prune receipt. A deploy receipt cannot authorize prune. The packaged `nixploy prune` command exits nonzero before state creation or remote effects.
 
-```bash
-nixploy prune --target production
-# or, from another flake directory
-nixploy prune -t production -C /srv/my-app
-```
-
-Prune resolves the same repository-bound resource identity as deploy. Under
+Managed prune resolves the same repository-bound resource identity as deploy. Under
 that scope, a container counts as owned only when it carries the complete modern
 `io.nixploy.managed=true`, project, target, and resource-key labels. Legacy
 `nixploy.*` ownership labels are not accepted. Prune checks
