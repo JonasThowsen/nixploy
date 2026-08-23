@@ -156,24 +156,56 @@ pkgs.testers.runNixOSTest {
         """Corrupt/partial/mismatched durable evidence refuses startup.
 
         Runs the packaged broker once directly so systemd restart pacing cannot
-        mask the validation result."""
+        mask the validation result.  A broker that starts up and has to be
+        killed by timeout (exit 124) is a test failure, not a pass: refusal
+        must be an explicit, prompt, nonzero exit with bounded diagnostics."""
         machine.execute("systemctl stop nixploy-target-lease.service")
         machine.succeed(marker_actions)
         broker_bin = "${nixployPackage}/bin/nixploy-target-lease-broker"
-        machine.fail(
-            f"runuser -u nixploy-target-lease -- timeout 10 {broker_bin}"
+        run = (
+            "start=$(date +%s); "
+            f"timeout 60 {broker_bin}"
             f" --socket {socket} --state-directory /var/lib/nixploy-target-lease"
             f" --authority {authority} --identity {identity}"
             f" --scope-user {scope_one}:deploy"
+            " >/tmp/fails-closed.out 2>/tmp/fails-closed.err;"
+            " code=$?; end=$(date +%s);"
+            ' echo "$code" >/tmp/fails-closed.code;'
+            " echo $((end - start)) >/tmp/fails-closed.elapsed"
         )
-        machine.succeed(
-            "rm -f /var/lib/nixploy-target-lease/scope-*"
-            " && systemctl reset-failed nixploy-target-lease.service"
-        )
-        machine.execute("systemctl start nixploy-target-lease.service")
-        machine.wait_until_succeeds(
-            "systemctl is-active --quiet nixploy-target-lease.service", timeout=60
-        )
+        machine.succeed(f"runuser -u nixploy-target-lease -- sh -c '{run}'")
+        code = machine.succeed("cat /tmp/fails-closed.code").strip()
+        elapsed = int(machine.succeed("cat /tmp/fails-closed.elapsed").strip())
+        try:
+            if code == "124":
+                raise RuntimeError(
+                    "broker started despite corrupt evidence and was killed by timeout"
+                )
+            if code == "" or code == "0":
+                raise RuntimeError(
+                    f"broker accepted corrupt evidence with status {code!r}"
+                )
+            # Refusal is prompt even under heavy VM load: far below the 60s cap.
+            if elapsed >= 30:
+                raise RuntimeError(
+                    f"broker took {elapsed}s to refuse startup; not prompt"
+                )
+            machine.succeed("test -s /tmp/fails-closed.err")
+            machine.succeed("test $(stat --format=%s /tmp/fails-closed.err) -lt 100000")
+            # Nothing may linger: no surviving broker process, no socket.
+            machine.fail("pgrep -f '[b]in/nixploy-target-lease-broker'")
+            machine.fail(f"test -S {socket}")
+        finally:
+            machine.execute(
+                "rm -f /var/lib/nixploy-target-lease/scope-*"
+                " /tmp/fails-closed.out /tmp/fails-closed.err"
+                " /tmp/fails-closed.code /tmp/fails-closed.elapsed"
+                " && systemctl reset-failed nixploy-target-lease.service"
+            )
+            machine.execute("systemctl start nixploy-target-lease.service")
+            machine.wait_until_succeeds(
+                "systemctl is-active --quiet nixploy-target-lease.service", timeout=60
+            )
 
     fails_closed(f"printf 'garbage' > /var/lib/nixploy-target-lease/scope-{scope_one}.dirty")
     fails_closed(f": > /var/lib/nixploy-target-lease/scope-{scope_one}.dirty")

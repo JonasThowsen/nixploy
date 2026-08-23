@@ -21,10 +21,12 @@ static int retry_fsync(int fd) {
   return result;
 }
 
-static int retry_close(int fd) {
-  int result;
-  do result = close(fd); while (result == -1 && errno == EINTR);
-  return result;
+/* Linux never retries close(2) after EINTR: the descriptor is already closed
+   (or about to be reused by another thread), so a retry could destroy an
+   unrelated recycled descriptor.  Close-once, best-effort; durability never
+   depends on the close result because every fsync happened earlier. */
+static void close_once(int fd) {
+  if (fd >= 0) (void)close(fd);
 }
 
 static int retry_unlinkat(int directory, const char *name) {
@@ -134,9 +136,9 @@ static int open_private_directory(const char *root) {
    many failure modes as possible; ambiguity is resolved by refusing to start
    rather than by restoring or clearing anything. */
 static void preserve_files(int a, int b, int directory) {
-  if (a >= 0) { (void)retry_fsync(a); (void)retry_close(a); }
-  if (b >= 0) { (void)retry_fsync(b); (void)retry_close(b); }
-  if (directory >= 0) { (void)retry_fsync(directory); (void)close(directory); }
+  if (a >= 0) { (void)retry_fsync(a); close_once(a); }
+  if (b >= 0) { (void)retry_fsync(b); close_once(b); }
+  if (directory >= 0) { (void)retry_fsync(directory); close_once(directory); }
 }
 
 /* Durable state machine (see ocaml/lib/target_lease_state.mli):
@@ -160,25 +162,47 @@ static void preserve_files(int a, int b, int directory) {
 
 static value caml_nixploy_target_lease_read_exact(int directory, const char *name, char *buffer, size_t capacity);
 
+/* Reads a durable state entry into [buffer] with room for [capacity] bytes
+   plus one NUL terminator.  Returns Val_false only when the entry does not
+   exist.  When the file fills [capacity] exactly, a single extra byte is
+   probed so trailing garbage or truncation-oversize contents are reported as
+   EINVAL instead of being silently accepted as EOF (read(fd, buf, 0) always
+   returns 0 and would masquerade as EOF).  Any read error, including
+   oversize, raises a Unix error; callers fail closed. */
 value caml_nixploy_target_lease_read_exact(int directory, const char *name, char *buffer, size_t capacity) {
   int fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd == -1) return Val_false;
   size_t offset = 0;
+  int oversize = 0;
   for (;;) {
+    if (offset == capacity) {
+      /* Capacity exhausted: probe one byte to detect trailing data instead of
+         issuing read(..., 0), which would be misread as EOF. */
+      char probe;
+      ssize_t count;
+      do count = read(fd, &probe, 1); while (count == -1 && errno == EINTR);
+      oversize = count == 1;
+      break;
+    }
     ssize_t count = read(fd, buffer + offset, capacity - offset);
     if (count > 0) {
       offset += (size_t)count;
-      if (offset > capacity) break;
     } else if (count == 0) {
-      close(fd);
-      buffer[offset] = '\0';
-      return Val_true;
-    } else if (errno != EINTR) {
       break;
+    } else if (errno != EINTR) {
+      int saved = errno;
+      close_once(fd);
+      errno = saved;
+      uerror("read durable state entry", Nothing);
     }
   }
-  close(fd);
-  uerror("read durable state entry", Nothing);
+  close_once(fd);
+  if (oversize) {
+    errno = EINVAL;
+    uerror("read durable state entry", Nothing);
+  }
+  buffer[offset] = '\0';
+  return Val_true;
 }
 
 static void fail_with_saved(int saved, int directory, const char *tag, const char *name) {
@@ -208,7 +232,7 @@ CAMLprim value caml_nixploy_target_lease_clear_clean_receipt(value root, value n
     unix_error(saved, (char *)"fsync state directory after clearing clean receipt",
                caml_copy_string(receipt_name));
   }
-  if (close(directory) == -1) uerror("close private state directory", root);
+  close_once(directory);
   CAMLreturn(Val_unit);
 }
 
@@ -231,12 +255,10 @@ CAMLprim value caml_nixploy_target_lease_mark_dirty(value root, value name, valu
     preserve_files(marker, -1, directory);
     unix_error(saved, (char *)"durably create dirty marker", caml_copy_string(name_string));
   }
-  if (retry_close(marker) == -1) {
-    int saved = errno;
-    preserve_files(-1, -1, directory);
-    unix_error(saved, (char *)"close dirty marker", caml_copy_string(name_string));
-  }
-  if (close(directory) == -1) uerror("close private state directory", root);
+  /* Close-once, best-effort: durability was established by the fsyncs above,
+     and Linux close(2) must never be retried after EINTR. */
+  close_once(marker);
+  close_once(directory);
   CAMLreturn(Val_unit);
 }
 
@@ -261,7 +283,7 @@ CAMLprim value caml_nixploy_target_lease_write_clean_receipt(value root, value n
     if (!caml_nixploy_target_lease_read_exact(directory, receipt_name, existing, sizeof(existing) - 1) ||
         strncmp(existing, line, (size_t)length) != 0 || existing[length] != '\0')
       fail_with_saved(EEXIST, directory, "conflicting clean receipt", receipt_name);
-    close(directory);
+    close_once(directory);
     CAMLreturn(Val_unit);
   }
   if (receipt == -1) fail_with_saved(errno, directory, "create clean receipt", receipt_name);
@@ -272,12 +294,10 @@ CAMLprim value caml_nixploy_target_lease_write_clean_receipt(value root, value n
     preserve_files(receipt, -1, directory);
     unix_error(saved, (char *)"durably create clean receipt", caml_copy_string(receipt_name));
   }
-  if (retry_close(receipt) == -1) {
-    int saved = errno;
-    preserve_files(-1, -1, directory);
-    unix_error(saved, (char *)"close clean receipt", caml_copy_string(receipt_name));
-  }
-  if (close(directory) == -1) uerror("close private state directory", root);
+  /* Close-once, best-effort: durability was established by the fsyncs above,
+     and Linux close(2) must never be retried after EINTR. */
+  close_once(receipt);
+  close_once(directory);
   CAMLreturn(Val_unit);
 }
 
@@ -306,7 +326,7 @@ CAMLprim value caml_nixploy_target_lease_retire_dirty(value root, value name, va
     preserve_files(-1, -1, directory);
     unix_error(saved, (char *)"fsync state directory after retiring dirty marker", caml_copy_string(name_string));
   }
-  if (close(directory) == -1) uerror("close private state directory", root);
+  close_once(directory);
   CAMLreturn(Val_unit);
 }
 

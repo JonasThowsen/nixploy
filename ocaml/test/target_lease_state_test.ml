@@ -184,6 +184,59 @@ let () =
   | _ -> failwith "mismatched-generation retire removed foreign evidence");
   remove_dir path
 
+(* A dirty marker whose valid prefix is followed by trailing garbage is
+   corrupt evidence: retirement must reject it, never match or remove it. *)
+let () =
+  let path = fresh_dir () in
+  mark path;
+  let oc =
+    Out_channel.create
+      (Filename.concat path (S.dirty_marker_name scope_uuid))
+  in
+  Out_channel.output_string oc ("dirty " ^ generation ^ "\ntrailing garbage");
+  Out_channel.close oc;
+  assert_error
+    (S.retire_dirty ~state_directory:path ~scope:scope_uuid
+       ~generation:gen_uuid);
+  assert_error (S.scan_directory ~state_directory:path);
+  ignore
+    (U.lstat (Filename.concat path (S.dirty_marker_name scope_uuid)));
+  remove_dir path
+
+(* An oversize dirty marker cannot match any expected generation: retirement
+   must fail closed rather than truncate-match the prefix. *)
+let () =
+  let path = fresh_dir () in
+  let oc =
+    Out_channel.create
+      (Filename.concat path (S.dirty_marker_name scope_uuid))
+  in
+  Out_channel.output_string oc ("dirty " ^ generation ^ "\n");
+  Out_channel.output_string oc (String.make (S.max_entry_bytes + 1) 'x');
+  Out_channel.close oc;
+  assert_error
+    (S.retire_dirty ~state_directory:path ~scope:scope_uuid
+       ~generation:gen_uuid);
+  assert_error (S.scan_directory ~state_directory:path);
+  remove_dir path
+
+(* An existing clean receipt with trailing garbage is not byte-identical:
+   the idempotent re-release path must report a conflict, not accept it. *)
+let () =
+  let path = fresh_dir () in
+  receipt path;
+  let oc =
+    Out_channel.create
+      (Filename.concat path (S.clean_receipt_name scope_uuid))
+  in
+  Out_channel.output_string oc ("clean " ^ generation ^ "\ntrailing");
+  Out_channel.close oc;
+  assert_error
+    (S.write_clean_receipt ~state_directory:path ~scope:scope_uuid
+       ~generation:gen_uuid);
+  assert_error (S.scan_directory ~state_directory:path);
+  remove_dir path
+
 (* Corrupt, partial, and unexpected states fail closed. *)
 let () =
   let corrupt_contents contents =
