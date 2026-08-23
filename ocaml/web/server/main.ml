@@ -260,7 +260,7 @@ let run ~port ~state_db =
   let open Deferred.Let_syntax in
   Nixploy.Process_runner.handle_termination_signals ();
   let applications =
-    Managed_application.load_environment () |> Or_error.ok_exn
+    Managed_application.load_authority_file () |> Or_error.ok_exn
   in
   let authorization = Authorization.load_environment () |> Or_error.ok_exn in
   let origin_policy = Authorization.load_origin_policy () |> Or_error.ok_exn in

@@ -31,12 +31,7 @@ let resolve_internal ~verify_deployment_identity ?commit ?operation_id
     | None -> Source.preview_main ~working_directory
   in
   let%bind source =
-    Source.prepare ~working_directory
-      ~selection:
-        (Source.immutable
-           ~repository_identity:
-             (Managed_application.repository_identity application)
-           commit)
+    Source.prepare ~working_directory ~selection:(Source.immutable commit)
   in
   Monitor.protect
     ~finally:(fun () -> Source.cleanup source)
@@ -61,12 +56,24 @@ let resolve_internal ~verify_deployment_identity ?commit ?operation_id
           (Configuration.find_target configuration
              (Managed_application.target application))
       in
-      let repository_identity = Source.repository source in
+      let repository_identity =
+        Managed_application.repository_identity application
+      in
       let%bind candidates =
-        Deferred.return
-          (Resource_key.candidates ~project
-             ~target:(Managed_application.target application)
-             ~repository_identity)
+        match Managed_application.production_destination application with
+        | Some _ ->
+            let%map canonical =
+              Deferred.return
+                (Resource_key.derive ~project
+                   ~target:(Managed_application.target application)
+                   ~repository_identity)
+            in
+            [ canonical ]
+        | None ->
+            Deferred.return
+              (Resource_key.candidates ~project
+                 ~target:(Managed_application.target application)
+                 ~repository_identity)
       in
       let%bind resource_key =
         Podman.select_resource_key ~project ~target ~repository_identity

@@ -18,8 +18,12 @@ type t = {
   repository : string;
   repository_identity : string;
   repository_provenance : string option;
+  repository_reference : string option;
+  repository_evidence_file : string option;
+  repository_evidence_max_age_seconds : int;
   subdirectory : string;
   production_destination : production_destination option;
+  non_production_destination : production_destination option;
 }
 
 let maximum_count = 64
@@ -29,7 +33,14 @@ let target t = t.target
 let repository t = t.repository
 let repository_identity t = t.repository_identity
 let repository_provenance t = t.repository_provenance
+let repository_reference t = t.repository_reference
+let repository_evidence_file t = t.repository_evidence_file
+
+let repository_evidence_max_age_seconds t =
+  t.repository_evidence_max_age_seconds
+
 let production_destination t = t.production_destination
+let non_production_destination t = t.non_production_destination
 let destination_host t = t.host
 let destination_user t = t.user
 let destination_port t = t.port
@@ -66,13 +77,14 @@ let validate_members ~field ~allowed fields =
   in
   loop String.Set.empty fields
 
-let parse_production_destination fields =
-  match List.Assoc.find fields ~equal:String.equal "production" with
+let parse_destination fields field_name =
+  match List.Assoc.find fields ~equal:String.equal field_name with
   | None | Some `Null -> Ok None
   | Some (`Assoc fields) ->
       let open Or_error.Let_syntax in
       let%bind () =
-        validate_members ~field:"managed application production destination"
+        validate_members
+          ~field:("managed application " ^ field_name ^ " destination")
           ~allowed:
             (String.Set.of_list
                [ "host"; "user"; "port"; "kind"; "domain"; "coordinationScope" ])
@@ -84,14 +96,13 @@ let parse_production_destination fields =
       let%bind port =
         match List.Assoc.find fields ~equal:String.equal "port" with
         | Some (`Int port) when port >= 1 && port <= 65_535 -> Ok port
-        | _ ->
-            Or_error.error_string "production.port must be between 1 and 65535"
+        | _ -> Or_error.errorf "%s.port must be between 1 and 65535" field_name
       in
       let%bind kind =
         match List.Assoc.find fields ~equal:String.equal "kind" with
         | Some (`String "non-web") -> Ok Non_web
         | Some (`String "web") -> Ok Web
-        | _ -> Or_error.error_string "production.kind must be non-web or web"
+        | _ -> Or_error.errorf "%s.kind must be non-web or web" field_name
       in
       let%bind domain =
         match (kind, List.Assoc.find fields ~equal:String.equal "domain") with
@@ -108,7 +119,7 @@ let parse_production_destination fields =
       if String.equal user "root" then
         Or_error.error_string "production destination SSH user must not be root"
       else Ok (Some { host; user; port; kind; domain; coordination_scope })
-  | Some _ -> Or_error.error_string "production must be an object"
+  | Some _ -> Or_error.errorf "%s must be an object" field_name
 
 let valid_key key =
   let valid_character = function
@@ -140,8 +151,12 @@ let parse (key, json) =
                    "repository";
                    "repositoryIdentity";
                    "repositoryProvenance";
+                   "repositoryReference";
+                   "repositoryEvidenceFile";
+                   "repositoryEvidenceMaxAgeSeconds";
                    "subdirectory";
                    "production";
+                   "nonProduction";
                  ])
             fields
         in
@@ -171,18 +186,65 @@ let parse (key, json) =
               Or_error.error_string
                 "repositoryProvenance must be a non-empty string"
         in
+        let%bind repository_reference =
+          match
+            List.Assoc.find fields ~equal:String.equal "repositoryReference"
+          with
+          | None | Some `Null -> Ok None
+          | Some (`String value)
+            when String.is_prefix value ~prefix:"refs/heads/"
+                 && not (String.is_empty (String.drop_prefix value 11)) ->
+              Ok (Some value)
+          | Some _ ->
+              Or_error.error_string
+                "repositoryReference must be a full refs/heads/... reference"
+        in
+        let%bind repository_evidence_file =
+          match
+            List.Assoc.find fields ~equal:String.equal "repositoryEvidenceFile"
+          with
+          | None | Some `Null -> Ok None
+          | Some (`String value) when Filename.is_absolute value ->
+              Ok (Some value)
+          | Some _ ->
+              Or_error.error_string
+                "repositoryEvidenceFile must be an absolute path"
+        in
+        let%bind repository_evidence_max_age_seconds =
+          match
+            List.Assoc.find fields ~equal:String.equal
+              "repositoryEvidenceMaxAgeSeconds"
+          with
+          | None -> Ok 900
+          | Some (`Int value) when value >= 1 && value <= 3600 -> Ok value
+          | Some _ ->
+              Or_error.error_string
+                "repositoryEvidenceMaxAgeSeconds must be between 1 and 3600"
+        in
         let%bind subdirectory =
           optional_string fields "subdirectory" ~default:"."
         in
-        let%bind production_destination = parse_production_destination fields in
+        let%bind production_destination = parse_destination fields "production"
+        and non_production_destination =
+          parse_destination fields "nonProduction"
+        in
         if
           Option.is_some production_destination
+          && Option.is_some non_production_destination
+        then
+          Or_error.error_string
+            "managed application cannot be both production and nonProduction"
+        else if
+          Option.is_some production_destination
           && ((not repository_identity_is_explicit)
-             || Option.is_none repository_provenance)
+             || Option.is_none repository_provenance
+             || Option.is_none repository_reference
+             || Option.is_none repository_evidence_file)
         then
           Or_error.error_string
             "production managed application requires explicit \
-             repositoryIdentity and repositoryProvenance"
+             repositoryIdentity, repositoryProvenance, repositoryReference, \
+             and repositoryEvidenceFile"
         else if not (Filename.is_absolute repository) then
           Or_error.error_string
             "managed application repository must be absolute"
@@ -212,8 +274,12 @@ let parse (key, json) =
               repository;
               repository_identity;
               repository_provenance;
+              repository_reference;
+              repository_evidence_file;
+              repository_evidence_max_age_seconds;
               subdirectory;
               production_destination;
+              non_production_destination;
             }
     | _ -> Or_error.error_string "managed application must be an object"
 
@@ -259,9 +325,56 @@ let all_of_json input =
              String.compare left.key right.key))
   | _ -> Or_error.error_string "managed applications must be a JSON object"
 
-let load_environment () =
-  Sys.getenv "NIXPLOY_MANAGED_APPLICATIONS_JSON"
-  |> Option.value ~default:"{}" |> all_of_json
+let authority_file = "/etc/nixploy/managed-applications.json"
+let maximum_authority_file_bytes = 262_144
+
+let load_authority_file () =
+  if not (Sys_unix.file_exists_exn authority_file) then Ok []
+  else
+    Or_error.try_with_join (fun () ->
+        let resolved = Filename_unix.realpath authority_file in
+        let link_stats = Caml_unix.lstat authority_file in
+        if not (Int.equal link_stats.st_uid 0) then
+          failwith "managed application authority link must be root-owned";
+        let descriptor =
+          Caml_unix.openfile resolved
+            [ Caml_unix.O_RDONLY; Caml_unix.O_CLOEXEC ]
+            0
+        in
+        Exn.protect
+          ~finally:(fun () -> Caml_unix.close descriptor)
+          ~f:(fun () ->
+            let stats = Caml_unix.fstat descriptor in
+            if not (Poly.equal stats.st_kind Caml_unix.S_REG) then
+              Or_error.error_string
+                "managed application authority must be a regular file"
+            else if
+              not
+                (Int.equal stats.st_uid 0
+                && Int.equal (stats.st_perm land 0o022) 0)
+            then
+              Or_error.error_string
+                "managed application authority must be root-owned and not \
+                 group/other writable"
+            else if stats.st_size > maximum_authority_file_bytes then
+              Or_error.error_string
+                "managed application authority exceeds 262144 bytes"
+            else
+              let length = stats.st_size in
+              let bytes = Bytes.create length in
+              let rec read_all offset =
+                if offset < length then
+                  let count =
+                    Caml_unix.read descriptor bytes offset (length - offset)
+                  in
+                  if Int.equal count 0 then
+                    failwith
+                      "unexpected EOF while reading managed application \
+                       authority"
+                  else read_all (offset + count)
+              in
+              read_all 0;
+              all_of_json (Bytes.to_string bytes)))
 
 let find applications key =
   match

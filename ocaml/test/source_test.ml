@@ -130,8 +130,7 @@ let run_tests () =
   assert (Result.is_error mismatched);
   let%bind prepared =
     Nixploy.Source.prepare ~working_directory:directory
-      ~selection:
-        (Nixploy.Source.immutable ~repository_identity:"owner/test" preview)
+      ~selection:(Nixploy.Source.immutable preview)
   in
   let prepared = Or_error.ok_exn prepared in
   assert (String.equal revision_a (Nixploy.Source.revision prepared));
@@ -139,7 +138,9 @@ let run_tests () =
     not
       (Sys_unix.file_exists_exn
          (Filename.concat (Nixploy.Source.nix_root prepared) ".git")));
-  assert (String.equal "owner/test" (Nixploy.Source.repository prepared));
+  assert (
+    String.equal "git@example.invalid:test.git"
+      (Nixploy.Source.repository prepared));
   assert (
     String.equal
       (In_channel.read_all

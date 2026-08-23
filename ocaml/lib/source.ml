@@ -15,7 +15,7 @@ type commit = { revision : string; subject : string; timestamp_ms : int64 }
 
 type selection =
   | Local of { commit : commit; working_directory : string }
-  | Immutable of { commit : commit; repository_identity : string option }
+  | Immutable of { commit : commit }
 
 let git_timeout = Time_ns.Span.of_min 2.
 let max_git_output = 262_144
@@ -35,7 +35,15 @@ let commit_timestamp_ms (commit : commit) = commit.timestamp_ms
 
 let git ?working_directory args =
   Process_runner.run_stdout ?working_directory ~timeout:git_timeout
-    ~max_output_bytes:max_git_output ~prog:"git" ~args ()
+    ~max_output_bytes:max_git_output ~prog:"git" ~args
+    ~env:
+      (`Extend
+         [
+           ("GIT_CONFIG_COUNT", "1");
+           ("GIT_CONFIG_KEY_0", "safe.directory");
+           ("GIT_CONFIG_VALUE_0", "*");
+         ])
+    ()
 
 let valid_revision revision =
   String.length revision = 40
@@ -133,12 +141,11 @@ let local ~working_directory =
       describe ~working_directory "HEAD^{commit}"
       >>| Or_error.map ~f:(fun commit -> Local { commit; working_directory })
 
-let immutable ?repository_identity commit =
-  Immutable { commit; repository_identity }
+let immutable commit = Immutable { commit }
 
 let selection_commit = function
   | Local { commit; _ } -> commit
-  | Immutable { commit; _ } -> commit
+  | Immutable { commit } -> commit
 
 let selection_is_local = function Local _ -> true | Immutable _ -> false
 
@@ -378,10 +385,6 @@ let prepare_local ~working_directory ~selected_directory ~commit =
 
 let prepare ~working_directory ~selection =
   match selection with
-  | Immutable { commit; repository_identity } ->
-      let open Deferred.Or_error.Let_syntax in
-      let%map prepared = prepare_immutable ~working_directory ~commit in
-      Option.value_map repository_identity ~default:prepared
-        ~f:(fun repository -> { prepared with repository })
+  | Immutable { commit } -> prepare_immutable ~working_directory ~commit
   | Local { commit; working_directory = selected_directory } ->
       prepare_local ~working_directory ~selected_directory ~commit

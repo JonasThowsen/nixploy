@@ -68,7 +68,9 @@ type target_metrics = {
   applications : application_metrics list;
 }
 
-val create : store:Store.t -> unit -> t
+val create :
+  ?managed_applications:Managed_application.t list -> store:Store.t -> unit -> t
+
 val open_ : state_path:string -> t Deferred.Or_error.t
 
 val begin_shutdown : t -> shutdown_transition
@@ -107,7 +109,7 @@ val resolve_commit :
   t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t
 
 val local_source : t -> working_directory:string -> source Deferred.Or_error.t
-val immutable_source : ?repository_identity:string -> commit -> source
+val immutable_source : commit -> source
 val source_revision : source -> string
 val source_subject : source -> string
 val source_is_local : source -> bool
@@ -200,6 +202,7 @@ module For_testing : sig
     ?status:(scope:scope -> status Deferred.Or_error.t) ->
     ?logs:(Managed_application.t -> log_snapshot Deferred.Or_error.t) ->
     ?metrics:(Managed_application.t -> target_metrics Deferred.t) ->
+    ?managed_applications:Managed_application.t list ->
     store:Store.t ->
     preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->
     find_commit:
@@ -212,6 +215,9 @@ module For_testing : sig
       application_key:string option ->
       expected_project:Project_name.t option ->
       expected_intent:Deployment_intent.t option ->
+      managed_application:Managed_application.t option ->
+      managed_applications:Managed_application.t list ->
+      on_authorized:(unit -> unit Deferred.Or_error.t) ->
       working_directory:string ->
       source:source ->
       target:Target_name.t ->

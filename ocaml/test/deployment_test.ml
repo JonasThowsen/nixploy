@@ -356,9 +356,11 @@ exit 99
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let deploy ?record_stage ?expected_project ?expected_intent operation_id =
+      let deploy ?record_stage ?expected_project ?expected_intent
+          ?managed_application ?managed_applications operation_id =
         Nixploy.Deployment.deploy ?record_stage ?expected_project
-          ?expected_intent ~operation_id ~working_directory:repository
+          ?expected_intent ?managed_application ?managed_applications
+          ~operation_id ~working_directory:repository
           ~source:(Nixploy.Source.immutable commit)
           ~target ()
       in
@@ -401,7 +403,7 @@ exit 99
       in
 
       let expected_configuration_json =
-        {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
+        {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
       in
       let expected_configuration =
         Nixploy.Configuration.of_json expected_configuration_json |> assert_ok
@@ -409,13 +411,20 @@ exit 99
       let managed =
         Nixploy.Managed_application.all_of_json
           (sprintf
-             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git"}}|}
+             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git","nonProduction":{"host":"worker.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"test-staging"}}}|}
+             repository)
+        |> assert_ok |> List.hd_exn
+      in
+      let production_managed =
+        Nixploy.Managed_application.all_of_json
+          (sprintf
+             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git","repositoryReference":"refs/heads/main","repositoryEvidenceFile":"/root/test-evidence.json","production":{"host":"worker.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"sample-worker"}}}|}
              repository)
         |> assert_ok |> List.hd_exn
       in
       let expected_intent =
         Nixploy.Deployment_intent.create ~application:managed
-          ~repository_origin:(Some "git@example.invalid:test.git")
+          ~source_authority:None
           ~revision:(Nixploy.Source.commit_revision commit)
           ~configuration:expected_configuration
           ~configuration_json:expected_configuration_json
@@ -424,10 +433,12 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
       let%bind production_without_receipt =
-        deploy "operation-production-without-receipt"
+        deploy ~managed_applications:[ production_managed ]
+          "operation-production-without-receipt"
       in
       expect_error_containing production_without_receipt
-        "production-profile deployment requires a managed preview receipt";
+        "root-managed production authority requires a server-bound preview \
+         receipt";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
       [%test_eq: int] 0 (count lines "nix|build|");
@@ -438,7 +449,8 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
       let%bind intent_mismatch =
-        deploy ~expected_intent "operation-intent-mismatch"
+        deploy ~expected_intent ~managed_application:managed
+          "operation-intent-mismatch"
       in
       expect_error_containing intent_mismatch
         "deployment preview intent no longer matches";
@@ -476,18 +488,19 @@ exit 99
           ~source:(Nixploy.Application.immutable_source application_commit)
           ~target ()
       in
-      let rejected_application = assert_ok rejected_application in
-      assert (
-        [%equal: Nixploy.Application.deployment_state]
-          (Nixploy.Application.deployment_state rejected_application)
-          Failed);
+      expect_error_containing rejected_application "managed project mismatch";
+      let%bind rejected_history =
+        Nixploy.Store.list_for_scope application_store
+          ~working_directory:repository ~target ~limit:10
+      in
+      [%test_eq: int] 0 (List.length (assert_ok rejected_history));
       let%bind rejected_state =
         Nixploy.Application.resource_state application
           ~working_directory:repository ~target
       in
       assert (
         [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
-          Unknown);
+          Present);
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 0 (count lines "nix|build|");
       assert (
@@ -605,8 +618,6 @@ exit 99
         not (String.is_substring runtime_line ~substring:"|--label|nixploy."));
       [%test_eq: Nixploy.Deployment.stage list]
         [
-          Preparing_source;
-          Evaluating;
           Connecting;
           Building;
           Planning;

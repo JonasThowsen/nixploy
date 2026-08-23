@@ -17,10 +17,18 @@ let
       repository
       repositoryIdentity
       repositoryProvenance
+      repositoryReference
+      repositoryEvidenceFile
+      repositoryEvidenceMaxAgeSeconds
       subdirectory
       production
+      nonProduction
       ;
   }) cfg.applications;
+
+  managedApplicationsFile = pkgs.writeText "nixploy-managed-applications.json" (
+    builtins.toJSON publicApplications
+  );
 
   credentialDefinitions = [
     {
@@ -60,7 +68,6 @@ let
 
   moduleEnvironment = {
     NIXPLOY_AUTH_MODE = cfg.authMode;
-    NIXPLOY_MANAGED_APPLICATIONS_JSON = builtins.toJSON publicApplications;
     RUNTIME_DIRECTORY = runtimeDirectoryPath;
   }
   // lib.optionalAttrs (cfg.operatorEmail != null) {
@@ -118,12 +125,29 @@ let
     !(lib.hasPrefix "/" subdirectory) && !(lib.elem ".." (lib.splitString "/" subdirectory));
   validProductionDestination =
     application:
-    application.production == null
-    || (
-      application.production.user != "root"
-      && (
-        (application.production.kind == "web" && application.production.domain != null)
-        || (application.production.kind == "non-web" && application.production.domain == null)
+    (application.production == null || application.nonProduction == null)
+    && (
+      application.production == null
+      || (application.repositoryReference != null && application.repositoryEvidenceFile != null)
+    )
+    && (
+      application.production == null
+      || (
+        application.production.user != "root"
+        && (
+          (application.production.kind == "web" && application.production.domain != null)
+          || (application.production.kind == "non-web" && application.production.domain == null)
+        )
+      )
+    )
+    && (
+      application.nonProduction == null
+      || (
+        application.nonProduction.user != "root"
+        && (
+          (application.nonProduction.kind == "web" && application.nonProduction.domain != null)
+          || (application.nonProduction.kind == "non-web" && application.nonProduction.domain == null)
+        )
       )
     );
 in
@@ -168,9 +192,10 @@ in
     applications = lib.mkOption {
       default = { };
       description = ''
-        NixOS-owned managed application allowlist. Repositories are existing,
-        absolute local Git checkout paths; deployment source selection remains
-        constrained to commits in those checkouts.
+        NixOS-owned machine mutation authority shared by CLI and web.
+        Production repositories are existing root-protected Git custody paths;
+        deployment source selection is constrained by their fresh evidence
+        manifests, protected refs, and exact commit objects.
       '';
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -185,7 +210,7 @@ in
             };
             repository = lib.mkOption {
               type = lib.types.strMatching "^/.*";
-              description = "Absolute path to the host-owned Git repository checkout.";
+              description = "Absolute path to the host-owned Git custody checkout.";
             };
             repositoryIdentity = lib.mkOption {
               type = lib.types.nonEmptyStr;
@@ -193,7 +218,22 @@ in
             };
             repositoryProvenance = lib.mkOption {
               type = lib.types.nonEmptyStr;
-              description = "Exact expected Git remote.origin.url used for immutable preview admission.";
+              description = "Root-owned provenance identifier attested by source freshness evidence.";
+            };
+            repositoryReference = lib.mkOption {
+              type = lib.types.nullOr (lib.types.strMatching "^refs/heads/.+");
+              default = null;
+              description = "Protected full Git ref used for production source admission.";
+            };
+            repositoryEvidenceFile = lib.mkOption {
+              type = lib.types.nullOr (lib.types.strMatching "^/.*");
+              default = null;
+              description = "Root-owned fresh ref/object evidence manifest for production source admission.";
+            };
+            repositoryEvidenceMaxAgeSeconds = lib.mkOption {
+              type = lib.types.ints.between 1 3600;
+              default = 900;
+              description = "Maximum accepted source evidence age.";
             };
             subdirectory = lib.mkOption {
               type = lib.types.str;
@@ -228,6 +268,36 @@ in
                     };
                     coordinationScope = lib.mkOption {
                       type = lib.types.nonEmptyStr;
+                    };
+                  };
+                }
+              );
+            };
+            nonProduction = lib.mkOption {
+              default = null;
+              description = "Root-owned exact destination permitted for local development or staging deployment.";
+              type = lib.types.nullOr (
+                lib.types.submodule {
+                  options = {
+                    host = lib.mkOption { type = lib.types.nonEmptyStr; };
+                    user = lib.mkOption { type = lib.types.nonEmptyStr; };
+                    port = lib.mkOption {
+                      type = lib.types.port;
+                      default = 22;
+                    };
+                    kind = lib.mkOption {
+                      type = lib.types.enum [
+                        "non-web"
+                        "web"
+                      ];
+                    };
+                    domain = lib.mkOption {
+                      type = lib.types.nullOr lib.types.nonEmptyStr;
+                      default = null;
+                    };
+                    coordinationScope = lib.mkOption {
+                      type = lib.types.nonEmptyStr;
+                      default = "non-production";
                     };
                   };
                 }
@@ -363,6 +433,8 @@ in
       }
     ];
 
+    environment.etc."nixploy/managed-applications.json".source = managedApplicationsFile;
+
     users.groups = lib.mkIf cfg.manageUser {
       "${cfg.group}" = { };
     };
@@ -419,7 +491,11 @@ in
         ProtectKernelTunables = true;
         ReadWritePaths = [ "/var/lib/nixploy" ];
         ReadOnlyPaths =
-          (map (application: application.repository) (lib.attrValues cfg.applications)) ++ cfg.readOnlyPaths;
+          (map (application: application.repository) (lib.attrValues cfg.applications))
+          ++ (lib.filter (path: path != null) (
+            map (application: application.repositoryEvidenceFile) (lib.attrValues cfg.applications)
+          ))
+          ++ cfg.readOnlyPaths;
         RestrictAddressFamilies = [
           "AF_UNIX"
           "AF_INET"

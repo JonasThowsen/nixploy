@@ -20,7 +20,7 @@ val repository_origin :
     the canonical-directory fallback used by local compatibility flows. *)
 
 val local : working_directory:string -> selection Deferred.Or_error.t
-val immutable : ?repository_identity:string -> commit -> selection
+val immutable : commit -> selection
 val selection_commit : selection -> commit
 val selection_is_local : selection -> bool
 

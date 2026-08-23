@@ -101,12 +101,16 @@ let run_tests () =
           ~application_key
           ~expected_project:_
           ~expected_intent:_
+          ~managed_application:_
+          ~managed_applications:_
+          ~on_authorized
           ~working_directory
           ~source:_
           ~target
           ()
         ->
         let open Deferred.Or_error.Let_syntax in
+        let%bind () = on_authorized () in
         let%bind stored =
           Nixploy.Store.request store ~application_key ~working_directory
             ~target ~commit:store_commit

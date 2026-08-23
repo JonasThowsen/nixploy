@@ -90,358 +90,407 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-let deploy ?(record_stage = no_stage) ?expected_project ?expected_intent
-    ~operation_id ~working_directory ~source:source_selection
+type prepared = {
+  source : Source.t;
+  project : Project_name.t;
+  target_name : Target_name.t;
+  target : Configuration.Target.t;
+  repository_identity : string;
+  configuration_digest : string;
+  candidates : Resource_key.t list;
+}
+
+let cleanup_prepared prepared = Source.cleanup prepared.source
+
+let prepare ?expected_project ?expected_intent ?managed_application
+    ?(managed_applications = []) ~working_directory ~source:source_selection
     ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind repository_origin =
-    match expected_intent with
-    | None -> Deferred.Or_error.return None
-    | Some _ -> Source.repository_origin ~working_directory
-  in
-  let%bind () =
-    record_stage Preparing_source
-      (if Source.selection_is_local source_selection then
-         "Using the current local flake source"
-       else "Materializing the confirmed Git commit")
+  let%bind source_authority =
+    match (expected_intent, managed_application) with
+    | Some intent, Some application
+      when [%equal: Deployment_intent.identity_policy]
+             (Deployment_intent.identity_policy intent)
+             Deployment_intent.Canonical_only ->
+        let%map authority =
+          Source_authority.verify
+            ~expected_revision:(Deployment_intent.revision intent)
+            application
+        in
+        Some authority
+    | Some _, Some _ -> Deferred.Or_error.return None
+    | Some _, None ->
+        Deferred.Or_error.error_string
+          "managed deployment intent is missing its root-owned application \
+           contract"
+    | None, _ -> Deferred.Or_error.return None
   in
   let%bind source =
     Source.prepare ~working_directory ~selection:source_selection
   in
-  Monitor.protect
-    ~finally:(fun () -> Source.cleanup source)
-    (fun () ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind () =
-        record_stage Evaluating "Evaluating committed flake configuration"
-      in
-      let%bind evaluated =
-        Nix_configuration.load_evaluated
-          ~working_directory:(Source.nix_root source)
-          ~flake:(Source.nix_flake source)
-      in
-      let configuration = Nix_configuration.configuration evaluated in
-      let project = Configuration.project configuration in
-      let%bind () =
-        match expected_project with
-        | None -> Deferred.Or_error.return ()
-        | Some expected when Project_name.equal expected project ->
-            Deferred.Or_error.return ()
-        | Some _ ->
-            Deferred.Or_error.error_string
-              "managed project mismatch: evaluated configuration project \
-               differs from the allowlisted project"
-      in
-      let%bind target =
-        Deferred.return (Configuration.find_target configuration target_name)
-      in
-      let%bind () =
-        match (Configuration.Target.production target, expected_intent) with
-        | Some _, None ->
-            Deferred.Or_error.error_string
-              "production-profile deployment requires a managed preview receipt"
-        | Some _, Some _ | None, _ -> Deferred.Or_error.return ()
-      in
-      let repository_identity = Source.repository source in
-      let configuration_json = Nix_configuration.json evaluated in
-      let configuration_digest =
-        configuration_json |> Digestif.SHA256.digest_string
-        |> Digestif.SHA256.to_hex
-      in
-      let%bind () =
-        match expected_intent with
-        | None -> Deferred.Or_error.return ()
-        | Some expected ->
+  let validate () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind evaluated =
+      Nix_configuration.load_evaluated
+        ~working_directory:(Source.nix_root source)
+        ~flake:(Source.nix_flake source)
+    in
+    let configuration = Nix_configuration.configuration evaluated in
+    let project = Configuration.project configuration in
+    let%bind () =
+      match expected_project with
+      | None -> Deferred.Or_error.return ()
+      | Some expected when Project_name.equal expected project ->
+          Deferred.Or_error.return ()
+      | Some _ ->
+          Deferred.Or_error.error_string
+            "managed project mismatch: evaluated configuration project differs \
+             from the root-managed project"
+    in
+    let%bind target =
+      Deferred.return (Configuration.find_target configuration target_name)
+    in
+    let configuration_json = Nix_configuration.json evaluated in
+    let configuration_digest =
+      configuration_json |> Digestif.SHA256.digest_string
+      |> Digestif.SHA256.to_hex
+    in
+    let%bind identity_policy =
+      match expected_intent with
+      | Some expected ->
+          let%map () =
             Deferred.return
-              (Deployment_intent.validate_evaluated expected ~repository_origin
+              (Deployment_intent.validate_evaluated expected ~source_authority
                  ~revision:(Source.revision source) ~configuration
                  ~configuration_json)
+          in
+          Deployment_intent.identity_policy expected
+      | None ->
+          Deferred.return
+            (Deployment_intent.authorize_local
+               ~applications:managed_applications ~working_directory
+               ~configuration ~target)
+    in
+    let repository_identity =
+      match expected_intent with
+      | Some intent -> Deployment_intent.repository_identity intent
+      | None -> Source.repository source
+    in
+    let%map candidates =
+      match (identity_policy, expected_intent) with
+      | Canonical_only, Some intent ->
+          Deferred.Or_error.return [ Deployment_intent.resource_key intent ]
+      | Canonical_only, None ->
+          Deferred.return
+            (Resource_key.derive ~project ~target:target_name
+               ~repository_identity
+            |> Or_error.map ~f:List.return)
+      | Migration_candidates, _ ->
+          Deferred.return
+            (Resource_key.candidates ~project ~target:target_name
+               ~repository_identity)
+    in
+    {
+      source;
+      project;
+      target_name;
+      target;
+      repository_identity;
+      configuration_digest;
+      candidates;
+    }
+  in
+  let%bind.Deferred result = Monitor.try_with_or_error validate in
+  match Or_error.join result with
+  | Ok prepared -> Deferred.Or_error.return prepared
+  | Error error ->
+      let%map.Deferred () = Source.cleanup source in
+      Error error
+
+let execute ?(record_stage = no_stage) ~operation_id prepared =
+  let open Deferred.Or_error.Let_syntax in
+  let source = prepared.source in
+  let project = prepared.project in
+  let target_name = prepared.target_name in
+  let target = prepared.target in
+  let repository_identity = prepared.repository_identity in
+  let configuration_digest = prepared.configuration_digest in
+  let%bind resource_key =
+    Podman.select_resource_key ~project ~target ~repository_identity
+      ~candidates:prepared.candidates
+  in
+  let%bind () =
+    record_stage Connecting "Verifying the canonical Podman connection"
+  in
+  let%bind connection = Podman.ensure_connection ~target ~resource_key in
+  let%bind () = Podman.preflight_read_only_bind_sources ~target in
+  let load_artifacts () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind () = record_stage Building "Building and loading the image" in
+    let%bind image =
+      Podman.build_and_load ~connection ~source
+        ~image_output:(Configuration.Target.image target)
+    in
+    let%bind secrets = Secrets.load ~source_root:(Source.path source) ~target in
+    let%map secret_mounts =
+      Podman.install_secrets ~connection ~resource_key ~secrets
+    in
+    (image, secrets, secret_mounts)
+  in
+  let target_kind = Configuration.Target.kind target in
+  let deployment_result ~image ~placement ~candidate ~warning =
+    {
+      operation_id;
+      project;
+      target = target_name;
+      revision = Source.revision source;
+      image_id = Podman.image_id image;
+      container_name = Podman.candidate_name candidate;
+      container_id = Podman.candidate_id candidate;
+      placement;
+      warning;
+    }
+  in
+  match target_kind with
+  | Configuration.Target.Non_web -> (
+      let%bind image, secrets, secret_mounts = load_artifacts () in
+      let verify candidate =
+        Podman.verify_candidate ~connection ~project ~target ~resource_key
+          ~source ~configuration_digest ~operation_id ~image ~candidate
       in
-      let%bind candidates =
-        match expected_intent with
-        | Some expected
-          when [%equal: Deployment_intent.identity_policy]
-                 (Deployment_intent.identity_policy expected)
-                 Deployment_intent.Canonical_only ->
-            Deferred.Or_error.return [ Deployment_intent.resource_key expected ]
-        | Some _ | None ->
-            Deferred.return
-              (Resource_key.candidates ~project ~target:target_name
-                 ~repository_identity)
+      let%bind plan =
+        Deferred.return (Deployment_plan.create ~target_kind ~active_port:None)
       in
-      let%bind resource_key =
-        Podman.select_resource_key ~project ~target ~repository_identity
-          ~candidates
+      let placement = Deployment_plan.placement plan in
+      let%bind () =
+        record_stage Planning "Planning single-container replacement"
       in
       let%bind () =
-        record_stage Connecting "Verifying the canonical Podman connection"
+        record_stage Running_pre_start
+          "Running flake-declared pre-start commands"
       in
-      let%bind connection = Podman.ensure_connection ~target ~resource_key in
-      let%bind () = Podman.preflight_read_only_bind_sources ~target in
-      let load_artifacts () =
+      let%bind () =
+        Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
+          ~secret_mounts
+      in
+      let%bind () =
+        record_stage Preparing_candidate
+          "Replacing only the owned application container"
+      in
+      let%bind () =
+        Podman.prepare_candidate ~connection ~project ~target ~resource_key
+          ~repository_identity ~placement
+      in
+      let%bind () =
+        record_stage Starting "Starting the application container"
+      in
+      let%bind candidate =
+        Podman.start_candidate ~connection ~project ~target ~resource_key
+          ~placement ~source ~configuration_digest ~operation_id
+          ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
+      in
+      let after_candidate =
         let open Deferred.Or_error.Let_syntax in
-        let%bind () = record_stage Building "Building and loading the image" in
-        let%bind image =
-          Podman.build_and_load ~connection ~source
-            ~image_output:(Configuration.Target.image target)
+        let%bind () =
+          record_stage Verifying
+            "Reading back application image, state, name, and labels"
         in
-        let%bind secrets =
-          Secrets.load ~source_root:(Source.path source) ~target
+        let%bind () = verify candidate in
+        let%bind () =
+          match Cancellation.commit_current () with
+          | Cancellation.Cancel ->
+              Deferred.Or_error.error_string
+                "deployment cancelled before finalization"
+          | Continue -> Deferred.Or_error.return ()
         in
-        let%map secret_mounts =
-          Podman.install_secrets ~connection ~resource_key ~secrets
+        let%map () =
+          record_stage Succeeded "Deployment independently verified"
         in
-        (image, secrets, secret_mounts)
+        deployment_result ~image ~placement ~candidate ~warning:None
       in
-      let target_kind = Configuration.Target.kind target in
-      let deployment_result ~image ~placement ~candidate ~warning =
-        {
-          operation_id;
-          project;
-          target = target_name;
-          revision = Source.revision source;
-          image_id = Podman.image_id image;
-          container_name = Podman.candidate_name candidate;
-          container_id = Podman.candidate_id candidate;
-          placement;
-          warning;
-        }
+      let%bind.Deferred result = after_candidate in
+      match result with
+      | Ok deployment -> Deferred.Or_error.return deployment
+      | Error error -> cleanup_candidate ~connection candidate error)
+  | Web web -> (
+      let caddy = Caddy.create ~target ~resource_key ~web in
+      let%bind () =
+        record_stage Planning "Reading the exact current Caddy route"
       in
-      match target_kind with
-      | Configuration.Target.Non_web -> (
-          let%bind image, secrets, secret_mounts = load_artifacts () in
-          let verify candidate =
-            Podman.verify_candidate ~connection ~project ~target ~resource_key
-              ~source ~configuration_digest ~operation_id ~image ~candidate
-          in
-          let%bind plan =
-            Deferred.return
-              (Deployment_plan.create ~target_kind ~active_port:None)
-          in
-          let placement = Deployment_plan.placement plan in
-          let%bind () =
-            record_stage Planning "Planning single-container replacement"
-          in
-          let%bind () =
-            record_stage Running_pre_start
-              "Running flake-declared pre-start commands"
-          in
-          let%bind () =
-            Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
-              ~secret_mounts
-          in
-          let%bind () =
-            record_stage Preparing_candidate
-              "Replacing only the owned application container"
-          in
-          let%bind () =
-            Podman.prepare_candidate ~connection ~project ~target ~resource_key
-              ~repository_identity ~placement
-          in
-          let%bind () =
-            record_stage Starting "Starting the application container"
-          in
-          let%bind candidate =
-            Podman.start_candidate ~connection ~project ~target ~resource_key
-              ~placement ~source ~configuration_digest ~operation_id
-              ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
-          in
-          let after_candidate =
-            let open Deferred.Or_error.Let_syntax in
-            let%bind () =
-              record_stage Verifying
-                "Reading back application image, state, name, and labels"
+      let%bind previous = Caddy.inspect caddy in
+      let active_port =
+        match previous with
+        | Caddy.Missing -> None
+        | Existing { active_port; _ } -> Some active_port
+      in
+      let%bind plan =
+        Deferred.return (Deployment_plan.create ~target_kind ~active_port)
+      in
+      let placement = Deployment_plan.placement plan in
+      let%bind _candidate_slot, candidate_port =
+        Deferred.return (Deployment_plan.web_placement plan)
+      in
+      let active_slot = Deployment_plan.active_slot plan in
+      let%bind previous_candidate =
+        match active_slot with
+        | None -> Deferred.Or_error.return None
+        | Some slot -> (
+            let%bind candidate =
+              Podman.find_owned_slot ~connection ~project ~target ~resource_key
+                ~repository_identity ~slot
             in
-            let%bind () = verify candidate in
-            let%bind () =
-              match Cancellation.commit_current () with
-              | Cancellation.Cancel ->
-                  Deferred.Or_error.error_string
-                    "deployment cancelled before finalization"
-              | Continue -> Deferred.Or_error.return ()
-            in
-            let%map () =
-              record_stage Succeeded "Deployment independently verified"
-            in
-            deployment_result ~image ~placement ~candidate ~warning:None
-          in
-          let%bind.Deferred result = after_candidate in
-          match result with
-          | Ok deployment -> Deferred.Or_error.return deployment
-          | Error error -> cleanup_candidate ~connection candidate error)
-      | Web web -> (
-          let caddy = Caddy.create ~target ~resource_key ~web in
-          let%bind () =
-            record_stage Planning "Reading the exact current Caddy route"
-          in
-          let%bind previous = Caddy.inspect caddy in
-          let active_port =
-            match previous with
-            | Caddy.Missing -> None
-            | Existing { active_port; _ } -> Some active_port
-          in
-          let%bind plan =
-            Deferred.return (Deployment_plan.create ~target_kind ~active_port)
-          in
-          let placement = Deployment_plan.placement plan in
-          let%bind _candidate_slot, candidate_port =
-            Deferred.return (Deployment_plan.web_placement plan)
-          in
-          let active_slot = Deployment_plan.active_slot plan in
-          let%bind previous_candidate =
-            match active_slot with
-            | None -> Deferred.Or_error.return None
-            | Some slot -> (
-                let%bind candidate =
-                  Podman.find_owned_slot ~connection ~project ~target
-                    ~resource_key ~repository_identity ~slot
-                in
-                match candidate with
-                | Some candidate -> Deferred.Or_error.return (Some candidate)
-                | None ->
-                    Deferred.Or_error.error_string
-                      "Caddy active slot has no owned container")
-          in
-          let%bind legacy_single =
-            Podman.find_owned_placement ~connection ~project ~target
-              ~resource_key ~repository_identity
-              ~placement:Deployment_plan.Single_container
-          in
-          let%bind image, secrets, secret_mounts = load_artifacts () in
-          let verify candidate =
-            Podman.verify_candidate ~connection ~project ~target ~resource_key
-              ~source ~configuration_digest ~operation_id ~image ~candidate
-          in
-          let%bind () =
-            record_stage Preparing_candidate
-              "Removing only the owned inactive slot"
-          in
-          let%bind () =
-            Podman.prepare_candidate ~connection ~project ~target ~resource_key
-              ~repository_identity ~placement
-          in
-          let%bind () =
-            record_stage Running_pre_start
-              "Running flake-declared pre-start commands"
-          in
-          let%bind () =
-            Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
-              ~secret_mounts
-          in
-          let%bind () =
-            record_stage Starting "Starting the inactive candidate slot"
-          in
-          let%bind candidate =
-            Podman.start_candidate ~connection ~project ~target ~resource_key
-              ~placement ~source ~configuration_digest ~operation_id
-              ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
-          in
-          let switched = ref false in
-          let after_candidate =
-            let open Deferred.Or_error.Let_syntax in
-            let%bind () =
-              record_stage Verifying "Reading back candidate image and labels"
-            in
-            let%bind () = verify candidate in
-            let%bind () =
-              record_stage Health_checking "Waiting for target-local health"
-            in
-            let%bind () = Caddy.health_check caddy ~port:candidate_port in
-            let%bind () =
-              record_stage Switching "Switching the exact Caddy proxy"
-            in
-            switched := true;
-            let%bind () = Caddy.switch caddy ~previous ~candidate_port in
-            let%bind () =
-              record_stage Verifying "Verifying ingress and candidate identity"
-            in
-            let%bind observed = Caddy.inspect caddy in
-            let%bind () =
-              match observed with
-              | Caddy.Existing { active_port; domain }
-                when Int.equal active_port candidate_port
-                     && String.Caseless.equal domain
-                          (Configuration.Web.domain web) ->
-                  Deferred.Or_error.return ()
-              | _ ->
-                  Deferred.Or_error.error_string
-                    "Caddy readback did not select candidate"
-            in
-            let%bind () = verify candidate in
-            let%bind () =
-              match Cancellation.commit_current () with
-              | Continue -> Deferred.Or_error.return ()
-              | Cancel ->
-                  Deferred.Or_error.error_string
-                    "deployment cancelled before finalization"
-            in
-            let retirements =
-              List.filter_opt [ previous_candidate; legacy_single ]
-              |> List.dedup_and_sort ~compare:(fun left right ->
-                  String.compare (Podman.candidate_id left)
-                    (Podman.candidate_id right))
-            in
-            let%bind () =
-              if List.is_empty retirements then Deferred.Or_error.return ()
-              else
-                record_stage Retiring_previous
-                  "Retiring previous owned application containers"
-            in
-            let%bind () =
-              record_stage Succeeded "Deployment independently verified"
-            in
-            let%bind.Deferred retirement_results =
-              let open Deferred.Let_syntax in
-              let%bind observed =
-                Caddy.inspect ~ignore_termination:true caddy
-              in
-              match observed with
-              | Ok (Caddy.Existing { active_port; domain })
-                when Int.equal active_port candidate_port
-                     && String.Caseless.equal domain
-                          (Configuration.Web.domain web) ->
-                  Deferred.List.map retirements ~how:`Sequential
-                    ~f:(fun retirement ->
-                      let%map result =
-                        Podman.remove_candidate ~connection
-                          ~candidate:retirement
-                      in
-                      (retirement, result))
-              | Error error ->
-                  Deferred.return
-                    (List.map retirements ~f:(fun retirement ->
-                         (retirement, Error error)))
-              | _ ->
-                  let error =
-                    Error.of_string
-                      "Caddy route changed before container retirement"
+            match candidate with
+            | Some candidate -> Deferred.Or_error.return (Some candidate)
+            | None ->
+                Deferred.Or_error.error_string
+                  "Caddy active slot has no owned container")
+      in
+      let%bind legacy_single =
+        Podman.find_owned_placement ~connection ~project ~target ~resource_key
+          ~repository_identity ~placement:Deployment_plan.Single_container
+      in
+      let%bind image, secrets, secret_mounts = load_artifacts () in
+      let verify candidate =
+        Podman.verify_candidate ~connection ~project ~target ~resource_key
+          ~source ~configuration_digest ~operation_id ~image ~candidate
+      in
+      let%bind () =
+        record_stage Preparing_candidate "Removing only the owned inactive slot"
+      in
+      let%bind () =
+        Podman.prepare_candidate ~connection ~project ~target ~resource_key
+          ~repository_identity ~placement
+      in
+      let%bind () =
+        record_stage Running_pre_start
+          "Running flake-declared pre-start commands"
+      in
+      let%bind () =
+        Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
+          ~secret_mounts
+      in
+      let%bind () =
+        record_stage Starting "Starting the inactive candidate slot"
+      in
+      let%bind candidate =
+        Podman.start_candidate ~connection ~project ~target ~resource_key
+          ~placement ~source ~configuration_digest ~operation_id
+          ~deployed_at:(timestamp ()) ~image ~secrets ~secret_mounts
+      in
+      let switched = ref false in
+      let after_candidate =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind () =
+          record_stage Verifying "Reading back candidate image and labels"
+        in
+        let%bind () = verify candidate in
+        let%bind () =
+          record_stage Health_checking "Waiting for target-local health"
+        in
+        let%bind () = Caddy.health_check caddy ~port:candidate_port in
+        let%bind () =
+          record_stage Switching "Switching the exact Caddy proxy"
+        in
+        switched := true;
+        let%bind () = Caddy.switch caddy ~previous ~candidate_port in
+        let%bind () =
+          record_stage Verifying "Verifying ingress and candidate identity"
+        in
+        let%bind observed = Caddy.inspect caddy in
+        let%bind () =
+          match observed with
+          | Caddy.Existing { active_port; domain }
+            when Int.equal active_port candidate_port
+                 && String.Caseless.equal domain (Configuration.Web.domain web)
+            ->
+              Deferred.Or_error.return ()
+          | _ ->
+              Deferred.Or_error.error_string
+                "Caddy readback did not select candidate"
+        in
+        let%bind () = verify candidate in
+        let%bind () =
+          match Cancellation.commit_current () with
+          | Continue -> Deferred.Or_error.return ()
+          | Cancel ->
+              Deferred.Or_error.error_string
+                "deployment cancelled before finalization"
+        in
+        let retirements =
+          List.filter_opt [ previous_candidate; legacy_single ]
+          |> List.dedup_and_sort ~compare:(fun left right ->
+              String.compare (Podman.candidate_id left)
+                (Podman.candidate_id right))
+        in
+        let%bind () =
+          if List.is_empty retirements then Deferred.Or_error.return ()
+          else
+            record_stage Retiring_previous
+              "Retiring previous owned application containers"
+        in
+        let%bind () =
+          record_stage Succeeded "Deployment independently verified"
+        in
+        let%bind.Deferred retirement_results =
+          let open Deferred.Let_syntax in
+          let%bind observed = Caddy.inspect ~ignore_termination:true caddy in
+          match observed with
+          | Ok (Caddy.Existing { active_port; domain })
+            when Int.equal active_port candidate_port
+                 && String.Caseless.equal domain (Configuration.Web.domain web)
+            ->
+              Deferred.List.map retirements ~how:`Sequential
+                ~f:(fun retirement ->
+                  let%map result =
+                    Podman.remove_candidate ~connection ~candidate:retirement
                   in
-                  Deferred.return
-                    (List.map retirements ~f:(fun retirement ->
-                         (retirement, Error error)))
-            in
-            let warning =
-              List.filter_map retirement_results ~f:(fun (retirement, result) ->
-                  Result.error result
-                  |> Option.map ~f:(fun error ->
-                      sprintf "%s: %s"
-                        (Podman.candidate_name retirement)
-                        (Error.to_string_hum error)))
-              |> function
-              | [] -> None
-              | failures ->
-                  Some
-                    (String.prefix
-                       ("Deployment verified, but container retirement failed: "
-                       ^ String.concat failures ~sep:"; ")
-                       4096)
-            in
-            Deferred.Or_error.return
-              (deployment_result ~image ~placement ~candidate ~warning)
-          in
-          let%bind.Deferred result = after_candidate in
-          match result with
-          | Ok deployment -> Deferred.Or_error.return deployment
-          | Error error when !switched ->
-              restore_and_cleanup ~caddy ~previous ~connection ~candidate error
-          | Error error -> cleanup_candidate ~connection candidate error))
+                  (retirement, result))
+          | Error error ->
+              Deferred.return
+                (List.map retirements ~f:(fun retirement ->
+                     (retirement, Error error)))
+          | _ ->
+              let error =
+                Error.of_string
+                  "Caddy route changed before container retirement"
+              in
+              Deferred.return
+                (List.map retirements ~f:(fun retirement ->
+                     (retirement, Error error)))
+        in
+        let warning =
+          List.filter_map retirement_results ~f:(fun (retirement, result) ->
+              Result.error result
+              |> Option.map ~f:(fun error ->
+                  sprintf "%s: %s"
+                    (Podman.candidate_name retirement)
+                    (Error.to_string_hum error)))
+          |> function
+          | [] -> None
+          | failures ->
+              Some
+                (String.prefix
+                   ("Deployment verified, but container retirement failed: "
+                   ^ String.concat failures ~sep:"; ")
+                   4096)
+        in
+        Deferred.Or_error.return
+          (deployment_result ~image ~placement ~candidate ~warning)
+      in
+      let%bind.Deferred result = after_candidate in
+      match result with
+      | Ok deployment -> Deferred.Or_error.return deployment
+      | Error error when !switched ->
+          restore_and_cleanup ~caddy ~previous ~connection ~candidate error
+      | Error error -> cleanup_candidate ~connection candidate error)
+
+let deploy ?record_stage ?expected_project ?expected_intent ?managed_application
+    ?managed_applications ~operation_id ~working_directory ~source ~target () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind prepared =
+    prepare ?expected_project ?expected_intent ?managed_application
+      ?managed_applications ~working_directory ~source ~target ()
+  in
+  Monitor.protect
+    ~finally:(fun () -> cleanup_prepared prepared)
+    (fun () -> execute ?record_stage ~operation_id prepared)

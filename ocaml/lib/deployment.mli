@@ -17,11 +17,35 @@ type stage =
 [@@deriving compare, equal, sexp]
 
 type t
+type prepared
+
+val prepare :
+  ?expected_project:Project_name.t ->
+  ?expected_intent:Deployment_intent.t ->
+  ?managed_application:Managed_application.t ->
+  ?managed_applications:Managed_application.t list ->
+  working_directory:string ->
+  source:Source.selection ->
+  target:Target_name.t ->
+  unit ->
+  prepared Deferred.Or_error.t
+(** Materializes, evaluates, and authorizes the exact deployment without remote,
+    resource-state, or deployment-history mutation. *)
+
+val cleanup_prepared : prepared -> unit Deferred.t
+
+val execute :
+  ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
+  operation_id:string ->
+  prepared ->
+  t Deferred.Or_error.t
 
 val deploy :
   ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
   ?expected_project:Project_name.t ->
   ?expected_intent:Deployment_intent.t ->
+  ?managed_application:Managed_application.t ->
+  ?managed_applications:Managed_application.t list ->
   operation_id:string ->
   working_directory:string ->
   source:Source.selection ->

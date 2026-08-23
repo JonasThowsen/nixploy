@@ -58,6 +58,9 @@ let run_tests () =
           ~application_key
           ~expected_project
           ~expected_intent:_
+          ~managed_application:_
+          ~managed_applications:_
+          ~on_authorized
           ~working_directory
           ~source
           ~target:_
@@ -72,6 +75,8 @@ let run_tests () =
         match !deployment_error with
         | Some error -> Deferred.return (Error error)
         | None ->
+            let%bind authorized = on_authorized () in
+            assert_ok authorized;
             let deployment =
               Nixploy.Application.For_testing.deployment
                 ~id:("deployment-" ^ String.prefix revision 1)

@@ -147,6 +147,8 @@ let%test_unit "production managed applications require exact root-owned intent"
         "repository": "/srv/sample",
         "repositoryIdentity": "owner/sample",
         "repositoryProvenance": "ssh://git@example.invalid/sample.git",
+        "repositoryReference": "refs/heads/main",
+        "repositoryEvidenceFile": "/var/lib/nixploy/sample-source.json",
         "production": {
           "host": "production.example.invalid",
           "user": "deploy",
@@ -174,9 +176,41 @@ let%test_unit "production managed applications require exact root-owned intent"
         ~with_:"";
       String.substr_replace_first valid
         ~pattern:"\"repositoryIdentity\": \"owner/sample\"," ~with_:"";
+      String.substr_replace_first valid
+        ~pattern:"\"repositoryReference\": \"refs/heads/main\"," ~with_:"";
+      String.substr_replace_first valid
+        ~pattern:
+          "\"repositoryEvidenceFile\": \"/var/lib/nixploy/sample-source.json\","
+        ~with_:"";
     ]
     ~f:(fun json ->
       assert (Result.is_error (Nixploy.Managed_application.all_of_json json)))
+
+let%test_unit "production source evidence is bounded, exact, and fresh" =
+  let valid =
+    {|{"version":1,"provenance":"owner/repository","reference":"refs/heads/main","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observedAtUnixSeconds":1000}|}
+  in
+  let validate ?(now_seconds = 1100.) ?(provenance = "owner/repository")
+      ?(reference = "refs/heads/main") input =
+    Nixploy.Source_authority.For_testing.validate_manifest ~now_seconds
+      ~max_age_seconds:300 ~expected_provenance:provenance
+      ~expected_reference:reference input
+  in
+  assert_ok (validate valid);
+  assert (Result.is_error (validate ~now_seconds:1401. valid));
+  assert (Result.is_error (validate ~now_seconds:900. valid));
+  assert (Result.is_error (validate ~provenance:"attacker/repository" valid));
+  assert (Result.is_error (validate ~reference:"refs/heads/release" valid));
+  List.iter
+    [
+      String.substr_replace_first valid ~pattern:"\"version\":1"
+        ~with_:"\"version\":2";
+      String.substr_replace_first valid
+        ~pattern:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ~with_:"not-a-commit";
+      String.substr_replace_first valid ~pattern:"}" ~with_:",\"extra\":true}";
+    ]
+    ~f:(fun evidence -> assert (Result.is_error (validate evidence)))
 
 let%test_unit
     "deployment preview receipts fail closed across every cache boundary" =
@@ -313,6 +347,8 @@ let%test_unit
           "repository": "/srv/sample",
           "repositoryIdentity": "owner/sample",
           "repositoryProvenance": "ssh://git@example.invalid/sample.git",
+          "repositoryReference": "refs/heads/main",
+          "repositoryEvidenceFile": "/var/lib/nixploy/sample-source.json",
           "production": {
             "host": "production.example.invalid",
             "user": "deploy",
@@ -345,10 +381,20 @@ let%test_unit
     Nixploy.Configuration.of_json configuration_json |> assert_ok
   in
   let revision = String.make 40 'a' in
-  let origin = Some "ssh://git@example.invalid/sample.git" in
+  let commit =
+    Nixploy.Source.For_testing.commit ~revision ~subject:"test" ~timestamp_ms:0L
+    |> assert_ok
+  in
+  let source_authority =
+    Nixploy.Source_authority.For_testing.create ~commit
+      ~provenance:"ssh://git@example.invalid/sample.git"
+      ~reference:"refs/heads/main" ~evidence_digest:"evidence"
+      ~repository_root:"/srv/sample"
+  in
   let intent =
-    Nixploy.Deployment_intent.create ~application ~repository_origin:origin
-      ~revision ~configuration ~configuration_json
+    Nixploy.Deployment_intent.create ~application
+      ~source_authority:(Some source_authority) ~revision ~configuration
+      ~configuration_json
     |> assert_ok
   in
   assert (
@@ -357,25 +403,25 @@ let%test_unit
       Nixploy.Deployment_intent.Canonical_only);
   assert_ok
     (Nixploy.Deployment_intent.validate_evaluated intent
-       ~repository_origin:origin ~revision ~configuration ~configuration_json);
+       ~source_authority:(Some source_authority) ~revision ~configuration
+       ~configuration_json);
   let changed replacements =
     List.fold replacements ~init:configuration_json
       ~f:(fun json (pattern, with_) ->
         String.substr_replace_first json ~pattern ~with_)
   in
-  let reject ?(repository_origin = origin) ?(revision = revision)
+  let reject ?(source_authority = Some source_authority) ?(revision = revision)
       configuration_json =
     let configuration =
       Nixploy.Configuration.of_json configuration_json |> assert_ok
     in
     assert (
       Result.is_error
-        (Nixploy.Deployment_intent.validate_evaluated intent ~repository_origin
+        (Nixploy.Deployment_intent.validate_evaluated intent ~source_authority
            ~revision ~configuration ~configuration_json))
   in
   reject ~revision:(String.make 40 'b') configuration_json;
-  reject ~repository_origin:(Some "ssh://git@example.invalid/forged.git")
-    configuration_json;
+  reject ~source_authority:None configuration_json;
   reject (changed [ ("\"project\":\"sample\"", "\"project\":\"other\"") ]);
   reject (changed [ ("\"production\":{", "\"staging\":{") ]);
   reject
@@ -390,6 +436,49 @@ let%test_unit
          ( "\"domain\":\"app.example.invalid\"",
            "\"domain\":\"other.example.invalid\"" );
        ])
+
+let%test_unit
+    "root mutation policy blocks production stanza removal and destination \
+     aliases" =
+  let directory = Filename_unix.temp_dir "nixploy-authority-policy-" "" in
+  let applications =
+    Nixploy.Managed_application.all_of_json
+      (sprintf
+         {|{
+           "production":{"project":"sample","target":"production","repository":"%s","repositoryIdentity":"owner/sample","repositoryProvenance":"owner/sample","repositoryReference":"refs/heads/main","repositoryEvidenceFile":"/etc/nixploy/sample-source.json","production":{"host":"prod.invalid","user":"deploy","port":22,"kind":"web","domain":"app.invalid","coordinationScope":"sample-production"}},
+           "staging":{"project":"sample","target":"staging","repository":"%s","repositoryIdentity":"owner/sample","repositoryProvenance":"owner/sample","nonProduction":{"host":"stage.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"sample-staging"}}
+         }|}
+         directory directory)
+    |> assert_ok
+  in
+  let authorize json target_name =
+    let configuration = Nixploy.Configuration.of_json json |> assert_ok in
+    let target_name = Nixploy.Target_name.of_string target_name |> assert_ok in
+    let target =
+      Nixploy.Configuration.find_target configuration target_name |> assert_ok
+    in
+    Nixploy.Deployment_intent.authorize_local ~applications
+      ~working_directory:directory ~configuration ~target
+  in
+  let removed_profile =
+    {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"prod.invalid","user":"deploy","web":{"domain":"app.invalid"}}}}|}
+  in
+  let target_alias =
+    {|{"__schema":"v0.4","project":"other","targets":{"alias":{"image":"image","ip":"prod.invalid","user":"other"}}}|}
+  in
+  let domain_alias =
+    {|{"__schema":"v0.4","project":"other","targets":{"alias":{"image":"image","ip":"elsewhere.invalid","user":"deploy","web":{"domain":"app.invalid"}}}}|}
+  in
+  let staging =
+    {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy"}}}|}
+  in
+  assert (Result.is_error (authorize removed_profile "production"));
+  assert (Result.is_error (authorize target_alias "alias"));
+  assert (Result.is_error (authorize domain_alias "alias"));
+  ignore
+    (assert_ok (authorize staging "staging")
+      : Nixploy.Deployment_intent.identity_policy);
+  Core_unix.rmdir directory
 
 let%test_unit "configuration reads the current flake schema" =
   let json =

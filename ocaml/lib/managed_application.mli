@@ -9,14 +9,21 @@ val maximum_count : int
     predictable. *)
 
 val all_of_json : string -> t list Or_error.t
-val load_environment : unit -> t list Or_error.t
+
+val load_authority_file : unit -> t list Or_error.t
+(** Loads the one root-owned machine authority shared by CLI and web. *)
+
 val key : t -> string
 val project : t -> Project_name.t
 val target : t -> Target_name.t
 val repository : t -> string
 val repository_identity : t -> string
 val repository_provenance : t -> string option
+val repository_reference : t -> string option
+val repository_evidence_file : t -> string option
+val repository_evidence_max_age_seconds : t -> int
 val production_destination : t -> production_destination option
+val non_production_destination : t -> production_destination option
 val destination_host : production_destination -> string
 val destination_user : production_destination -> string
 val destination_port : production_destination -> int

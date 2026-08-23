@@ -219,17 +219,6 @@
             ];
           };
           service = evaluated.config.systemd.services.nixploy;
-          expectedApplications = builtins.toJSON {
-            example = {
-              project = "example";
-              target = "production";
-              repository = "/srv/nixploy/example";
-              repositoryIdentity = "owner/example";
-              repositoryProvenance = "git@example.invalid:example.git";
-              subdirectory = "deploy";
-              production = null;
-            };
-          };
           renamed = lib.nixosSystem {
             inherit system;
             modules = [
@@ -272,7 +261,7 @@
             assert service.environment.NIXPLOY_AUTH_MODE == "tailscale";
             assert service.environment.NIXPLOY_OPERATOR_EMAIL == "operator@example.com";
             assert service.environment.NIXPLOY_ALLOWED_ORIGIN == "https://nixploy.example.com";
-            assert service.environment.NIXPLOY_MANAGED_APPLICATIONS_JSON == expectedApplications;
+            assert !(builtins.hasAttr "NIXPLOY_MANAGED_APPLICATIONS_JSON" service.environment);
             assert
               service.environment.NIXPLOY_SSH_IDENTITY_FILE == "/run/credentials/nixploy.service/ssh-identity";
             assert
@@ -322,8 +311,8 @@
                 }).config.system.build.toplevel
               );
             in
-              assert !attempted.success;
-              pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
+            assert !attempted.success;
+            pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
         }
       );
 

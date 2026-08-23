@@ -4,9 +4,12 @@ open Core
 val deploy :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(Store.deployment -> unit) ->
+  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   ?expected_intent:Deployment_intent.t ->
+  ?managed_application:Managed_application.t ->
+  ?managed_applications:Managed_application.t list ->
   store:Store.t ->
   working_directory:string ->
   source:Source.selection ->
@@ -17,9 +20,12 @@ val deploy :
 val deploy_within_lease :
   ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
   ?on_requested:(Store.deployment -> unit) ->
+  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   ?expected_intent:Deployment_intent.t ->
+  ?managed_application:Managed_application.t ->
+  ?managed_applications:Managed_application.t list ->
   store:Store.t ->
   working_directory:string ->
   source:Source.selection ->

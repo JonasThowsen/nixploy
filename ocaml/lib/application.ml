@@ -131,6 +131,9 @@ type t = {
     application_key:string option ->
     expected_project:Project_name.t option ->
     expected_intent:Deployment_intent.t option ->
+    managed_application:Managed_application.t option ->
+    managed_applications:Managed_application.t list ->
+    on_authorized:(unit -> unit Deferred.Or_error.t) ->
     working_directory:string ->
     source:source ->
     target:Target_name.t ->
@@ -150,6 +153,7 @@ type t = {
   active : active_operation String.Table.t;
   runtime_cache : cached_runtime String.Table.t;
   deployment_receipts : preview_payload Deployment_receipt_store.t;
+  managed_applications : Managed_application.t list;
   mutations : mutation_lifecycle;
 }
 
@@ -207,15 +211,18 @@ let same_scope (scope : scope) (deployment : deployment) =
   | None, None -> true
   | None, Some _ -> false
 
-let create ~store () =
+let create ?(managed_applications = []) ~store () =
   let deploy_operation ~on_stage ~on_requested ~application_key
-      ~expected_project ~expected_intent ~working_directory ~source ~target () =
+      ~expected_project ~expected_intent ~managed_application
+      ~managed_applications ~on_authorized ~working_directory ~source ~target ()
+      =
     let open Deferred.Or_error.Let_syntax in
     Tracked_deployment.deploy_within_lease ~on_stage
       ~on_requested:(fun deployment ->
         on_requested (deployment_of_store deployment))
-      ?application_key ?expected_project ?expected_intent ~store
-      ~working_directory ~source ~target ()
+      ~on_authorized ?application_key ?expected_project ?expected_intent
+      ?managed_application ~managed_applications ~store ~working_directory
+      ~source ~target ()
     >>| deployment_of_store
   in
   {
@@ -236,6 +243,7 @@ let create ~store () =
     active = String.Table.create ();
     runtime_cache = String.Table.create ();
     deployment_receipts = Deployment_receipt_store.create () |> Or_error.ok_exn;
+    managed_applications;
     mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
 
@@ -275,22 +283,31 @@ let account_mutation t operation =
           Deferred.unit)
 
 let open_ ~state_path =
-  let%map.Deferred.Or_error store = Store.open_ ~path:state_path in
-  create ~store ()
+  let open Deferred.Or_error.Let_syntax in
+  let%bind managed_applications =
+    Deferred.return (Managed_application.load_authority_file ())
+  in
+  let%map store = Store.open_ ~path:state_path in
+  create ~managed_applications ~store ()
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 
 let evaluate_managed_deployment_intent application commit =
   let open Deferred.Or_error.Let_syntax in
   let working_directory = Managed_application.working_directory application in
-  let%bind repository_origin = Source.repository_origin ~working_directory in
+  let%bind source_authority =
+    match Managed_application.production_destination application with
+    | Some _ ->
+        let%map authority =
+          Source_authority.verify
+            ~expected_revision:(Source.commit_revision commit)
+            application
+        in
+        Some authority
+    | None -> Deferred.Or_error.return None
+  in
   let%bind source =
-    Source.prepare ~working_directory
-      ~selection:
-        (Source.immutable
-           ~repository_identity:
-             (Managed_application.repository_identity application)
-           commit)
+    Source.prepare ~working_directory ~selection:(Source.immutable commit)
   in
   Monitor.protect
     ~finally:(fun () -> Source.cleanup source)
@@ -302,16 +319,28 @@ let evaluate_managed_deployment_intent application commit =
           ~flake:(Source.nix_flake source)
       in
       Deferred.return
-        (Deployment_intent.create ~application ~repository_origin
+        (Deployment_intent.create ~application ~source_authority
            ~revision:(Source.revision source)
            ~configuration:(Nix_configuration.configuration evaluated)
            ~configuration_json:(Nix_configuration.json evaluated)))
 
-let preview_managed_deployment t application =
+let authoritative_application t application =
+  Managed_application.find t.managed_applications
+    (Managed_application.key application)
+
+let preview_managed_deployment t requested_application =
   let open Deferred.Or_error.Let_syntax in
+  let%bind application =
+    Deferred.return (authoritative_application t requested_application)
+  in
   let%bind commit =
-    t.preview_main
-      ~working_directory:(Managed_application.working_directory application)
+    match Managed_application.production_destination application with
+    | Some _ ->
+        let%map authority = Source_authority.verify application in
+        Source_authority.commit authority
+    | None ->
+        t.preview_main
+          ~working_directory:(Managed_application.working_directory application)
   in
   let%bind intent = evaluate_managed_deployment_intent application commit in
   let%bind working_directory =
@@ -334,7 +363,7 @@ let resolve_commit t ~working_directory ~revision =
   t.find_commit ~working_directory ~revision
 
 let local_source _t ~working_directory = Source.local ~working_directory
-let immutable_source = Source.immutable
+let immutable_source commit = Source.immutable commit
 
 let source_revision source =
   Source.selection_commit source |> Source.commit_revision
@@ -361,8 +390,8 @@ let invalidate_runtime_scope t ~working_directory ~target =
       | Some _ | None -> ())
 
 let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project ?expected_intent t ~working_directory
-    ~source ~target () =
+    ?application_key ?expected_project ?expected_intent ?managed_application t
+    ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
@@ -381,13 +410,15 @@ let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
         Cancellation.within cancellation (fun () ->
             Store.with_lease t.store ~working_directory ~target (fun () ->
                 let open Deferred.Or_error.Let_syntax in
-                let%bind () =
+                let on_authorized () =
                   Store.set_resource_state t.store ~working_directory ~target
                     Unknown
                 in
                 let%bind deployment =
                   t.deploy_operation ~on_stage ~on_requested:requested
                     ~application_key ~expected_project ~expected_intent
+                    ~managed_application
+                    ~managed_applications:t.managed_applications ~on_authorized
                     ~working_directory ~source ~target ()
                 in
                 let%map () =
@@ -411,38 +442,39 @@ let deploy ?on_stage ?on_requested ?application_key ?expected_project t
       deploy_unaccounted ?on_stage ?on_requested ?application_key
         ?expected_project t ~working_directory ~source ~target ())
 
-let deploy_managed_preview ?on_requested t application ~receipt =
-  match
-    Deployment_receipt_store.consume t.deployment_receipts
-      ~application_key:(Managed_application.key application)
-      ~receipt
-  with
+let deploy_managed_preview ?on_requested t requested_application ~receipt =
+  let application = authoritative_application t requested_application in
+  match application with
   | Error error -> Deferred.return (Error error)
-  | Ok { commit; intent; working_directory } -> (
+  | Ok application -> (
       match
-        canonical_working_directory
-          (Managed_application.working_directory application)
+        Deployment_receipt_store.consume t.deployment_receipts
+          ~application_key:(Managed_application.key application)
+          ~receipt
       with
       | Error error -> Deferred.return (Error error)
-      | Ok current_working_directory
-        when not (String.equal working_directory current_working_directory) ->
-          Deferred.Or_error.error_string
-            "deployment preview checkout no longer matches the managed \
-             application"
-      | Ok current_working_directory ->
-          account_mutation t (fun () ->
-              deploy_unaccounted ?on_requested
-                ~application_key:(Managed_application.key application)
-                ~expected_project:(Managed_application.project application)
-                ~expected_intent:intent t
-                ~working_directory:current_working_directory
-                ~source:
-                  (Source.immutable
-                     ~repository_identity:
-                       (Managed_application.repository_identity application)
-                     commit)
-                ~target:(Managed_application.target application)
-                ()))
+      | Ok { commit; intent; working_directory } -> (
+          match
+            canonical_working_directory
+              (Managed_application.working_directory application)
+          with
+          | Error error -> Deferred.return (Error error)
+          | Ok current_working_directory
+            when not (String.equal working_directory current_working_directory)
+            ->
+              Deferred.Or_error.error_string
+                "deployment preview checkout no longer matches the managed \
+                 application"
+          | Ok current_working_directory ->
+              account_mutation t (fun () ->
+                  deploy_unaccounted ?on_requested
+                    ~application_key:(Managed_application.key application)
+                    ~expected_project:(Managed_application.project application)
+                    ~expected_intent:intent ~managed_application:application t
+                    ~working_directory:current_working_directory
+                    ~source:(Source.immutable commit)
+                    ~target:(Managed_application.target application)
+                    ())))
 
 let prune_unaccounted ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =
@@ -903,8 +935,8 @@ let deployment_updated_at_ms (deployment : deployment) =
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ?status ?logs ?metrics ~store ~preview_main ~find_commit ~deploy
-      ~prune () =
+  let create ?status ?logs ?metrics ?(managed_applications = []) ~store
+      ~preview_main ~find_commit ~deploy ~prune () =
     {
       store;
       preview_main;
@@ -921,6 +953,7 @@ module For_testing = struct
       runtime_cache = String.Table.create ();
       deployment_receipts =
         Deployment_receipt_store.create () |> Or_error.ok_exn;
+      managed_applications;
       mutations =
         { accepting = true; active_count = 0; drained = Ivar.create () };
     }
