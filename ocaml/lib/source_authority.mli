@@ -16,6 +16,10 @@ val reference : t -> string
 val evidence_digest : t -> string
 val repository_root : t -> string
 
+val protected_git : t -> Protected_git.t Or_error.t
+(** Returns the admitted Git context used by protected object materialization.
+*)
+
 module For_testing : sig
   val create :
     commit:Source.commit ->

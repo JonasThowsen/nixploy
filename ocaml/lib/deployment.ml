@@ -141,7 +141,17 @@ let prepare ?expected_project ?managed_authorization
     | None, _ -> Deferred.Or_error.return None
   in
   let%bind source =
-    Source.prepare ~working_directory ~selection:source_selection
+    match source_authority with
+    | None -> Source.prepare ~working_directory ~selection:source_selection
+    | Some authority ->
+        let%bind protected_git =
+          Deferred.return (Source_authority.protected_git authority)
+        in
+        Source.prepare_protected ~working_directory ~protected_git
+          ~repository_identity:
+            (Deployment_intent.repository_identity
+               (Option.value_exn expected_intent))
+          ~commit:(Source.selection_commit source_selection)
   in
   let validate () =
     let open Deferred.Or_error.Let_syntax in

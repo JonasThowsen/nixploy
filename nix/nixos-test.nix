@@ -162,7 +162,16 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 
     revision = machine.succeed("git -C /var/lib/nixploy-custody/example rev-parse HEAD").strip()
-    machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx {revision}")
+    flake_digest = machine.succeed("git -C /var/lib/nixploy-custody/example show HEAD:flake.nix | sha256sum | cut -d' ' -f1").strip()
+    machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx '{revision} {flake_digest}'")
+
+    # A service-owned global attributes/filter configuration changes an ordinary
+    # checkout, but protected materialization writes and verifies committed blob
+    # bytes under a fully replaced Git environment.
+    machine.succeed("install -m 0644 -o nixploy -g nixploy /dev/null /var/lib/nixploy/attacker.attributes && printf 'flake.nix filter=attacker\\n' > /var/lib/nixploy/attacker.attributes && chown nixploy:nixploy /var/lib/nixploy/attacker.attributes")
+    machine.succeed("cat > /var/lib/nixploy/.gitconfig <<'EOF'\n[core]\n  attributesFile = /var/lib/nixploy/attacker.attributes\n[filter \"attacker\"]\n  smudge = sed s/smoke/FILTERED/g\n  required = true\nEOF\nchown nixploy:nixploy /var/lib/nixploy/.gitconfig")
+    machine.succeed("rm -rf /tmp/filtered-checkout && runuser -u nixploy -- env HOME=/var/lib/nixploy git -c safe.directory='*' clone /var/lib/nixploy-custody/example /tmp/filtered-checkout && grep -F FILTERED /tmp/filtered-checkout/flake.nix")
+    machine.succeed(f"runuser -u nixploy -- env HOME=/var/lib/nixploy nixploy-source-authority-probe example | grep -Fx '{revision} {flake_digest}'")
 
     # Protected Git runs reject inherited object/config/work-tree authority
     # rather than merely hoping Git ignores it.
@@ -190,7 +199,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("mv /var/lib/nixploy-custody/example.evidence.json /var/lib/nixploy-custody/example.evidence.real && ln -s example.evidence.real /var/lib/nixploy-custody/example.evidence.json")
     machine.fail("runuser -u nixploy -- nixploy-source-authority-probe example")
     machine.succeed("rm /var/lib/nixploy-custody/example.evidence.json && mv /var/lib/nixploy-custody/example.evidence.real /var/lib/nixploy-custody/example.evidence.json")
-    machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx {revision}")
+    machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx '{revision} {flake_digest}'")
 
     # The standalone packaged CLI categorically has no mutation authority.
     # A mutable clone cannot downgrade production by deleting its stanza.

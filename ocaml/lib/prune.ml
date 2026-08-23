@@ -48,7 +48,16 @@ let prepare_managed ~application ~intent ~commit =
     | None -> Deferred.Or_error.return None
   in
   let%bind source =
-    Source.prepare ~working_directory ~selection:(Source.immutable commit)
+    match source_authority with
+    | None ->
+        Source.prepare ~working_directory ~selection:(Source.immutable commit)
+    | Some authority ->
+        let%bind protected_git =
+          Deferred.return (Source_authority.protected_git authority)
+        in
+        Source.prepare_protected ~working_directory ~protected_git
+          ~repository_identity:(Deployment_intent.repository_identity intent)
+          ~commit
   in
   let validate () =
     let open Deferred.Or_error.Let_syntax in

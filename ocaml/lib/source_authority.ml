@@ -15,6 +15,7 @@ type t = {
   reference : string;
   evidence_digest : string;
   repository_root : string;
+  protected_git : Protected_git.t option;
 }
 
 let commit t = t.commit
@@ -23,8 +24,15 @@ let provenance t = t.provenance
 let reference t = t.reference
 let evidence_digest t = t.evidence_digest
 let repository_root t = t.repository_root
+
+let protected_git t =
+  Option.value_map t.protected_git
+    ~default:
+      (Or_error.error_string
+         "test source authority has no protected Git materialization context")
+    ~f:Or_error.return
+
 let maximum_manifest_bytes = 4096
-let maximum_custody_entries = 200_000
 
 let valid_revision revision =
   String.length revision = 40
@@ -222,171 +230,6 @@ let validate_protected_ancestors path =
       in
       loop (Filename.dirname path))
 
-let validate_protected_directory path =
-  let open Or_error.Let_syntax in
-  let%bind () = validate_protected_ancestors path in
-  let stats = U.lstat path in
-  if Poly.equal stats.U.st_kind U.S_DIR && secure_mode stats then Ok ()
-  else
-    Or_error.errorf
-      "source custody directory %s must be root-owned and not group/other \
-       writable"
-      path
-
-let validate_secure_custody_tree root =
-  Or_error.try_with_join (fun () ->
-      let visited = ref 0 in
-      let rec walk path =
-        Int.incr visited;
-        if !visited > maximum_custody_entries then
-          Or_error.errorf
-            "source custody contains more than %d filesystem entries"
-            maximum_custody_entries
-        else
-          let stats = U.lstat path in
-          if not (secure_mode stats) then
-            Or_error.errorf
-              "source custody path %s must be root-owned and not group/other \
-               writable"
-              path
-          else
-            match stats.U.st_kind with
-            | U.S_REG -> Ok ()
-            | U.S_DIR ->
-                Sys_unix.ls_dir path
-                |> List.map ~f:(fun name -> walk (Filename.concat path name))
-                |> Or_error.all_unit
-            | _ ->
-                Or_error.errorf
-                  "source custody path %s must not contain symlinks or special \
-                   files"
-                  path
-      in
-      walk root)
-
-let inherited_git_authority () =
-  let dangerous name =
-    String.equal name "GIT_DIR"
-    || String.equal name "GIT_WORK_TREE"
-    || String.equal name "GIT_COMMON_DIR"
-    || String.equal name "GIT_OBJECT_DIRECTORY"
-    || String.equal name "GIT_ALTERNATE_OBJECT_DIRECTORIES"
-    || String.equal name "GIT_REPLACE_REF_BASE"
-    || String.equal name "GIT_INDEX_FILE"
-    || String.equal name "GIT_NAMESPACE"
-    || String.equal name "GIT_SHALLOW_FILE"
-    || String.equal name "GIT_CEILING_DIRECTORIES"
-    || String.equal name "GIT_DISCOVERY_ACROSS_FILESYSTEM"
-    || String.is_prefix name ~prefix:"GIT_CONFIG"
-  in
-  U.environment () |> Array.to_list
-  |> List.filter_map ~f:(fun binding ->
-      String.lsplit2 binding ~on:'=' |> Option.map ~f:fst)
-  |> List.find ~f:dangerous
-  |> function
-  | None -> Ok ()
-  | Some name ->
-      Or_error.errorf
-        "protected source verification rejects inherited Git authority %s" name
-
-let protected_git_program () =
-  match Sys.getenv "NIXPLOY_PROTECTED_GIT" with
-  | Some path when Filename.is_absolute path -> Ok path
-  | Some _ ->
-      Or_error.error_string "NIXPLOY_PROTECTED_GIT must be an absolute path"
-  | None ->
-      List.find
-        [ "/run/current-system/sw/bin/git"; "/usr/bin/git" ]
-        ~f:Sys_unix.file_exists_exn
-      |> Option.value_map
-           ~default:
-             (Or_error.error_string
-                "protected source verification requires an absolute Git \
-                 executable")
-           ~f:Or_error.return
-
-let protected_git_env =
-  `Replace
-    [
-      ("HOME", "/var/empty");
-      ("PATH", "/no-such-path");
-      ("GIT_CONFIG_NOSYSTEM", "1");
-      ("GIT_CONFIG_SYSTEM", "/dev/null");
-      ("GIT_CONFIG_GLOBAL", "/dev/null");
-      ("GIT_TERMINAL_PROMPT", "0");
-      ("GIT_NO_LAZY_FETCH", "1");
-      ("GIT_CONFIG_COUNT", "1");
-      ("GIT_CONFIG_KEY_0", "safe.directory");
-      ("GIT_CONFIG_VALUE_0", "*");
-    ]
-
-let git_run ~prog args =
-  Process_runner.run ~timeout:(Time_ns.Span.of_min 2.) ~max_output_bytes:262_144
-    ~prog ~args ~env:protected_git_env ()
-
-let git ~prog args =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind result = git_run ~prog args in
-  match result.exit_status with
-  | Ok () -> Deferred.Or_error.return result.stdout
-  | Error failure ->
-      Deferred.Or_error.errorf "protected git failed (%s): %s"
-        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip result.stderr)
-
-let reject_git_config_authority ~prog ~common_directory ~repository_root =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind result =
-    git_run ~prog
-      [
-        "--no-replace-objects";
-        "--git-dir=" ^ common_directory;
-        "--work-tree=" ^ repository_root;
-        "config";
-        "--local";
-        "--no-includes";
-        "--name-only";
-        "--list";
-      ]
-  in
-  match result.exit_status with
-  | Ok () ->
-      let external_authority name =
-        let name = String.lowercase (String.strip name) in
-        String.is_prefix name ~prefix:"include."
-        || String.is_prefix name ~prefix:"includeif."
-        || List.mem
-             [
-               "core.worktree";
-               "core.alternaterefscommand";
-               "extensions.worktreeconfig";
-             ]
-             name ~equal:String.equal
-      in
-      String.split_lines result.stdout
-      |> List.find ~f:external_authority
-      |> Option.value_map ~default:(Deferred.Or_error.return ()) ~f:(fun name ->
-          Deferred.Or_error.errorf
-            "protected Git config contains external authority: %s" name)
-  | Error failure ->
-      Deferred.Or_error.errorf "could not inspect protected Git config (%s): %s"
-        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip result.stderr)
-
-let reject_alternate_object_mechanisms common_directory =
-  let mechanisms =
-    [
-      Filename.concat common_directory "objects/info/alternates";
-      Filename.concat common_directory "objects/info/http-alternates";
-      Filename.concat common_directory "refs/replace";
-    ]
-  in
-  match List.find mechanisms ~f:Sys_unix.file_exists_exn with
-  | None -> Ok ()
-  | Some path ->
-      Or_error.errorf
-        "protected Git custody rejects alternate object mechanism %s" path
-
 let canonical path = Or_error.try_with (fun () -> Filename_unix.realpath path)
 
 let verify ?expected_revision application =
@@ -396,8 +239,6 @@ let verify ?expected_revision application =
   let max_age_seconds =
     Managed_application.repository_evidence_max_age_seconds application
   in
-  let%bind () = Deferred.return (inherited_git_authority ()) in
-  let%bind prog = Deferred.return (protected_git_program ()) in
   let%bind expected_provenance =
     Managed_application.repository_provenance application
     |> Option.value_map
@@ -422,86 +263,18 @@ let verify ?expected_revision application =
               "production source authority requires repositoryEvidenceFile")
          ~f:Deferred.Or_error.return
   in
-  let%bind repository_lexical =
-    Deferred.return (validate_no_symlink_components repository)
+  let%bind protected_git =
+    Protected_git.admit ~repository_root:repository ~working_directory
   in
-  let%bind working_lexical =
-    Deferred.return (validate_no_symlink_components working_directory)
-  in
+  let repository_root = Protected_git.repository_root protected_git in
   let%bind evidence_lexical =
     Deferred.return (validate_no_symlink_components evidence_file)
   in
-  let%bind repository_root = Deferred.return (canonical repository_lexical) in
-  let%bind working_directory = Deferred.return (canonical working_lexical) in
   let%bind evidence_file = Deferred.return (canonical evidence_lexical) in
-  let%bind observed_root =
-    git ~prog [ "-C"; working_directory; "rev-parse"; "--show-toplevel" ]
-  in
-  let%bind observed_root_lexical =
-    Deferred.return
-      (validate_no_symlink_components (String.strip observed_root))
-  in
-  let%bind observed_root = Deferred.return (canonical observed_root_lexical) in
   let%bind () =
-    if String.equal repository_root observed_root then
-      Deferred.Or_error.return ()
-    else
-      Deferred.Or_error.error_string
-        "managed source checkout is not the configured custody repository"
+    In_thread.run (fun () -> validate_protected_ancestors evidence_file)
   in
-  let%bind common_output =
-    git ~prog [ "-C"; working_directory; "rev-parse"; "--git-common-dir" ]
-  in
-  let common_output = String.strip common_output in
-  let common_path =
-    if Filename.is_absolute common_output then common_output
-    else Filename.concat working_directory common_output
-  in
-  let%bind common_lexical = Deferred.return (lexical_absolute common_path) in
-  let%bind common_lexical =
-    Deferred.return (validate_no_symlink_components common_lexical)
-  in
-  let%bind common_directory = Deferred.return (canonical common_lexical) in
-  let%bind () =
-    In_thread.run (fun () ->
-        let open Or_error.Let_syntax in
-        let%bind () = validate_protected_directory repository_root in
-        let%bind () = validate_protected_directory common_directory in
-        let%bind () = validate_protected_ancestors evidence_file in
-        let%bind () = reject_alternate_object_mechanisms common_directory in
-        validate_secure_custody_tree common_directory)
-  in
-  let%bind () =
-    reject_git_config_authority ~prog ~common_directory ~repository_root
-  in
-  let explicit_git args =
-    git ~prog
-      ([
-         "--no-replace-objects";
-         "-c";
-         "core.useReplaceRefs=false";
-         "--git-dir=" ^ common_directory;
-         "--work-tree=" ^ repository_root;
-       ]
-      @ args)
-  in
-  let%bind objects_path =
-    explicit_git
-      [ "rev-parse"; "--path-format=absolute"; "--git-path"; "objects" ]
-  in
-  let%bind objects_lexical =
-    Deferred.return (validate_no_symlink_components (String.strip objects_path))
-  in
-  let%bind objects_path = Deferred.return (canonical objects_lexical) in
-  let expected_objects = Filename.concat common_directory "objects" in
-  let%bind expected_objects = Deferred.return (canonical expected_objects) in
-  let%bind () =
-    if String.equal objects_path expected_objects then
-      Deferred.Or_error.return ()
-    else
-      Deferred.Or_error.error_string
-        "protected Git object directory is outside the protected common custody"
-  in
+  let explicit_git = Protected_git.stdout protected_git in
   let%bind first_evidence =
     In_thread.run (fun () -> read_evidence_file evidence_file)
   in
@@ -563,11 +336,19 @@ let verify ?expected_revision application =
       evidence_digest =
         Digestif.SHA256.digest_string second_evidence |> Digestif.SHA256.to_hex;
       repository_root;
+      protected_git = Some protected_git;
     }
 
 module For_testing = struct
   let create ~commit ~provenance ~reference ~evidence_digest ~repository_root =
-    { commit; provenance; reference; evidence_digest; repository_root }
+    {
+      commit;
+      provenance;
+      reference;
+      evidence_digest;
+      repository_root;
+      protected_git = None;
+    }
 
   let validate_manifest = validate_manifest
 end

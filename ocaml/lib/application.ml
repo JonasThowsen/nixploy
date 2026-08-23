@@ -330,7 +330,17 @@ let evaluate_managed_deployment_intent ?verified_source_authority application
           "non-production preview unexpectedly carried source authority"
   in
   let%bind source =
-    Source.prepare ~working_directory ~selection:(Source.immutable commit)
+    match source_authority with
+    | None ->
+        Source.prepare ~working_directory ~selection:(Source.immutable commit)
+    | Some authority ->
+        let%bind protected_git =
+          Deferred.return (Source_authority.protected_git authority)
+        in
+        Source.prepare_protected ~working_directory ~protected_git
+          ~repository_identity:
+            (Managed_application.repository_identity application)
+          ~commit
   in
   Monitor.protect
     ~finally:(fun () -> Source.cleanup source)

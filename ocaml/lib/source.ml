@@ -318,6 +318,154 @@ let prepare_immutable ~working_directory ~commit =
       let%map.Deferred () = cleanup provisional in
       Error error
 
+let protected_tree_entry entry =
+  let open Or_error.Let_syntax in
+  let%bind metadata, path =
+    String.lsplit2 entry ~on:'\t'
+    |> Option.value_map
+         ~default:
+           (Or_error.error_string "protected Git returned malformed tree entry")
+         ~f:Or_error.return
+  in
+  let%bind mode, kind, object_id =
+    match String.split metadata ~on:' ' with
+    | [ mode; kind; object_id ] -> Ok (mode, kind, object_id)
+    | _ ->
+        Or_error.error_string "protected Git returned malformed tree metadata"
+  in
+  let safe_path =
+    (not (String.is_empty path))
+    && (not (Filename.is_absolute path))
+    && String.split path ~on:'/'
+       |> List.for_all ~f:(fun component ->
+           (not (String.is_empty component))
+           && not (String.equal component "." || String.equal component ".."))
+  in
+  if not safe_path then
+    Or_error.error_string "protected Git tree contains an unsafe path"
+  else
+    match (mode, kind) with
+    | "100644", "blob" -> Ok (path, object_id, 0o644)
+    | "100755", "blob" -> Ok (path, object_id, 0o755)
+    | "120000", "blob" ->
+        Or_error.errorf "protected source does not support symlink %s" path
+    | "160000", "commit" ->
+        Or_error.errorf "protected source does not support gitlink %s" path
+    | _ ->
+        Or_error.errorf "protected source contains unsupported mode %s for %s"
+          mode path
+
+let make_parent_directories path =
+  let rec loop pending directory =
+    if Sys_unix.file_exists_exn directory then
+      List.iter pending ~f:(fun path -> Core_unix.mkdir path)
+    else
+      let parent = Filename.dirname directory in
+      if String.equal parent directory then
+        failwith "protected source parent escaped its workspace"
+      else loop (directory :: pending) parent
+  in
+  loop [] (Filename.dirname path)
+
+let write_protected_blob ~protected_git ~destination (path, object_id, mode) =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind blob =
+    Protected_git.stdout
+      ~max_output_bytes:(64 * 1024 * 1024)
+      protected_git
+      [ "cat-file"; "blob"; object_id ]
+  in
+  let destination = Filename.concat destination path in
+  let%bind () =
+    In_thread.run (fun () ->
+        Or_error.try_with (fun () ->
+            make_parent_directories destination;
+            Out_channel.write_all destination ~data:blob;
+            Core_unix.chmod destination ~perm:mode))
+  in
+  let%map read_back =
+    In_thread.run (fun () ->
+        Or_error.try_with (fun () -> In_channel.read_all destination))
+  in
+  if String.equal blob read_back then ()
+  else failwithf "protected source blob changed while writing %s" path ()
+
+let prepare_protected ~working_directory ~protected_git ~repository_identity
+    ~commit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_directory working_directory)
+  in
+  let repository_root = Protected_git.repository_root protected_git in
+  let%bind subdirectory =
+    if String.equal working_directory repository_root then
+      Deferred.Or_error.return "."
+    else
+      String.chop_prefix working_directory ~prefix:(repository_root ^ "/")
+      |> Option.value_map
+           ~default:
+             (Deferred.Or_error.error_string
+                "protected working directory is outside its admitted repository")
+           ~f:Deferred.Or_error.return
+  in
+  let workspace = Filename_unix.temp_dir "nixploy-protected-" "" in
+  let source_root = Filename.concat workspace "source" in
+  let source_path =
+    if String.equal subdirectory "." then source_root
+    else Filename.concat source_root subdirectory
+  in
+  let provisional =
+    {
+      workspace = Some workspace;
+      path = source_path;
+      nix_root = source_root;
+      subdirectory;
+      revision = commit.revision;
+      repository = repository_identity;
+      is_local = false;
+    }
+  in
+  let materialize () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind tree =
+      Protected_git.stdout
+        ~max_output_bytes:(32 * 1024 * 1024)
+        protected_git
+        [ "ls-tree"; "-r"; "-z"; "--full-tree"; commit.revision ^ "^{tree}" ]
+    in
+    let%bind entries =
+      String.split tree ~on:'\000' |> List.filter ~f:(Fn.non String.is_empty)
+      |> fun entries ->
+      if List.length entries > 200_000 then
+        Deferred.Or_error.error_string
+          "protected source tree exceeds 200000 entries"
+      else
+        Deferred.return
+          (entries |> List.map ~f:protected_tree_entry |> Or_error.all)
+    in
+    let%bind () =
+      Deferred.return
+        (Or_error.try_with (fun () -> Core_unix.mkdir source_root))
+    in
+    let%bind () =
+      Deferred.Or_error.List.iter entries ~how:`Sequential
+        ~f:(write_protected_blob ~protected_git ~destination:source_root)
+    in
+    if
+      Sys_unix.file_exists_exn (Filename.concat source_path "flake.nix")
+      && Sys_unix.file_exists_exn (Filename.concat source_path "flake.lock")
+    then Deferred.Or_error.return provisional
+    else
+      Deferred.Or_error.error_string
+        "protected commit must contain flake.nix and flake.lock"
+  in
+  let%bind.Deferred result = Monitor.try_with_or_error materialize in
+  match Or_error.join result with
+  | Ok source -> Deferred.Or_error.return source
+  | Error error ->
+      let%map.Deferred () = cleanup provisional in
+      Error error
+
 let prepare_local ~working_directory ~selected_directory ~commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =

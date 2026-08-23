@@ -26,10 +26,20 @@ val selection_is_local : selection -> bool
 
 val prepare :
   working_directory:string -> selection:selection -> t Deferred.Or_error.t
-(** Local selections materialize one stable snapshot of committed files, tracked
-    modifications, and intent-to-add files, while rejecting non-ignored
-    untracked files and excluding ignored build artifacts. Immutable selections
-    materialize exactly the selected commit. *)
+(** Local and non-production compatibility materialization. Local selections
+    snapshot tracked worktree bytes; immutable selections use ordinary Git
+    checkout semantics and must not be used for protected production source. *)
+
+val prepare_protected :
+  working_directory:string ->
+  protected_git:Protected_git.t ->
+  repository_identity:string ->
+  commit:commit ->
+  t Deferred.Or_error.t
+(** Materializes regular files directly from the admitted commit's blob objects,
+    bypassing checkout attributes, filters, hooks, templates, replacement refs,
+    and inherited configuration. Written bytes are read back and compared with
+    the selected blob bytes. *)
 
 val cleanup : t -> unit Deferred.t
 val path : t -> string
