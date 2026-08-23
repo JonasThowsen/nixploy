@@ -176,3 +176,24 @@
  (libraries async async_rpc_websocket core core_unix.command_unix protocol)
  (preprocess
   (pps ppx_jane)))
+
+(test
+ (name target_lease_state_test)
+ (modules target_lease_state_test)
+ (libraries nixploy core core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name target_lease_socket_test)
+ (modules target_lease_socket_test)
+ (libraries nixploy core core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name target_lease_broker_test)
+ (modules target_lease_broker_test)
+ (libraries nixploy core threads.posix core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))

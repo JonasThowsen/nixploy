@@ -18,10 +18,7 @@ type response = Ready of ready | Busy | Dirty | Denied | Released | Malformed
 let max_line_bytes = 256
 
 let uuid_of_string value =
-  let valid_hex = function
-    | '0' .. '9' | 'a' .. 'f' -> true
-    | _ -> false
-  in
+  let valid_hex = function '0' .. '9' | 'a' .. 'f' -> true | _ -> false in
   if String.length value <> 36 then
     Or_error.error_string "UUID must be 36 bytes"
   else if
