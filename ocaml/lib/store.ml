@@ -2,6 +2,7 @@ open Async
 open Core
 
 type t = { path : string }
+type lease = { store : t; working_directory : string; target : Target_name.t }
 
 type state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
@@ -239,10 +240,13 @@ let release_lease descriptor =
       ignore (Core_unix.flock descriptor Core_unix.Flock_command.unlock : bool);
       Core_unix.close descriptor)
 
-let with_lease t ~working_directory ~target deploy =
+let with_lease t ~working_directory ~target operation =
   let open Deferred.Or_error.Let_syntax in
   let%bind descriptor = acquire_lease t ~working_directory ~target in
-  Monitor.protect deploy ~finally:(fun () -> release_lease descriptor)
+  let lease = { store = t; working_directory; target } in
+  Monitor.protect
+    (fun () -> operation lease)
+    ~finally:(fun () -> release_lease descriptor)
 
 let data =
   Option.value_map ~default:Sqlite3.Data.NULL ~f:(fun value ->
@@ -267,6 +271,70 @@ let insert_event db ~id ~stage ~message ~now =
       bind db statement
         [ Sqlite3.Data.TEXT id; TEXT stage; TEXT message; INT now ];
       check db "insert deployment event" (Sqlite3.step statement))
+
+let interrupted_message =
+  "Previous local nixploy process exited while this operation was active; \
+   remote outcome is unknown"
+
+let active_deployment_ids db ~application_key ~working_directory ~target =
+  let application_predicate, application_values =
+    match application_key with
+    | None -> ("application_key IS NULL", [])
+    | Some application_key ->
+        ( "(application_key = ? OR application_key IS NULL)",
+          [ Sqlite3.Data.TEXT application_key ] )
+  in
+  with_statement db
+    ("SELECT id FROM deployments WHERE working_directory = ? AND target = ? \
+      AND state IN ('requested', 'running') AND " ^ application_predicate)
+    ~f:(fun statement ->
+      bind db statement
+        ([
+           Sqlite3.Data.TEXT working_directory;
+           TEXT (Target_name.to_string target);
+         ]
+        @ application_values);
+      let rec collect ids =
+        match Sqlite3.step statement with
+        | ROW -> collect (Sqlite3.column_text statement 0 :: ids)
+        | DONE -> List.rev ids
+        | code ->
+            check db "list interrupted deployments" code;
+            assert false
+      in
+      collect [])
+
+let reconcile_interrupted_within_lease lease ~application_key =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          let now = now_ms () in
+          with_db lease.store ~f:(fun db ->
+              transaction db (fun () ->
+                  active_deployment_ids db ~application_key
+                    ~working_directory:lease.working_directory
+                    ~target:lease.target
+                  |> List.iter ~f:(fun id ->
+                      with_statement db
+                        "UPDATE deployments SET state = 'failed', message = ?, \
+                         error = CASE WHEN error IS NULL OR error = '' THEN ? \
+                         ELSE error || '; ' || ? END, finished_at_ms = ?, \
+                         updated_at_ms = ? WHERE id = ? AND state IN \
+                         ('requested', 'running')" ~f:(fun statement ->
+                          bind db statement
+                            [
+                              Sqlite3.Data.TEXT interrupted_message;
+                              TEXT interrupted_message;
+                              TEXT interrupted_message;
+                              INT now;
+                              INT now;
+                              TEXT id;
+                            ];
+                          check db "reconcile interrupted deployment"
+                            (Sqlite3.step statement));
+                      if Sqlite3.changes db <> 1 then
+                        failwith "interrupted deployment transition conflicted";
+                      insert_event db ~id ~stage:"interrupted"
+                        ~message:interrupted_message ~now)))))
 
 let request t ~application_key ~working_directory ~target ~commit =
   Monitor.try_with_or_error (fun () ->

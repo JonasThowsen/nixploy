@@ -179,14 +179,24 @@ let run_tests () =
     Nixploy.Store.request store ~application_key:(Some "example")
       ~working_directory:directory ~target ~commit:store_commit
   in
-  ignore (assert_ok interrupted : Nixploy.Store.deployment);
+  let interrupted = assert_ok interrupted in
   let%bind prune =
-    Nixploy.Application.prune ~repository_identity:"owner/example" application
+    Nixploy.Application.prune ~application_key:"example"
+      ~repository_identity:"owner/example" application
       ~working_directory:directory ~target
   in
   let prune = assert_ok prune in
   [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
   [%test_eq: int] 3 (Nixploy.Application.prune_secrets_removed prune);
+  let%bind reconciled =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id interrupted)
+  in
+  let reconciled = assert_ok reconciled |> Option.value_exn in
+  assert (Nixploy.Store.equal_state (Nixploy.Store.state reconciled) Failed);
+  assert (
+    String.is_substring
+      (Nixploy.Store.message reconciled)
+      ~substring:"remote outcome is unknown");
   let%bind absent =
     Nixploy.Application.resource_state application ~working_directory:directory
       ~target
@@ -213,6 +223,11 @@ let run_tests () =
   in
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Unknown);
+  let%bind stale_cli_deployment =
+    Nixploy.Store.request store ~application_key:None
+      ~working_directory:directory ~target ~commit:store_commit
+  in
+  let stale_cli_deployment = assert_ok stale_cli_deployment in
   deployment_state := Failed;
   let%bind failed_deployment =
     Nixploy.Application.deploy application ~working_directory:directory
@@ -222,6 +237,13 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Application.deployment_state]
       (Nixploy.Application.deployment_state (assert_ok failed_deployment))
+      Failed);
+  let%bind stale_cli_deployment =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id stale_cli_deployment)
+  in
+  assert (
+    Nixploy.Store.equal_state
+      (Nixploy.Store.state (assert_ok stale_cli_deployment |> Option.value_exn))
       Failed);
   let%bind failed_state =
     Nixploy.Application.resource_state application ~working_directory:directory

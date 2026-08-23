@@ -151,9 +151,23 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
       let load_artifacts () =
         let open Deferred.Or_error.Let_syntax in
         let%bind () = record_stage Building "Building and loading the image" in
+        let on_build_progress elapsed =
+          let elapsed_seconds =
+            Time_ns.Span.to_sec elapsed |> Float.iround_down_exn
+          in
+          let%map.Deferred _ =
+            record_stage Building
+              (sprintf
+                 "Nix image build still running (elapsed %ds; build output \
+                  remains buffered)"
+                 elapsed_seconds)
+          in
+          ()
+        in
         let%bind image =
-          Podman.build_and_load ~connection ~source
+          Podman.build_and_load ~on_build_progress ~connection ~source
             ~image_output:(Configuration.Target.image target)
+            ()
         in
         let%bind secrets =
           Secrets.load ~source_root:(Source.path source) ~target

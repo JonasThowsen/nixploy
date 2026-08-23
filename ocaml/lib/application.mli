@@ -130,8 +130,9 @@ val cancel_deployment :
   operation_id:string ->
   cancellation_result Deferred.Or_error.t
 (** Cancellation is process-local. Persisted requested/running operations that
-    are not registered in this process remain visible in history but cannot be
-    signalled. Ownership is checked against both the scope and operation id
+    are not registered in this process remain visible but cannot be signalled;
+    the next matching deploy or prune reconciles them while holding the local
+    scope flock. Ownership is checked against both the scope and operation id
     before either the cancellation token or store is mutated. *)
 
 val deployment_can_cancel : t -> scope:scope -> deployment -> bool

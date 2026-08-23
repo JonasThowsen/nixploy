@@ -2,6 +2,7 @@ open Async
 open Core
 
 type t
+type lease
 
 type state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
@@ -17,8 +18,16 @@ val with_lease :
   t ->
   working_directory:string ->
   target:Target_name.t ->
-  (unit -> 'a Deferred.Or_error.t) ->
+  (lease -> 'a Deferred.Or_error.t) ->
   'a Deferred.Or_error.t
+
+val reconcile_interrupted_within_lease :
+  lease -> application_key:string option -> unit Deferred.Or_error.t
+(** Marks active history left by a dead local process as failed with an unknown
+    remote outcome. The opaque [lease] proves that reconciliation uses the exact
+    canonical working directory and target protected by [with_lease]. A managed
+    application includes matching unkeyed CLI history but never history keyed to
+    another application. *)
 
 val request :
   t ->

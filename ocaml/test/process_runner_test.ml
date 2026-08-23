@@ -120,8 +120,9 @@ let run_tests () =
   Nixploy.Process_runner.handle_termination_signals ();
   let cancelled =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
-      ~max_output_bytes:1024 ~prog:executable ~args:[ "child-cancel"; marker ]
-      ()
+      ~max_output_bytes:1024
+      ~on_progress:(fun _ -> Deferred.unit)
+      ~prog:executable ~args:[ "child-cancel"; marker ] ()
   in
   let%bind () = wait_for_file marker 100 in
   let descendant = In_channel.read_all marker |> Int.of_string in

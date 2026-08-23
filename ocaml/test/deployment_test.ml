@@ -39,8 +39,48 @@ let expect_error_containing result text =
   | Error error ->
       assert (String.is_substring (Error.to_string_hum error) ~substring:text)
 
+let test_build_progress_heartbeats () =
+  let open Deferred.Let_syntax in
+  let completion = Ivar.create () in
+  let messages = ref [] in
+  let operation =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun elapsed ->
+        messages :=
+          sprintf "elapsed %.0f seconds" (Time_ns.Span.to_sec elapsed)
+          :: !messages;
+        Deferred.unit)
+      (fun () -> Ivar.read completion)
+  in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 30.) in
+  [%test_eq: int] 3 (List.length !messages);
+  Ivar.fill_exn completion (Error (Error.of_string "raw-build-output-secret"));
+  let%bind result = operation in
+  assert (Result.is_error result);
+  let messages_at_completion = List.length !messages in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 15.) in
+  [%test_eq: int] messages_at_completion (List.length !messages);
+  assert (
+    List.for_all !messages ~f:(fun message ->
+        not (String.is_substring message ~substring:"raw-build-output-secret")));
+  let immediate_messages = ref 0 in
+  let%bind immediate =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ ->
+        Int.incr immediate_messages;
+        Deferred.unit)
+      (fun () -> Deferred.return (Error (Error.of_string "bounded failure")))
+  in
+  assert (Result.is_error immediate);
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 15.) in
+  [%test_eq: int] 0 !immediate_messages;
+  Deferred.unit
+
 let run_tests () =
   let open Deferred.Let_syntax in
+  let%bind () = test_build_progress_heartbeats () in
   let root = Filename_unix.temp_dir "nixploy-deployment-test-" "" in
   let repository = Filename.concat root "repository" in
   let bin = Filename.concat root "bin" in

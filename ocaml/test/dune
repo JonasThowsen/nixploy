@@ -129,6 +129,13 @@
   (pps ppx_jane)))
 
 (test
+ (name local_crash_recovery_test)
+ (modules local_crash_recovery_test)
+ (libraries nixploy core core_unix.command_unix async sqlite3)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name status_test)
  (modules status_test)
  (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)

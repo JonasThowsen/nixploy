@@ -15,6 +15,8 @@ type completion =
   | Cancelled
 
 let termination_grace = Time_ns.Span.of_sec 2.
+let progress_interval = Time_ns.Span.of_sec 30.
+let max_progress_heartbeats = 119
 
 type termination_state = { delivered : Signal.t Ivar.t }
 
@@ -78,6 +80,37 @@ let read_bounded reader ~stream ~max_output_bytes ~overflow =
         Buffer.add_string buffer remaining;
       Buffer.contents buffer
 
+let with_progress_heartbeats ~interval ~max_heartbeats ~on_heartbeat operation =
+  let open Deferred.Let_syntax in
+  let result = operation () in
+  let finished = Ivar.create () in
+  upon result (fun _ -> Ivar.fill_if_empty finished ());
+  let rec report heartbeat_number =
+    if heartbeat_number > max_heartbeats then Deferred.unit
+    else
+      let%bind next =
+        Deferred.choose
+          [
+            Deferred.choice (Ivar.read finished) (fun () -> `Finished);
+            Deferred.choice (Clock_ns.after interval) (fun () -> `Heartbeat);
+          ]
+      in
+      match next with
+      | `Finished -> Deferred.unit
+      | `Heartbeat when not (Ivar.is_empty finished) -> Deferred.unit
+      | `Heartbeat ->
+          let elapsed =
+            Time_ns.Span.scale interval (Float.of_int heartbeat_number)
+          in
+          let%bind () = on_heartbeat elapsed in
+          report (heartbeat_number + 1)
+  in
+  let reports = report 1 in
+  let%bind result = result in
+  Ivar.fill_if_empty finished ();
+  let%map () = reports in
+  result
+
 let terminate_process_group process wait =
   let group = `Group (Process.pid process) in
   Signal_unix.send_i Signal.term group;
@@ -103,8 +136,8 @@ let terminate_process_group process wait =
   let%map _ = wait in
   ()
 
-let run ?working_directory ?stdin ?env ?(ignore_termination = false) ~timeout
-    ~max_output_bytes ~prog ~args () =
+let run_without_progress ?working_directory ?stdin ?env
+    ?(ignore_termination = false) ~timeout ~max_output_bytes ~prog ~args () =
   if max_output_bytes <= 0 then
     Deferred.Or_error.error_string "max_output_bytes must be positive"
   else
@@ -210,6 +243,18 @@ let run ?working_directory ?stdin ?env ?(ignore_termination = false) ~timeout
                     let%map () = terminate_process_group process wait in
                     cancellation_error prog))
 
+let run ?working_directory ?stdin ?env ?ignore_termination ?on_progress ~timeout
+    ~max_output_bytes ~prog ~args () =
+  let operation () =
+    run_without_progress ?working_directory ?stdin ?env ?ignore_termination
+      ~timeout ~max_output_bytes ~prog ~args ()
+  in
+  match on_progress with
+  | None -> operation ()
+  | Some on_heartbeat ->
+      with_progress_heartbeats ~interval:progress_interval
+        ~max_heartbeats:max_progress_heartbeats ~on_heartbeat operation
+
 let run_stdout ?working_directory ?stdin ?env ?ignore_termination ~timeout
     ~max_output_bytes ~prog ~args () =
   let open Deferred.Or_error.Let_syntax in
@@ -226,4 +271,5 @@ let run_stdout ?working_directory ?stdin ?env ?ignore_termination ~timeout
 
 module For_testing = struct
   let should_force_termination = should_force_termination
+  let with_progress_heartbeats = with_progress_heartbeats
 end

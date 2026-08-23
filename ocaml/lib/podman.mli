@@ -31,9 +31,11 @@ val preflight_read_only_bind_sources :
     nixploy never creates them. *)
 
 val build_and_load :
+  ?on_build_progress:(Time_ns.Span.t -> unit Deferred.t) ->
   connection:string ->
   source:Source.t ->
   image_output:string ->
+  unit ->
   image Deferred.Or_error.t
 
 val prepare_candidate :
