@@ -193,9 +193,9 @@ let%test_unit "production managed applications require exact root-owned intent"
     ~f:(fun json ->
       assert (Result.is_error (Nixploy.Managed_application.all_of_json json)))
 
-let%test_unit "destination identity canonicalizes numeric and DNS aliases" =
+let%test_unit "destination identity rejects legacy numeric aliases" =
   let host value = Nixploy.Endpoint_identity.host value |> assert_ok in
-  [%test_eq: string] "192.168.1.10" (host "192.168.001.010");
+  [%test_eq: string] "192.168.1.10" (host "192.168.1.10");
   [%test_eq: string] "2001:db8::1" (host "2001:0DB8:0:0:0:0:0:1");
   [%test_eq: string] "2001:db8::1" (host "[2001:db8::1]");
   [%test_eq: string] "host.example.invalid" (host "HOST.EXAMPLE.INVALID.");
@@ -205,9 +205,28 @@ let%test_unit "destination identity canonicalizes numeric and DNS aliases" =
     (Nixploy.Endpoint_identity.coordination_scope "Sample:PRODUCTION"
     |> assert_ok);
   assert (not (String.equal (host "2001:db8::1") (host "2001:db8::2")));
-  List.iter [ "[2001:db8::1"; "2001:db8::1]"; "fe80::1%eth0"; "999.1.1.1" ]
-    ~f:(fun value ->
+  [%test_eq: string] "0x7f.example.invalid" (host "0x7f.example.invalid");
+  [%test_eq: string] "0x7f.example.invalid"
+    (Nixploy.Endpoint_identity.domain "0x7f.example.invalid" |> assert_ok);
+  List.iter
+    [
+      "[2001:db8::1";
+      "2001:db8::1]";
+      "fe80::1%eth0";
+      "999.1.1.1";
+      "192.168.001.010";
+      "0177.0.0.1";
+      "0x7f000001";
+      "0X7F000001";
+      "0x7f.1";
+      "127.1";
+      "127.0.1";
+    ] ~f:(fun value ->
       assert (Result.is_error (Nixploy.Endpoint_identity.host value)));
+  [%test_eq: string] "127.0.0.1"
+    (Nixploy.Endpoint_identity.domain "127.0.0.1" |> assert_ok);
+  List.iter [ "0x7f000001"; "0x7f.1" ] ~f:(fun value ->
+      assert (Result.is_error (Nixploy.Endpoint_identity.domain value)));
   assert (
     Result.is_error (Nixploy.Endpoint_identity.domain "app.example.invalid.."));
   assert (
@@ -269,8 +288,17 @@ let%test_unit "managed profile intersections use semantic destination identity"
     ("2001:db8::1", "production.example.invalid", "production-scope")
     ("2001:0DB8:0:0:0:0:0:1", "staging.example.invalid", "staging-scope");
   rejects
-    ("192.168.001.010", "production.example.invalid", "production-scope")
-    ("192.168.1.10", "staging.example.invalid", "staging-scope");
+    ("192.168.1.10", "production.example.invalid", "production-scope")
+    ("0x7f000001", "staging.example.invalid", "staging-scope");
+  rejects
+    ("127.0.0.1", "production.example.invalid", "production-scope")
+    ("0x7f.1", "staging.example.invalid", "staging-scope");
+  rejects
+    ("127.0.0.1", "production.example.invalid", "production-scope")
+    ("0177.0.0.1", "staging.example.invalid", "staging-scope");
+  rejects
+    ("127.0.0.1", "production.example.invalid", "production-scope")
+    ("127.1", "staging.example.invalid", "staging-scope");
   rejects
     ("HOST.EXAMPLE.INVALID.", "production.example.invalid", "production-scope")
     ("host.example.invalid", "staging.example.invalid", "staging-scope");

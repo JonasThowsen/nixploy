@@ -121,32 +121,37 @@ let
 
   safeIdentityValue =
     value: builtins.match ".*[[:space:]/@].*" value == null && !(lib.hasSuffix ".." value);
-  stripLeadingZeros =
+  numericIpv4Component =
+    value: builtins.match "[0-9]+" value != null || builtins.match "0x[0-9a-f]+" value != null;
+  numericIpv4Spelling =
     value:
-    if builtins.stringLength value > 1 && lib.hasPrefix "0" value then
-      stripLeadingZeros (builtins.substring 1 (builtins.stringLength value - 1) value)
-    else
-      value;
+    let
+      components = lib.splitString "." value;
+    in
+    builtins.length components <= 4 && lib.all numericIpv4Component components;
   canonicalIpv4Octet =
     value:
-    if builtins.match "[0-9]+" value == null then
+    if
+      builtins.match "[0-9]+" value == null
+      || (builtins.stringLength value > 1 && lib.hasPrefix "0" value)
+    then
       null
     else
       let
-        number = builtins.fromJSON (stripLeadingZeros value);
+        number = builtins.fromJSON value;
       in
-      if number <= 255 then toString number else null;
+      if number <= 255 then value else null;
   canonicalEndpoint =
     value:
     let
       lowered = lib.toLower value;
       dns = lib.removeSuffix "." lowered;
-      ipv4Parts = lib.splitString "." lowered;
+      ipv4Parts = lib.splitString "." dns;
       ipv4Octets = map canonicalIpv4Octet ipv4Parts;
     in
     if lib.hasSuffix ".." lowered then
       null
-    else if builtins.match "[0-9.]+" lowered != null then
+    else if numericIpv4Spelling dns then
       if builtins.length ipv4Parts == 4 && lib.all (octet: octet != null) ipv4Octets then
         lib.concatStringsSep "." ipv4Octets
       else

@@ -27,14 +27,17 @@ let scope_character = function
   | 'a' .. 'z' | '0' .. '9' | '.' | '-' | '_' | ':' -> true
   | _ -> false
 
-let canonical_dns ~field value =
-  let open Or_error.Let_syntax in
-  let%bind value =
-    normalized_ascii ~field ~valid_character:dns_character value
-  in
-  if String.is_suffix value ~suffix:".." then
-    Or_error.errorf "%s must contain at most one trailing DNS root dot" field
-  else Ok (Option.value (String.chop_suffix value ~suffix:".") ~default:value)
+let numeric_ipv4_component value =
+  ((not (String.is_empty value)) && String.for_all value ~f:Char.is_digit)
+  || String.is_prefix value ~prefix:"0x"
+     && String.length value > 2
+     && String.for_all (String.drop_prefix value 2) ~f:Char.is_hex_digit
+
+let numeric_ipv4_spelling value =
+  match String.split value ~on:'.' with
+  | components when List.length components <= 4 ->
+      List.for_all components ~f:numeric_ipv4_component
+  | _ -> false
 
 let canonical_ipv4 value =
   let open Or_error.Let_syntax in
@@ -45,17 +48,33 @@ let canonical_ipv4 value =
           (List.map octets ~f:(fun octet ->
                if
                  String.is_empty octet
-                 || not (String.for_all octet ~f:Char.is_digit)
+                 || (not (String.for_all octet ~f:Char.is_digit))
+                 || (String.length octet > 1 && Char.equal octet.[0] '0')
                then Or_error.error_string "IPv4 address is malformed"
                else
                  Or_error.try_with (fun () -> Int.of_string octet)
                  >>= fun number ->
                  if number > 255 then
                    Or_error.error_string "IPv4 address octet exceeds 255"
-                 else Ok (Int.to_string number)))
+                 else Ok octet))
       in
       String.concat ~sep:"." octets
   | _ -> Or_error.error_string "IPv4 address must contain four octets"
+
+let canonical_dns ~field value =
+  let open Or_error.Let_syntax in
+  let%bind value =
+    normalized_ascii ~field ~valid_character:dns_character value
+  in
+  if String.is_suffix value ~suffix:".." then
+    Or_error.errorf "%s must contain at most one trailing DNS root dot" field
+  else
+    let value =
+      Option.value (String.chop_suffix value ~suffix:".") ~default:value
+    in
+    if numeric_ipv4_spelling value && Result.is_error (canonical_ipv4 value)
+    then Or_error.errorf "%s must not use a legacy numeric IPv4 spelling" field
+    else Ok value
 
 let canonical_ipv6 value =
   if String.mem value '%' then
@@ -82,10 +101,7 @@ let host value =
           Or_error.error_string "SSH host has mismatched IPv6 brackets"
     in
     if String.mem value ':' then canonical_ipv6 value
-    else if
-      String.for_all value ~f:(fun character ->
-          Char.is_digit character || Char.equal character '.')
-    then canonical_ipv4 value
+    else if numeric_ipv4_spelling value then canonical_ipv4 value
     else canonical_dns ~field:"SSH host" value
 
 let domain = canonical_dns ~field:"web domain"

@@ -311,8 +311,32 @@
             nonProductionHost = "host.example.invalid";
           };
           ipv4HostIntersection = crossProfileAttemptFor {
-            productionHost = "192.168.001.010";
+            productionHost = "192.168.1.10";
             nonProductionHost = "192.168.1.10";
+          };
+          legacyHexHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "0x7f000001";
+          };
+          legacyUppercaseHexHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "0X7F000001";
+          };
+          legacyMixedHexHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "0x7f.1";
+          };
+          legacyOctalHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "0177.0.0.1";
+          };
+          legacyShortHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "127.1";
+          };
+          legacyThreePartHostIntersection = crossProfileAttemptFor {
+            productionHost = "127.0.0.1";
+            nonProductionHost = "127.0.1";
           };
           ipv6HostIntersection = crossProfileAttemptFor {
             productionHost = "2001:db8::1";
@@ -336,6 +360,12 @@
           cross-profile-intersection-rejected =
             assert !dnsHostIntersection.success;
             assert !ipv4HostIntersection.success;
+            assert !legacyHexHostIntersection.success;
+            assert !legacyUppercaseHexHostIntersection.success;
+            assert !legacyMixedHexHostIntersection.success;
+            assert !legacyOctalHostIntersection.success;
+            assert !legacyShortHostIntersection.success;
+            assert !legacyThreePartHostIntersection.success;
             assert !ipv6HostIntersection.success;
             assert !domainIntersection.success;
             assert !coordinationScopeIntersection.success;
