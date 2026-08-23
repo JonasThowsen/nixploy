@@ -319,12 +319,11 @@ let image_id_of_inspect output =
       Or_error.error_string
         "loaded image inspect must contain exactly one image"
 
-let build_and_load ?on_build_progress ~connection ~source ~image_output () =
+let build_and_load ~connection ~source ~image_output () =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
     Process_runner.run ~working_directory:(Source.nix_root source)
-      ?on_progress:on_build_progress ~timeout:build_timeout
-      ~max_output_bytes:max_output ~prog:"nix"
+      ~timeout:build_timeout ~max_output_bytes:max_output ~prog:"nix"
       ~args:
         (Nix_command.build_args ~flake:(Source.nix_flake source)
            ~output:image_output)

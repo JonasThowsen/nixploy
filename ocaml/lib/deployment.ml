@@ -59,7 +59,50 @@ let timestamp () =
   sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (tm.tm_year + 1900) (tm.tm_mon + 1)
     tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
 
-let no_stage _ _ = Deferred.Or_error.return ()
+let build_heartbeat_interval = Time_ns.Span.of_sec 30.
+let max_build_heartbeats = 119
+
+let run_build_with_durable_heartbeats ~store ~operation_id build =
+  let finished = Ivar.create () in
+  upon build (fun _ -> Ivar.fill_if_empty finished ());
+  let rec heartbeat number =
+    if number > max_build_heartbeats then Deferred.unit
+    else
+      let open Deferred.Let_syntax in
+      let%bind next =
+        Deferred.choose
+          [
+            Deferred.choice (Ivar.read finished) (fun () -> `Finished);
+            Deferred.choice (Clock_ns.after build_heartbeat_interval) (fun () ->
+                `Heartbeat);
+          ]
+      in
+      match next with
+      | `Finished -> Deferred.unit
+      | `Heartbeat when not (Ivar.is_empty finished) -> Deferred.unit
+      | `Heartbeat -> (
+          let message =
+            sprintf
+              "Nix image build still running (elapsed %ds; build output \
+               remains buffered)"
+              (number * 30)
+          in
+          let durable_write =
+            Store.record_stage store ~id:operation_id ~stage:"building" ~message
+          in
+          let%bind next =
+            Deferred.choose
+              [
+                Deferred.choice (Ivar.read finished) (fun () -> `Finished);
+                Deferred.choice durable_write (fun _ -> `Written);
+              ]
+          in
+          match next with
+          | `Finished -> Deferred.unit
+          | `Written -> heartbeat (number + 1))
+  in
+  don't_wait_for (heartbeat 1);
+  build
 
 let combine_failure primary secondary =
   Error.create_s [%message (primary : Error.t) (secondary : Error.t)]
@@ -90,9 +133,11 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-let deploy ?(record_stage = no_stage) ?(record_heartbeat = no_stage)
-    ?expected_project ~operation_id ~working_directory ~source:source_selection
-    ~target:target_name () =
+let deploy ?expected_project ~store ~operation_id ~working_directory
+    ~source:source_selection ~target:target_name () =
+  let record_stage stage message =
+    Store.record_stage store ~id:operation_id ~stage:(stage_name stage) ~message
+  in
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
     record_stage Preparing_source
@@ -152,23 +197,13 @@ let deploy ?(record_stage = no_stage) ?(record_heartbeat = no_stage)
       let load_artifacts () =
         let open Deferred.Or_error.Let_syntax in
         let%bind () = record_stage Building "Building and loading the image" in
-        let on_build_progress elapsed =
-          let elapsed_seconds =
-            Time_ns.Span.to_sec elapsed |> Float.iround_down_exn
-          in
-          let%map.Deferred _ =
-            record_heartbeat Building
-              (sprintf
-                 "Nix image build still running (elapsed %ds; build output \
-                  remains buffered)"
-                 elapsed_seconds)
-          in
-          ()
-        in
-        let%bind image =
-          Podman.build_and_load ~on_build_progress ~connection ~source
+        let build =
+          Podman.build_and_load ~connection ~source
             ~image_output:(Configuration.Target.image target)
             ()
+        in
+        let%bind image =
+          run_build_with_durable_heartbeats ~store ~operation_id build
         in
         let%bind secrets =
           Secrets.load ~source_root:(Source.path source) ~target

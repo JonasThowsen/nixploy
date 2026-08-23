@@ -53,8 +53,6 @@ let run_tests () =
         assert (String.equal revision selected_revision);
         Deferred.Or_error.return selected_commit)
       ~deploy:(fun
-          ~on_stage
-          ~on_requested
           ~application_key
           ~expected_project
           ~working_directory
@@ -83,11 +81,8 @@ let run_tests () =
                 revision,
                 Nixploy.Application.source_is_local source )
               :: !deployed;
-            let%map () =
-              on_stage Nixploy.Deployment.Preparing_source revision
-            in
-            on_requested deployment;
-            Ok deployment)
+            Deferred.Or_error.return
+              (deployment, Deferred.Or_error.return deployment))
       ~prune:(fun
           ~expected_project ~repository_identity ~working_directory ~target ->
         pruned :=
@@ -99,15 +94,6 @@ let run_tests () =
       ()
   in
   let target = prune_target in
-  let stages = ref [] in
-  let requested = ref [] in
-  let on_stage stage message =
-    stages := (stage, message) :: !stages;
-    Deferred.unit
-  in
-  let on_requested deployment =
-    requested := Nixploy.Application.deployment_id deployment :: !requested
-  in
   let%bind preview =
     Nixploy.Application.preview_main_commit application
       ~working_directory:directory
@@ -120,8 +106,8 @@ let run_tests () =
       preview
   in
   let%bind cli_result =
-    Nixploy.Application.deploy ~on_stage ~on_requested application
-      ~working_directory:directory ~source:local_source ~target ()
+    Nixploy.Application.deploy application ~working_directory:directory
+      ~source:local_source ~target ()
   in
   let cli_deployment = assert_ok cli_result in
   assert (
@@ -137,9 +123,8 @@ let run_tests () =
     String.equal selected_revision
       (Nixploy.Application.commit_revision resolved));
   let%bind rpc_result =
-    Nixploy.Application.deploy ~on_stage ~on_requested
-      ~application_key:"example" ~expected_project:project application
-      ~working_directory:directory
+    Nixploy.Application.deploy ~application_key:"example"
+      ~expected_project:project application ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
   in
@@ -156,12 +141,6 @@ let run_tests () =
       (Some "example", Some project, directory, selected_revision, false);
     ]
     (List.rev !deployed);
-  [%test_eq: (Nixploy.Deployment.stage * string) list]
-    [ (Preparing_source, main_revision); (Preparing_source, selected_revision) ]
-    (List.rev !stages);
-  [%test_eq: string list]
-    [ "deployment-a"; "deployment-b" ]
-    (List.rev !requested);
   let%bind deployed_resources =
     Nixploy.Application.resource_state application ~working_directory:directory
       ~target
@@ -238,6 +217,12 @@ let run_tests () =
     [%equal: Nixploy.Application.deployment_state]
       (Nixploy.Application.deployment_state (assert_ok failed_deployment))
       Failed);
+  let%bind.Deferred reconciled =
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:directory ~target (fun () ->
+        Deferred.Or_error.return ())
+  in
+  assert_ok reconciled;
   let%bind stale_cli_deployment =
     Nixploy.Store.find store ~id:(Nixploy.Store.id stale_cli_deployment)
   in
@@ -287,8 +272,8 @@ let run_tests () =
     Nixploy.Application.prune application ~working_directory:directory ~target
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
-  assert (not (Deferred.is_determined waiting_prune));
-  [%test_eq: int] prunes_before_wait (List.length !pruned);
+  assert (Deferred.is_determined waiting_prune);
+  [%test_eq: int] (prunes_before_wait + 1) (List.length !pruned);
   Ivar.fill_exn release_deploy ();
   let%bind deployment_after_wait = waiting_deploy in
   ignore (assert_ok deployment_after_wait : Nixploy.Application.deployment);
@@ -301,7 +286,7 @@ let run_tests () =
       ~target
   in
   assert (
-    [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Absent);
+    [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Present);
   [%test_eq:
     (Nixploy.Project_name.t option
     * string option

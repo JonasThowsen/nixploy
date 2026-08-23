@@ -1,7 +1,13 @@
 open Async
 open Core
 
-let no_stage _ _ = Deferred.unit
+type started = {
+  deployment : Store.deployment;
+  completion : Store.deployment Deferred.Or_error.t;
+}
+
+let deployment t = t.deployment
+let completion t = t.completion
 
 let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
     ~execution_error =
@@ -40,36 +46,7 @@ let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
                   (Error.to_string_hum tracking_error)
                   (Error.to_string_hum failure_error)))
 
-let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project ~store ~working_directory ~source ~target
-    () =
-  let cancellation = Cancellation.current () in
-  let open Deferred.Or_error.Let_syntax in
-  let%bind operation =
-    Store.request store ~application_key ~working_directory ~target
-      ~commit:(Source.selection_commit source)
-  in
-  on_requested operation;
-  let record_stage stage message =
-    let open Deferred.Or_error.Let_syntax in
-    let%bind () =
-      Store.record_stage store ~id:(Store.id operation) ~stage ~message
-    in
-    let%bind.Deferred _ = Monitor.try_with (fun () -> on_stage stage message) in
-    Deferred.Or_error.return ()
-  in
-  let record_heartbeat stage message =
-    (* Heartbeats are authoritative store evidence, not public observer work.
-       Store rejects this transition once a terminal state has won the race. *)
-    Store.record_stage store ~id:(Store.id operation) ~stage ~message
-  in
-  let%bind.Deferred execution =
-    Monitor.try_with_or_error (fun () ->
-        Deployment.deploy ~record_stage ~record_heartbeat ?expected_project
-          ~operation_id:(Store.id operation) ~working_directory ~source ~target
-          ())
-  in
-  let result = Or_error.join execution in
+let finish_operation ~store operation result cancellation =
   let terminalize execution_error =
     let id = Store.id operation in
     terminalize_cancelled
@@ -77,14 +54,21 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
       ~cancel:(fun () -> Store.cancel store ~id)
       ~fail:(fun error -> Store.fail store ~id ~error)
       ~find_state:(fun () ->
-        let%map found = Store.find store ~id in
-        Option.map found ~f:Store.state)
+        let%map.Deferred found = Store.find store ~id in
+        Result.map found ~f:(Option.map ~f:Store.state))
       ~execution_error
   in
+  let open Deferred.Or_error.Let_syntax in
   let%bind () =
     match result with
     | Ok deployment ->
-        Store.succeed store ~id:(Store.id operation) ~result:deployment
+        let message =
+          Deployment.warning deployment
+          |> Option.value ~default:"Deployment independently verified"
+        in
+        Store.succeed store ~id:(Store.id operation)
+          ~container_name:(Deployment.container_name deployment)
+          ~message
     | Error error -> (
         match cancellation with
         | Some token
@@ -98,14 +82,57 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
   | Some deployment -> Deferred.Or_error.return deployment
   | None -> Deferred.Or_error.error_string "tracked deployment disappeared"
 
+let run_requested ?expected_project ~store ~working_directory ~source ~target
+    operation =
+  let cancellation = Cancellation.current () in
+  let%bind.Deferred execution =
+    Monitor.try_with_or_error (fun () ->
+        Deployment.deploy ?expected_project ~store
+          ~operation_id:(Store.id operation) ~working_directory ~source ~target
+          ())
+  in
+  finish_operation ~store operation (Or_error.join execution) cancellation
+
+let start ?application_key ?expected_project ~store ~working_directory ~source
+    ~target () =
+  let started = Ivar.create () in
+  let completion = Ivar.create () in
+  let launch () =
+    Store.with_reconciled_lease store ~application_key ~working_directory
+      ~target (fun () ->
+        let open Deferred.Or_error.Let_syntax in
+        let%bind operation =
+          Store.request store ~application_key ~working_directory ~target
+            ~commit:(Source.selection_commit source)
+        in
+        Ivar.fill_if_empty started (Ok operation);
+        run_requested ?expected_project ~store ~working_directory ~source
+          ~target operation)
+  in
+  don't_wait_for
+    ( Monitor.try_with launch >>| function
+      | Ok result ->
+          Ivar.fill_if_empty completion result;
+          Ivar.fill_if_empty started result
+      | Error error ->
+          let error = Error.of_exn error in
+          Ivar.fill_if_empty completion (Error error);
+          Ivar.fill_if_empty started (Error error) );
+  let%bind.Deferred started_result = Ivar.read started in
+  match started_result with
+  | Error error -> Deferred.return (Error error)
+  | Ok deployment ->
+      Deferred.Or_error.return { deployment; completion = Ivar.read completion }
+
+let deploy ?application_key ?expected_project ~store ~working_directory ~source
+    ~target () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started =
+    start ?application_key ?expected_project ~store ~working_directory ~source
+      ~target ()
+  in
+  completion started
+
 module For_testing = struct
   let terminalize_cancelled = terminalize_cancelled
 end
-
-let deploy ?on_stage ?on_requested ?application_key ?expected_project ~store
-    ~working_directory ~source ~target () =
-  let working_directory = Filename_unix.realpath working_directory in
-  Store.with_reconciled_lease store ~application_key ~working_directory ~target
-    (fun () ->
-      deploy_within_lease ?on_stage ?on_requested ?application_key
-        ?expected_project ~store ~working_directory ~source ~target ())

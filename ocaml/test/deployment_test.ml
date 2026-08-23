@@ -39,48 +39,8 @@ let expect_error_containing result text =
   | Error error ->
       assert (String.is_substring (Error.to_string_hum error) ~substring:text)
 
-let test_build_progress_heartbeats () =
-  let open Deferred.Let_syntax in
-  let completion = Ivar.create () in
-  let messages = ref [] in
-  let operation =
-    Nixploy.Process_runner.For_testing.with_progress_heartbeats
-      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
-      ~on_heartbeat:(fun elapsed ->
-        messages :=
-          sprintf "elapsed %.0f seconds" (Time_ns.Span.to_sec elapsed)
-          :: !messages;
-        Deferred.unit)
-      (fun () -> Ivar.read completion)
-  in
-  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 30.) in
-  [%test_eq: int] 3 (List.length !messages);
-  Ivar.fill_exn completion (Error (Error.of_string "raw-build-output-secret"));
-  let%bind result = operation in
-  assert (Result.is_error result);
-  let messages_at_completion = List.length !messages in
-  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 15.) in
-  [%test_eq: int] messages_at_completion (List.length !messages);
-  assert (
-    List.for_all !messages ~f:(fun message ->
-        not (String.is_substring message ~substring:"raw-build-output-secret")));
-  let immediate_messages = ref 0 in
-  let%bind immediate =
-    Nixploy.Process_runner.For_testing.with_progress_heartbeats
-      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
-      ~on_heartbeat:(fun _ ->
-        Int.incr immediate_messages;
-        Deferred.unit)
-      (fun () -> Deferred.return (Error (Error.of_string "bounded failure")))
-  in
-  assert (Result.is_error immediate);
-  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 15.) in
-  [%test_eq: int] 0 !immediate_messages;
-  Deferred.unit
-
 let run_tests () =
   let open Deferred.Let_syntax in
-  let%bind () = test_build_progress_heartbeats () in
   let root = Filename_unix.temp_dir "nixploy-deployment-test-" "" in
   let repository = Filename.concat root "repository" in
   let bin = Filename.concat root "bin" in
@@ -390,8 +350,17 @@ exit 99
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let deploy ?record_stage ?expected_project operation_id =
-        Nixploy.Deployment.deploy ?record_stage ?expected_project ~operation_id
+      let direct_store_path = Filename.concat root "deployment.sqlite" in
+      let%bind direct_store = Nixploy.Store.open_ ~path:direct_store_path in
+      let direct_store = assert_ok direct_store in
+      let deploy ?record_stage:_ ?expected_project _operation_id =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind operation =
+          Nixploy.Store.request direct_store ~application_key:None
+            ~working_directory:repository ~target ~commit
+        in
+        Nixploy.Deployment.deploy ?expected_project ~store:direct_store
+          ~operation_id:(Nixploy.Store.id operation)
           ~working_directory:repository
           ~source:(Nixploy.Source.immutable commit)
           ~target ()
@@ -517,12 +486,7 @@ exit 99
           assert (not (String.is_substring line ~substring:"ro=false")));
 
       clear_scenario ();
-      let stages = ref [] in
-      let record_stage stage _message =
-        stages := stage :: !stages;
-        Deferred.Or_error.return ()
-      in
-      let%bind deployed = deploy ~record_stage "operation-1" in
+      let%bind deployed = deploy "operation-1" in
       let deployed = assert_ok deployed in
       [%test_eq: Nixploy.Deployment_plan.placement]
         Nixploy.Deployment_plan.Single_container
@@ -581,28 +545,13 @@ exit 99
           "|--label|io.nixploy.target=worker|";
           "|--label|io.nixploy.resource_key=" ^ expected_name ^ "|";
           "|--label|io.nixploy.repository_identity=git@example.invalid:test.git|";
-          "|--label|io.nixploy.operation_id=operation-1|";
+          "|--label|io.nixploy.operation_id=";
           "|loaded@sha256:immutable|/app/worker|--once";
         ]
         ~f:(fun substring ->
           assert (String.is_substring runtime_line ~substring));
       assert (
         not (String.is_substring runtime_line ~substring:"|--label|nixploy."));
-      [%test_eq: Nixploy.Deployment.stage list]
-        [
-          Preparing_source;
-          Evaluating;
-          Connecting;
-          Building;
-          Planning;
-          Running_pre_start;
-          Preparing_candidate;
-          Starting;
-          Verifying;
-          Succeeded;
-        ]
-        (List.rev !stages);
-
       let secret_directory = Filename.concat repository "config" in
       Core_unix.mkdir secret_directory;
       write (Filename.concat secret_directory "secrets.env") "encrypted\n";
@@ -617,10 +566,18 @@ exit 99
         Nixploy.Source.local ~working_directory:repository
       in
       let local_source = assert_ok local_source in
-      let%bind local_deployment =
-        Nixploy.Deployment.deploy ~operation_id:"operation-local"
-          ~working_directory:repository ~source:local_source ~target ()
+      let deploy_local source =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind operation =
+          Nixploy.Store.request direct_store ~application_key:None
+            ~working_directory:repository ~target
+            ~commit:(Nixploy.Source.selection_commit source)
+        in
+        Nixploy.Deployment.deploy ~store:direct_store
+          ~operation_id:(Nixploy.Store.id operation)
+          ~working_directory:repository ~source ~target ()
       in
+      let%bind local_deployment = deploy_local local_source in
       ignore (assert_ok local_deployment : Nixploy.Deployment.t);
       let lines = In_channel.read_lines trace in
       assert (
@@ -651,10 +608,7 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_EXPECTED_SECRET" "config/secrets.env";
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
-      let%bind credential_deployment =
-        Nixploy.Deployment.deploy ~operation_id:"operation-private-identities"
-          ~working_directory:repository ~source:local_source ~target ()
-      in
+      let%bind credential_deployment = deploy_local local_source in
       ignore (assert_ok credential_deployment : Nixploy.Deployment.t);
       let lines = In_channel.read_lines trace in
       let ssh_to_age =
@@ -668,10 +622,7 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
-      let%bind insecure_age =
-        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-age"
-          ~working_directory:repository ~source:local_source ~target ()
-      in
+      let%bind insecure_age = deploy_local local_source in
       expect_error_containing insecure_age "group or other permissions";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 0 (count lines "ssh-to-age|");
@@ -683,10 +634,7 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "SOPS_AGE_KEY_FILE" age_identity;
       Caml_unix.putenv "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE" ssh_identity;
-      let%bind insecure_ssh =
-        Nixploy.Deployment.deploy ~operation_id:"operation-insecure-ssh"
-          ~working_directory:repository ~source:local_source ~target ()
-      in
+      let%bind insecure_ssh = deploy_local local_source in
       expect_error_containing insecure_ssh "group or other permissions";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 0 (count lines "ssh-to-age|");
@@ -695,10 +643,7 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "../outside.env";
-      let%bind traversal =
-        Nixploy.Deployment.deploy ~operation_id:"operation-secret-traversal"
-          ~working_directory:repository ~source:local_source ~target ()
-      in
+      let%bind traversal = deploy_local local_source in
       expect_error_containing traversal "relative secret path";
       [%test_eq: int] 0
         (In_channel.read_lines trace
@@ -715,10 +660,7 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_SECRETS" "1";
       Caml_unix.putenv "NIXPLOY_TEST_SECRET_PATH" "config/escape.env";
-      let%bind symlink_escape =
-        Nixploy.Deployment.deploy ~operation_id:"operation-secret-symlink"
-          ~working_directory:repository ~source:local_source ~target ()
-      in
+      let%bind symlink_escape = deploy_local local_source in
       expect_error_containing symlink_escape "relative secret path";
       [%test_eq: int] 0
         (In_channel.read_lines trace
@@ -780,64 +722,6 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_VERIFY_MISMATCH" "1";
       let%bind () = expect_application_failure_leaves_unknown () in
-
-      clear_scenario ();
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Verifying then
-          Deferred.Or_error.error_string "stage persistence failed"
-        else Deferred.Or_error.return ()
-      in
-      let%bind stage_failure = deploy ~record_stage "operation-stage-failure" in
-      expect_error stage_failure;
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "|rm|-f|");
-      assert (not (Sys_unix.file_exists_exn state));
-
-      clear_scenario ();
-      let observer_store_path = Filename.concat root "observer.sqlite" in
-      let%bind observer_store = Nixploy.Store.open_ ~path:observer_store_path in
-      let observer_store = assert_ok observer_store in
-      let observer_calls = ref 0 in
-      let on_stage _stage _message =
-        Int.incr observer_calls;
-        raise_s [%message "observer failure"]
-      in
-      let%bind observer_result =
-        Nixploy.Tracked_deployment.deploy ~on_stage ~store:observer_store
-          ~working_directory:repository
-          ~source:(Nixploy.Source.immutable commit)
-          ~target ()
-      in
-      let observer_result = assert_ok observer_result in
-      assert (!observer_calls > 0);
-      assert (
-        Nixploy.Store.equal_state
-          (Nixploy.Store.state observer_result)
-          Succeeded);
-
-      clear_scenario ();
-      let failing_store_path = Filename.concat root "failing.sqlite" in
-      let%bind failing_store = Nixploy.Store.open_ ~path:failing_store_path in
-      let failing_store = assert_ok failing_store in
-      let on_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Starting then (
-          Core_unix.unlink failing_store_path;
-          Core_unix.mkdir failing_store_path);
-        Deferred.unit
-      in
-      let%bind persisted_stage_failure =
-        Nixploy.Tracked_deployment.deploy ~on_stage ~store:failing_store
-          ~working_directory:repository
-          ~source:(Nixploy.Source.immutable commit)
-          ~target ()
-      in
-      expect_error persisted_stage_failure;
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "|rm|-f|");
-      assert (
-        String.is_substring (List.last_exn lines)
-          ~substring:"|rm|-f|candidate-id");
-      Core_unix.rmdir failing_store_path;
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
@@ -920,69 +804,6 @@ exit 99
         (In_channel.read_lines route_state);
 
       clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
-      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
-      write route_state "8080\nretired.example.invalid\n";
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Succeeded then
-          Deferred.Or_error.error_string "terminal stage persistence failed"
-        else Deferred.Or_error.return ()
-      in
-      let%bind restored_domain =
-        deploy ~record_stage "operation-domain-compensation"
-      in
-      expect_error restored_domain;
-      [%test_eq: string list]
-        [ "8080"; "retired.example.invalid" ]
-        (In_channel.read_lines route_state);
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "'-X' 'PATCH'");
-      let updates =
-        List.filter_mapi lines ~f:(fun index line ->
-            if String.is_substring line ~substring:"'-X' 'PATCH'" then
-              Some index
-            else None)
-      in
-      let cleanup_candidate =
-        index_of lines (String.is_substring ~substring:"|rm|-f|candidate-id")
-      in
-      assert (List.nth_exn updates 1 < cleanup_candidate);
-
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
-      let terminal_stage_attempted = ref false in
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Succeeded then (
-          terminal_stage_attempted := true;
-          Deferred.Or_error.error_string "terminal stage persistence failed")
-        else Deferred.Or_error.return ()
-      in
-      let%bind web_stage_failure =
-        deploy ~record_stage "operation-web-stage-failure"
-      in
-      expect_error web_stage_failure;
-      let lines = In_channel.read_lines trace in
-      if not !terminal_stage_attempted then
-        failwithf "web deployment failed before terminal stage: %s\n%s"
-          (Result.error web_stage_failure
-          |> Option.value_exn |> Error.to_string_hum)
-          (String.concat ~sep:"\n" lines)
-          ();
-      let switch =
-        index_of lines (fun line ->
-            String.is_prefix line ~prefix:"ssh|"
-            && String.is_substring line ~substring:"'-X' 'POST'")
-      in
-      let restore =
-        index_of lines (fun line ->
-            String.is_prefix line ~prefix:"ssh|"
-            && String.is_substring line ~substring:"'-X' 'DELETE'")
-      in
-      let cleanup_candidate =
-        index_of lines (String.is_substring ~substring:"|rm|-f|")
-      in
-      assert (switch < restore && restore < cleanup_candidate);
-      assert (not (Sys_unix.file_exists_exn state));
       assert (not (Sys_unix.file_exists_exn route_state));
       Deferred.unit)
 

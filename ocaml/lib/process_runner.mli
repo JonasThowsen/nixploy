@@ -19,23 +19,12 @@ val run :
   ?stdin:string ->
   ?env:Core_unix.env ->
   ?ignore_termination:bool ->
-  ?on_progress:(Time_ns.Span.t -> unit Deferred.t) ->
   timeout:Time_ns.Span.t ->
   max_output_bytes:int ->
   prog:string ->
   args:string list ->
   unit ->
   t Deferred.Or_error.t
-
-(** When [on_progress] is provided, it receives elapsed-time heartbeats every 30
-    seconds while the child is active, capped at 119 callbacks. Buffered stdout
-    and stderr are never passed to the callback. Progress is advisory: callback
-    exceptions are ignored, and an in-flight callback is abandoned as soon as
-    the child operation reaches a terminal result, so it cannot delay timeout,
-    cancellation, signal handling, or process-group cleanup. Callbacks that
-    perform their own asynchronous effects must make those effects
-    terminal-state safe; the deployment store does so by accepting stage
-    transitions only while an operation is active. *)
 
 val run_stdout :
   ?working_directory:string ->
@@ -51,11 +40,4 @@ val run_stdout :
 
 module For_testing : sig
   val should_force_termination : already_delivered:bool -> bool
-
-  val with_progress_heartbeats :
-    interval:Time_ns.Span.t ->
-    max_heartbeats:int ->
-    on_heartbeat:(Time_ns.Span.t -> unit Deferred.t) ->
-    (unit -> 'a Deferred.t) ->
-    'a Deferred.t
 end

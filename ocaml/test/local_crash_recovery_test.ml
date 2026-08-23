@@ -31,8 +31,7 @@ let child_mode () =
              let%bind staged =
                Nixploy.Store.record_stage (assert_ok store)
                  ~id:(Nixploy.Store.id deployment)
-                 ~stage:Nixploy.Deployment.Building
-                 ~message:"Building and loading the image"
+                 ~stage:"building" ~message:"Building and loading the image"
              in
              assert_ok staged;
              Out_channel.write_all marker ~data:(Nixploy.Store.id deployment);

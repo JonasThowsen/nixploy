@@ -3,9 +3,31 @@ open Core
 module Deployment_output = Nixploy_cli_mapping.Deployment_output
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
-let print_deployment_stage stage message =
-  printf "[%s] %s\n%!" (Nixploy.Deployment.stage_name stage) message;
-  Deferred.unit
+let print_deployment_stage stage message = printf "[%s] %s\n%!" stage message
+
+let rec follow_deployment application ~scope ~operation_id ~last_event =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind history =
+    Nixploy.Application.deployment_history application ~scope ~limit:100
+  in
+  match
+    List.find history ~f:(fun deployment ->
+        String.equal (Nixploy.Application.deployment_id deployment) operation_id)
+  with
+  | None -> Deferred.Or_error.error_string "started deployment disappeared"
+  | Some deployment -> (
+      let event =
+        ( Nixploy.Application.deployment_stage deployment,
+          Nixploy.Application.deployment_message deployment )
+      in
+      if not (Option.equal [%equal: string * string] last_event (Some event))
+      then print_deployment_stage (fst event) (snd event);
+      match Nixploy.Application.deployment_state deployment with
+      | Succeeded | Failed | Cancelled -> Deferred.Or_error.return deployment
+      | Requested | Running ->
+          let%bind.Deferred () = Clock_ns.after (Time_ns.Span.of_ms 100.) in
+          follow_deployment application ~scope ~operation_id
+            ~last_event:(Some event))
 
 let exit_after_signal ~default =
   match Nixploy.Process_runner.termination_signal () with
@@ -163,8 +185,23 @@ let deploy_command =
                      (Nixploy.Application.source_revision source)
                      (Nixploy.Application.source_subject source);
                    let%bind result =
-                     Nixploy.Application.deploy ~on_stage:print_deployment_stage
-                       application ~working_directory ~source ~target ()
+                     Nixploy.Application.start_deploy application
+                       ~working_directory ~source ~target ()
+                   in
+                   let%bind result =
+                     match result with
+                     | Error _ as error -> Deferred.return error
+                     | Ok started -> (
+                         match
+                           Nixploy.Application.local_scope ~working_directory
+                             ~target
+                         with
+                         | Error error -> Deferred.return (Error error)
+                         | Ok scope ->
+                             follow_deployment application ~scope
+                               ~operation_id:
+                                 (Nixploy.Application.deployment_id started)
+                               ~last_event:None)
                    in
                    match result with
                    | Error error ->

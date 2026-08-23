@@ -94,9 +94,20 @@ val source_revision : source -> string
 val source_subject : source -> string
 val source_is_local : source -> bool
 
+val start_deploy :
+  ?application_key:string ->
+  ?expected_project:Project_name.t ->
+  t ->
+  working_directory:string ->
+  source:source ->
+  target:Target_name.t ->
+  unit ->
+  deployment Deferred.Or_error.t
+(** Starts a deployment and returns its persisted requested event. Progress is
+    observed by polling durable deployment history; no observer runs under the
+    target lease. *)
+
 val deploy :
-  ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-  ?on_requested:(deployment -> unit) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
@@ -190,15 +201,13 @@ module For_testing : sig
       revision:string ->
       commit Deferred.Or_error.t) ->
     deploy:
-      (on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-      on_requested:(deployment -> unit) ->
-      application_key:string option ->
+      (application_key:string option ->
       expected_project:Project_name.t option ->
       working_directory:string ->
       source:source ->
       target:Target_name.t ->
       unit ->
-      deployment Deferred.Or_error.t) ->
+      (deployment * deployment Deferred.Or_error.t) Deferred.Or_error.t) ->
     prune:
       (expected_project:Project_name.t option ->
       repository_identity:string option ->

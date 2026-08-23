@@ -396,7 +396,6 @@ let request t ~application_key ~working_directory ~target ~commit =
 let record_stage t ~id ~stage ~message =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
-          let stage = Deployment.stage_name stage in
           let now = now_ms () in
           with_db t ~f:(fun db ->
               transaction db (fun () ->
@@ -477,14 +476,9 @@ let finish t ~id ~state ~stage ~event_stage ~message ~container_name ~error =
                     failwith "deployment terminal transition conflicted";
                   insert_event db ~id ~stage:event_stage ~message ~now))))
 
-let succeed t ~id ~result =
-  let message =
-    Deployment.warning result
-    |> Option.value ~default:"Deployment independently verified"
-  in
+let succeed t ~id ~container_name ~message =
   finish t ~id ~state:Succeeded ~stage:(Some "succeeded")
-    ~event_stage:"succeeded" ~message
-    ~container_name:(Some (Deployment.container_name result))
+    ~event_stage:"succeeded" ~message ~container_name:(Some container_name)
     ~error:None
 
 let fail t ~id ~error =

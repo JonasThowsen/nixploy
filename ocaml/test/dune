@@ -4,6 +4,12 @@
  (action
   (run bash %{dep:cli_contract_test.sh} %{dep:../bin/main.exe})))
 
+(rule
+ (alias runtest)
+ (deps callback_api_contract_test.sh)
+ (action
+  (run bash %{dep:callback_api_contract_test.sh})))
+
 (library
  (name core_test)
  (modules core_test)

@@ -118,15 +118,13 @@ type t = {
   find_commit :
     working_directory:string -> revision:string -> commit Deferred.Or_error.t;
   deploy_operation :
-    on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-    on_requested:(deployment -> unit) ->
     application_key:string option ->
     expected_project:Project_name.t option ->
     working_directory:string ->
     source:source ->
     target:Target_name.t ->
     unit ->
-    deployment Deferred.Or_error.t;
+    (deployment * deployment Deferred.Or_error.t) Deferred.Or_error.t;
   prune_operation :
     expected_project:Project_name.t option ->
     repository_identity:string option ->
@@ -143,7 +141,6 @@ type t = {
   mutations : mutation_lifecycle;
 }
 
-let no_stage _ _ = Deferred.unit
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
 let canonical_working_directory working_directory =
@@ -198,15 +195,21 @@ let same_scope (scope : scope) (deployment : deployment) =
   | None, Some _ -> false
 
 let create ~store () =
-  let deploy_operation ~on_stage ~on_requested ~application_key
-      ~expected_project ~working_directory ~source ~target () =
+  let deploy_operation ~application_key ~expected_project ~working_directory
+      ~source ~target () =
     let open Deferred.Or_error.Let_syntax in
-    Tracked_deployment.deploy_within_lease ~on_stage
-      ~on_requested:(fun deployment ->
-        on_requested (deployment_of_store deployment))
-      ?application_key ?expected_project ~store ~working_directory ~source
-      ~target ()
-    >>| deployment_of_store
+    let%bind started =
+      Tracked_deployment.start ?application_key ?expected_project ~store
+        ~working_directory ~source ~target ()
+    in
+    let deployment =
+      Tracked_deployment.deployment started |> deployment_of_store
+    in
+    let completion =
+      let%map.Deferred result = Tracked_deployment.completion started in
+      Result.map result ~f:deployment_of_store
+    in
+    Deferred.Or_error.return (deployment, completion)
   in
   {
     store;
@@ -299,56 +302,73 @@ let invalidate_runtime_scope t ~working_directory ~target =
           Hashtbl.remove t.runtime_cache key
       | Some _ | None -> ())
 
-let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?application_key ?expected_project t ~working_directory ~source ~target () =
-  match canonical_working_directory working_directory with
+let launch_deploy ?application_key ?expected_project t ~working_directory
+    ~source ~target () =
+  match begin_mutation t with
   | Error error -> Deferred.return (Error error)
-  | Ok working_directory ->
-      invalidate_runtime_scope t ~working_directory ~target;
-      let scope = { application_key; working_directory; target } in
-      let cancellation = Cancellation.create () in
-      let operation_id = ref None in
-      let requested deployment =
-        operation_id := Some deployment.id;
-        Option.iter application_key ~f:(fun _ ->
-            Hashtbl.set t.active ~key:deployment.id
-              ~data:{ scope; cancellation });
-        on_requested deployment
-      in
-      let execution =
-        Cancellation.within cancellation (fun () ->
-            Store.with_reconciled_lease t.store ~application_key
-              ~working_directory ~target (fun () ->
+  | Ok () -> (
+      match canonical_working_directory working_directory with
+      | Error error ->
+          finish_mutation t;
+          Deferred.return (Error error)
+      | Ok working_directory -> (
+          invalidate_runtime_scope t ~working_directory ~target;
+          let scope = { application_key; working_directory; target } in
+          let cancellation = Cancellation.create () in
+          let started =
+            Cancellation.within cancellation (fun () ->
                 let open Deferred.Or_error.Let_syntax in
                 let%bind () =
                   Store.set_resource_state t.store ~working_directory ~target
                     Unknown
                 in
-                let%bind deployment =
-                  t.deploy_operation ~on_stage ~on_requested:requested
-                    ~application_key ~expected_project ~working_directory
-                    ~source ~target ()
-                in
-                let%map () =
-                  match deployment.state with
-                  | Succeeded ->
+                t.deploy_operation ~application_key ~expected_project
+                  ~working_directory ~source ~target ())
+          in
+          let%map result = started in
+          match result with
+          | Error error ->
+              finish_mutation t;
+              Error error
+          | Ok (deployment, completion) ->
+              let completion =
+                let%bind.Deferred terminal = completion in
+                match terminal with
+                | Ok { state = Succeeded; _ } ->
+                    let%map _ =
                       Store.set_resource_state t.store ~working_directory
                         ~target Present
-                  | Requested | Running | Failed | Cancelled ->
-                      Deferred.Or_error.return ()
-                in
-                deployment))
-      in
-      let%map result = execution in
-      Option.iter !operation_id ~f:(fun id -> remove_active t id cancellation);
-      invalidate_runtime_scope t ~working_directory ~target;
-      result
+                    in
+                    terminal
+                | Ok { state = Requested | Running | Failed | Cancelled; _ }
+                | Error _ ->
+                    Deferred.return terminal
+              in
+              Option.iter application_key ~f:(fun _ ->
+                  Hashtbl.set t.active ~key:deployment.id
+                    ~data:{ scope; cancellation });
+              upon completion (fun _ ->
+                  remove_active t deployment.id cancellation;
+                  invalidate_runtime_scope t ~working_directory ~target;
+                  finish_mutation t);
+              Ok (deployment, completion)))
 
-let deploy ?on_stage ?on_requested ?application_key ?expected_project t
-    ~working_directory ~source ~target () =
-  account_mutation t (fun () ->
-      deploy_unaccounted ?on_stage ?on_requested ?application_key
-        ?expected_project t ~working_directory ~source ~target ())
+let start_deploy ?application_key ?expected_project t ~working_directory ~source
+    ~target () =
+  let%map.Deferred result =
+    launch_deploy ?application_key ?expected_project t ~working_directory
+      ~source ~target ()
+  in
+  Result.map result ~f:fst
+
+let deploy ?application_key ?expected_project t ~working_directory ~source
+    ~target () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind _started, completion =
+    launch_deploy ?application_key ?expected_project t ~working_directory
+      ~source ~target ()
+  in
+  completion
 
 let prune_unaccounted ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =

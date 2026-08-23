@@ -36,14 +36,19 @@ val request :
   deployment Deferred.Or_error.t
 
 val record_stage :
+  t -> id:string -> stage:string -> message:string -> unit Deferred.Or_error.t
+(** Writes trusted durable progress while the operation remains active. Terminal
+    compare-and-set transitions reject every later heartbeat or stage update. *)
+
+val request_cancellation : t -> id:string -> unit Deferred.Or_error.t
+
+val succeed :
   t ->
   id:string ->
-  stage:Deployment.stage ->
+  container_name:string ->
   message:string ->
   unit Deferred.Or_error.t
 
-val request_cancellation : t -> id:string -> unit Deferred.Or_error.t
-val succeed : t -> id:string -> result:Deployment.t -> unit Deferred.Or_error.t
 val fail : t -> id:string -> error:Error.t -> unit Deferred.Or_error.t
 val cancel : t -> id:string -> unit Deferred.Or_error.t
 val list : t -> limit:int -> deployment list Deferred.Or_error.t

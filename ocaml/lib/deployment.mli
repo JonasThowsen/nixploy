@@ -19,9 +19,8 @@ type stage =
 type t
 
 val deploy :
-  ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
-  ?record_heartbeat:(stage -> string -> unit Deferred.Or_error.t) ->
   ?expected_project:Project_name.t ->
+  store:Store.t ->
   operation_id:string ->
   working_directory:string ->
   source:Source.selection ->
