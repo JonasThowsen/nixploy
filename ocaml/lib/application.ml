@@ -95,7 +95,14 @@ type scope = {
   target : Target_name.t;
 }
 
-type active_operation = { scope : scope; cancellation : Cancellation.t }
+type started_deployment = {
+  deployment : deployment;
+  scope : scope;
+  cancellation : Cancellation.t;
+  completion : deployment Deferred.Or_error.t;
+}
+
+type active_operation = started_deployment
 
 type mutation_lifecycle = {
   mutable accepting : bool;
@@ -136,7 +143,10 @@ type t = {
     (Managed_application.t -> log_snapshot Deferred.Or_error.t) option;
   metrics_override :
     (Managed_application.t -> target_metrics Deferred.t) option;
+  deployment_history_override :
+    (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) option;
   active : active_operation String.Table.t;
+  cancellations : Cancellation.t list ref;
   runtime_cache : cached_runtime String.Table.t;
   mutations : mutation_lifecycle;
 }
@@ -226,7 +236,9 @@ let create ~store () =
           ~target:scope.target);
     logs_override = None;
     metrics_override = None;
+    deployment_history_override = None;
     active = String.Table.create ();
+    cancellations = ref [];
     runtime_cache = String.Table.create ();
     mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
@@ -235,6 +247,20 @@ let begin_shutdown t =
   if not t.mutations.accepting then Already_shutting_down
   else (
     t.mutations.accepting <- false;
+    let active = Hashtbl.data t.active in
+    List.iter active ~f:(fun started ->
+        (* Start the durable marker before waking the child. The tracked
+           completion retries terminalization if this write fails. *)
+        upon (Store.request_cancellation t.store ~id:started.deployment.id)
+          (fun _ ->
+            ignore
+              (Cancellation.request started.cancellation : Cancellation.request)));
+    List.iter !(t.cancellations) ~f:(fun cancellation ->
+        if
+          not
+            (List.exists active ~f:(fun started ->
+                 phys_equal started.cancellation cancellation))
+        then ignore (Cancellation.request cancellation : Cancellation.request));
     if Int.equal t.mutations.active_count 0 then
       Ivar.fill_if_empty t.mutations.drained ();
     Shutdown_started)
@@ -286,11 +312,20 @@ let source_subject source =
 
 let source_is_local = Source.selection_is_local
 
+let add_cancellation t cancellation =
+  t.cancellations := cancellation :: !(t.cancellations)
+
+let remove_cancellation t cancellation =
+  t.cancellations :=
+    List.filter !(t.cancellations) ~f:(fun active ->
+        not (phys_equal active cancellation))
+
 let remove_active t operation_id cancellation =
-  match Hashtbl.find t.active operation_id with
+  (match Hashtbl.find t.active operation_id with
   | Some active when phys_equal active.cancellation cancellation ->
       Hashtbl.remove t.active operation_id
-  | Some _ | None -> ()
+  | Some _ | None -> ());
+  remove_cancellation t cancellation
 
 let invalidate_runtime_scope t ~working_directory ~target =
   Hashtbl.keys t.runtime_cache
@@ -315,6 +350,7 @@ let launch_deploy ?application_key ?expected_project t ~working_directory
           invalidate_runtime_scope t ~working_directory ~target;
           let scope = { application_key; working_directory; target } in
           let cancellation = Cancellation.create () in
+          add_cancellation t cancellation;
           let started =
             Cancellation.within cancellation (fun () ->
                 let open Deferred.Or_error.Let_syntax in
@@ -328,11 +364,12 @@ let launch_deploy ?application_key ?expected_project t ~working_directory
           let%map result = started in
           match result with
           | Error error ->
+              remove_cancellation t cancellation;
               finish_mutation t;
               Error error
-          | Ok (deployment, completion) ->
+          | Ok (deployment, operation_completion) ->
               let completion =
-                let%bind.Deferred terminal = completion in
+                let%bind.Deferred terminal = operation_completion in
                 match terminal with
                 | Ok { state = Succeeded; _ } ->
                     let%map _ =
@@ -344,31 +381,54 @@ let launch_deploy ?application_key ?expected_project t ~working_directory
                 | Error _ ->
                     Deferred.return terminal
               in
-              Option.iter application_key ~f:(fun _ ->
-                  Hashtbl.set t.active ~key:deployment.id
-                    ~data:{ scope; cancellation });
+              let started = { deployment; scope; cancellation; completion } in
+              Hashtbl.set t.active ~key:deployment.id ~data:started;
               upon completion (fun _ ->
                   remove_active t deployment.id cancellation;
                   invalidate_runtime_scope t ~working_directory ~target;
                   finish_mutation t);
-              Ok (deployment, completion)))
+              Ok started))
 
 let start_deploy ?application_key ?expected_project t ~working_directory ~source
     ~target () =
-  let%map.Deferred result =
-    launch_deploy ?application_key ?expected_project t ~working_directory
-      ~source ~target ()
+  launch_deploy ?application_key ?expected_project t ~working_directory ~source
+    ~target ()
+
+let started_deployment started = started.deployment
+let started_deployment_id started = started.deployment.id
+let await_started_deployment started = started.completion
+
+let request_cancellation t started =
+  let%bind marker =
+    Store.request_cancellation t.store ~id:started.deployment.id
   in
-  Result.map result ~f:fst
+  let request = Cancellation.request started.cancellation in
+  match (marker, request) with
+  | Ok (), Accepted -> Deferred.Or_error.return Cancellation_requested
+  | Ok (), Already_requested -> Deferred.Or_error.return Already_requested
+  | Ok (), Too_late ->
+      Deferred.Or_error.error_string "deployment is already finalizing"
+  | Error error, (Accepted | Already_requested | Too_late) ->
+      (* Never leave a live child behind merely because durable observation is
+         unavailable. Its tracked completion retries terminalization. *)
+      Deferred.return (Error error)
+
+let cancel_started_deployment t started =
+  match Hashtbl.find t.active started.deployment.id with
+  | Some active when phys_equal active.cancellation started.cancellation ->
+      request_cancellation t started
+  | Some _ | None ->
+      Deferred.Or_error.error_string
+        "deployment is not active in this control-plane process"
 
 let deploy ?application_key ?expected_project t ~working_directory ~source
     ~target () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind _started, completion =
-    launch_deploy ?application_key ?expected_project t ~working_directory
-      ~source ~target ()
+  let%bind started =
+    start_deploy ?application_key ?expected_project t ~working_directory ~source
+      ~target ()
   in
-  completion
+  await_started_deployment started
 
 let prune_unaccounted ?application_key ?expected_project ?repository_identity t
     ~working_directory ~target =
@@ -416,21 +476,24 @@ let bounded_limit limit =
 let deployment_history t ~scope ~limit =
   match bounded_limit limit with
   | Error error -> Deferred.return (Error error)
-  | Ok limit ->
-      let%map deployments =
-        match scope.application_key with
-        | Some application_key ->
-            Store.list_for_application t.store ~application_key
-              ~working_directory:scope.working_directory ~target:scope.target
-              ~limit
-        | None ->
-            Store.list_for_scope t.store
-              ~working_directory:scope.working_directory ~target:scope.target
-              ~limit
-      in
-      Or_error.map deployments ~f:(fun deployments ->
-          List.map deployments ~f:deployment_of_store
-          |> List.filter ~f:(same_scope scope))
+  | Ok limit -> (
+      match t.deployment_history_override with
+      | Some history -> history ~scope ~limit
+      | None ->
+          let%map deployments =
+            match scope.application_key with
+            | Some application_key ->
+                Store.list_for_application t.store ~application_key
+                  ~working_directory:scope.working_directory
+                  ~target:scope.target ~limit
+            | None ->
+                Store.list_for_scope t.store
+                  ~working_directory:scope.working_directory
+                  ~target:scope.target ~limit
+          in
+          Or_error.map deployments ~f:(fun deployments ->
+              List.map deployments ~f:deployment_of_store
+              |> List.filter ~f:(same_scope scope)))
 
 let equal_scope (left : scope) (right : scope) =
   String.equal left.working_directory right.working_directory
@@ -445,42 +508,28 @@ let deployment_can_cancel t ~scope deployment =
   | None -> false
 
 let cancel_deployment t ~scope ~operation_id =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind found = Store.find t.store ~id:operation_id in
-  let%bind deployment =
-    match Option.map found ~f:deployment_of_store with
-    | None -> Deferred.Or_error.error_string "deployment does not exist"
-    | Some deployment when same_scope scope deployment ->
-        Deferred.Or_error.return deployment
-    | Some _ ->
-        Deferred.Or_error.error_string
-          "deployment does not belong to the selected application"
-  in
-  let%bind active =
-    match Hashtbl.find t.active operation_id with
-    | Some active
-      when same_scope scope deployment && same_scope active.scope deployment ->
-        Deferred.Or_error.return active
-    | Some _ ->
-        Deferred.Or_error.error_string
-          "deployment does not belong to the selected application"
-    | None ->
-        Deferred.Or_error.error_string
-          "deployment is not active in this control-plane process"
-  in
-  let%bind.Deferred marker =
-    Store.request_cancellation t.store ~id:operation_id
-  in
-  match marker with
-  | Error _ when Cancellation.was_requested active.cancellation ->
-      Deferred.Or_error.return Already_requested
-  | Error error -> Deferred.return (Error error)
-  | Ok () -> (
-      match Cancellation.request active.cancellation with
-      | Too_late ->
-          Deferred.Or_error.error_string "deployment is already finalizing"
-      | Accepted -> Deferred.Or_error.return Cancellation_requested
-      | Already_requested -> Deferred.Or_error.return Already_requested)
+  match Hashtbl.find t.active operation_id with
+  | Some started when equal_scope scope started.scope ->
+      cancel_started_deployment t started
+  | Some _ ->
+      Deferred.Or_error.error_string
+        "deployment does not belong to the selected application"
+  | None -> (
+      (* A restarted process has no cancellation authority. This read only
+         improves the scope error; it is never used to prove completion. *)
+      let%map found = Store.find t.store ~id:operation_id in
+      match found with
+      | Ok (Some deployment)
+        when same_scope scope (deployment_of_store deployment) ->
+          Error.of_string
+            "deployment is not active in this control-plane process"
+          |> Result.Error
+      | Ok (Some _) ->
+          Error.of_string
+            "deployment does not belong to the selected application"
+          |> Result.Error
+      | Ok None -> Error.of_string "deployment does not exist" |> Result.Error
+      | Error error -> Error error)
 
 let resource_state_for_scope t ~(scope : scope) =
   Store.resource_state t.store ~working_directory:scope.working_directory
@@ -829,8 +878,8 @@ let deployment_updated_at_ms (deployment : deployment) =
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ?status ?logs ?metrics ~store ~preview_main ~find_commit ~deploy
-      ~prune () =
+  let create ?status ?logs ?metrics ?deployment_history ~store ~preview_main
+      ~find_commit ~deploy ~prune () =
     {
       store;
       preview_main;
@@ -843,7 +892,9 @@ module For_testing = struct
               ~target:scope.target);
       logs_override = logs;
       metrics_override = metrics;
+      deployment_history_override = deployment_history;
       active = String.Table.create ();
+      cancellations = ref [];
       runtime_cache = String.Table.create ();
       mutations =
         { accepting = true; active_count = 0; drained = Ivar.create () };

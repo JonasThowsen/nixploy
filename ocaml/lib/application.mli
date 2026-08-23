@@ -5,6 +5,7 @@ type t
 type commit
 type source
 type deployment
+type started_deployment
 type prune_result
 type status
 type scope
@@ -71,7 +72,8 @@ val create : store:Store.t -> unit -> t
 val open_ : state_path:string -> t Deferred.Or_error.t
 
 val begin_shutdown : t -> shutdown_transition
-(** Atomically rejects new deploy and prune mutations. *)
+(** Atomically rejects new deploy and prune mutations and requests cancellation
+    for every process-local started deployment. *)
 
 val mutations_drained : t -> unit Deferred.t
 (** Becomes determined after shutdown begins and every admitted deploy or prune
@@ -102,10 +104,23 @@ val start_deploy :
   source:source ->
   target:Target_name.t ->
   unit ->
-  deployment Deferred.Or_error.t
-(** Starts a deployment and returns its persisted requested event. Progress is
-    observed by polling durable deployment history; no observer runs under the
-    target lease. *)
+  started_deployment Deferred.Or_error.t
+(** Starts a deployment and returns an opaque, process-local ownership handle.
+    The handle contains the durable requested operation and the only completion
+    and cancellation authority for that started operation. It is never sent
+    across RPC boundaries. Durable history is observation only; it cannot prove
+    that the in-memory mutation has finished. *)
+
+val started_deployment : started_deployment -> deployment
+val started_deployment_id : started_deployment -> string
+
+val await_started_deployment :
+  started_deployment -> deployment Deferred.Or_error.t
+
+val cancel_started_deployment :
+  t -> started_deployment -> cancellation_result Deferred.Or_error.t
+(** Requests cancellation for exactly this opaque started operation, then lets
+    its completion drain the owned mutation and lease. *)
 
 val deploy :
   ?application_key:string ->
@@ -194,6 +209,8 @@ module For_testing : sig
     ?status:(scope:scope -> status Deferred.Or_error.t) ->
     ?logs:(Managed_application.t -> log_snapshot Deferred.Or_error.t) ->
     ?metrics:(Managed_application.t -> target_metrics Deferred.t) ->
+    ?deployment_history:
+      (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) ->
     store:Store.t ->
     preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->
     find_commit:

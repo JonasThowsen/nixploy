@@ -212,6 +212,24 @@ let run_tests () =
       Cancelled);
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 1.) in
   assert (Deferred.is_determined (Nixploy.Application.mutations_drained fake));
+  let%bind web_started =
+    Nixploy.Application.start_deploy ~application_key:"example" fake
+      ~working_directory:directory ~source ~target ()
+  in
+  let web_started = assert_ok web_started in
+  assert (
+    [%equal: Nixploy.Application.shutdown_transition]
+      (Nixploy.Application.begin_shutdown fake)
+      Shutdown_started);
+  let%bind web_terminal =
+    Nixploy.Application.await_started_deployment web_started
+  in
+  assert (
+    [%equal: Nixploy.Application.deployment_state]
+      (Nixploy.Application.deployment_state (assert_ok web_terminal))
+      Cancelled);
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 1.) in
+  assert (Deferred.is_determined (Nixploy.Application.mutations_drained fake));
   let%bind interrupted =
     Nixploy.Store.request store ~application_key:(Some "example")
       ~working_directory:directory ~target ~commit:store_commit

@@ -47,6 +47,13 @@
   (pps ppx_jane)))
 
 (test
+ (name deployment_observer_test)
+ (modules deployment_observer_test)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name deployment_test)
  (modules deployment_test)
  (libraries nixploy core core_unix.command_unix async)

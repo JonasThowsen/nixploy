@@ -84,7 +84,7 @@ let deploy state _connection_state query =
               ()
           in
           let%map result = execution in
-          Result.map result ~f:Deployment_start.operation_id)
+          Result.map result ~f:Nixploy.Application.started_deployment_id)
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
