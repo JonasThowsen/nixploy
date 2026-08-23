@@ -19,8 +19,9 @@ let child_mode () =
       Some
         (let open Deferred.Let_syntax in
          let%bind store = Nixploy.Store.open_ ~path:database in
-         Nixploy.Store.with_lease (assert_ok store) ~working_directory ~target
-           (fun _lease ->
+         Nixploy.Store.with_reconciled_lease (assert_ok store)
+           ~application_key:(Some "managed-app") ~working_directory ~target
+           (fun () ->
              let%bind deployment =
                Nixploy.Store.request (assert_ok store)
                  ~application_key:(Some "managed-app") ~working_directory
@@ -131,23 +132,22 @@ let run_tests () =
       let interrupted_id = In_channel.read_all marker in
       set_prior_error database interrupted_id;
       let recovery_entered = Ivar.create () in
+      let retained_callback =
+        ref (fun () ->
+            Deferred.Or_error.error_string
+              "reconciled lease callback was not retained")
+      in
       let recovered =
-        Nixploy.Store.with_lease store ~working_directory ~target (fun lease ->
+        Nixploy.Store.with_reconciled_lease store
+          ~application_key:(Some "managed-app") ~working_directory ~target
+          (fun () ->
             Ivar.fill_if_empty recovery_entered ();
-            let open Deferred.Or_error.Let_syntax in
-            let%bind () =
-              Nixploy.Store.reconcile_interrupted_within_lease lease
-                ~application_key:(Some "managed-app")
-            in
-            let%bind () =
-              Nixploy.Store.reconcile_interrupted_within_lease lease
-                ~application_key:(Some "managed-app")
-            in
-            let%map deployment =
-              Nixploy.Store.request store ~application_key:(Some "managed-app")
-                ~working_directory ~target ~commit
-            in
-            deployment)
+            (retained_callback :=
+               fun () ->
+                 Nixploy.Store.request store
+                   ~application_key:(Some "managed-app") ~working_directory
+                   ~target ~commit);
+            Deferred.Or_error.return ())
       in
       let%bind () = Clock_ns.after (Time_ns.Span.of_ms 75.) in
       assert (not (Deferred.is_determined recovered));
@@ -155,8 +155,16 @@ let run_tests () =
       Signal_unix.send_i Signal.kill (`Pid (Process.pid child));
       let%bind _ = child_wait in
       let%bind recovered = recovered in
-      let new_deployment = assert_ok recovered in
+      assert_ok recovered;
       assert (not (Ivar.is_empty recovery_entered));
+      let%bind released_lease =
+        Nixploy.Store.with_reconciled_lease store
+          ~application_key:(Some "managed-app") ~working_directory ~target
+          (fun () -> Deferred.Or_error.return ())
+      in
+      assert_ok released_lease;
+      let%bind post_release = !retained_callback () in
+      let new_deployment = assert_ok post_release in
       assert (
         Nixploy.Store.equal_state (Nixploy.Store.state new_deployment) Requested);
       let%bind interrupted = Nixploy.Store.find store ~id:interrupted_id in
@@ -175,6 +183,10 @@ let run_tests () =
           (Nixploy.Store.message interrupted)
           ~substring:"remote outcome is unknown");
       [%test_eq: int] 1 (interrupted_event_count database interrupted_id);
+      (* The retained callback can use ordinary store operations after release,
+         but it received no lease reconciliation authority. *)
+      [%test_eq: int] 0
+        (interrupted_event_count database (Nixploy.Store.id new_deployment));
       let%bind local_cli_deployment =
         Nixploy.Store.find store ~id:(Nixploy.Store.id local_cli_deployment)
       in
@@ -204,9 +216,8 @@ let run_tests () =
           (Nixploy.Store.state (assert_ok unrelated_scope |> Option.value_exn))
           Requested);
       let%bind local_recovery =
-        Nixploy.Store.with_lease store ~working_directory ~target (fun lease ->
-            Nixploy.Store.reconcile_interrupted_within_lease lease
-              ~application_key:None)
+        Nixploy.Store.with_reconciled_lease store ~application_key:None
+          ~working_directory ~target (fun () -> Deferred.Or_error.return ())
       in
       assert_ok local_recovery;
       let%map new_deployment =

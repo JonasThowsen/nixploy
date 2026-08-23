@@ -100,10 +100,7 @@ end
 let deploy ?on_stage ?on_requested ?application_key ?expected_project ~store
     ~working_directory ~source ~target () =
   let working_directory = Filename_unix.realpath working_directory in
-  Store.with_lease store ~working_directory ~target (fun lease ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind () =
-        Store.reconcile_interrupted_within_lease lease ~application_key
-      in
+  Store.with_reconciled_lease store ~application_key ~working_directory ~target
+    (fun () ->
       deploy_within_lease ?on_stage ?on_requested ?application_key
         ?expected_project ~store ~working_directory ~source ~target ())

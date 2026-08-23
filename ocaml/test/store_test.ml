@@ -136,16 +136,17 @@ let run_tests () =
   let lease_entered = Ivar.create () in
   let release_lease = Ivar.create () in
   let first_lease =
-    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
-      (fun _lease ->
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:"/tmp/project" ~target (fun () ->
         Ivar.fill_if_empty lease_entered ();
         let%map () = Ivar.read release_lease in
         Ok ())
   in
   let%bind () = Ivar.read lease_entered in
   let second_lease =
-    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
-      (fun _lease -> Deferred.Or_error.return ())
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:"/tmp/project" ~target (fun () ->
+        Deferred.Or_error.return ())
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
   assert (not (Deferred.is_determined second_lease));

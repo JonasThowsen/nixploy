@@ -2,7 +2,6 @@ open Async
 open Core
 
 type t = { path : string }
-type lease = { store : t; working_directory : string; target : Target_name.t }
 
 type state = Requested | Running | Succeeded | Failed | Cancelled
 [@@deriving compare, equal, sexp]
@@ -240,14 +239,6 @@ let release_lease descriptor =
       ignore (Core_unix.flock descriptor Core_unix.Flock_command.unlock : bool);
       Core_unix.close descriptor)
 
-let with_lease t ~working_directory ~target operation =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind descriptor = acquire_lease t ~working_directory ~target in
-  let lease = { store = t; working_directory; target } in
-  Monitor.protect
-    (fun () -> operation lease)
-    ~finally:(fun () -> release_lease descriptor)
-
 let data =
   Option.value_map ~default:Sqlite3.Data.NULL ~f:(fun value ->
       Sqlite3.Data.TEXT value)
@@ -304,15 +295,15 @@ let active_deployment_ids db ~application_key ~working_directory ~target =
       in
       collect [])
 
-let reconcile_interrupted_within_lease lease ~application_key =
+let reconcile_interrupted_in_scope t ~application_key ~working_directory ~target
+    =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
           let now = now_ms () in
-          with_db lease.store ~f:(fun db ->
+          with_db t ~f:(fun db ->
               transaction db (fun () ->
-                  active_deployment_ids db ~application_key
-                    ~working_directory:lease.working_directory
-                    ~target:lease.target
+                  active_deployment_ids db ~application_key ~working_directory
+                    ~target
                   |> List.iter ~f:(fun id ->
                       with_statement db
                         "UPDATE deployments SET state = 'failed', message = ?, \
@@ -335,6 +326,19 @@ let reconcile_interrupted_within_lease lease ~application_key =
                         failwith "interrupted deployment transition conflicted";
                       insert_event db ~id ~stage:"interrupted"
                         ~message:interrupted_message ~now)))))
+
+let with_reconciled_lease t ~application_key ~working_directory ~target
+    operation =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind descriptor = acquire_lease t ~working_directory ~target in
+  Monitor.protect
+    (fun () ->
+      let%bind () =
+        reconcile_interrupted_in_scope t ~application_key ~working_directory
+          ~target
+      in
+      operation ())
+    ~finally:(fun () -> release_lease descriptor)
 
 let request t ~application_key ~working_directory ~target ~commit =
   Monitor.try_with_or_error (fun () ->

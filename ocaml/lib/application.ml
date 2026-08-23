@@ -317,12 +317,9 @@ let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
       in
       let execution =
         Cancellation.within cancellation (fun () ->
-            Store.with_lease t.store ~working_directory ~target (fun lease ->
+            Store.with_reconciled_lease t.store ~application_key
+              ~working_directory ~target (fun () ->
                 let open Deferred.Or_error.Let_syntax in
-                let%bind () =
-                  Store.reconcile_interrupted_within_lease lease
-                    ~application_key
-                in
                 let%bind () =
                   Store.set_resource_state t.store ~working_directory ~target
                     Unknown
@@ -360,11 +357,9 @@ let prune_unaccounted ?application_key ?expected_project ?repository_identity t
   | Ok working_directory ->
       invalidate_runtime_scope t ~working_directory ~target;
       let%map result =
-        Store.with_lease t.store ~working_directory ~target (fun lease ->
+        Store.with_reconciled_lease t.store ~application_key ~working_directory
+          ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
-            let%bind () =
-              Store.reconcile_interrupted_within_lease lease ~application_key
-            in
             let%bind () =
               Store.set_resource_state t.store ~working_directory ~target
                 Unknown
