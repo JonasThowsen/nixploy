@@ -98,16 +98,28 @@ let with_progress_heartbeats ~interval ~max_heartbeats ~on_heartbeat operation =
       match next with
       | `Finished -> Deferred.unit
       | `Heartbeat when not (Ivar.is_empty finished) -> Deferred.unit
-      | `Heartbeat ->
+      | `Heartbeat -> (
           let elapsed =
             Time_ns.Span.scale interval (Float.of_int heartbeat_number)
           in
-          let%bind () = on_heartbeat elapsed in
-          report (heartbeat_number + 1)
+          let callback = Monitor.try_with (fun () -> on_heartbeat elapsed) in
+          (* A heartbeat observer is not allowed to own the child operation.
+             Race its one in-flight callback with completion rather than
+             accumulating detached callbacks or awaiting it after completion.
+             A callback error is intentionally ignored: progress is advisory. *)
+          let%bind callback_or_finished =
+            Deferred.choose
+              [
+                Deferred.choice (Ivar.read finished) (fun () -> `Finished);
+                Deferred.choice callback (fun _ -> `Callback_finished);
+              ]
+          in
+          match callback_or_finished with
+          | `Finished -> Deferred.unit
+          | `Callback_finished -> report (heartbeat_number + 1))
   in
   let reports = report 1 in
   let%bind result = result in
-  Ivar.fill_if_empty finished ();
   let%map () = reports in
   result
 

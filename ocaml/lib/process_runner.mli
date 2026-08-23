@@ -29,7 +29,13 @@ val run :
 
 (** When [on_progress] is provided, it receives elapsed-time heartbeats every 30
     seconds while the child is active, capped at 119 callbacks. Buffered stdout
-    and stderr are never passed to the callback. *)
+    and stderr are never passed to the callback. Progress is advisory: callback
+    exceptions are ignored, and an in-flight callback is abandoned as soon as
+    the child operation reaches a terminal result, so it cannot delay timeout,
+    cancellation, signal handling, or process-group cleanup. Callbacks that
+    perform their own asynchronous effects must make those effects
+    terminal-state safe; the deployment store does so by accepting stage
+    transitions only while an operation is active. *)
 
 val run_stdout :
   ?working_directory:string ->

@@ -90,8 +90,9 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       in
       Error error
 
-let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
-    ~working_directory ~source:source_selection ~target:target_name () =
+let deploy ?(record_stage = no_stage) ?(record_heartbeat = no_stage)
+    ?expected_project ~operation_id ~working_directory ~source:source_selection
+    ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
     record_stage Preparing_source
@@ -156,7 +157,7 @@ let deploy ?(record_stage = no_stage) ?expected_project ~operation_id
             Time_ns.Span.to_sec elapsed |> Float.iround_down_exn
           in
           let%map.Deferred _ =
-            record_stage Building
+            record_heartbeat Building
               (sprintf
                  "Nix image build still running (elapsed %ds; build output \
                   remains buffered)"

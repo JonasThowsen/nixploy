@@ -58,9 +58,14 @@ let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
     let%bind.Deferred _ = Monitor.try_with (fun () -> on_stage stage message) in
     Deferred.Or_error.return ()
   in
+  let record_heartbeat stage message =
+    (* Heartbeats are authoritative store evidence, not public observer work.
+       Store rejects this transition once a terminal state has won the race. *)
+    Store.record_stage store ~id:(Store.id operation) ~stage ~message
+  in
   let%bind.Deferred execution =
     Monitor.try_with_or_error (fun () ->
-        Deployment.deploy ~record_stage ?expected_project
+        Deployment.deploy ~record_stage ~record_heartbeat ?expected_project
           ~operation_id:(Store.id operation) ~working_directory ~source ~target
           ())
   in

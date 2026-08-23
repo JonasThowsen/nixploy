@@ -50,8 +50,72 @@ let rec wait_for_process_exit pid attempts =
     let%bind () = Clock_ns.after (Time_ns.Span.of_ms 10.) in
     wait_for_process_exit pid (attempts - 1)
 
+let require_prompt_completion deferred =
+  let open Deferred.Let_syntax in
+  let%bind completion =
+    Deferred.choose
+      [
+        Deferred.choice deferred (fun value -> `Completed value);
+        Deferred.choice
+          (Clock_ns.after (Time_ns.Span.of_sec 4.))
+          (fun () -> `Timed_out);
+      ]
+  in
+  match completion with
+  | `Completed value -> Deferred.return value
+  | `Timed_out -> failwith "progress observer delayed terminal process cleanup"
+
+let test_progress_observers_do_not_own_operation_liveness () =
+  let open Deferred.Let_syntax in
+  let completion = Ivar.create () in
+  let callback_started = Ivar.create () in
+  let blocked_callbacks = ref 0 in
+  let blocked_observer =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ ->
+        Int.incr blocked_callbacks;
+        Ivar.fill_if_empty callback_started ();
+        Deferred.never ())
+      (fun () -> Ivar.read completion)
+  in
+  let%bind () = Ivar.read callback_started in
+  Ivar.fill_exn completion "completed";
+  let%bind result = require_prompt_completion blocked_observer in
+  [%test_eq: string] "completed" result;
+  let callbacks_at_terminal = !blocked_callbacks in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 25.) in
+  [%test_eq: int] callbacks_at_terminal !blocked_callbacks;
+
+  let callback_errors = ref 0 in
+  let exceptional_observer =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ ->
+        Int.incr callback_errors;
+        raise_s [%message "progress observer failure"])
+      (fun () -> Clock_ns.after (Time_ns.Span.of_ms 20.))
+  in
+  let%bind () = require_prompt_completion exceptional_observer in
+  assert (!callback_errors > 0);
+
+  let delayed_callbacks = ref 0 in
+  let delayed_observer =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 20.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ ->
+        Int.incr delayed_callbacks;
+        Deferred.unit)
+      (fun () -> Deferred.unit)
+  in
+  let%bind () = require_prompt_completion delayed_observer in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 30.) in
+  [%test_eq: int] 0 !delayed_callbacks;
+  Deferred.unit
+
 let run_tests () =
   let open Deferred.Let_syntax in
+  let%bind () = test_progress_observers_do_not_own_operation_liveness () in
   let executable = Sys_unix.executable_name in
   let%bind success =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
@@ -68,10 +132,15 @@ let run_tests () =
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-overflow" ] ()
   in
   assert (Result.is_error overflow);
-  let%bind timed_out =
-    Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_ms 50.)
-      ~max_output_bytes:1024 ~prog:executable ~args:[ "child-timeout" ] ()
+  let timed_out =
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ -> Deferred.never ())
+      (fun () ->
+        Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_ms 50.)
+          ~max_output_bytes:1024 ~prog:executable ~args:[ "child-timeout" ] ())
   in
+  let%bind timed_out = require_prompt_completion timed_out in
   assert (Result.is_error timed_out);
   let scoped_marker =
     Filename_unix.temp_file "nixploy-scoped-cancel-" ".ready"
@@ -80,10 +149,14 @@ let run_tests () =
   let cancellation = Nixploy.Cancellation.create () in
   let scoped =
     Nixploy.Cancellation.within cancellation (fun () ->
-        Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
-          ~max_output_bytes:1024 ~prog:executable
-          ~args:[ "child-cancel"; scoped_marker ]
-          ())
+        Nixploy.Process_runner.For_testing.with_progress_heartbeats
+          ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+          ~on_heartbeat:(fun _ -> Deferred.never ())
+          (fun () ->
+            Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
+              ~max_output_bytes:1024 ~prog:executable
+              ~args:[ "child-cancel"; scoped_marker ]
+              ()))
   in
   let%bind () = wait_for_file scoped_marker 100 in
   let scoped_descendant = In_channel.read_all scoped_marker |> Int.of_string in
@@ -91,7 +164,7 @@ let run_tests () =
     [%equal: Nixploy.Cancellation.request]
       (Nixploy.Cancellation.request cancellation)
       Accepted);
-  let%bind scoped = scoped in
+  let%bind scoped = require_prompt_completion scoped in
   (match scoped with
   | Ok _ -> failwith "scoped cancellation completed successfully"
   | Error error ->
@@ -119,15 +192,18 @@ let run_tests () =
   Core_unix.unlink marker;
   Nixploy.Process_runner.handle_termination_signals ();
   let cancelled =
-    Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
-      ~max_output_bytes:1024
-      ~on_progress:(fun _ -> Deferred.unit)
-      ~prog:executable ~args:[ "child-cancel"; marker ] ()
+    Nixploy.Process_runner.For_testing.with_progress_heartbeats
+      ~interval:(Time_ns.Span.of_ms 5.) ~max_heartbeats:3
+      ~on_heartbeat:(fun _ -> Deferred.never ())
+      (fun () ->
+        Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
+          ~max_output_bytes:1024 ~prog:executable
+          ~args:[ "child-cancel"; marker ] ())
   in
   let%bind () = wait_for_file marker 100 in
   let descendant = In_channel.read_all marker |> Int.of_string in
   Signal_unix.send_i Signal.int (`Pid (Core_unix.getpid ()));
-  let%bind cancelled = cancelled in
+  let%bind cancelled = require_prompt_completion cancelled in
   (match cancelled with
   | Ok _ -> failwith "cancelled process completed successfully"
   | Error error ->
