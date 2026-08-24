@@ -100,7 +100,6 @@ let schema_v2 =
     CREATE TABLE deployments (
       id TEXT PRIMARY KEY,
       application_key TEXT,
-      operation_kind TEXT NOT NULL DEFAULT 'deploy' CHECK (operation_kind IN ('deploy', 'prune')),
       working_directory TEXT NOT NULL,
       target TEXT NOT NULL,
       state TEXT NOT NULL CHECK (state IN ('requested', 'running', 'succeeded', 'failed', 'cancelled')),
@@ -127,16 +126,6 @@ let schema_v2 =
     CREATE INDEX deployments_recent ON deployments(requested_at_ms DESC);
     CREATE INDEX deployments_application_recent ON deployments(application_key, requested_at_ms DESC);
     CREATE INDEX deployment_events_operation ON deployment_events(deployment_id, id);
-  |}
-
-let prune_operation_schema =
-  {|
-    CREATE TABLE prune_operations (
-      deployment_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
-      canonical_intent TEXT NOT NULL,
-      candidate_snapshot TEXT NOT NULL,
-      bound_at_ms INTEGER
-    );
   |}
 
 let resource_state_schema =
@@ -203,26 +192,14 @@ let migrate db =
       (match user_version db with
       | 0 ->
           exec db schema_v2;
-          exec db resource_state_schema;
-          exec db prune_operation_schema
+          exec db resource_state_schema
       | 1 ->
           migrate_v1_within_transaction db;
-          exec db resource_state_schema;
-          exec db prune_operation_schema
-      | 2 ->
-          exec db resource_state_schema;
-          exec db
-            "ALTER TABLE deployments ADD COLUMN operation_kind TEXT NOT NULL \
-             DEFAULT 'deploy' CHECK (operation_kind IN ('deploy', 'prune'))";
-          exec db prune_operation_schema
-      | 3 ->
-          exec db
-            "ALTER TABLE deployments ADD COLUMN operation_kind TEXT NOT NULL \
-             DEFAULT 'deploy' CHECK (operation_kind IN ('deploy', 'prune'))";
-          exec db prune_operation_schema
-      | 4 -> ()
+          exec db resource_state_schema
+      | 2 -> exec db resource_state_schema
+      | 3 -> ()
       | version -> failwithf "unsupported SQLite schema version %d" version ());
-      exec db "PRAGMA user_version = 4";
+      exec db "PRAGMA user_version = 3";
       exec db "COMMIT";
       committed := true)
     ~finally:(fun () ->
@@ -290,8 +267,7 @@ let interrupted_message =
   "Previous local nixploy process exited while this operation was active; \
    remote outcome is unknown"
 
-let active_deployment_ids db ~exclude_id ~application_key ~working_directory
-    ~target =
+let active_deployment_ids db ~application_key ~working_directory ~target =
   let application_predicate, application_values =
     match application_key with
     | None -> ("application_key IS NULL", [])
@@ -301,17 +277,13 @@ let active_deployment_ids db ~exclude_id ~application_key ~working_directory
   in
   with_statement db
     ("SELECT id FROM deployments WHERE working_directory = ? AND target = ? \
-      AND state IN ('requested', 'running')"
-    ^ Option.value_map exclude_id ~default:"" ~f:(fun _ -> " AND id <> ?")
-    ^ " AND " ^ application_predicate)
+      AND state IN ('requested', 'running') AND " ^ application_predicate)
     ~f:(fun statement ->
       bind db statement
         ([
            Sqlite3.Data.TEXT working_directory;
            TEXT (Target_name.to_string target);
          ]
-        @ (Option.map exclude_id ~f:(fun id -> Sqlite3.Data.TEXT id)
-          |> Option.to_list)
         @ application_values);
       let rec collect ids =
         match Sqlite3.step statement with
@@ -323,15 +295,15 @@ let active_deployment_ids db ~exclude_id ~application_key ~working_directory
       in
       collect [])
 
-let reconcile_interrupted_in_scope t ~exclude_id ~application_key
-    ~working_directory ~target =
+let reconcile_interrupted_in_scope t ~application_key ~working_directory ~target
+    =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
           let now = now_ms () in
           with_db t ~f:(fun db ->
               transaction db (fun () ->
-                  active_deployment_ids db ~exclude_id ~application_key
-                    ~working_directory ~target
+                  active_deployment_ids db ~application_key ~working_directory
+                    ~target
                   |> List.iter ~f:(fun id ->
                       with_statement db
                         "UPDATE deployments SET state = 'failed', message = ?, \
@@ -356,14 +328,14 @@ let reconcile_interrupted_in_scope t ~exclude_id ~application_key
                         ~message:interrupted_message ~now)))))
 
 let with_reconciled_lease t ~application_key ~working_directory ~target
-    ?exclude_id operation =
+    operation =
   let open Deferred.Or_error.Let_syntax in
   let%bind descriptor = acquire_lease t ~working_directory ~target in
   Monitor.protect
     (fun () ->
       let%bind () =
-        reconcile_interrupted_in_scope t ~exclude_id ~application_key
-          ~working_directory ~target
+        reconcile_interrupted_in_scope t ~application_key ~working_directory
+          ~target
       in
       operation ())
     ~finally:(fun () -> release_lease descriptor)
@@ -420,104 +392,6 @@ let request t ~application_key ~working_directory ~target ~commit =
             cancel_requested_at_ms = None;
             updated_at_ms = now;
           }))
-
-let request_prune t ~application_key ~working_directory ~target
-    ~canonical_intent ~candidate_snapshot =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          let id = new_id () in
-          let now = now_ms () in
-          let target_text = Target_name.to_string target in
-          with_db t ~f:(fun db ->
-              transaction db (fun () ->
-                  with_statement db
-                    "INSERT INTO deployments (id, application_key, \
-                     operation_kind, working_directory, target, state, stage, \
-                     message, requested_at_ms, updated_at_ms) VALUES (?, ?, \
-                     'prune', ?, ?, 'requested', 'requested', 'Prune \
-                     requested', ?, ?)" ~f:(fun statement ->
-                      bind db statement
-                        [
-                          Sqlite3.Data.TEXT id;
-                          data application_key;
-                          Sqlite3.Data.TEXT working_directory;
-                          Sqlite3.Data.TEXT target_text;
-                          Sqlite3.Data.INT now;
-                          Sqlite3.Data.INT now;
-                        ];
-                      check db "insert prune operation" (Sqlite3.step statement));
-                  with_statement db
-                    "INSERT INTO prune_operations (deployment_id, \
-                     canonical_intent, candidate_snapshot) VALUES (?, ?, ?)"
-                    ~f:(fun statement ->
-                      bind db statement
-                        [
-                          Sqlite3.Data.TEXT id;
-                          Sqlite3.Data.TEXT canonical_intent;
-                          Sqlite3.Data.TEXT candidate_snapshot;
-                        ];
-                      check db "insert prune operation binding"
-                        (Sqlite3.step statement));
-                  insert_event db ~id ~stage:"requested"
-                    ~message:"Prune requested" ~now));
-          {
-            id;
-            application_key;
-            working_directory;
-            target;
-            state = Requested;
-            stage = "requested";
-            message = "Prune requested";
-            revision = None;
-            commit_subject = None;
-            commit_timestamp_ms = None;
-            container_name = None;
-            error = None;
-            requested_at_ms = now;
-            started_at_ms = None;
-            finished_at_ms = None;
-            cancel_requested_at_ms = None;
-            updated_at_ms = now;
-          }))
-
-let bind_prune_operation t ~id ~application_key ~working_directory ~target
-    ~canonical_intent ~candidate_snapshot =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          let now = now_ms () in
-          with_db t ~f:(fun db ->
-              transaction db (fun () ->
-                  let application_predicate, application_values =
-                    match application_key with
-                    | None -> ("d.application_key IS NULL", [])
-                    | Some key ->
-                        ("d.application_key = ?", [ Sqlite3.Data.TEXT key ])
-                  in
-                  with_statement db
-                    ("UPDATE prune_operations AS p SET bound_at_ms = ? WHERE \
-                      p.deployment_id = ? AND p.canonical_intent = ? AND \
-                      p.candidate_snapshot = ? AND p.bound_at_ms IS NULL AND \
-                      EXISTS (SELECT 1 FROM deployments AS d WHERE d.id = \
-                      p.deployment_id AND d.operation_kind = 'prune' AND \
-                      d.working_directory = ? AND d.target = ? AND "
-                   ^ application_predicate
-                   ^ " AND d.state IN ('requested', 'running'))")
-                    ~f:(fun statement ->
-                      bind db statement
-                        ([
-                           Sqlite3.Data.INT now;
-                           Sqlite3.Data.TEXT id;
-                           Sqlite3.Data.TEXT canonical_intent;
-                           Sqlite3.Data.TEXT candidate_snapshot;
-                           Sqlite3.Data.TEXT working_directory;
-                           Sqlite3.Data.TEXT (Target_name.to_string target);
-                         ]
-                        @ application_values);
-                      check db "bind prune operation" (Sqlite3.step statement));
-                  if Sqlite3.changes db <> 1 then
-                    failwith
-                      "prune operation binding was missing, stale, or already \
-                       consumed"))))
 
 let record_stage t ~id ~stage ~message =
   Monitor.try_with_or_error (fun () ->
@@ -611,18 +485,6 @@ let fail t ~id ~error =
   let message = Error.to_string_hum error in
   finish t ~id ~state:Failed ~stage:None ~event_stage:"failed" ~message
     ~container_name:None ~error:(Some message)
-
-let review t ~id ~error =
-  let message =
-    "Prune outcome requires operator review; remote cleanup may have taken \
-     effect: " ^ Error.to_string_hum error
-  in
-  finish t ~id ~state:Failed ~stage:(Some "review") ~event_stage:"review"
-    ~message ~container_name:None ~error:(Some message)
-
-let succeed_prune t ~id ~message =
-  finish t ~id ~state:Succeeded ~stage:(Some "succeeded")
-    ~event_stage:"succeeded" ~message ~container_name:None ~error:None
 
 let cancel t ~id =
   finish t ~id ~state:Cancelled ~stage:(Some "cancelled")
@@ -736,9 +598,8 @@ let latest_successful_for_application t ~application_key ~working_directory
               with_statement db
                 ("SELECT " ^ select_columns
                ^ " FROM deployments WHERE application_key = ? AND \
-                  working_directory = ? AND target = ? AND operation_kind = \
-                  'deploy' AND state = 'succeeded' ORDER BY requested_at_ms \
-                  DESC, rowid DESC LIMIT 1")
+                  working_directory = ? AND target = ? AND state = 'succeeded' \
+                  ORDER BY requested_at_ms DESC, rowid DESC LIMIT 1")
                 ~f:(fun statement ->
                   bind db statement
                     [

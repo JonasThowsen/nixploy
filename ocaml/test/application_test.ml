@@ -89,7 +89,7 @@ let run_tests () =
               :: !deployed;
             Deferred.Or_error.return
               (deployment, Deferred.Or_error.return deployment))
-      ~prune:(fun ~authorization ~prepared:_ ~operation_id:_ ->
+      ~prune:(fun ~authorization ~prepared:_ ->
         let expected_project =
           Nixploy.Operation_receipt.prune_expected_project authorization
         in

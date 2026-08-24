@@ -69,14 +69,11 @@ source, then acquire the lease, reconcile a dead predecessor, create the durable
 `requested` admission record needed by the opaque handle, bind that exact
 capability to its operation id, and only then mark resource state `Unknown`,
 write active-stage history, or run a remote process. The admission record is
-history of a consumed request, not evidence that a resource changed. A prune consumes its exact receipt, computes one canonical resource candidate
-snapshot, and records a durable `requested` prune operation before acquiring the
-lease. The lease reconciles only predecessors (never that admitted operation),
-then atomically binds the receipt to the exact operation id, target, canonical
-intent, and candidate snapshot. Only then may it mark `Unknown` or start
-cleanup. Bind or resource-state failures terminalize the admitted operation
-without remote effects; a cleanup error after remote invocation is terminal
-`review` and cannot be replayed. The lease always unwinds.
+history of a consumed request, not evidence that a resource changed. A prune
+follows the same lease/reconcile/bound-capability sequence before marking
+`Unknown` or starting cleanup. A failed resource-state write terminalizes the
+admitted deployment and aborts before any remote process; the lease always
+unwinds.
 
 ## Architecture
 

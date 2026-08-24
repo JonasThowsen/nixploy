@@ -31,18 +31,6 @@ let secrets_removed (t : t) = t.secrets_removed
 let route (t : t) = t.route
 let cleanup_prepared prepared = prepared.cleanup ()
 
-let canonical_intent prepared =
-  String.concat ~sep:"\000"
-    [
-      prepared.repository_identity;
-      Project_name.to_string prepared.project;
-      Target_name.to_string prepared.target_name;
-    ]
-
-let candidate_snapshot prepared =
-  List.map prepared.candidates ~f:Resource_key.to_string
-  |> String.concat ~sep:"\000"
-
 let validate_managed_capability authorization application intent commit =
   let open Or_error.Let_syntax in
   let%bind () = Deployment_intent.validate_application intent application in
@@ -226,23 +214,15 @@ let prepare ~authorization =
       Deferred.Or_error.error_string
         "prune capability has incomplete managed-operation bindings"
 
-let validate_bound ~authorization prepared ~operation_id =
+let validate_bound ~authorization prepared =
   if not (phys_equal authorization prepared.authorization) then
     Or_error.error_string
       "prepared prune belongs to a different consumed capability"
-  else
-    Operation_receipt.validate_prune_operation authorization ~operation_id
-      ~working_directory:
-        (Operation_receipt.prune_working_directory authorization)
-      ~target:prepared.target_name
-      ~canonical_intent:(canonical_intent prepared)
-      ~candidate_snapshot:(candidate_snapshot prepared)
+  else Operation_receipt.validate_prune authorization
 
-let execute ~authorization prepared ~operation_id =
+let execute ~authorization prepared =
   let open Deferred.Or_error.Let_syntax in
-  let%bind () =
-    Deferred.return (validate_bound ~authorization prepared ~operation_id)
-  in
+  let%bind () = Deferred.return (validate_bound ~authorization prepared) in
   let project = prepared.project in
   let target_name = prepared.target_name in
   let target = prepared.target in
@@ -288,9 +268,7 @@ let prune ~authorization () =
   let%bind prepared = prepare ~authorization in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () ->
-      Deferred.Or_error.error_string
-        "prune execution requires a durable operation admission")
+    (fun () -> execute ~authorization prepared)
 
 module For_testing = struct
   let result ~project ~target ~resource_key ~containers_removed ~secrets_removed

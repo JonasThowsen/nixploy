@@ -135,7 +135,7 @@ let run_tests () =
                ~state:Cancelled ~revision ())
         in
         Deferred.Or_error.return (operation, completion))
-      ~prune:(fun ~authorization:_ ~prepared:_ ~operation_id:_ ->
+      ~prune:(fun ~authorization:_ ~prepared:_ ->
         Deferred.Or_error.error_string "unused prune")
       ()
   in
