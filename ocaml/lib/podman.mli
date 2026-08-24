@@ -34,6 +34,7 @@ val build_and_load :
   connection:string ->
   source:Source.t ->
   image_output:string ->
+  unit ->
   image Deferred.Or_error.t
 
 val prepare_candidate :

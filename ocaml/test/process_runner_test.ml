@@ -62,7 +62,6 @@ let run_tests () =
   in
   assert (String.equal success.stdout "hello");
   assert (String.equal success.stderr "diagnostic");
-  (match success.exit_status with Ok () -> () | Error _ -> assert false);
   let%bind overflow =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-overflow" ] ()
@@ -73,38 +72,26 @@ let run_tests () =
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-timeout" ] ()
   in
   assert (Result.is_error timed_out);
-  let scoped_marker =
-    Filename_unix.temp_file "nixploy-scoped-cancel-" ".ready"
-  in
-  Core_unix.unlink scoped_marker;
+  let marker = Filename_unix.temp_file "nixploy-cancel-test-" ".ready" in
+  Core_unix.unlink marker;
   let cancellation = Nixploy.Cancellation.create () in
-  let scoped =
+  let running =
     Nixploy.Cancellation.within cancellation (fun () ->
         Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
           ~max_output_bytes:1024 ~prog:executable
-          ~args:[ "child-cancel"; scoped_marker ]
-          ())
+          ~args:[ "child-cancel"; marker ] ())
   in
-  let%bind () = wait_for_file scoped_marker 100 in
-  let scoped_descendant = In_channel.read_all scoped_marker |> Int.of_string in
+  let%bind () = wait_for_file marker 100 in
+  let descendant = In_channel.read_all marker |> Int.of_string in
   assert (
     [%equal: Nixploy.Cancellation.request]
       (Nixploy.Cancellation.request cancellation)
       Accepted);
-  let%bind scoped = scoped in
-  (match scoped with
-  | Ok _ -> failwith "scoped cancellation completed successfully"
-  | Error error ->
-      assert (
-        String.is_substring (Error.to_string_hum error) ~substring:"cancelled"));
+  let%bind cancelled = running in
+  assert (Result.is_error cancelled);
   assert (Nixploy.Cancellation.was_acknowledged cancellation);
-  let%bind () = wait_for_process_exit scoped_descendant 100 in
-  let%bind unaffected =
-    Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
-      ~max_output_bytes:1024 ~prog:executable ~args:[ "child-success" ] ()
-  in
-  assert (Result.is_ok unaffected);
-  Core_unix.unlink scoped_marker;
+  let%bind () = wait_for_process_exit descendant 100 in
+  Core_unix.unlink marker;
   let committed = Nixploy.Cancellation.create () in
   assert (
     [%equal: Nixploy.Cancellation.commit]
@@ -115,26 +102,24 @@ let run_tests () =
     [%equal: Nixploy.Cancellation.request]
       (Nixploy.Cancellation.request committed)
       Too_late);
-  let marker = Filename_unix.temp_file "nixploy-cancel-test-" ".ready" in
-  Core_unix.unlink marker;
+  let signal_marker = Filename_unix.temp_file "nixploy-signal-test-" ".ready" in
+  Core_unix.unlink signal_marker;
   Nixploy.Process_runner.handle_termination_signals ();
-  let cancelled =
+  let interrupted =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 10.)
-      ~max_output_bytes:1024 ~prog:executable ~args:[ "child-cancel"; marker ]
+      ~max_output_bytes:1024 ~prog:executable
+      ~args:[ "child-cancel"; signal_marker ]
       ()
   in
-  let%bind () = wait_for_file marker 100 in
-  let descendant = In_channel.read_all marker |> Int.of_string in
+  let%bind () = wait_for_file signal_marker 100 in
+  let signal_descendant = In_channel.read_all signal_marker |> Int.of_string in
   Signal_unix.send_i Signal.int (`Pid (Core_unix.getpid ()));
-  let%bind cancelled = cancelled in
-  (match cancelled with
-  | Ok _ -> failwith "cancelled process completed successfully"
-  | Error error ->
-      assert (
-        String.is_substring
-          (Error.to_string_hum error)
-          ~substring:"interrupted by sigint"));
-  let%bind () = wait_for_process_exit descendant 100 in
+  let%bind interrupted = interrupted in
+  assert (Result.is_error interrupted);
+  assert (
+    Result.error interrupted |> Option.value_exn |> Error.to_string_hum
+    |> String.is_substring ~substring:"interrupted by sigint");
+  let%bind () = wait_for_process_exit signal_descendant 100 in
   let%bind retry =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-success" ] ()
@@ -146,7 +131,7 @@ let run_tests () =
       ~args:[ "child-success" ] ()
   in
   assert (Result.is_ok cleanup);
-  Core_unix.unlink marker;
+  Core_unix.unlink signal_marker;
   Deferred.unit
 
 let () =

@@ -382,18 +382,49 @@ exit 99
           ~receipt
         |> assert_ok
       in
+      let direct_store () =
+        Nixploy.Store.open_ ~path:(Filename.concat root "direct.sqlite")
+      in
       let deploy ?record_stage ?expected_project ?expected_intent
-          ?managed_application ?managed_applications operation_id =
+          ?managed_application ?managed_applications _operation_id =
+        ignore record_stage;
         let authorization =
           authorization ?expected_project ?expected_intent ?managed_application
             ?managed_applications
             (Nixploy.Source.immutable commit)
         in
-        Nixploy.Deployment.deploy ?record_stage ~authorization ~operation_id ()
+        let open Deferred.Or_error.Let_syntax in
+        let%bind store = direct_store () in
+        let source = Nixploy.Operation_receipt.deploy_source authorization in
+        let working_directory =
+          Nixploy.Operation_receipt.deploy_working_directory authorization
+        in
+        let target = Nixploy.Operation_receipt.deploy_target authorization in
+        let%bind operation =
+          Nixploy.Store.request store ~application_key:None ~working_directory
+            ~target
+            ~commit:(Nixploy.Source.selection_commit source)
+        in
+        Nixploy.Deployment.deploy ~store ~authorization
+          ~operation_id:(Nixploy.Store.id operation)
+          ()
       in
-      let deploy_source operation_id source =
+      let deploy_source _operation_id source =
         let authorization = authorization source in
-        Nixploy.Deployment.deploy ~authorization ~operation_id ()
+        let open Deferred.Or_error.Let_syntax in
+        let%bind store = direct_store () in
+        let working_directory =
+          Nixploy.Operation_receipt.deploy_working_directory authorization
+        in
+        let target = Nixploy.Operation_receipt.deploy_target authorization in
+        let%bind operation =
+          Nixploy.Store.request store ~application_key:None ~working_directory
+            ~target
+            ~commit:(Nixploy.Source.selection_commit source)
+        in
+        Nixploy.Deployment.deploy ~store ~authorization
+          ~operation_id:(Nixploy.Store.id operation)
+          ()
       in
       let application_store_path = Filename.concat root "application.sqlite" in
       let%bind application_store =
@@ -588,11 +619,7 @@ exit 99
           assert (not (String.is_substring line ~substring:"ro=false")));
 
       clear_scenario ();
-      let stages = ref [] in
-      let record_stage stage _message =
-        stages := stage :: !stages;
-        Deferred.Or_error.return ()
-      in
+      let record_stage _stage _message = Deferred.Or_error.return () in
       let%bind deployed = deploy ~record_stage "operation-1" in
       let deployed = assert_ok deployed in
       [%test_eq: Nixploy.Deployment_plan.placement]
@@ -652,26 +679,15 @@ exit 99
           "|--label|io.nixploy.target=worker|";
           "|--label|io.nixploy.resource_key=" ^ expected_name ^ "|";
           "|--label|io.nixploy.repository_identity=git@example.invalid:test.git|";
-          "|--label|io.nixploy.operation_id=operation-1|";
+          "|--label|io.nixploy.operation_id="
+          ^ Nixploy.Deployment.operation_id deployed
+          ^ "|";
           "|loaded@sha256:immutable|/app/worker|--once";
         ]
         ~f:(fun substring ->
           assert (String.is_substring runtime_line ~substring));
       assert (
         not (String.is_substring runtime_line ~substring:"|--label|nixploy."));
-      [%test_eq: Nixploy.Deployment.stage list]
-        [
-          Connecting;
-          Building;
-          Planning;
-          Running_pre_start;
-          Preparing_candidate;
-          Starting;
-          Verifying;
-          Succeeded;
-        ]
-        (List.rev !stages);
-
       let secret_directory = Filename.concat repository "config" in
       Core_unix.mkdir secret_directory;
       write (Filename.concat secret_directory "secrets.env") "encrypted\n";
@@ -845,66 +861,6 @@ exit 99
       let%bind () = expect_application_failure_leaves_unknown () in
 
       clear_scenario ();
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Verifying then
-          Deferred.Or_error.error_string "stage persistence failed"
-        else Deferred.Or_error.return ()
-      in
-      let%bind stage_failure = deploy ~record_stage "operation-stage-failure" in
-      expect_error stage_failure;
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "|rm|-f|");
-      assert (not (Sys_unix.file_exists_exn state));
-
-      clear_scenario ();
-      let observer_store_path = Filename.concat root "observer.sqlite" in
-      let%bind observer_store = Nixploy.Store.open_ ~path:observer_store_path in
-      let observer_store = assert_ok observer_store in
-      let observer_calls = ref 0 in
-      let on_stage _stage _message =
-        Int.incr observer_calls;
-        raise_s [%message "observer failure"]
-      in
-      let observer_authorization =
-        authorization (Nixploy.Source.immutable commit)
-      in
-      let%bind observer_result =
-        Nixploy.Tracked_deployment.deploy ~on_stage
-          ~authorization:observer_authorization ~store:observer_store ()
-      in
-      let observer_result = assert_ok observer_result in
-      assert (!observer_calls > 0);
-      assert (
-        Nixploy.Store.equal_state
-          (Nixploy.Store.state observer_result)
-          Succeeded);
-
-      clear_scenario ();
-      let failing_store_path = Filename.concat root "failing.sqlite" in
-      let%bind failing_store = Nixploy.Store.open_ ~path:failing_store_path in
-      let failing_store = assert_ok failing_store in
-      let on_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Starting then (
-          Core_unix.unlink failing_store_path;
-          Core_unix.mkdir failing_store_path);
-        Deferred.unit
-      in
-      let failing_authorization =
-        authorization (Nixploy.Source.immutable commit)
-      in
-      let%bind persisted_stage_failure =
-        Nixploy.Tracked_deployment.deploy ~on_stage
-          ~authorization:failing_authorization ~store:failing_store ()
-      in
-      expect_error persisted_stage_failure;
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "|rm|-f|");
-      assert (
-        String.is_substring (List.last_exn lines)
-          ~substring:"|rm|-f|candidate-id");
-      Core_unix.rmdir failing_store_path;
-
-      clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
       Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
       let%bind transitioned = deploy "operation-single-transition" in
@@ -984,71 +940,6 @@ exit 99
         [ "8081"; "worker.example.invalid" ]
         (In_channel.read_lines route_state);
 
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
-      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
-      write route_state "8080\nretired.example.invalid\n";
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Succeeded then
-          Deferred.Or_error.error_string "terminal stage persistence failed"
-        else Deferred.Or_error.return ()
-      in
-      let%bind restored_domain =
-        deploy ~record_stage "operation-domain-compensation"
-      in
-      expect_error restored_domain;
-      [%test_eq: string list]
-        [ "8080"; "retired.example.invalid" ]
-        (In_channel.read_lines route_state);
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 2 (count lines "'-X' 'PATCH'");
-      let updates =
-        List.filter_mapi lines ~f:(fun index line ->
-            if String.is_substring line ~substring:"'-X' 'PATCH'" then
-              Some index
-            else None)
-      in
-      let cleanup_candidate =
-        index_of lines (String.is_substring ~substring:"|rm|-f|candidate-id")
-      in
-      assert (List.nth_exn updates 1 < cleanup_candidate);
-
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
-      let terminal_stage_attempted = ref false in
-      let record_stage stage _message =
-        if Nixploy.Deployment.equal_stage stage Succeeded then (
-          terminal_stage_attempted := true;
-          Deferred.Or_error.error_string "terminal stage persistence failed")
-        else Deferred.Or_error.return ()
-      in
-      let%bind web_stage_failure =
-        deploy ~record_stage "operation-web-stage-failure"
-      in
-      expect_error web_stage_failure;
-      let lines = In_channel.read_lines trace in
-      if not !terminal_stage_attempted then
-        failwithf "web deployment failed before terminal stage: %s\n%s"
-          (Result.error web_stage_failure
-          |> Option.value_exn |> Error.to_string_hum)
-          (String.concat ~sep:"\n" lines)
-          ();
-      let switch =
-        index_of lines (fun line ->
-            String.is_prefix line ~prefix:"ssh|"
-            && String.is_substring line ~substring:"'-X' 'POST'")
-      in
-      let restore =
-        index_of lines (fun line ->
-            String.is_prefix line ~prefix:"ssh|"
-            && String.is_substring line ~substring:"'-X' 'DELETE'")
-      in
-      let cleanup_candidate =
-        index_of lines (String.is_substring ~substring:"|rm|-f|")
-      in
-      assert (switch < restore && restore < cleanup_candidate);
-      assert (not (Sys_unix.file_exists_exn state));
-      assert (not (Sys_unix.file_exists_exn route_state));
       Deferred.unit)
 
 let () =

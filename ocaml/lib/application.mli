@@ -6,6 +6,7 @@ type commit
 type source
 type deployment
 type deployment_preview
+type started_deployment
 type prune_result
 type status
 type scope
@@ -98,12 +99,14 @@ val deployment_preview_commit : deployment_preview -> commit
 val deployment_preview_receipt : deployment_preview -> string
 val deployment_preview_prune_receipt : deployment_preview -> string
 
-val deploy_managed_preview :
-  ?on_requested:(deployment -> unit) ->
+val start_managed_preview :
   t ->
   Managed_application.t ->
   receipt:string ->
-  deployment Deferred.Or_error.t
+  started_deployment Deferred.Or_error.t
+
+val deploy_managed_preview :
+  t -> Managed_application.t -> receipt:string -> deployment Deferred.Or_error.t
 (** Consumes the server-held receipt and revalidates its exact evaluated intent
     inside deployment before any remote or secret mutation. *)
 
@@ -124,10 +127,26 @@ val immutable_source : commit -> source
 val source_revision : source -> string
 val source_subject : source -> string
 val source_is_local : source -> bool
+val started_deployment : started_deployment -> deployment
+val started_deployment_id : started_deployment -> string
+
+val await_started_deployment :
+  started_deployment -> deployment Deferred.Or_error.t
+
+val cancel_started_deployment :
+  t -> started_deployment -> cancellation_result Deferred.Or_error.t
+
+val start_non_production :
+  ?application_key:string ->
+  ?expected_project:Project_name.t ->
+  t ->
+  working_directory:string ->
+  source:source ->
+  target:Target_name.t ->
+  unit ->
+  started_deployment Deferred.Or_error.t
 
 val deploy_non_production :
-  ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-  ?on_requested:(deployment -> unit) ->
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
@@ -216,6 +235,8 @@ module For_testing : sig
     ?status:(scope:scope -> status Deferred.Or_error.t) ->
     ?logs:(Managed_application.t -> log_snapshot Deferred.Or_error.t) ->
     ?metrics:(Managed_application.t -> target_metrics Deferred.t) ->
+    ?deployment_history:
+      (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) ->
     ?managed_applications:Managed_application.t list ->
     store:Store.t ->
     preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->
@@ -224,14 +245,12 @@ module For_testing : sig
       revision:string ->
       commit Deferred.Or_error.t) ->
     deploy:
-      (on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-      on_requested:(deployment -> unit) ->
-      on_authorized:(unit -> unit Deferred.Or_error.t) ->
-      authorization:Operation_receipt.deploy ->
-      deployment Deferred.Or_error.t) ->
+      (authorization:Operation_receipt.deploy ->
+      prepared:Deployment.prepared option ->
+      (deployment * deployment Deferred.Or_error.t) Deferred.Or_error.t) ->
     prune:
-      (on_authorized:(unit -> unit Deferred.Or_error.t) ->
-      authorization:Operation_receipt.prune ->
+      (authorization:Operation_receipt.prune ->
+      prepared:Prune.prepared option ->
       prune_result Deferred.Or_error.t) ->
     unit ->
     t

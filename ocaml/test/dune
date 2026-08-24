@@ -6,6 +6,12 @@
 
 (rule
  (alias runtest)
+ (deps callback_api_contract_test.sh)
+ (action
+  (run bash %{dep:callback_api_contract_test.sh})))
+
+(rule
+ (alias runtest)
  (deps lower_mutation_interface_test.sh ../lib/nixploy.cma)
  (action
   (run
@@ -47,6 +53,13 @@
  (name application_observation_test)
  (modules application_observation_test)
  (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name deployment_observer_test)
+ (modules deployment_observer_test)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
 
@@ -139,6 +152,13 @@
   (pps ppx_jane)))
 
 (test
+ (name local_crash_recovery_test)
+ (modules local_crash_recovery_test)
+ (libraries nixploy core core_unix.command_unix async sqlite3)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name status_test)
  (modules status_test)
  (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
@@ -181,16 +201,19 @@
   (pps ppx_jane)))
 
 (executable
- (name source_authority_probe)
- (modules source_authority_probe)
- (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(executable
  (name rpc_probe)
  (modules rpc_probe)
  (libraries async async_rpc_websocket core core_unix.command_unix protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+; This executable is built only by the NixOS lease VM check.  It has no public
+; name, so it is not installed by the nixploy package.
+
+(executable
+ (name target_lease_test_holder)
+ (modules target_lease_test_holder)
+ (libraries nixploy core core_unix.command_unix)
  (preprocess
   (pps ppx_jane)))
 

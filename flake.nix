@@ -200,6 +200,44 @@
               runHook postInstall
             '';
           };
+          leaseHolder = ocamlPackages.buildDunePackage {
+            pname = "nixploy-target-lease-test-holder";
+            version = "0.1.0-ocaml";
+            src = ./ocaml;
+            duneVersion = "3";
+            nativeBuildInputs = with ocamlPackages; [
+              js_of_ocaml-compiler_5_9
+              ocaml-embed-file
+            ];
+            propagatedBuildInputs = with ocamlPackages; [
+              async
+              async_kernel
+              async_rpc_kernel
+              async_rpc_websocket
+              bonsai
+              cohttp-async_5_3
+              core
+              core_unix
+              digestif
+              ocaml_sqlite3
+              ppx_jane
+              ppx_pattern_bind
+              uri
+              yojson
+            ];
+            doCheck = false;
+            buildPhase = ''
+              runHook preBuild
+              dune build test/target_lease_test_holder.exe
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 _build/default/test/target_lease_test_holder.exe \
+                $out/bin/nixploy-target-lease-test-holder
+              runHook postInstall
+            '';
+          };
           evaluated = lib.nixosSystem {
             inherit system;
             modules = [
@@ -406,7 +444,7 @@
             nixployPackage = self.packages.${system}.nixploy;
           };
           nixos-target-lease-vm = import ./nix/target-lease-test.nix {
-            inherit pkgs;
+            inherit pkgs leaseHolder;
             nixployModule = self.nixosModules.default;
             nixployPackage = self.packages.${system}.nixploy;
           };

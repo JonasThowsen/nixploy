@@ -2,6 +2,7 @@
   pkgs,
   nixployModule,
   nixployPackage,
+  leaseHolder,
 }:
 
 pkgs.testers.runNixOSTest {
@@ -118,7 +119,7 @@ pkgs.testers.runNixOSTest {
     dirty_holder = f"runuser -u deploy -- {client} {args} --scope {scope_one} --operation 99999999-8888-7777-6666-555555555550 --hold-seconds 60"
     machine.succeed(f"sh -c '{dirty_holder} > /tmp/dirty-holder 2>&1 & echo $! > /tmp/dirty-holder.pid'")
     machine.wait_until_succeeds(f"grep -E '^V1 READY {authority} {scope_one} 99999999-8888-7777-6666-555555555550 ' /tmp/dirty-holder", timeout=30)
-    machine.succeed("kill -9 $(cat /tmp/dirty-holder.pid) || true; pkill -9 -u deploy -f nixploy-target-lease-client")
+    machine.succeed("kill -9 $(cat /tmp/dirty-holder.pid) && pkill -9 -u deploy -f nixploy-target-lease-client")
     machine.wait_until_succeeds(f"test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty", timeout=30)
     machine.succeed(f"sh -c '{backup_busy} > /tmp/dirty 2>&1; test $? -eq 1'")
     machine.succeed("grep -Fx 'V1 DIRTY' /tmp/dirty")
@@ -130,7 +131,7 @@ pkgs.testers.runNixOSTest {
     # A SIGKILLed broker restarts automatically and the active lease survives
     # as durable blocked evidence: no automatic restart may turn uncertainty
     # into a clean scope.
-    machine.succeed("systemctl kill --signal=SIGKILL nixploy-target-lease.service || true")
+    machine.succeed("systemctl kill --signal=SIGKILL nixploy-target-lease.service")
     machine.wait_until_succeeds("systemctl is-active --quiet nixploy-target-lease.service", timeout=60)
     machine.wait_until_succeeds(f"test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty", timeout=30)
     import time
@@ -245,43 +246,217 @@ pkgs.testers.runNixOSTest {
     machine.sleep(2)
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
     machine.succeed(f"sh -c '{other_scope} > /tmp/saturated-probe 2>&1'")
-    machine.succeed("pkill -f '[s]ocat -t 25' || true; sleep 1")
+    machine.succeed("pkill -f '[s]ocat -t 25' && sleep 1")
     machine.succeed(f"sh -c '{clean_probe} > /tmp/recovered-slots 2>&1'")
 
-    # An accept flood cannot starve an existing holder's clean release.
+    # Issue #7: this is EOF churn, deliberately separate from the saturation
+    # test above.  A VM-only holder in its own transient unit owns the protocol
+    # session until that unit is killed; the installed client retains only its
+    # normal clean-release API.
+    import re
+
+    flood_operation = "99999999-8888-7777-6666-555555555557"
+    flood_unit = "nixploy-target-lease-flood-holder-99999999-8888-7777-6666-555555555557"
+    flood_service = f"{flood_unit}.service"
+    flood_output = "/tmp/flood-holder.stdout"
+    flood_error = "/tmp/flood-holder.stderr"
+    flood_holder = "${leaseHolder}/bin/nixploy-target-lease-test-holder"
+    flood_marker = f"/var/lib/nixploy-target-lease/scope-{scope_one}.dirty"
+    flood_clean = f"/var/lib/nixploy-target-lease/scope-{scope_one}.clean"
+    machine.succeed(f"rm -f {flood_output} {flood_error}")
     machine.succeed(
-        f"sh -c '{deploy_hold} > /tmp/flood-holder 2>&1 & echo $! > /tmp/flood-holder.pid'"
+        f"systemd-run --unit={flood_unit} --service-type=exec "
+        "--property=User=deploy "
+        f"--property=StandardOutput=file:{flood_output} "
+        f"--property=StandardError=file:{flood_error} "
+        f"{flood_holder} {args} --scope {scope_one} --operation {flood_operation}"
     )
-    machine.wait_until_succeeds(f"grep -E '^V1 READY {authority} {scope_one} 99999999-8888-7777-6666-555555555555 ' /tmp/flood-holder", timeout=30)
+    machine.wait_until_succeeds(
+        f"grep -E '^V1 READY {authority} {scope_one} {flood_operation} "
+        f"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}} {identity}$' "
+        f"{flood_output}",
+        timeout=30,
+    )
+    flood_ready = machine.succeed(f"cat {flood_output}")
+    ready_match = re.fullmatch(
+        rf"V1 READY {authority} {scope_one} {flood_operation} "
+        rf"([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}) {identity}\n",
+        flood_ready,
+    )
+    if ready_match is None:
+        raise RuntimeError(f"holder did not emit one exact READY: {flood_ready!r}")
+    machine.succeed(
+        f"test \"$(stat --format='%F:%a:%U:%G' {flood_marker})\" "
+        "= 'regular file:600:nixploy-target-lease:nixploy-target-lease'"
+    )
+    flood_marker_content = machine.succeed(f"cat {flood_marker}")
+    marker_match = re.fullmatch(
+        r"dirty ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n",
+        flood_marker_content,
+    )
+    if marker_match is None:
+        raise RuntimeError(f"dirty marker had unexpected exact content: {flood_marker_content!r}")
+    flood_generation = marker_match.group(1)
+    machine.succeed(f"printf 'dirty {flood_generation}\\n' | cmp - {flood_marker}")
+    machine.succeed(f"test ! -e {flood_clean}")
+
     machine.succeed(
         "for i in $(seq 50); do (timeout 5 runuser -u intruder -- socat -t 4 - UNIX-CONNECT:"
         + socket
         + " </dev/null >/dev/null 2>&1 &); done"
     )
-    machine.sleep(1)
-    # During the flood an unrelated allowed peer still completes cleanly.
+    # This control request proves an allowed peer can still complete cleanly
+    # while scope_one remains held through the EOF churn.
     machine.succeed(f"sh -c '{other_scope} > /tmp/flood-fairness 2>&1'")
     machine.succeed("grep -Fx 'V1 RELEASED' /tmp/flood-fairness")
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
-    # Killing the flooded-out holder leaves durable blocked evidence, never a
-    # clean scope.
-    machine.succeed("pkill -9 -f '[s]ocat -t 4' || true; sleep 1")
-    machine.succeed("pkill -9 -f '[n]ixploy-target-lease-client' || true")
-    machine.wait_until_succeeds(f"test -f /var/lib/nixploy-target-lease/scope-{scope_one}.dirty", timeout=30)
+    machine.wait_until_succeeds("! pgrep -f '[s]ocat -t 4'", timeout=30)
 
-    for _ in range(10):
-        machine.execute(
-            f"runuser -u backup -- sh -c '{client} {args} --scope {scope_one} --operation 99999999-8888-7777-6666-555555555557' > /tmp/flood-dirty 2>&1"
+    # Bind MainPID to the exact VM-only helper, request, and transient-unit
+    # cgroup immediately before SIGKILL.  Record the kernel start time as part
+    # of the identity proof: a later PID cannot silently stand in for this
+    # holder.  This neither targets a wrapper nor relies on a pidfile that
+    # could become stale or be reused.
+    flood_pid_file = "/tmp/flood-holder.pid"
+    flood_starttime_file = "/tmp/flood-holder.starttime"
+    flood_cgroup_file = "/tmp/flood-holder.cgroup"
+    machine.succeed(
+        f"pid=$(systemctl show --property=MainPID --value {flood_service}); "
+        "test \"$pid\" -gt 1; "
+        f"test \"$(readlink -f /proc/$pid/exe)\" = {flood_holder}; "
+        f"tr '\\000' ' ' < /proc/$pid/cmdline | grep -F -- "
+        f"'{flood_holder} --socket {socket} --authority {authority} --identity {identity} --scope {scope_one} --operation {flood_operation}'; "
+        f"cgroup=$(awk -F: '$1 == 0 {{ print $3 }}' /proc/$pid/cgroup); "
+        f"test \"$cgroup\" = /system.slice/{flood_service}; "
+        "test -r /proc/$pid/stat; "
+        "starttime=$(awk '{ print $22 }' /proc/$pid/stat); "
+        "test -n \"$starttime\"; printf '%s\\n' \"$starttime\" | grep -Eq '^[0-9]+$'; "
+        f"grep -Fx \"$pid\" /sys/fs/cgroup$cgroup/cgroup.procs; "
+        f"printf '%s\\n' \"$pid\" > {flood_pid_file}; "
+        f"printf '%s\\n' \"$starttime\" > {flood_starttime_file}; "
+        f"printf '%s\\n' \"$cgroup\" > {flood_cgroup_file}; "
+        f"systemctl kill --kill-who=main --signal=SIGKILL {flood_service}"
+    )
+
+    def assert_flood_holder_absent(phase):
+        """Reject PID reuse rather than ever treating a new process as holder."""
+        pid = machine.succeed(f"cat {flood_pid_file}").strip()
+        expected_starttime = machine.succeed(f"cat {flood_starttime_file}").strip()
+        if machine.execute(f"test ! -e /proc/{pid}")[0] != 0:
+            observed_starttime = machine.succeed(
+                f"awk '{{ print $22 }}' /proc/{pid}/stat"
+            ).strip()
+            raise RuntimeError(
+                f"{phase}: captured holder PID {pid} was reused "
+                f"(recorded starttime {expected_starttime}, observed {observed_starttime})"
+            )
+
+    def assert_flood_holder_reaped(phase):
+        # Every later observation of the captured PID begins by requiring it
+        # absent, so PID reuse cannot weaken this proof.
+        assert_flood_holder_absent(phase)
+        main_pid = machine.succeed(
+            f"systemctl show --property=MainPID --value {flood_service}"
+        ).strip()
+        if main_pid != "0":
+            raise RuntimeError(f"{phase}: transient unit MainPID was {main_pid}, not 0")
+        cgroup = machine.succeed(f"cat {flood_cgroup_file}").strip()
+        machine.succeed(
+            f"test ! -e /sys/fs/cgroup{cgroup}/cgroup.procs || "
+            f"test ! -s /sys/fs/cgroup{cgroup}/cgroup.procs"
         )
-        _out = machine.execute("cat /tmp/flood-dirty")[1]
-        if "V1 DIRTY" in _out:
-            break
-        time.sleep(2)
-    else:
-        raise RuntimeError("post-flood scope never reported V1 DIRTY: %r" % _out)
-    machine.succeed("rm -f /var/lib/nixploy-target-lease/scope-*.dirty && systemctl restart nixploy-target-lease.service")
+
+    machine.wait_until_succeeds(
+        f"test \"$(systemctl show --property=ActiveState --value {flood_service})\" = failed",
+        timeout=30,
+    )
+    machine.wait_until_succeeds(
+        f"pid=$(cat {flood_pid_file}); "
+        f"cgroup=$(cat {flood_cgroup_file}); "
+        f"test \"$(systemctl show --property=MainPID --value {flood_service})\" = 0; "
+        "test ! -e /proc/$pid; "
+        "test ! -e /sys/fs/cgroup$cgroup/cgroup.procs || "
+        "test ! -s /sys/fs/cgroup$cgroup/cgroup.procs",
+        timeout=30,
+    )
+    assert_flood_holder_reaped("immediately after SIGKILL")
+    machine.succeed(
+        f"test \"$(systemctl show --property=ExecMainCode --value {flood_service})\" = 2"
+    )
+    machine.succeed(
+        f"test \"$(systemctl show --property=ExecMainStatus --value {flood_service})\" = 9"
+    )
+
+    # Restart from disk-only state after the exact holder died.  The marker's
+    # bytes and metadata must remain the original durable evidence.
+    machine.succeed("systemctl stop nixploy-target-lease.service")
+    machine.wait_until_succeeds(
+        "test \"$(systemctl show --property=ActiveState --value nixploy-target-lease.service)\" = inactive",
+        timeout=30,
+    )
+    machine.succeed("systemctl start nixploy-target-lease.service")
     machine.wait_until_succeeds("systemctl is-active --quiet nixploy-target-lease.service", timeout=60)
-    machine.succeed(f"sh -c '{clean_probe} > /tmp/final-probe 2>&1'")
+    machine.succeed(
+        f"test \"$(stat --format='%F:%a:%U:%G' {flood_marker})\" "
+        "= 'regular file:600:nixploy-target-lease:nixploy-target-lease'"
+    )
+    machine.succeed(f"printf 'dirty {flood_generation}\\n' | cmp - {flood_marker}")
+    flood_dirty_status, _ = machine.execute(
+        f"runuser -u backup -- {client} {args} --scope {scope_one} "
+        f"--operation 99999999-8888-7777-6666-555555555558 "
+        "> /tmp/flood-dirty.stdout 2> /tmp/flood-dirty.stderr"
+    )
+    if flood_dirty_status != 1:
+        raise RuntimeError(f"disk-derived dirty probe exited {flood_dirty_status}, expected 1")
+    machine.succeed("printf 'V1 DIRTY\\n' | cmp - /tmp/flood-dirty.stdout")
+
+    # The backup control proves the client and broker are still usable before
+    # the negative control deliberately removes the durable marker.
+    backup_control = f"runuser -u backup -- {client} {args} --scope {scope_two} --operation 99999999-8888-7777-6666-555555555559"
+    backup_control_status, _ = machine.execute(
+        f"{backup_control} > /tmp/flood-backup-control.stdout 2> /tmp/flood-backup-control.stderr"
+    )
+    if backup_control_status != 0:
+        raise RuntimeError(f"backup control exited {backup_control_status}, expected 0")
+    backup_control_output = machine.succeed("cat /tmp/flood-backup-control.stdout")
+    if re.fullmatch(
+        rf"V1 READY {authority} {scope_two} 99999999-8888-7777-6666-555555555559 "
+        rf"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}} {identity}\nV1 RELEASED\n",
+        backup_control_output,
+    ) is None:
+        raise RuntimeError(f"backup control was not exact READY+RELEASED: {backup_control_output!r}")
+
+    machine.succeed("systemctl stop nixploy-target-lease.service")
+    machine.wait_until_succeeds(
+        "test \"$(systemctl show --property=ActiveState --value nixploy-target-lease.service)\" = inactive",
+        timeout=30,
+    )
+    machine.succeed(f"rm {flood_marker}")
+    machine.succeed("systemctl start nixploy-target-lease.service")
+    machine.wait_until_succeeds("systemctl is-active --quiet nixploy-target-lease.service", timeout=60)
+    removed_marker_status, _ = machine.execute(
+        f"runuser -u backup -- {client} {args} --scope {scope_one} "
+        "--operation 99999999-8888-7777-6666-555555555560 "
+        "> /tmp/removed-marker-probe.stdout 2> /tmp/removed-marker-probe.stderr"
+    )
+    if removed_marker_status != 0:
+        raise RuntimeError(
+            f"removed-marker client exited {removed_marker_status}, expected protocol success"
+        )
+    removed_marker_output = machine.succeed("cat /tmp/removed-marker-probe.stdout")
+    if removed_marker_output == "V1 DIRTY\\n":
+        raise RuntimeError("removed-marker negative control still reported V1 DIRTY")
+    if re.fullmatch(
+        rf"V1 READY {authority} {scope_one} 99999999-8888-7777-6666-555555555560 "
+        rf"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}} {identity}\nV1 RELEASED\n",
+        removed_marker_output,
+    ) is None:
+        raise RuntimeError(
+            f"removed-marker response was not exact READY+RELEASED: {removed_marker_output!r}"
+        )
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
+    # The complete disk-only/restart proof window must never observe the old
+    # holder again, even if the VM recycles numeric PIDs under load.
+    assert_flood_holder_reaped("at final test end")
   '';
 }

@@ -1,6 +1,8 @@
 open Async
 
 type stage =
+  | Preparing_source
+  | Evaluating
   | Connecting
   | Building
   | Planning
@@ -26,14 +28,14 @@ val prepare :
 val cleanup_prepared : prepared -> unit Deferred.t
 
 val execute :
-  ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
+  store:Store.t ->
   authorization:Operation_receipt.deploy ->
   operation_id:string ->
   prepared ->
   t Deferred.Or_error.t
 
 val deploy :
-  ?record_stage:(stage -> string -> unit Deferred.Or_error.t) ->
+  store:Store.t ->
   authorization:Operation_receipt.deploy ->
   operation_id:string ->
   unit ->

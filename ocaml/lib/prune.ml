@@ -263,16 +263,12 @@ let execute ~authorization prepared =
     route;
   }
 
-let prune ?(on_authorized = fun () -> Deferred.Or_error.return ())
-    ~authorization () =
+let prune ~authorization () =
   let open Deferred.Or_error.Let_syntax in
   let%bind prepared = prepare ~authorization in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind () = on_authorized () in
-      execute ~authorization prepared)
+    (fun () -> execute ~authorization prepared)
 
 module For_testing = struct
   let result ~project ~target ~resource_key ~containers_removed ~secrets_removed

@@ -67,27 +67,11 @@ let deploy state _connection_state query =
   match find_application state query.Protocol.Deploy.Query.application with
   | Error _ as error -> Deferred.return error
   | Ok managed ->
-      let started = Ivar.create () in
-      let execution =
-        Application.deploy_managed_preview
-          ~on_requested:(fun operation ->
-            Ivar.fill_if_empty started (Deployment_start.operation_id operation))
-          state.application managed ~receipt:query.Protocol.Deploy.Query.receipt
+      let%map started =
+        Application.start_managed_preview state.application managed
+          ~receipt:query.Protocol.Deploy.Query.receipt
       in
-      don't_wait_for
-        (let%map result = execution in
-         match result with
-         | Ok _ -> ()
-         | Error error ->
-             eprintf "Deployment task failed: %s\n%!"
-               (Error.to_string_hum error));
-      Deferred.choose
-        [
-          Deferred.choice (Ivar.read started) Or_error.return;
-          Deferred.choice execution (function
-            | Error error -> Error error
-            | Ok deployment -> Ok (Deployment_start.operation_id deployment));
-        ]
+      Result.map started ~f:Application.started_deployment_id
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications

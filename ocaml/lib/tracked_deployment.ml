@@ -1,8 +1,13 @@
 open Async
 open Core
 
-let no_stage _ _ = Deferred.unit
-let no_authorized () = Deferred.Or_error.return ()
+type started = {
+  deployment : Store.deployment;
+  completion : Store.deployment Deferred.Or_error.t;
+}
+
+let deployment t = t.deployment
+let completion t = t.completion
 
 let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
     ~execution_error =
@@ -41,88 +46,102 @@ let terminalize_cancelled ~request_marker ~cancel ~fail ~find_state
                   (Error.to_string_hum tracking_error)
                   (Error.to_string_hum failure_error)))
 
-let deploy_within_lease ?(on_stage = no_stage) ?(on_requested = Fn.ignore)
-    ?(on_authorized = no_authorized) ~authorization ~store () =
-  let cancellation = Cancellation.current () in
-  let open Deferred.Or_error.Let_syntax in
-  let working_directory =
-    Operation_receipt.deploy_working_directory authorization
+let finish_operation ~store operation result cancellation =
+  let terminalize execution_error =
+    let id = Store.id operation in
+    terminalize_cancelled
+      ~request_marker:(fun () -> Store.request_cancellation store ~id)
+      ~cancel:(fun () -> Store.cancel store ~id)
+      ~fail:(fun error -> Store.fail store ~id ~error)
+      ~find_state:(fun () ->
+        let%map.Deferred found = Store.find store ~id in
+        Result.map found ~f:(Option.map ~f:Store.state))
+      ~execution_error
   in
-  let source = Operation_receipt.deploy_source authorization in
-  let target = Operation_receipt.deploy_target authorization in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    match result with
+    | Ok deployment ->
+        let message =
+          Deployment.warning deployment
+          |> Option.value ~default:"Deployment independently verified"
+        in
+        Store.succeed store ~id:(Store.id operation)
+          ~container_name:(Deployment.container_name deployment)
+          ~message
+    | Error error -> (
+        match cancellation with
+        | Some token
+          when Cancellation.was_acknowledged token
+               && not (Cancellation.cleanup_failed token) ->
+            terminalize error
+        | _ -> Store.fail store ~id:(Store.id operation) ~error)
+  in
+  let%bind found = Store.find store ~id:(Store.id operation) in
+  match found with
+  | Some deployment -> Deferred.Or_error.return deployment
+  | None -> Deferred.Or_error.error_string "tracked deployment disappeared"
+
+let run_requested ~store ~authorization ~prepared operation =
+  let cancellation = Cancellation.current () in
+  let%bind.Deferred execution =
+    Monitor.try_with_or_error (fun () ->
+        Deployment.execute ~store ~authorization
+          ~operation_id:(Store.id operation) prepared)
+  in
+  finish_operation ~store operation (Or_error.join execution) cancellation
+
+let start ~authorization ~prepared ~store () =
+  let open Deferred.Let_syntax in
   let application_key =
     Operation_receipt.deploy_application_key authorization
   in
-  let%bind prepared = Deployment.prepare ~authorization in
-  Monitor.protect
-    ~finally:(fun () -> Deployment.cleanup_prepared prepared)
-    (fun () ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind () = on_authorized () in
-      let%bind operation =
-        Store.request store ~application_key ~working_directory ~target
-          ~commit:(Source.selection_commit source)
-      in
-      let%bind () =
-        Deferred.return
-          (Operation_receipt.bind_deploy_operation authorization
-             ~operation_id:(Store.id operation))
-      in
-      on_requested operation;
-      let record_stage stage message =
-        let open Deferred.Or_error.Let_syntax in
-        let%bind () =
-          Store.record_stage store ~id:(Store.id operation) ~stage ~message
-        in
-        let%bind.Deferred _ =
-          Monitor.try_with (fun () -> on_stage stage message)
-        in
-        Deferred.Or_error.return ()
-      in
-      let%bind.Deferred execution =
-        Monitor.try_with_or_error (fun () ->
-            Deployment.execute ~record_stage ~authorization
-              ~operation_id:(Store.id operation) prepared)
-      in
-      let result = Or_error.join execution in
-      let terminalize execution_error =
-        let id = Store.id operation in
-        terminalize_cancelled
-          ~request_marker:(fun () -> Store.request_cancellation store ~id)
-          ~cancel:(fun () -> Store.cancel store ~id)
-          ~fail:(fun error -> Store.fail store ~id ~error)
-          ~find_state:(fun () ->
-            let%map found = Store.find store ~id in
-            Option.map found ~f:Store.state)
-          ~execution_error
-      in
-      let%bind () =
-        match result with
-        | Ok deployment ->
-            Store.succeed store ~id:(Store.id operation) ~result:deployment
-        | Error error -> (
-            match cancellation with
-            | Some token
-              when Cancellation.was_acknowledged token
-                   && not (Cancellation.cleanup_failed token) ->
-                terminalize error
-            | _ -> Store.fail store ~id:(Store.id operation) ~error)
-      in
-      let%bind found = Store.find store ~id:(Store.id operation) in
-      match found with
-      | Some deployment -> Deferred.Or_error.return deployment
-      | None -> Deferred.Or_error.error_string "tracked deployment disappeared")
-
-module For_testing = struct
-  let terminalize_cancelled = terminalize_cancelled
-end
-
-let deploy ?on_stage ?on_requested ?on_authorized ~authorization ~store () =
   let working_directory =
     Operation_receipt.deploy_working_directory authorization
     |> Filename_unix.realpath
   in
   let target = Operation_receipt.deploy_target authorization in
-  Store.with_lease store ~working_directory ~target (fun () ->
-      deploy_within_lease ?on_stage ?on_requested ?on_authorized ~authorization
-        ~store ())
+  let source = Operation_receipt.deploy_source authorization in
+  let started : Store.deployment Or_error.t Ivar.t = Ivar.create () in
+  let completion : Store.deployment Or_error.t Ivar.t = Ivar.create () in
+  let launch () =
+    Monitor.protect
+      ~finally:(fun () -> Deployment.cleanup_prepared prepared)
+      (fun () ->
+        Store.with_reconciled_lease store ~application_key ~working_directory
+          ~target (fun () ->
+            let open Deferred.Or_error.Let_syntax in
+            let%bind operation =
+              Store.request store ~application_key ~working_directory ~target
+                ~commit:(Source.selection_commit source)
+            in
+            let%bind () =
+              Deferred.return
+                (Operation_receipt.bind_deploy_operation authorization
+                   ~operation_id:(Store.id operation))
+            in
+            Ivar.fill_if_empty started (Ok operation);
+            run_requested ~store ~authorization ~prepared operation))
+  in
+  don't_wait_for
+    ( Monitor.try_with launch >>| function
+      | Ok result ->
+          Ivar.fill_if_empty completion result;
+          Ivar.fill_if_empty started result
+      | Error error ->
+          let error = Error.of_exn error in
+          Ivar.fill_if_empty completion (Error error);
+          Ivar.fill_if_empty started (Error error) );
+  let%map started_result = Ivar.read started in
+  Result.map started_result ~f:(fun deployment ->
+      { deployment; completion = Ivar.read completion })
+
+let deploy ~authorization ~store () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind prepared = Deployment.prepare ~authorization in
+  let%bind started = start ~authorization ~prepared ~store () in
+  completion started
+
+module For_testing = struct
+  let terminalize_cancelled = terminalize_cancelled
+end

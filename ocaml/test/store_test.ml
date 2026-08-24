@@ -136,16 +136,17 @@ let run_tests () =
   let lease_entered = Ivar.create () in
   let release_lease = Ivar.create () in
   let first_lease =
-    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
-      (fun () ->
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:"/tmp/project" ~target (fun () ->
         Ivar.fill_if_empty lease_entered ();
         let%map () = Ivar.read release_lease in
         Ok ())
   in
   let%bind () = Ivar.read lease_entered in
   let second_lease =
-    Nixploy.Store.with_lease store ~working_directory:"/tmp/project" ~target
-      (fun () -> Deferred.Or_error.return ())
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:"/tmp/project" ~target (fun () ->
+        Deferred.Or_error.return ())
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
   assert (not (Deferred.is_determined second_lease));
@@ -162,7 +163,7 @@ let run_tests () =
   let%bind staged =
     Nixploy.Store.record_stage store
       ~id:(Nixploy.Store.id requested)
-      ~stage:Nixploy.Deployment.Building ~message:"Building"
+      ~stage:"building" ~message:"Building"
   in
   Or_error.ok_exn staged;
   let%bind failed =
@@ -193,7 +194,7 @@ let run_tests () =
   let%bind staged_cancel =
     Nixploy.Store.record_stage store
       ~id:(Nixploy.Store.id requested_cancel)
-      ~stage:Nixploy.Deployment.Building ~message:"Building"
+      ~stage:"building" ~message:"Building"
   in
   Or_error.ok_exn staged_cancel;
   let%bind cancellation =
@@ -212,6 +213,27 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Store.state] (Nixploy.Store.state cancelled) Cancelled);
   assert (Option.is_some (Nixploy.Store.cancel_requested_at_ms cancelled));
+  let%bind stale_heartbeat =
+    Nixploy.Store.record_stage store
+      ~id:(Nixploy.Store.id requested_cancel)
+      ~stage:"building"
+      ~message:
+        "Nix image build still running (elapsed 30s; build output remains \
+         buffered)"
+  in
+  assert (Result.is_error stale_heartbeat);
+  let%bind terminal_after_heartbeat =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id requested_cancel)
+  in
+  let terminal_after_heartbeat =
+    Or_error.ok_exn terminal_after_heartbeat |> Option.value_exn
+  in
+  assert (
+    [%equal: Nixploy.Store.state]
+      (Nixploy.Store.state terminal_after_heartbeat)
+      Cancelled);
+  assert (
+    String.equal (Nixploy.Store.stage terminal_after_heartbeat) "cancelled");
   let%bind exact_success =
     Nixploy.Store.request store ~application_key:(Some "managed")
       ~working_directory:"/tmp/exact" ~target ~commit

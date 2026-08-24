@@ -52,7 +52,7 @@ let run_tests () =
         assert (String.equal working_directory directory);
         assert (String.equal revision selected_revision);
         Deferred.Or_error.return selected_commit)
-      ~deploy:(fun ~on_stage ~on_requested ~on_authorized ~authorization ->
+      ~deploy:(fun ~authorization ~prepared:_ ->
         let application_key =
           Nixploy.Operation_receipt.deploy_application_key authorization
         in
@@ -75,8 +75,6 @@ let run_tests () =
         match !deployment_error with
         | Some error -> Deferred.return (Error error)
         | None ->
-            let%bind authorized = on_authorized () in
-            assert_ok authorized;
             let deployment =
               Nixploy.Application.For_testing.deployment
                 ~id:("deployment-" ^ String.prefix revision 1)
@@ -89,37 +87,33 @@ let run_tests () =
                 revision,
                 Nixploy.Source.selection_is_local source )
               :: !deployed;
-            let%map () = on_stage Nixploy.Deployment.Connecting revision in
-            on_requested deployment;
-            Ok deployment)
-      ~prune:(fun ~on_authorized ~authorization ->
+            Deferred.Or_error.return
+              (deployment, Deferred.Or_error.return deployment))
+      ~prune:(fun ~authorization ~prepared:_ ->
         let expected_project =
           Nixploy.Operation_receipt.prune_expected_project authorization
-        and repository_identity =
+        in
+        let repository_identity =
           Nixploy.Operation_receipt.prune_repository_identity authorization
-        and working_directory =
+        in
+        let working_directory =
           Nixploy.Operation_receipt.prune_working_directory authorization
-        and target = Nixploy.Operation_receipt.prune_target authorization in
+        in
+        let target = Nixploy.Operation_receipt.prune_target authorization in
         pruned :=
           (expected_project, repository_identity, working_directory, target)
           :: !pruned;
-        let%bind authorized = on_authorized () in
-        assert_ok authorized;
         match !prune_error with
-        | Some error -> Deferred.return (Error error)
+        | Some error ->
+            let%map _ =
+              Nixploy.Store.set_resource_state store
+                ~working_directory:directory ~target:prune_target Unknown
+            in
+            Error error
         | None -> Deferred.Or_error.return prune_result)
       ()
   in
   let target = prune_target in
-  let stages = ref [] in
-  let requested = ref [] in
-  let on_stage stage message =
-    stages := (stage, message) :: !stages;
-    Deferred.unit
-  in
-  let on_requested deployment =
-    requested := Nixploy.Application.deployment_id deployment :: !requested
-  in
   let%bind preview =
     Nixploy.Application.preview_main_commit application
       ~working_directory:directory
@@ -132,8 +126,8 @@ let run_tests () =
       preview
   in
   let%bind cli_result =
-    Nixploy.Application.deploy_non_production ~on_stage ~on_requested
-      application ~working_directory:directory ~source:local_source ~target ()
+    Nixploy.Application.deploy_non_production application
+      ~working_directory:directory ~source:local_source ~target ()
   in
   let cli_deployment = assert_ok cli_result in
   assert (
@@ -149,9 +143,8 @@ let run_tests () =
     String.equal selected_revision
       (Nixploy.Application.commit_revision resolved));
   let%bind rpc_result =
-    Nixploy.Application.deploy_non_production ~on_stage ~on_requested
-      ~application_key:"example" ~expected_project:project application
-      ~working_directory:directory
+    Nixploy.Application.deploy_non_production ~application_key:"example"
+      ~expected_project:project application ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
   in
@@ -168,12 +161,6 @@ let run_tests () =
       (Some "example", Some project, directory, selected_revision, false);
     ]
     (List.rev !deployed);
-  [%test_eq: (Nixploy.Deployment.stage * string) list]
-    [ (Connecting, main_revision); (Connecting, selected_revision) ]
-    (List.rev !stages);
-  [%test_eq: string list]
-    [ "deployment-a"; "deployment-b" ]
-    (List.rev !requested);
   let%bind deployed_resources =
     Nixploy.Application.resource_state application ~working_directory:directory
       ~target
@@ -191,15 +178,24 @@ let run_tests () =
     Nixploy.Store.request store ~application_key:(Some "example")
       ~working_directory:directory ~target ~commit:store_commit
   in
-  ignore (assert_ok interrupted : Nixploy.Store.deployment);
+  let interrupted = assert_ok interrupted in
   let%bind prune =
-    Nixploy.Application.prune_non_production
+    Nixploy.Application.prune_non_production ~application_key:"example"
       ~repository_identity:"owner/example" application
       ~working_directory:directory ~target
   in
   let prune = assert_ok prune in
   [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
   [%test_eq: int] 3 (Nixploy.Application.prune_secrets_removed prune);
+  let%bind reconciled =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id interrupted)
+  in
+  let reconciled = assert_ok reconciled |> Option.value_exn in
+  assert (Nixploy.Store.equal_state (Nixploy.Store.state reconciled) Failed);
+  assert (
+    String.is_substring
+      (Nixploy.Store.message reconciled)
+      ~substring:"remote outcome is unknown");
   let%bind absent =
     Nixploy.Application.resource_state application ~working_directory:directory
       ~target
@@ -227,6 +223,11 @@ let run_tests () =
   in
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Unknown);
+  let%bind stale_cli_deployment =
+    Nixploy.Store.request store ~application_key:None
+      ~working_directory:directory ~target ~commit:store_commit
+  in
+  let stale_cli_deployment = assert_ok stale_cli_deployment in
   deployment_state := Failed;
   let%bind failed_deployment =
     Nixploy.Application.deploy_non_production application
@@ -237,6 +238,19 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Application.deployment_state]
       (Nixploy.Application.deployment_state (assert_ok failed_deployment))
+      Failed);
+  let%bind.Deferred reconciled =
+    Nixploy.Store.with_reconciled_lease store ~application_key:None
+      ~working_directory:directory ~target (fun () ->
+        Deferred.Or_error.return ())
+  in
+  assert_ok reconciled;
+  let%bind stale_cli_deployment =
+    Nixploy.Store.find store ~id:(Nixploy.Store.id stale_cli_deployment)
+  in
+  assert (
+    Nixploy.Store.equal_state
+      (Nixploy.Store.state (assert_ok stale_cli_deployment |> Option.value_exn))
       Failed);
   let%bind failed_state =
     Nixploy.Application.resource_state application ~working_directory:directory
@@ -283,8 +297,8 @@ let run_tests () =
       ~working_directory:directory ~target
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
-  assert (not (Deferred.is_determined waiting_prune));
-  [%test_eq: int] prunes_before_wait (List.length !pruned);
+  assert (Deferred.is_determined waiting_prune);
+  [%test_eq: int] (prunes_before_wait + 1) (List.length !pruned);
   Ivar.fill_exn release_deploy ();
   let%bind deployment_after_wait = waiting_deploy in
   ignore (assert_ok deployment_after_wait : Nixploy.Application.deployment);
@@ -297,7 +311,7 @@ let run_tests () =
       ~target
   in
   assert (
-    [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Absent);
+    [%equal: Nixploy.Application.resource_state] (assert_ok final_state) Present);
   [%test_eq:
     (Nixploy.Project_name.t option
     * string option

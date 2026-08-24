@@ -86,15 +86,29 @@ SIGINT and SIGTERM stop the listener, reject new deploy and prune requests,
 interrupt active subprocess groups so compensation can unwind, and allow up to
 25 seconds for admitted mutations to drain. A second signal forces immediate
 shutdown. The NixOS unit allows 30 seconds before systemd forcefully stops it.
+During the local Nix image build, bounded 30-second progress heartbeats reach the
+same durable stage history and CLI observer without exposing buffered build
+output.
 
 It binds to loopback, reads the root-owned
 `/etc/nixploy/managed-applications.json` machine authority shared with the CLI,
 displays the latest persisted deployment for each application, and sends deploy
 and prune requests through
 the same shared `Application` operations as the CLI. CLI and web mutations share
-a cross-process target lease rooted beside the SQLite state database. Persisted
-requested/running rows from an interrupted process remain deployment history;
-they do not act as live-operation locks after restart.
+a cross-process target lease rooted beside the SQLite state database. History
+from an interrupted process remains visible after local crash reconciliation;
+its old row does not act as a live-operation lock after restart.
+
+Before a deploy or prune mutates a target, it holds the exclusive local flock
+for the canonical working directory and target and reconciles matching
+`requested` or `running` rows left by a dead local process. Such rows become
+failed with an `interrupted` event and an explicitly unknown remote outcome;
+prior revision, stage, and error evidence is retained. A managed application
+may reconcile unkeyed CLI history for its physical scope but never another
+managed application's keyed history. A live process still holding the flock is
+never reconciled. This is local crash reconciliation only: it neither proves
+remote state nor provides distributed target authority, rollback, or readiness
+semantics.
 
 SQLite also stores resource presence by canonical working directory and target.
 A verified deploy records `Present`; prune records `Unknown` before cleanup,

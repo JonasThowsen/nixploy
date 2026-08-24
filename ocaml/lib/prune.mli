@@ -18,10 +18,7 @@ val execute :
   authorization:Operation_receipt.prune -> prepared -> t Deferred.Or_error.t
 
 val prune :
-  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
-  authorization:Operation_receipt.prune ->
-  unit ->
-  t Deferred.Or_error.t
+  authorization:Operation_receipt.prune -> unit -> t Deferred.Or_error.t
 
 val project : t -> Project_name.t
 val target : t -> Target_name.t

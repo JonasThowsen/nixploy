@@ -319,7 +319,7 @@ let image_id_of_inspect output =
       Or_error.error_string
         "loaded image inspect must contain exactly one image"
 
-let build_and_load ~connection ~source ~image_output =
+let build_and_load ~connection ~source ~image_output () =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
     Process_runner.run ~working_directory:(Source.nix_root source)

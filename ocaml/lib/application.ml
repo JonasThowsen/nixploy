@@ -101,7 +101,14 @@ type scope = {
   target : Target_name.t;
 }
 
-type active_operation = { scope : scope; cancellation : Cancellation.t }
+type started_deployment = {
+  deployment : deployment;
+  scope : scope;
+  cancellation : Cancellation.t;
+  completion : deployment Deferred.Or_error.t;
+}
+
+type active_operation = started_deployment
 
 type mutation_lifecycle = {
   mutable accepting : bool;
@@ -123,22 +130,31 @@ type t = {
   preview_main : working_directory:string -> commit Deferred.Or_error.t;
   find_commit :
     working_directory:string -> revision:string -> commit Deferred.Or_error.t;
+  prepare_deploy :
+    (authorization:Operation_receipt.deploy ->
+    Deployment.prepared Deferred.Or_error.t)
+    option;
+  prepare_prune :
+    (authorization:Operation_receipt.prune ->
+    Prune.prepared Deferred.Or_error.t)
+    option;
   deploy_operation :
-    on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-    on_requested:(deployment -> unit) ->
-    on_authorized:(unit -> unit Deferred.Or_error.t) ->
     authorization:Operation_receipt.deploy ->
-    deployment Deferred.Or_error.t;
+    prepared:Deployment.prepared option ->
+    (deployment * deployment Deferred.Or_error.t) Deferred.Or_error.t;
   prune_operation :
-    on_authorized:(unit -> unit Deferred.Or_error.t) ->
     authorization:Operation_receipt.prune ->
+    prepared:Prune.prepared option ->
     prune_result Deferred.Or_error.t;
   load_status : scope:scope -> status Deferred.Or_error.t;
   logs_override :
     (Managed_application.t -> log_snapshot Deferred.Or_error.t) option;
   metrics_override :
     (Managed_application.t -> target_metrics Deferred.t) option;
+  deployment_history_override :
+    (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) option;
   active : active_operation String.Table.t;
+  cancellations : Cancellation.t list ref;
   runtime_cache : cached_runtime String.Table.t;
   deployment_receipts : Operation_receipt.deploy_store;
   prune_receipts : Operation_receipt.prune_store;
@@ -146,7 +162,6 @@ type t = {
   mutations : mutation_lifecycle;
 }
 
-let no_stage _ _ = Deferred.unit
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
 let canonical_working_directory working_directory =
@@ -201,29 +216,43 @@ let same_scope (scope : scope) (deployment : deployment) =
   | None, Some _ -> false
 
 let create_with_managed_applications ~managed_applications ~store () =
-  let deploy_operation ~on_stage ~on_requested ~on_authorized ~authorization =
+  let deploy_operation ~authorization ~prepared =
+    let prepared = Option.value_exn prepared in
     let open Deferred.Or_error.Let_syntax in
-    Tracked_deployment.deploy_within_lease ~on_stage
-      ~on_requested:(fun deployment ->
-        on_requested (deployment_of_store deployment))
-      ~on_authorized ~authorization ~store ()
-    >>| deployment_of_store
+    let%bind started =
+      Tracked_deployment.start ~authorization ~prepared ~store ()
+    in
+    let deployment =
+      Tracked_deployment.deployment started |> deployment_of_store
+    in
+    let completion =
+      let%map.Deferred result = Tracked_deployment.completion started in
+      Result.map result ~f:deployment_of_store
+    in
+    Deferred.Or_error.return (deployment, completion)
   in
   {
     store;
     preview_main = Source.preview_main;
     find_commit = Source.find_commit;
+    prepare_deploy = Some Deployment.prepare;
+    prepare_prune = Some Prune.prepare;
     deploy_operation;
     prune_operation =
-      (fun ~on_authorized ~authorization ->
-        Prune.prune ~on_authorized ~authorization ());
+      (fun ~authorization ~prepared ->
+        let prepared = Option.value_exn prepared in
+        Monitor.protect
+          ~finally:(fun () -> Prune.cleanup_prepared prepared)
+          (fun () -> Prune.execute ~authorization prepared));
     load_status =
       (fun ~scope ->
         Status.load ~working_directory:scope.working_directory
           ~target:scope.target);
     logs_override = None;
     metrics_override = None;
+    deployment_history_override = None;
     active = String.Table.create ();
+    cancellations = ref [];
     runtime_cache = String.Table.create ();
     deployment_receipts =
       Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
@@ -244,6 +273,18 @@ let begin_shutdown t =
   if not t.mutations.accepting then Already_shutting_down
   else (
     t.mutations.accepting <- false;
+    let active = Hashtbl.data t.active in
+    List.iter active ~f:(fun started ->
+        upon (Store.request_cancellation t.store ~id:started.deployment.id)
+          (fun _ ->
+            ignore
+              (Cancellation.request started.cancellation : Cancellation.request)));
+    List.iter !(t.cancellations) ~f:(fun cancellation ->
+        if
+          not
+            (List.exists active ~f:(fun started ->
+                 phys_equal started.cancellation cancellation))
+        then ignore (Cancellation.request cancellation : Cancellation.request));
     if Int.equal t.mutations.active_count 0 then
       Ivar.fill_if_empty t.mutations.drained ();
     Shutdown_started)
@@ -420,11 +461,20 @@ let source_subject source =
 
 let source_is_local = Source.selection_is_local
 
+let add_cancellation t cancellation =
+  t.cancellations := cancellation :: !(t.cancellations)
+
+let remove_cancellation t cancellation =
+  t.cancellations :=
+    List.filter !(t.cancellations) ~f:(fun active ->
+        not (phys_equal active cancellation))
+
 let remove_active t operation_id cancellation =
-  match Hashtbl.find t.active operation_id with
+  (match Hashtbl.find t.active operation_id with
   | Some active when phys_equal active.cancellation cancellation ->
       Hashtbl.remove t.active operation_id
-  | Some _ | None -> ()
+  | Some _ | None -> ());
+  remove_cancellation t cancellation
 
 let invalidate_runtime_scope t ~working_directory ~target =
   Hashtbl.keys t.runtime_cache
@@ -436,8 +486,7 @@ let invalidate_runtime_scope t ~working_directory ~target =
           Hashtbl.remove t.runtime_cache key
       | Some _ | None -> ())
 
-let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore) t
-    ~authorization =
+let launch_deploy t ~authorization ~prepared =
   let application_key =
     Operation_receipt.deploy_application_key authorization
   in
@@ -445,49 +494,94 @@ let deploy_unaccounted ?(on_stage = no_stage) ?(on_requested = Fn.ignore) t
     Operation_receipt.deploy_working_directory authorization
   in
   let target = Operation_receipt.deploy_target authorization in
-  match canonical_working_directory working_directory with
+  match begin_mutation t with
   | Error error -> Deferred.return (Error error)
-  | Ok working_directory ->
-      invalidate_runtime_scope t ~working_directory ~target;
-      let scope = { application_key; working_directory; target } in
-      let cancellation = Cancellation.create () in
-      let operation_id = ref None in
-      let requested deployment =
-        operation_id := Some deployment.id;
-        Option.iter application_key ~f:(fun _ ->
-            Hashtbl.set t.active ~key:deployment.id
-              ~data:{ scope; cancellation });
-        on_requested deployment
-      in
-      let execution =
-        Cancellation.within cancellation (fun () ->
-            Store.with_lease t.store ~working_directory ~target (fun () ->
+  | Ok () -> (
+      match canonical_working_directory working_directory with
+      | Error error ->
+          finish_mutation t;
+          Deferred.return (Error error)
+      | Ok working_directory -> (
+          invalidate_runtime_scope t ~working_directory ~target;
+          let scope = { application_key; working_directory; target } in
+          let cancellation = Cancellation.create () in
+          add_cancellation t cancellation;
+          let started =
+            Cancellation.within cancellation (fun () ->
                 let open Deferred.Or_error.Let_syntax in
-                let on_authorized () =
+                let%bind () =
                   Store.set_resource_state t.store ~working_directory ~target
                     Unknown
                 in
-                let%bind deployment =
-                  t.deploy_operation ~on_stage ~on_requested:requested
-                    ~on_authorized ~authorization
-                in
-                let%map () =
-                  match deployment.state with
-                  | Succeeded ->
+                t.deploy_operation ~authorization ~prepared)
+          in
+          let%map result = started in
+          match result with
+          | Error error ->
+              remove_cancellation t cancellation;
+              finish_mutation t;
+              Error error
+          | Ok (deployment, operation_completion) ->
+              let completion =
+                let%bind.Deferred terminal = operation_completion in
+                match terminal with
+                | Ok { state = Succeeded; _ } ->
+                    let%map _ =
                       Store.set_resource_state t.store ~working_directory
                         ~target Present
-                  | Requested | Running | Failed | Cancelled ->
-                      Deferred.Or_error.return ()
-                in
-                deployment))
-      in
-      let%map result = execution in
-      Option.iter !operation_id ~f:(fun id -> remove_active t id cancellation);
-      invalidate_runtime_scope t ~working_directory ~target;
-      result
+                    in
+                    terminal
+                | Ok { state = Requested | Running | Failed | Cancelled; _ }
+                | Error _ ->
+                    Deferred.return terminal
+              in
+              let started = { deployment; scope; cancellation; completion } in
+              Hashtbl.set t.active ~key:deployment.id ~data:started;
+              upon completion (fun _ ->
+                  remove_active t deployment.id cancellation;
+                  invalidate_runtime_scope t ~working_directory ~target;
+                  finish_mutation t);
+              Ok started))
 
-let deploy_non_production ?on_stage ?on_requested ?application_key
-    ?expected_project t ~working_directory ~source ~target () =
+let start_authorization t ~authorization =
+  match t.prepare_deploy with
+  | None -> launch_deploy t ~authorization ~prepared:None
+  | Some prepare ->
+      let open Deferred.Or_error.Let_syntax in
+      let%bind prepared = prepare ~authorization in
+      launch_deploy t ~authorization ~prepared:(Some prepared)
+
+let await_started_deployment started = started.completion
+let started_deployment started = started.deployment
+let started_deployment_id started = started.deployment.id
+
+let request_cancellation t started =
+  let%bind marker =
+    Store.request_cancellation t.store ~id:started.deployment.id
+  in
+  let request = Cancellation.request started.cancellation in
+  match (marker, request) with
+  | Ok (), Accepted -> Deferred.Or_error.return Cancellation_requested
+  | Ok (), Already_requested -> Deferred.Or_error.return Already_requested
+  | Ok (), Too_late ->
+      Deferred.Or_error.error_string "deployment is already finalizing"
+  | Error error, (Accepted | Already_requested | Too_late) ->
+      Deferred.return (Error error)
+
+let cancel_started_deployment t started =
+  match Hashtbl.find t.active started.deployment.id with
+  | Some active when phys_equal active.cancellation started.cancellation ->
+      request_cancellation t started
+  | Some _ | None ->
+      Deferred.Or_error.error_string
+        "deployment is not active in this control-plane process"
+
+let consume_deploy t ~application_key ~receipt =
+  Operation_receipt.consume_deploy t.deployment_receipts ~application_key
+    ~receipt
+
+let start_non_production ?application_key ?expected_project t ~working_directory
+    ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory -> (
@@ -502,29 +596,36 @@ let deploy_non_production ?on_stage ?on_requested ?application_key
       with
       | Error error -> Deferred.return (Error error)
       | Ok receipt -> (
-          match
-            Operation_receipt.consume_deploy t.deployment_receipts
-              ~application_key:receipt_key ~receipt
-          with
+          match consume_deploy t ~application_key:receipt_key ~receipt with
           | Error error -> Deferred.return (Error error)
-          | Ok authorization ->
-              account_mutation t (fun () ->
-                  deploy_unaccounted ?on_stage ?on_requested t ~authorization)))
+          | Ok authorization -> start_authorization t ~authorization))
 
-let deploy_managed_preview ?on_requested t requested_application ~receipt =
-  let application = authoritative_application t requested_application in
-  match application with
-  | Error error -> Deferred.return (Error error)
-  | Ok application -> (
-      match
-        Operation_receipt.consume_deploy t.deployment_receipts
-          ~application_key:(Managed_application.key application)
-          ~receipt
-      with
-      | Error error -> Deferred.return (Error error)
-      | Ok authorization ->
-          account_mutation t (fun () ->
-              deploy_unaccounted ?on_requested t ~authorization))
+let deploy_non_production ?application_key ?expected_project t
+    ~working_directory ~source ~target () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started =
+    start_non_production ?application_key ?expected_project t ~working_directory
+      ~source ~target ()
+  in
+  await_started_deployment started
+
+let start_managed_preview t requested_application ~receipt =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind application =
+    Deferred.return (authoritative_application t requested_application)
+  in
+  let%bind authorization =
+    Deferred.return
+      (consume_deploy t
+         ~application_key:(Managed_application.key application)
+         ~receipt)
+  in
+  start_authorization t ~authorization
+
+let deploy_managed_preview t requested_application ~receipt =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started = start_managed_preview t requested_application ~receipt in
+  await_started_deployment started
 
 let rec prune_managed_preview t requested_application ~receipt =
   match authoritative_application t requested_application with
@@ -537,9 +638,16 @@ let rec prune_managed_preview t requested_application ~receipt =
       with
       | Error error -> Deferred.return (Error error)
       | Ok authorization ->
-          account_mutation t (fun () -> prune_unaccounted t ~authorization))
+          let open Deferred.Or_error.Let_syntax in
+          let%bind prepared =
+            match t.prepare_prune with
+            | Some prepare -> prepare ~authorization >>| Option.some
+            | None -> Deferred.Or_error.return None
+          in
+          account_mutation t (fun () ->
+              prune_unaccounted t ~authorization ~prepared))
 
-and prune_unaccounted t ~authorization =
+and prune_unaccounted t ~authorization ~prepared =
   let working_directory =
     Operation_receipt.prune_working_directory authorization
   in
@@ -549,13 +657,16 @@ and prune_unaccounted t ~authorization =
   | Ok working_directory ->
       invalidate_runtime_scope t ~working_directory ~target;
       let%map result =
-        Store.with_lease t.store ~working_directory ~target (fun () ->
+        Store.with_reconciled_lease t.store
+          ~application_key:
+            (Operation_receipt.prune_application_key authorization)
+          ~working_directory ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
-            let on_authorized () =
+            let%bind () =
               Store.set_resource_state t.store ~working_directory ~target
                 Unknown
             in
-            let%bind result = t.prune_operation ~on_authorized ~authorization in
+            let%bind result = t.prune_operation ~authorization ~prepared in
             let%map () =
               Store.set_resource_state t.store ~working_directory ~target Absent
             in
@@ -585,8 +696,14 @@ let prune_non_production ?application_key ?expected_project ?repository_identity
           with
           | Error error -> Deferred.return (Error error)
           | Ok authorization ->
-              account_mutation t (fun () -> prune_unaccounted t ~authorization))
-      )
+              let open Deferred.Or_error.Let_syntax in
+              let%bind prepared =
+                match t.prepare_prune with
+                | Some prepare -> prepare ~authorization >>| Option.some
+                | None -> Deferred.Or_error.return None
+              in
+              account_mutation t (fun () ->
+                  prune_unaccounted t ~authorization ~prepared)))
 
 let live_status t ~scope = t.load_status ~scope
 let status_project = Status.project
@@ -602,21 +719,24 @@ let bounded_limit limit =
 let deployment_history t ~scope ~limit =
   match bounded_limit limit with
   | Error error -> Deferred.return (Error error)
-  | Ok limit ->
-      let%map deployments =
-        match scope.application_key with
-        | Some application_key ->
-            Store.list_for_application t.store ~application_key
-              ~working_directory:scope.working_directory ~target:scope.target
-              ~limit
-        | None ->
-            Store.list_for_scope t.store
-              ~working_directory:scope.working_directory ~target:scope.target
-              ~limit
-      in
-      Or_error.map deployments ~f:(fun deployments ->
-          List.map deployments ~f:deployment_of_store
-          |> List.filter ~f:(same_scope scope))
+  | Ok limit -> (
+      match t.deployment_history_override with
+      | Some history -> history ~scope ~limit
+      | None ->
+          let%map deployments =
+            match scope.application_key with
+            | Some application_key ->
+                Store.list_for_application t.store ~application_key
+                  ~working_directory:scope.working_directory
+                  ~target:scope.target ~limit
+            | None ->
+                Store.list_for_scope t.store
+                  ~working_directory:scope.working_directory
+                  ~target:scope.target ~limit
+          in
+          Or_error.map deployments ~f:(fun deployments ->
+              List.map deployments ~f:deployment_of_store
+              |> List.filter ~f:(same_scope scope)))
 
 let equal_scope (left : scope) (right : scope) =
   String.equal left.working_directory right.working_directory
@@ -1015,12 +1135,15 @@ let deployment_updated_at_ms (deployment : deployment) =
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ?status ?logs ?metrics ?(managed_applications = []) ~store
-      ~preview_main ~find_commit ~deploy ~prune () =
+  let create ?status ?logs ?metrics ?deployment_history
+      ?(managed_applications = []) ~store ~preview_main ~find_commit ~deploy
+      ~prune () =
     {
       store;
       preview_main;
       find_commit;
+      prepare_deploy = None;
+      prepare_prune = None;
       deploy_operation = deploy;
       prune_operation = prune;
       load_status =
@@ -1029,7 +1152,9 @@ module For_testing = struct
               ~target:scope.target);
       logs_override = logs;
       metrics_override = metrics;
+      deployment_history_override = deployment_history;
       active = String.Table.create ();
+      cancellations = ref [];
       runtime_cache = String.Table.create ();
       deployment_receipts =
         Operation_receipt.create_deploy_store () |> Or_error.ok_exn;

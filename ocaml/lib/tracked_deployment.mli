@@ -1,25 +1,26 @@
 open Async
 open Core
 
-val deploy :
-  ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-  ?on_requested:(Store.deployment -> unit) ->
-  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
-  authorization:Operation_receipt.deploy ->
-  store:Store.t ->
-  unit ->
-  Store.deployment Deferred.Or_error.t
+type started
 
-val deploy_within_lease :
-  ?on_stage:(Deployment.stage -> string -> unit Deferred.t) ->
-  ?on_requested:(Store.deployment -> unit) ->
-  ?on_authorized:(unit -> unit Deferred.Or_error.t) ->
+val start :
+  authorization:Operation_receipt.deploy ->
+  prepared:Deployment.prepared ->
+  store:Store.t ->
+  unit ->
+  started Deferred.Or_error.t
+(** Receives a claimed, validated capability before creating an opaque handle.
+    [Store.with_reconciled_lease] owns flock, reconciliation, request,
+    mutation, and release for that handle. *)
+
+val deployment : started -> Store.deployment
+val completion : started -> Store.deployment Deferred.Or_error.t
+
+val deploy :
   authorization:Operation_receipt.deploy ->
   store:Store.t ->
   unit ->
   Store.deployment Deferred.Or_error.t
-(** Advanced entry point for application orchestration that already holds the
-    target lease. [working_directory] must be canonical. *)
 
 module For_testing : sig
   val terminalize_cancelled :

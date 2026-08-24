@@ -95,14 +95,15 @@ let run_tests () =
         Deferred.Or_error.return commit)
       ~find_commit:(fun ~working_directory:_ ~revision:_ ->
         Deferred.Or_error.return commit)
-      ~deploy:(fun ~on_stage:_ ~on_requested ~on_authorized ~authorization ->
+      ~deploy:(fun ~authorization ~prepared:_ ->
         let application_key =
           Nixploy.Operation_receipt.deploy_application_key authorization
-        and working_directory =
+        in
+        let working_directory =
           Nixploy.Operation_receipt.deploy_working_directory authorization
-        and target = Nixploy.Operation_receipt.deploy_target authorization in
+        in
+        let target = Nixploy.Operation_receipt.deploy_target authorization in
         let open Deferred.Or_error.Let_syntax in
-        let%bind () = on_authorized () in
         let%bind stored =
           Nixploy.Store.request store ~application_key ~working_directory
             ~target ~commit:store_commit
@@ -112,27 +113,29 @@ let run_tests () =
             ~working_directory ~target ~id:(Nixploy.Store.id stored)
             ~state:Running ~revision ()
         in
-        on_requested operation;
         Ivar.fill_if_empty started operation;
-        let cancellation =
-          Nixploy.Cancellation.current () |> Option.value_exn
+        let completion =
+          let cancellation =
+            Nixploy.Cancellation.current () |> Option.value_exn
+          in
+          let%bind.Deferred () = Nixploy.Cancellation.requested cancellation in
+          let%bind persisted =
+            Nixploy.Store.find store ~id:(Nixploy.Store.id stored)
+          in
+          assert (
+            Option.bind persisted ~f:Nixploy.Store.cancel_requested_at_ms
+            |> Option.is_some);
+          assert (Nixploy.Cancellation.acknowledge_current ());
+          let%bind () =
+            Nixploy.Store.cancel store ~id:(Nixploy.Store.id stored)
+          in
+          Deferred.Or_error.return
+            (Nixploy.Application.For_testing.deployment ?application_key
+               ~working_directory ~target ~id:(Nixploy.Store.id stored)
+               ~state:Cancelled ~revision ())
         in
-        let%bind.Deferred () = Nixploy.Cancellation.requested cancellation in
-        let%bind persisted =
-          Nixploy.Store.find store ~id:(Nixploy.Store.id stored)
-        in
-        assert (
-          Option.bind persisted ~f:Nixploy.Store.cancel_requested_at_ms
-          |> Option.is_some);
-        assert (Nixploy.Cancellation.acknowledge_current ());
-        let%bind () =
-          Nixploy.Store.cancel store ~id:(Nixploy.Store.id stored)
-        in
-        Deferred.Or_error.return
-          (Nixploy.Application.For_testing.deployment ?application_key
-             ~working_directory ~target ~id:(Nixploy.Store.id stored)
-             ~state:Cancelled ~revision ()))
-      ~prune:(fun ~on_authorized:_ ~authorization:_ ->
+        Deferred.Or_error.return (operation, completion))
+      ~prune:(fun ~authorization:_ ~prepared:_ ->
         Deferred.Or_error.error_string "unused prune")
       ()
   in
@@ -151,10 +154,12 @@ let run_tests () =
   [%test_eq: string] "production" metrics.target;
   [%test_eq: string list] [ "example" ] (List.rev !log_calls);
   [%test_eq: string list] [ "example" ] (List.rev !metric_calls);
-  let running =
-    Nixploy.Application.deploy_non_production ~application_key:"example" fake
+  let%bind started_handle =
+    Nixploy.Application.start_non_production ~application_key:"example" fake
       ~working_directory:directory ~source ~target ()
   in
+  let started_handle = assert_ok started_handle in
+  let running = Nixploy.Application.await_started_deployment started_handle in
   let%bind operation = Ivar.read started in
   let operation_id = Nixploy.Application.deployment_id operation in
   let%bind history =
@@ -174,6 +179,19 @@ let run_tests () =
   in
   assert (Result.is_error wrong_owner);
   assert (not (Deferred.is_determined running));
+  let slow_consumer_started = Ivar.create () in
+  don't_wait_for
+    (let%bind.Deferred history =
+       Nixploy.Application.deployment_history fake ~scope ~limit:25
+     in
+     let history = assert_ok history in
+     assert (
+       List.exists history ~f:(fun deployment ->
+           String.equal operation_id
+             (Nixploy.Application.deployment_id deployment)));
+     Ivar.fill_if_empty slow_consumer_started ();
+     Deferred.never ());
+  let%bind () = Ivar.read slow_consumer_started in
   let%bind unchanged = Nixploy.Store.find store ~id:operation_id in
   assert (
     Option.bind (assert_ok unchanged) ~f:Nixploy.Store.cancel_requested_at_ms
@@ -190,6 +208,26 @@ let run_tests () =
     [%equal: Nixploy.Application.deployment_state]
       (Nixploy.Application.deployment_state completed)
       Cancelled);
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 1.) in
+  assert (Deferred.is_determined (Nixploy.Application.mutations_drained fake));
+  let%bind web_started =
+    Nixploy.Application.start_non_production ~application_key:"example" fake
+      ~working_directory:directory ~source ~target ()
+  in
+  let web_started = assert_ok web_started in
+  assert (
+    [%equal: Nixploy.Application.shutdown_transition]
+      (Nixploy.Application.begin_shutdown fake)
+      Shutdown_started);
+  let%bind web_terminal =
+    Nixploy.Application.await_started_deployment web_started
+  in
+  assert (
+    [%equal: Nixploy.Application.deployment_state]
+      (Nixploy.Application.deployment_state (assert_ok web_terminal))
+      Cancelled);
+  let%bind () = Clock_ns.after (Time_ns.Span.of_ms 1.) in
+  assert (Deferred.is_determined (Nixploy.Application.mutations_drained fake));
   let%bind interrupted =
     Nixploy.Store.request store ~application_key:(Some "example")
       ~working_directory:directory ~target ~commit:store_commit
