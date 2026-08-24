@@ -503,13 +503,7 @@ let remove_owned_placement ~connection ~project ~target ~resource_key
 
 let prepare_candidate = remove_owned_placement
 
-type prune_container = { prune_id : string; prune_name : string }
-
-type prepared_prune = {
-  prune_connection : string;
-  prune_containers : prune_container list;
-  prune_secret_names : string list;
-}
+type prepared_prune = Disabled_prune
 
 let max_secret_name_bytes = 253
 let max_listed_secrets = 4_096
@@ -543,119 +537,16 @@ let secret_names_of_output output =
           else Ok name)
       |> Or_error.all
 
-let inspect_prune_container ~connection ~project ~target ~resource_key
-    ~repository_identity name =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind exists =
-    run [ "--connection"; connection; "container"; "exists"; name ]
-  in
-  match exists.exit_status with
-  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return None
-  | Error failure ->
-      Deferred.Or_error.errorf "could not inspect prune container (%s): %s"
-        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip exists.stderr)
-  | Ok () -> (
-      let%bind inspected = inspect_container ~connection name in
-      let%bind owned =
-        Deferred.return
-          (let open Or_error.Let_syntax in
-           let%bind target_owned =
-             owned_candidate_collision inspected.stdout ~project ~target
-               ~resource_key
-           in
-           let%map repository_owned =
-             repository_owned ~require_repository_label:true inspected.stdout
-               ~repository_identity
-           in
-           target_owned && repository_owned)
-      in
-      if not owned then
-        Deferred.Or_error.errorf
-          "container %s exists but is not owned by this repository and target"
-          name
-      else
-        let%bind json =
-          Deferred.return
-            (Or_error.try_with (fun () ->
-                 Yojson.Safe.from_string inspected.stdout))
-        in
-        match json with
-        | `List [ `Assoc fields ] -> (
-            match List.Assoc.find fields ~equal:String.equal "Id" with
-            | Some (`String id) when not (String.is_empty id) ->
-                Deferred.Or_error.return
-                  (Some { prune_id = id; prune_name = name })
-            | _ ->
-                Deferred.Or_error.errorf
-                  "container %s inspect did not contain an ID" name)
-        | _ ->
-            Deferred.Or_error.errorf
-              "container %s inspect must contain exactly one container" name)
+let prune_disabled_error () =
+  Or_error.error_string
+    "prune is disabled in Production V1: durable prune operation lifecycle is \
+     not implemented"
 
-let preflight_prune_owned_resources ~connection ~project ~target ~resource_key
-    ~repository_identity =
-  let open Deferred.Or_error.Let_syntax in
-  let plan = Prune_plan.create ~resource_key in
-  let%bind prune_containers =
-    Deferred.Or_error.List.filter_map
-      (Prune_plan.container_names plan)
-      ~how:`Sequential
-      ~f:
-        (inspect_prune_container ~connection ~project ~target ~resource_key
-           ~repository_identity)
-  in
-  let%bind listed =
-    run_ok
-      [ "--connection"; connection; "secret"; "ls"; "--format"; "{{.Name}}" ]
-  in
-  let%map all_secret_names =
-    Deferred.return (secret_names_of_output listed.stdout)
-  in
-  {
-    prune_connection = connection;
-    prune_containers;
-    prune_secret_names = Prune_plan.select_secret_names plan all_secret_names;
-  }
+let preflight_prune_owned_resources ~connection:_ ~project:_ ~target:_
+    ~resource_key:_ ~repository_identity:_ =
+  Deferred.return (prune_disabled_error ())
 
-let execute_prepared_prune prepared =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind () =
-    Deferred.Or_error.List.iter prepared.prune_containers ~how:`Sequential
-      ~f:(fun container ->
-        let%map _ =
-          run_ok
-            [
-              "--connection";
-              prepared.prune_connection;
-              "rm";
-              "-f";
-              container.prune_id;
-            ]
-          |> Deferred.map
-               ~f:
-                 (Or_error.tag
-                    ~tag:
-                      (sprintf "could not remove owned container %s"
-                         container.prune_name))
-        in
-        ())
-  in
-  let%map () =
-    Deferred.Or_error.List.iter prepared.prune_secret_names ~how:`Sequential
-      ~f:(fun name ->
-        let%map _ =
-          run_ok
-            [ "--connection"; prepared.prune_connection; "secret"; "rm"; name ]
-          |> Deferred.map
-               ~f:
-                 (Or_error.tag
-                    ~tag:(sprintf "could not remove owned secret %s" name))
-        in
-        ())
-  in
-  ( List.length prepared.prune_containers,
-    List.length prepared.prune_secret_names )
+let execute_prepared_prune _prepared = Deferred.return (prune_disabled_error ())
 
 let find_owned_slot ~connection ~project ~target ~resource_key
     ~repository_identity ~slot =
@@ -1260,6 +1151,7 @@ let read_stats ~connection ~container =
   Deferred.return (parse_stats result.stdout)
 
 module For_testing = struct
+  let prepared_prune = Disabled_prune
   let pre_start_argvs = pre_start_argvs
   let runtime_argv = runtime_argv
   let loaded_reference = loaded_reference

@@ -120,12 +120,10 @@ val preflight_prune_owned_resources :
   resource_key:Resource_key.t ->
   repository_identity:string ->
   prepared_prune Deferred.Or_error.t
-(** Verifies every exact managed container name has complete target and
-    repository ownership, then selects only scoped secrets without mutating
-    remote resources. *)
+(** Always fails before Podman inspection or listing in Production V1. *)
 
 val execute_prepared_prune : prepared_prune -> (int * int) Deferred.Or_error.t
-(** Executes only the opaque, previously verified prune selection. *)
+(** Always fails before container or secret removal in Production V1. *)
 
 val image_reference : image -> string
 val image_id : image -> string
@@ -168,6 +166,8 @@ val read_stats :
   runtime_stats Deferred.Or_error.t
 
 module For_testing : sig
+  val prepared_prune : prepared_prune
+
   val pre_start_argvs :
     connection:string ->
     run:Configuration.Run.t ->
