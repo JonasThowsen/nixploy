@@ -308,14 +308,6 @@ let finish_mutation t =
   if (not t.mutations.accepting) && Int.equal t.mutations.active_count 0 then
     Ivar.fill_if_empty t.mutations.drained ()
 
-let account_mutation t operation =
-  match begin_mutation t with
-  | Error error -> Deferred.return (Error error)
-  | Ok () ->
-      Monitor.protect operation ~finally:(fun () ->
-          finish_mutation t;
-          Deferred.unit)
-
 let open_ ~state_path =
   let open Deferred.Or_error.Let_syntax in
   let%bind managed_applications =
@@ -622,89 +614,18 @@ let deploy_managed_preview t requested_application ~receipt =
   let%bind started = start_managed_preview t requested_application ~receipt in
   await_started_deployment started
 
-let rec prune_managed_preview t requested_application ~receipt =
-  match authoritative_application t requested_application with
-  | Error error -> Deferred.return (Error error)
-  | Ok application -> (
-      match
-        Operation_receipt.consume_prune t.prune_receipts
-          ~application_key:(Managed_application.key application)
-          ~receipt
-      with
-      | Error error -> Deferred.return (Error error)
-      | Ok authorization ->
-          let open Deferred.Or_error.Let_syntax in
-          let%bind prepared =
-            match t.prepare_prune with
-            | Some prepare -> prepare ~authorization >>| Option.some
-            | None -> Deferred.Or_error.return None
-          in
-          account_mutation t (fun () ->
-              prune_unaccounted t ~authorization ~prepared))
+let prune_disabled t =
+  ignore t.prepare_prune;
+  ignore t.prune_operation;
+  Deferred.Or_error.error_string
+    "prune is disabled in Production V1: durable prune operation lifecycle is \
+     not implemented"
 
-and prune_unaccounted t ~authorization ~prepared =
-  let working_directory =
-    Operation_receipt.prune_working_directory authorization
-  in
-  let target = Operation_receipt.prune_target authorization in
-  match canonical_working_directory working_directory with
-  | Error error -> Deferred.return (Error error)
-  | Ok working_directory ->
-      invalidate_runtime_scope t ~working_directory ~target;
-      let%map result =
-        Store.with_reconciled_lease t.store
-          ~application_key:
-            (Operation_receipt.prune_application_key authorization)
-          ~working_directory ~target (fun () ->
-            let open Deferred.Or_error.Let_syntax in
-            let%bind () =
-              match prepared with
-              | None -> Deferred.Or_error.return ()
-              | Some prepared ->
-                  Deferred.return (Prune.validate_bound ~authorization prepared)
-            in
-            let%bind () =
-              Store.set_resource_state t.store ~working_directory ~target
-                Unknown
-            in
-            let%bind result = t.prune_operation ~authorization ~prepared in
-            let%map () =
-              Store.set_resource_state t.store ~working_directory ~target Absent
-            in
-            result)
-      in
-      invalidate_runtime_scope t ~working_directory ~target;
-      result
+let prune_managed_preview t _requested_application ~receipt:_ = prune_disabled t
 
-let prune_non_production ?application_key ?expected_project ?repository_identity
-    t ~working_directory ~target =
-  match canonical_working_directory working_directory with
-  | Error error -> Deferred.return (Error error)
-  | Ok working_directory -> (
-      let receipt_key =
-        Option.value application_key ~default:"non-production"
-      in
-      match
-        Operation_receipt.issue_prune t.prune_receipts ~application_key
-          ~expected_project ~repository_identity ~intent:None ~application:None
-          ~commit:None ~working_directory ~target
-      with
-      | Error error -> Deferred.return (Error error)
-      | Ok receipt -> (
-          match
-            Operation_receipt.consume_prune t.prune_receipts
-              ~application_key:receipt_key ~receipt
-          with
-          | Error error -> Deferred.return (Error error)
-          | Ok authorization ->
-              let open Deferred.Or_error.Let_syntax in
-              let%bind prepared =
-                match t.prepare_prune with
-                | Some prepare -> prepare ~authorization >>| Option.some
-                | None -> Deferred.Or_error.return None
-              in
-              account_mutation t (fun () ->
-                  prune_unaccounted t ~authorization ~prepared)))
+let prune_non_production ?application_key:_ ?expected_project:_
+    ?repository_identity:_ t ~working_directory:_ ~target:_ =
+  prune_disabled t
 
 let live_status t ~scope = t.load_status ~scope
 let status_project = Status.project

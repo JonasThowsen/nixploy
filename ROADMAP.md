@@ -51,7 +51,10 @@ New work should improve or preserve the quality of the OCaml codebase:
 
 The UI renders persisted operations and observed runtime facts. It must
 distinguish running, succeeded, failed, cancelled, unavailable, and stale state
-without inferring success from an optimistic client transition.
+without inferring success from an optimistic client transition. Production V1
+keeps destructive prune fail-closed until it has a separate resource-scoped
+durable admission and terminal lifecycle; deployment history is not cleanup
+authority.
 
 ## Production baseline
 

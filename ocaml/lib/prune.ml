@@ -220,55 +220,21 @@ let validate_bound ~authorization prepared =
       "prepared prune belongs to a different consumed capability"
   else Operation_receipt.validate_prune authorization
 
-let execute ~authorization prepared =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind () = Deferred.return (validate_bound ~authorization prepared) in
-  let project = prepared.project in
-  let target_name = prepared.target_name in
-  let target = prepared.target in
-  let repository_identity = prepared.repository_identity in
-  let%bind resource_key =
-    Podman.select_resource_key ~project ~target ~repository_identity
-      ~candidates:prepared.candidates
-  in
-  let%bind connection = Podman.ensure_connection ~target ~resource_key in
-  let%bind podman_preflight =
-    Podman.preflight_prune_owned_resources ~connection ~project ~target
-      ~resource_key ~repository_identity
-  in
-  let%bind caddy_preflight =
-    match Configuration.Target.kind target with
-    | Non_web -> Deferred.Or_error.return None
-    | Web web ->
-        let caddy = Caddy.create ~target ~resource_key ~web in
-        Caddy.preflight_delete caddy >>| Option.some
-  in
-  let%bind route =
-    match caddy_preflight with
-    | None -> Deferred.Or_error.return Not_configured
-    | Some deletion -> (
-        Caddy.execute_delete deletion >>| function
-        | true -> Removed
-        | false -> Missing)
-  in
-  let%map containers_removed, secrets_removed =
-    Podman.execute_prepared_prune podman_preflight
-  in
-  {
-    project;
-    target = target_name;
-    resource_key;
-    containers_removed;
-    secrets_removed;
-    route;
-  }
+let execute ~authorization:_ prepared =
+  ignore
+    ( prepared.project,
+      prepared.target_name,
+      prepared.target,
+      prepared.repository_identity,
+      prepared.candidates );
+  Deferred.Or_error.error_string
+    "prune is disabled in Production V1: durable prune operation lifecycle is \
+     not implemented"
 
-let prune ~authorization () =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind prepared = prepare ~authorization in
-  Monitor.protect
-    ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () -> execute ~authorization prepared)
+let prune ~authorization:_ () =
+  Deferred.Or_error.error_string
+    "prune is disabled in Production V1: durable prune operation lifecycle is \
+     not implemented"
 
 module For_testing = struct
   let result ~project ~target ~resource_key ~containers_removed ~secrets_removed

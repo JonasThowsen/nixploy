@@ -179,40 +179,25 @@ let run_tests () =
       ~working_directory:directory ~target ~commit:store_commit
   in
   let interrupted = assert_ok interrupted in
-  let%bind prune =
+  let%bind refused_prune =
     Nixploy.Application.prune_non_production ~application_key:"example"
       ~repository_identity:"owner/example" application
       ~working_directory:directory ~target
   in
-  let prune = assert_ok prune in
-  [%test_eq: int] 2 (Nixploy.Application.prune_containers_removed prune);
-  [%test_eq: int] 3 (Nixploy.Application.prune_secrets_removed prune);
-  let%bind reconciled =
+  assert (Result.is_error refused_prune);
+  let%bind still_requested =
     Nixploy.Store.find store ~id:(Nixploy.Store.id interrupted)
   in
-  let reconciled = assert_ok reconciled |> Option.value_exn in
-  assert (Nixploy.Store.equal_state (Nixploy.Store.state reconciled) Failed);
+  let still_requested = assert_ok still_requested |> Option.value_exn in
   assert (
-    String.is_substring
-      (Nixploy.Store.message reconciled)
-      ~substring:"remote outcome is unknown");
-  let%bind absent =
-    Nixploy.Application.resource_state application ~working_directory:directory
-      ~target
-  in
-  assert ([%equal: Nixploy.Application.resource_state] (assert_ok absent) Absent);
-  prune_error := Some (Error.of_string "cleanup stopped after one container");
-  let%bind failed_prune =
-    Nixploy.Application.prune_non_production application
-      ~working_directory:directory ~target
-  in
-  assert (Result.is_error failed_prune);
-  let%bind unknown =
+    Nixploy.Store.equal_state (Nixploy.Store.state still_requested) Requested);
+  let%bind still_present =
     Nixploy.Application.resource_state application ~working_directory:directory
       ~target
   in
   assert (
-    [%equal: Nixploy.Application.resource_state] (assert_ok unknown) Unknown);
+    [%equal: Nixploy.Application.resource_state] (assert_ok still_present)
+      Present);
   let%bind reopened =
     Nixploy.Store.open_ ~path:(Filename.concat directory "state.sqlite")
   in
@@ -222,7 +207,7 @@ let run_tests () =
       ~target
   in
   assert (
-    [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Unknown);
+    [%equal: Nixploy.Application.resource_state] (assert_ok read_back) Present);
   let%bind stale_cli_deployment =
     Nixploy.Store.request store ~application_key:None
       ~working_directory:directory ~target ~commit:store_commit
@@ -258,7 +243,7 @@ let run_tests () =
   in
   assert (
     [%equal: Nixploy.Application.resource_state] (assert_ok failed_state)
-      Unknown);
+      Present);
   deployment_state := Cancelled;
   let%bind cancelled_deployment =
     Nixploy.Application.deploy_non_production application
@@ -277,7 +262,7 @@ let run_tests () =
   assert (
     [%equal: Nixploy.Application.resource_state]
       (assert_ok cancelled_state)
-      Unknown);
+      Present);
   deployment_state := Succeeded;
   prune_error := None;
   let deploy_started = Ivar.create () in
@@ -298,12 +283,12 @@ let run_tests () =
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
   assert (Deferred.is_determined waiting_prune);
-  [%test_eq: int] (prunes_before_wait + 1) (List.length !pruned);
+  [%test_eq: int] prunes_before_wait (List.length !pruned);
   Ivar.fill_exn release_deploy ();
   let%bind deployment_after_wait = waiting_deploy in
   ignore (assert_ok deployment_after_wait : Nixploy.Application.deployment);
   let%bind prune_after_wait = waiting_prune in
-  ignore (assert_ok prune_after_wait : Nixploy.Application.prune_result);
+  assert (Result.is_error prune_after_wait);
   deployment_started := None;
   deployment_gate := None;
   let%bind final_state =
@@ -317,13 +302,7 @@ let run_tests () =
     * string option
     * string
     * Nixploy.Target_name.t)
-    list]
-    [
-      (None, Some "owner/example", directory, target);
-      (None, None, directory, target);
-      (None, None, directory, target);
-    ]
-    (List.rev !pruned);
+    list] [] (List.rev !pruned);
   assert (
     Deferred.is_determined (Nixploy.Application.mutations_drained application));
   let shutdown_started = Ivar.create () in

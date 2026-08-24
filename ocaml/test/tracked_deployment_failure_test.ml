@@ -388,17 +388,11 @@ exit 0
       in
       assert_ok reused_state;
 
-      (* Prune uses its own leased path, so prove the same exact durable state
-         failure occurs before the prune adapter can touch a remote process. *)
+      (* V1 prune is fail-closed before it can touch state or a remote process. *)
       clear_process_observations ();
       let prune_path = Filename.concat root "prune-state-write.sqlite" in
       let%bind prune_store = Nixploy.Store.open_ ~path:prune_path in
       let prune_store = assert_ok prune_store in
-      install_trigger prune_path
-        {|CREATE TRIGGER reject_prune_unknown_resource_state
-          BEFORE INSERT ON resource_states
-          WHEN NEW.state = 'unknown'
-          BEGIN SELECT RAISE(ABORT, 'prune unknown resource state rejected'); END;|};
       let prune_application =
         Nixploy.Application.create ~store:prune_store ()
       in
@@ -406,7 +400,7 @@ exit 0
         Nixploy.Application.prune_non_production prune_application
           ~working_directory:repository ~target
       in
-      expect_error_containing pruned "prune unknown resource state rejected";
+      expect_error_containing pruned "prune is disabled in Production V1";
       [%test_eq: int] 0 (resource_state_row_count prune_path);
       assert (List.is_empty (trace_lines trace));
       let%bind reused_prune =

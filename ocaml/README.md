@@ -66,15 +66,13 @@ Live scoped inspection and deployment history are available through
 transport adapters over `Application`; history is bounded and scoped by the
 canonical working directory and target.
 
-Scoped cleanup is available through the managed prune RPC. It evaluates
-the selected local flake through `Application`, derives the same
-repository-bound identity as deployment, and verifies exact container ownership
-before removing resource-prefixed Podman secrets or deleting the exact Caddy
-route for web targets. Ownership requires the complete modern
-`io.nixploy.managed=true`, project, target, and resource-key labels; legacy
-`nixploy.*` ownership labels and partial or mixed substitutes are not accepted.
-Deployment reconciliation and status also verify the canonical modern repository
-identity. Non-web prune never contacts Caddy.
+Prune is disabled in Production V1 at the shared `Application` and lower
+prune boundaries. This is intentional: cleanup is destructive, while the current
+SQLite history models only deployment operations. Re-enabling prune requires its
+own resource-scoped durable admission and exact receipt binding, canonical
+candidate snapshot, observer-visible terminal lifecycle, and non-replayable
+review outcome for ambiguous remote cleanup. Until then it performs no resource
+state, Podman, or Caddy mutation.
 
 The Bonsai control-plane tracer is served by the second packaged executable:
 
@@ -82,10 +80,11 @@ The Bonsai control-plane tracer is served by the second packaged executable:
 nixploy-web --port 8080
 ```
 
-SIGINT and SIGTERM stop the listener, reject new deploy and prune requests,
+SIGINT and SIGTERM stop the listener, reject new deployment requests,
 interrupt active subprocess groups so compensation can unwind, and allow up to
-25 seconds for admitted mutations to drain. A second signal forces immediate
-shutdown. The NixOS unit allows 30 seconds before systemd forcefully stops it.
+25 seconds for admitted mutations to drain. Prune is already fail-closed in V1.
+A second signal forces immediate shutdown. The NixOS unit allows 30 seconds
+before systemd forcefully stops it.
 During the local Nix image build, bounded 30-second progress heartbeats reach the
 same durable stage history and CLI observer without exposing buffered build
 output.

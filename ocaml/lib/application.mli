@@ -115,9 +115,9 @@ val prune_managed_preview :
   Managed_application.t ->
   receipt:string ->
   prune_result Deferred.Or_error.t
-(** Consumes a prune-only receipt and repeats exact protected source,
-    destination, intent, and canonical identity validation before state or
-    remote mutation. A deployment receipt is never prune authority. *)
+(** Always fails closed in Production V1. Durable prune admission, binding, and
+    terminal review are deferred rather than allowing destructive cleanup under
+    deployment-only operation tracking. *)
 
 val resolve_commit :
   t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t
@@ -167,6 +167,7 @@ val prune_non_production :
   working_directory:string ->
   target:Target_name.t ->
   prune_result Deferred.Or_error.t
+(** Always fails closed in Production V1, including library-only local calls. *)
 
 val live_status : t -> scope:scope -> status Deferred.Or_error.t
 val status_project : status -> Project_name.t

@@ -69,11 +69,12 @@ source, then acquire the lease, reconcile a dead predecessor, create the durable
 `requested` admission record needed by the opaque handle, bind that exact
 capability to its operation id, and only then mark resource state `Unknown`,
 write active-stage history, or run a remote process. The admission record is
-history of a consumed request, not evidence that a resource changed. A prune
-follows the same lease/reconcile/bound-capability sequence before marking
-`Unknown` or starting cleanup. A failed resource-state write terminalizes the
-admitted deployment and aborts before any remote process; the lease always
-unwinds.
+history of a consumed request, not evidence that a resource changed. Production
+V1 deliberately disables prune: deployment's durable operation model cannot
+honestly represent destructive cleanup yet. A future prune slice must add a
+resource-scoped durable admission, exact receipt-to-operation binding, canonical
+candidate snapshot, terminal review for ambiguous remote effects, and observer
+rehydration before it may mutate resource state or invoke Podman/Caddy.
 
 ## Architecture
 
@@ -151,11 +152,19 @@ Add a typed non-web plan to the shared engine. Run pre-start commands before rep
 
 **Acceptance:** a recorded command trace proves pre-start-before-replacement, exact runtime options, scoped ownership, verification, and no Caddy effects.
 
-### 3. Prune parity
+### 3. Durable prune lifecycle (deferred; prune disabled in Production V1)
 
-Add one scoped prune operation using the same resolved resource identity as deploy. Remove the owned route when configured, the single/blue/green container names, and owned secrets.
+Prune is destructive and is fail-closed at the shared `Application` boundary in
+Production V1. Do not reuse deployment rows or synthetic deployment keys for
+cleanup. Re-enable it only with a resource-scoped durable operation model that
+records admission before the lease, binds the consumed prune receipt to the exact
+operation, target, canonical intent, and candidate snapshot under the lease, and
+has terminal success/error/review outcomes that observers can reopen.
 
-**Acceptance:** web and non-web command traces prove that unrelated resources cannot be selected.
+**Acceptance before re-enabling:** SQLite-trigger tests prove bind and
+resource-state write failures produce no Podman/Caddy process, a successful fake
+prune has ordered durable admission/bind/current-state/terminal evidence, and an
+ambiguous remote failure is terminal review with no replay.
 
 ### 4. Consumer cutover (complete)
 
