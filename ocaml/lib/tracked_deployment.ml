@@ -120,8 +120,18 @@ let start ~authorization ~prepared ~store () =
                 (Operation_receipt.bind_deploy_operation authorization
                    ~operation_id:(Store.id operation))
             in
-            Ivar.fill_if_empty started (Ok operation);
-            run_requested ~store ~authorization ~prepared operation))
+            let%bind.Deferred resource_state =
+              Store.set_resource_state store ~working_directory ~target Unknown
+            in
+            match resource_state with
+            | Ok () ->
+                Ivar.fill_if_empty started (Ok operation);
+                run_requested ~store ~authorization ~prepared operation
+            | Error error ->
+                let%map.Deferred terminal =
+                  Store.fail store ~id:(Store.id operation) ~error
+                in
+                Result.bind terminal ~f:(fun () -> Error error)))
   in
   don't_wait_for
     ( Monitor.try_with launch >>| function

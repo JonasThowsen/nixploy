@@ -123,6 +123,9 @@
             ];
 
             doCheck = true;
+            preCheck = ''
+              export TZDIR=${pkgs.tzdata}/share/zoneinfo
+            '';
 
             postInstall = ''
               install -Dm644 web/assets/fonts/LICENSE-IBM-PLEX.txt \
@@ -391,6 +394,18 @@
         in
         {
           nixploy = self.packages.${system}.nixploy;
+          dune-stanza-contract =
+            pkgs.runCommand "nixploy-dune-stanza-contract"
+              {
+                nativeBuildInputs = [
+                  pkgs.gawk
+                  pkgs.gnugrep
+                ];
+              }
+              ''
+                bash ${./nix/dune-stanza-contract-test.sh} ${./flake.nix} ${./ocaml/test/dune}
+                touch $out
+              '';
           config-contract =
             assert configContract;
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";

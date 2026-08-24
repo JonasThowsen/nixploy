@@ -141,3 +141,7 @@ let claim_prune (t : prune) =
   else (
     t.claimed <- true;
     Ok ())
+
+let validate_prune (t : prune) =
+  if t.claimed then Ok ()
+  else Or_error.error_string "prune capability must be claimed before mutation"

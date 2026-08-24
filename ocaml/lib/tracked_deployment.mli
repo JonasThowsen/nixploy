@@ -10,8 +10,15 @@ val start :
   unit ->
   started Deferred.Or_error.t
 (** Receives a claimed, validated capability before creating an opaque handle.
-    [Store.with_reconciled_lease] owns flock, reconciliation, request,
-    mutation, and release for that handle. *)
+    [Store.with_reconciled_lease] owns flock, predecessor reconciliation,
+    capability-to-operation binding, current resource-state mutation, execution,
+    terminalization, and release. The durable [requested] row is admission
+    history for the opaque handle; it is not evidence of a resource mutation.
+
+    Exact order: consume and validate the capability during preparation; acquire
+    the target lease; reconcile a dead predecessor; create the admission row;
+    bind the claimed capability to that row; mark the current resource state
+    [Unknown]; then write stages or run any remote process. *)
 
 val deployment : started -> Store.deployment
 val completion : started -> Store.deployment Deferred.Or_error.t

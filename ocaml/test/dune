@@ -201,6 +201,13 @@
   (pps ppx_jane)))
 
 (executable
+ (name source_authority_probe)
+ (modules source_authority_probe)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(executable
  (name rpc_probe)
  (modules rpc_probe)
  (libraries async async_rpc_websocket core core_unix.command_unix protocol)

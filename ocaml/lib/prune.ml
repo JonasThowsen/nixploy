@@ -214,15 +214,15 @@ let prepare ~authorization =
       Deferred.Or_error.error_string
         "prune capability has incomplete managed-operation bindings"
 
+let validate_bound ~authorization prepared =
+  if not (phys_equal authorization prepared.authorization) then
+    Or_error.error_string
+      "prepared prune belongs to a different consumed capability"
+  else Operation_receipt.validate_prune authorization
+
 let execute ~authorization prepared =
   let open Deferred.Or_error.Let_syntax in
-  let%bind () =
-    if phys_equal authorization prepared.authorization then
-      Deferred.Or_error.return ()
-    else
-      Deferred.Or_error.error_string
-        "prepared prune belongs to a different consumed capability"
-  in
+  let%bind () = Deferred.return (validate_bound ~authorization prepared) in
   let project = prepared.project in
   let target_name = prepared.target_name in
   let target = prepared.target in

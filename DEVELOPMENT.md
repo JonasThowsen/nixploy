@@ -64,6 +64,17 @@ authority. After confirmation, the application must acquire the declared
 per-target coordination-domain lease and, while holding it, recompute or
 revalidate the authoritative plan from fresh observations before any mutation.
 
+For a deploy, consume and validate the exact receipt while preparing immutable
+source, then acquire the lease, reconcile a dead predecessor, create the durable
+`requested` admission record needed by the opaque handle, bind that exact
+capability to its operation id, and only then mark resource state `Unknown`,
+write active-stage history, or run a remote process. The admission record is
+history of a consumed request, not evidence that a resource changed. A prune
+follows the same lease/reconcile/bound-capability sequence before marking
+`Unknown` or starting cleanup. A failed resource-state write terminalizes the
+admitted deployment and aborts before any remote process; the lease always
+unwinds.
+
 ## Architecture
 
 ```text

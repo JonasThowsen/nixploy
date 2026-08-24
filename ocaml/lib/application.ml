@@ -508,11 +508,6 @@ let launch_deploy t ~authorization ~prepared =
           add_cancellation t cancellation;
           let started =
             Cancellation.within cancellation (fun () ->
-                let open Deferred.Or_error.Let_syntax in
-                let%bind () =
-                  Store.set_resource_state t.store ~working_directory ~target
-                    Unknown
-                in
                 t.deploy_operation ~authorization ~prepared)
           in
           let%map result = started in
@@ -662,6 +657,12 @@ and prune_unaccounted t ~authorization ~prepared =
             (Operation_receipt.prune_application_key authorization)
           ~working_directory ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
+            let%bind () =
+              match prepared with
+              | None -> Deferred.Or_error.return ()
+              | Some prepared ->
+                  Deferred.return (Prune.validate_bound ~authorization prepared)
+            in
             let%bind () =
               Store.set_resource_state t.store ~working_directory ~target
                 Unknown

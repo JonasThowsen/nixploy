@@ -89,9 +89,10 @@ single-use bounded-memory receipt. Confirmation supplies no SHA, target, or
 destination; expiry, eviction, replay, mismatch, or restart requires a new
 preview. Inside the target lease, deployment revalidates and prepares the full
 intent before resource-state/history writes and before remote or secret effects.
-The packaged VM proves exact production preview, forged receipt rejection, and
-standalone-CLI rejection of tracked production changes, stanza removal, and
-endpoint aliases with zero deployment/resource rows. Focused tests cover stale
+The source-authority VM smoke passed in the current full flake check: it
+verifies exact production preview, forged receipt rejection, protected Git
+materialization, and standalone-CLI rejection with zero deployment/resource
+rows. Focused tests cover stale
 or mismatched source evidence, provenance, SHA, target, destination and digest
 mismatch before Podman/SSH, while receipt tests cover expiry, eviction, replay,
 restart and application mismatch.

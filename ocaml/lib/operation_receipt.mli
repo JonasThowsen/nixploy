@@ -71,3 +71,7 @@ val prune_commit : prune -> Source.commit option
 val prune_working_directory : prune -> string
 val prune_target : prune -> Target_name.t
 val claim_prune : prune -> unit Or_error.t
+
+val validate_prune : prune -> unit Or_error.t
+(** Confirms that this exact consumed prune capability was claimed before a
+    leased mutation begins. *)

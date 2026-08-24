@@ -1,4 +1,5 @@
 open Async
+open Core
 
 type route = Not_configured | Missing | Removed
 [@@deriving compare, equal, sexp]
@@ -13,6 +14,11 @@ val prepare :
     mutation. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
+
+val validate_bound :
+  authorization:Operation_receipt.prune -> prepared -> unit Or_error.t
+(** Confirms the exact claimed prune capability before the lease holder records
+    current resource state or starts remote cleanup. *)
 
 val execute :
   authorization:Operation_receipt.prune -> prepared -> t Deferred.Or_error.t

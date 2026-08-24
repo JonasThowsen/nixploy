@@ -62,24 +62,29 @@ let timestamp () =
 let build_heartbeat_interval = Time_ns.Span.of_sec 30.
 let max_build_heartbeats = 119
 
+let combine_failure primary secondary =
+  Error.create_s [%message (primary : Error.t) (secondary : Error.t)]
+
 let run_build_with_durable_heartbeats ~store ~operation_id build =
-  let finished = Ivar.create () in
-  upon build (fun _ -> Ivar.fill_if_empty finished ());
+  let stopped = Ivar.create () in
+  let request_build_cancellation () =
+    Option.iter (Cancellation.current ()) ~f:(fun cancellation ->
+        ignore (Cancellation.request cancellation : Cancellation.request))
+  in
   let rec heartbeat number =
-    if number > max_build_heartbeats then Deferred.unit
+    if number > max_build_heartbeats then Deferred.Or_error.return ()
     else
       let open Deferred.Let_syntax in
       let%bind next =
         Deferred.choose
           [
-            Deferred.choice (Ivar.read finished) (fun () -> `Finished);
+            Deferred.choice (Ivar.read stopped) (fun () -> `Stopped);
             Deferred.choice (Clock_ns.after build_heartbeat_interval) (fun () ->
                 `Heartbeat);
           ]
       in
       match next with
-      | `Finished -> Deferred.unit
-      | `Heartbeat when not (Ivar.is_empty finished) -> Deferred.unit
+      | `Stopped -> Deferred.Or_error.return ()
       | `Heartbeat -> (
           let message =
             sprintf
@@ -87,25 +92,42 @@ let run_build_with_durable_heartbeats ~store ~operation_id build =
                remains buffered)"
               (number * 30)
           in
-          let durable_write =
+          let%bind wrote =
             Store.record_stage store ~id:operation_id ~stage:"building" ~message
           in
-          let%bind next =
-            Deferred.choose
-              [
-                Deferred.choice (Ivar.read finished) (fun () -> `Finished);
-                Deferred.choice durable_write (fun _ -> `Written);
-              ]
-          in
-          match next with
-          | `Finished -> Deferred.unit
-          | `Written -> heartbeat (number + 1))
+          match wrote with
+          | Ok () -> heartbeat (number + 1)
+          | Error error -> Deferred.return (Error error))
   in
-  don't_wait_for (heartbeat 1);
-  build
-
-let combine_failure primary secondary =
-  Error.create_s [%message (primary : Error.t) (secondary : Error.t)]
+  let heartbeat_owner = heartbeat 1 in
+  let open Deferred.Let_syntax in
+  let%bind winner =
+    Deferred.choose
+      [
+        Deferred.choice build (fun result -> `Build result);
+        Deferred.choice heartbeat_owner (fun result -> `Heartbeat result);
+      ]
+  in
+  match winner with
+  | `Build result ->
+      Ivar.fill_if_empty stopped ();
+      let%map heartbeat_result = heartbeat_owner in
+      Result.bind heartbeat_result ~f:(fun () -> result)
+  | `Heartbeat (Ok ()) ->
+      let%map result = build in
+      result
+  | `Heartbeat (Error heartbeat_error) -> (
+      (* The heartbeat owns build liveness: a failed durable write requests the
+         exact cancellation token that Process_runner observes and then waits
+         for that process group to finish before execution can terminalize. *)
+      request_build_cancellation ();
+      let%bind build_result = build in
+      Ivar.fill_if_empty stopped ();
+      let%map () = heartbeat_owner >>| ignore in
+      match build_result with
+      | Ok _ -> Error heartbeat_error
+      | Error build_error -> Error (combine_failure heartbeat_error build_error)
+      )
 
 let cleanup_candidate ~connection candidate primary =
   let%map cleanup = Podman.remove_candidate ~connection ~candidate in
