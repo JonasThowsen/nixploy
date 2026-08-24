@@ -190,17 +190,14 @@ let () =
   let path = fresh_dir () in
   mark path;
   let oc =
-    Out_channel.create
-      (Filename.concat path (S.dirty_marker_name scope_uuid))
+    Out_channel.create (Filename.concat path (S.dirty_marker_name scope_uuid))
   in
   Out_channel.output_string oc ("dirty " ^ generation ^ "\ntrailing garbage");
   Out_channel.close oc;
   assert_error
-    (S.retire_dirty ~state_directory:path ~scope:scope_uuid
-       ~generation:gen_uuid);
+    (S.retire_dirty ~state_directory:path ~scope:scope_uuid ~generation:gen_uuid);
   assert_error (S.scan_directory ~state_directory:path);
-  ignore
-    (U.lstat (Filename.concat path (S.dirty_marker_name scope_uuid)));
+  ignore (U.lstat (Filename.concat path (S.dirty_marker_name scope_uuid)));
   remove_dir path
 
 (* An oversize dirty marker cannot match any expected generation: retirement
@@ -208,15 +205,13 @@ let () =
 let () =
   let path = fresh_dir () in
   let oc =
-    Out_channel.create
-      (Filename.concat path (S.dirty_marker_name scope_uuid))
+    Out_channel.create (Filename.concat path (S.dirty_marker_name scope_uuid))
   in
   Out_channel.output_string oc ("dirty " ^ generation ^ "\n");
   Out_channel.output_string oc (String.make (S.max_entry_bytes + 1) 'x');
   Out_channel.close oc;
   assert_error
-    (S.retire_dirty ~state_directory:path ~scope:scope_uuid
-       ~generation:gen_uuid);
+    (S.retire_dirty ~state_directory:path ~scope:scope_uuid ~generation:gen_uuid);
   assert_error (S.scan_directory ~state_directory:path);
   remove_dir path
 
@@ -226,8 +221,7 @@ let () =
   let path = fresh_dir () in
   receipt path;
   let oc =
-    Out_channel.create
-      (Filename.concat path (S.clean_receipt_name scope_uuid))
+    Out_channel.create (Filename.concat path (S.clean_receipt_name scope_uuid))
   in
   Out_channel.output_string oc ("clean " ^ generation ^ "\ntrailing");
   Out_channel.close oc;

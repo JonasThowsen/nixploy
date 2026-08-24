@@ -199,6 +199,7 @@
 
 ; This executable is built only by the NixOS lease VM check.  It has no public
 ; name, so it is not installed by the nixploy package.
+
 (executable
  (name target_lease_test_holder)
  (modules target_lease_test_holder)

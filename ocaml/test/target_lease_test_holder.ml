@@ -70,7 +70,8 @@ let run ~socket_path ~authority ~scope ~operation ~identity =
         | Nixploy.Target_lease.Ready _ ->
             Or_error.error_string
               "broker READY did not exactly bind request and identity"
-        | _ -> Or_error.error_string "broker did not make the scope mutation-ready"
+        | _ ->
+            Or_error.error_string "broker did not make the scope mutation-ready"
       with Caml_unix.Unix_error (error, _, _) ->
         Or_error.errorf "target-lease test holder failed: %s"
           (Caml_unix.error_message error))

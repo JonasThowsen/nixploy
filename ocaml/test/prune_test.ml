@@ -416,8 +416,7 @@ exit 99
 
       let%bind () =
         Deferred.List.iter [ "missing"; "different"; "conflicting" ]
-          ~how:`Sequential
-          ~f:(fun repository_label_mode ->
+          ~how:`Sequential ~f:(fun repository_label_mode ->
             clear_scenario canonical_key;
             Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
             Caml_unix.putenv "NIXPLOY_TEST_REPOSITORY_LABEL_MODE"
