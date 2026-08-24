@@ -2,10 +2,15 @@ open Async
 open Core
 module Deployment_output = Nixploy_cli_mapping.Deployment_output
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
+module Deployment_observer = Nixploy_cli_mapping.Deployment_observer
 
-let print_deployment_stage stage message =
-  printf "[%s] %s\n%!" (Nixploy.Deployment.stage_name stage) message;
-  Deferred.unit
+let cancel_and_drain application started =
+  let cancellation =
+    Nixploy.Application.cancel_started_deployment application started
+  in
+  let completion = Nixploy.Application.await_started_deployment started in
+  let%map _ = cancellation and completion = completion in
+  completion
 
 let exit_after_signal ~default =
   match Nixploy.Process_runner.termination_signal () with
@@ -163,41 +168,66 @@ let deploy_command =
                      (Nixploy.Application.source_revision source)
                      (Nixploy.Application.source_subject source);
                    let%bind result =
-                     Nixploy.Application.deploy ~on_stage:print_deployment_stage
-                       application ~working_directory ~source ~target ()
+                     Nixploy.Application.start_deploy application
+                       ~working_directory ~source ~target ()
                    in
                    match result with
                    | Error error ->
-                       eprintf "Deployment tracking failed: %s\n"
+                       eprintf "Deployment failed to start: %s\n"
                          (Error.to_string_hum error);
                        Shutdown.exit 1
-                   | Ok deployment -> (
-                       let output =
-                         Deployment_output.of_deployment deployment
-                       in
-                       printf "\nDeployment %s: %s\n"
-                         (Deployment_output.id output)
-                         (Deployment_output.state_name output);
-                       Option.iter (Deployment_output.revision output)
-                         ~f:(fun revision -> printf "Revision: %s\n" revision);
-                       Option.iter (Deployment_output.container_name output)
-                         ~f:(fun container ->
-                           printf "Container: %s\n" container);
-                       match Deployment_output.terminal_state output with
-                       | Succeeded ->
-                           exit_after_signal ~default:(fun () -> Deferred.unit)
-                       | Failed error ->
-                           Option.iter error ~f:(fun error ->
-                               eprintf "%s\n" error);
-                           exit_after_signal ~default:(fun () ->
-                               Shutdown.exit 1)
-                       | Cancelled ->
-                           exit_after_signal ~default:(fun () ->
-                               Shutdown.exit 130)
-                       | Incomplete ->
-                           eprintf
-                             "Deployment ended without a terminal state.\n";
-                           Shutdown.exit 1)))))
+                   | Ok started -> (
+                       match
+                         Nixploy.Application.local_scope ~working_directory
+                           ~target
+                       with
+                       | Error error ->
+                           let%bind _ = cancel_and_drain application started in
+                           eprintf "Deployment tracking failed: %s\n"
+                             (Error.to_string_hum error);
+                           Shutdown.exit 1
+                       | Ok scope -> (
+                           let%bind observation =
+                             Deployment_observer.observe_and_drain
+                               ~render_stage:(fun stage message ->
+                                 printf "[%s] %s\n%!" stage message)
+                               application ~scope started
+                           in
+                           match observation with
+                           | Error error ->
+                               eprintf "Deployment tracking failed: %s\n"
+                                 (Error.to_string_hum error);
+                               Shutdown.exit 1
+                           | Ok (Deployment_observer.Interrupted signal) ->
+                               Shutdown.shutdown_with_signal_exn signal;
+                               Deferred.never ()
+                           | Ok (Deployment_observer.Completed deployment) -> (
+                               let output =
+                                 Deployment_output.of_deployment deployment
+                               in
+                               printf "\nDeployment %s: %s\n"
+                                 (Deployment_output.id output)
+                                 (Deployment_output.state_name output);
+                               Option.iter (Deployment_output.revision output)
+                                 ~f:(fun revision ->
+                                   printf "Revision: %s\n" revision);
+                               Option.iter
+                                 (Deployment_output.container_name output)
+                                 ~f:(fun container ->
+                                   printf "Container: %s\n" container);
+                               match
+                                 Deployment_output.terminal_state output
+                               with
+                               | Succeeded -> Deferred.unit
+                               | Failed error ->
+                                   Option.iter error ~f:(fun error ->
+                                       eprintf "%s\n" error);
+                                   Shutdown.exit 1
+                               | Cancelled -> Shutdown.exit 130
+                               | Incomplete ->
+                                   eprintf
+                                     "Deployment ended without a terminal state.\n";
+                                   Shutdown.exit 1)))))))
 
 let print_history deployments =
   printf "%s%!" (Inspection_output.history deployments)

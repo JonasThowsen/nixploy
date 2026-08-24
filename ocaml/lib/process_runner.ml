@@ -103,8 +103,8 @@ let terminate_process_group process wait =
   let%map _ = wait in
   ()
 
-let run ?working_directory ?stdin ?env ?(ignore_termination = false) ~timeout
-    ~max_output_bytes ~prog ~args () =
+let run_without_progress ?working_directory ?stdin ?env
+    ?(ignore_termination = false) ~timeout ~max_output_bytes ~prog ~args () =
   if max_output_bytes <= 0 then
     Deferred.Or_error.error_string "max_output_bytes must be positive"
   else
@@ -209,6 +209,11 @@ let run ?working_directory ?stdin ?env ?(ignore_termination = false) ~timeout
                     ignore (Cancellation.acknowledge_current () : bool);
                     let%map () = terminate_process_group process wait in
                     cancellation_error prog))
+
+let run ?working_directory ?stdin ?env ?ignore_termination ~timeout
+    ~max_output_bytes ~prog ~args () =
+  run_without_progress ?working_directory ?stdin ?env ?ignore_termination
+    ~timeout ~max_output_bytes ~prog ~args ()
 
 let run_stdout ?working_directory ?stdin ?env ?ignore_termination ~timeout
     ~max_output_bytes ~prog ~args () =

@@ -319,7 +319,7 @@ let image_id_of_inspect output =
       Or_error.error_string
         "loaded image inspect must contain exactly one image"
 
-let build_and_load ~connection ~source ~image_output =
+let build_and_load ~connection ~source ~image_output () =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
     Process_runner.run ~working_directory:(Source.nix_root source)
@@ -428,9 +428,9 @@ let repository_owned ?(require_repository_label = false) output
               let repository = label labels "io.nixploy.repository" in
               Option.equal String.equal canonical_identity
                 (Some repository_identity)
-              &&
-              ((not require_repository_label)
-              || Option.equal String.equal repository (Some repository_identity))
+              && ((not require_repository_label)
+                 || Option.equal String.equal repository
+                      (Some repository_identity))
           | _ -> Ok false)
       | _ -> Ok false)
   | _ ->

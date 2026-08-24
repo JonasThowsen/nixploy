@@ -70,12 +70,8 @@ let deploy state _connection_state query =
       match commit with
       | Error _ as error -> Deferred.return error
       | Ok commit ->
-          let started = Ivar.create () in
           let execution =
-            Application.deploy
-              ~on_requested:(fun operation ->
-                Ivar.fill_if_empty started
-                  (Deployment_start.operation_id operation))
+            Application.start_deploy
               ~application_key:(Managed_application.key managed)
               ~expected_project:(Deployment_start.expected_project managed)
               state.application ~working_directory
@@ -87,20 +83,8 @@ let deploy state _connection_state query =
               ~target:(Managed_application.target managed)
               ()
           in
-          don't_wait_for
-            (let%map result = execution in
-             match result with
-             | Ok _ -> ()
-             | Error error ->
-                 eprintf "Deployment task failed: %s\n%!"
-                   (Error.to_string_hum error));
-          Deferred.choose
-            [
-              Deferred.choice (Ivar.read started) Or_error.return;
-              Deferred.choice execution (function
-                | Error error -> Error error
-                | Ok deployment -> Ok (Deployment_start.operation_id deployment));
-            ])
+          let%map result = execution in
+          Result.map result ~f:Nixploy.Application.started_deployment_id)
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications

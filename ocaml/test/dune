@@ -4,6 +4,12 @@
  (action
   (run bash %{dep:cli_contract_test.sh} %{dep:../bin/main.exe})))
 
+(rule
+ (alias runtest)
+ (deps callback_api_contract_test.sh)
+ (action
+  (run bash %{dep:callback_api_contract_test.sh})))
+
 (library
  (name core_test)
  (modules core_test)
@@ -37,6 +43,13 @@
  (name application_observation_test)
  (modules application_observation_test)
  (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name deployment_observer_test)
+ (modules deployment_observer_test)
+ (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
 
@@ -125,6 +138,13 @@
  (name store_test)
  (modules store_test)
  (libraries nixploy core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name local_crash_recovery_test)
+ (modules local_crash_recovery_test)
+ (libraries nixploy core core_unix.command_unix async sqlite3)
  (preprocess
   (pps ppx_jane)))
 
