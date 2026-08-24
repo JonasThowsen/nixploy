@@ -357,8 +357,8 @@
                 }).config.system.build.toplevel
               );
             in
-              assert !attempted.success;
-              pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
+            assert !attempted.success;
+            pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
         }
       );
 
