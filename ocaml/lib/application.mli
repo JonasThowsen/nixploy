@@ -251,6 +251,7 @@ module For_testing : sig
     prune:
       (authorization:Operation_receipt.prune ->
       prepared:Prune.prepared option ->
+      operation_id:string ->
       prune_result Deferred.Or_error.t) ->
     unit ->
     t

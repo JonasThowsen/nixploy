@@ -145,6 +145,7 @@ type t = {
   prune_operation :
     authorization:Operation_receipt.prune ->
     prepared:Prune.prepared option ->
+    operation_id:string ->
     prune_result Deferred.Or_error.t;
   load_status : scope:scope -> status Deferred.Or_error.t;
   logs_override :
@@ -239,11 +240,11 @@ let create_with_managed_applications ~managed_applications ~store () =
     prepare_prune = Some Prune.prepare;
     deploy_operation;
     prune_operation =
-      (fun ~authorization ~prepared ->
+      (fun ~authorization ~prepared ~operation_id ->
         let prepared = Option.value_exn prepared in
         Monitor.protect
           ~finally:(fun () -> Prune.cleanup_prepared prepared)
-          (fun () -> Prune.execute ~authorization prepared));
+          (fun () -> Prune.execute ~authorization prepared ~operation_id));
     load_status =
       (fun ~scope ->
         Status.load ~working_directory:scope.working_directory
@@ -650,31 +651,95 @@ and prune_unaccounted t ~authorization ~prepared =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory ->
+      let open Deferred.Or_error.Let_syntax in
+      let application_key =
+        Operation_receipt.prune_application_key authorization
+      in
+      let%bind () =
+        match prepared with
+        | Some _ -> Deferred.Or_error.return ()
+        | None -> Deferred.return (Operation_receipt.claim_prune authorization)
+      in
+      let canonical_intent, candidate_snapshot =
+        match prepared with
+        | Some prepared ->
+            (Prune.canonical_intent prepared, Prune.candidate_snapshot prepared)
+        | None ->
+            (* Test-only adapters have no resource plan; production always
+               prepares and snapshots the canonical candidate set above. *)
+            ( "test-adapter-prune",
+              Option.value
+                (Operation_receipt.prune_repository_identity authorization)
+                ~default:"test-adapter" )
+      in
+      let%bind operation =
+        Store.request_prune t.store ~application_key ~working_directory ~target
+          ~canonical_intent ~candidate_snapshot
+      in
+      let remote_started = ref false in
+      let terminal_error error =
+        let terminal =
+          if !remote_started then
+            Store.review t.store ~id:(Store.id operation) ~error
+          else Store.fail t.store ~id:(Store.id operation) ~error
+        in
+        let%map.Deferred terminal = terminal in
+        match terminal with
+        | Ok () -> Error error
+        | Error terminal_error -> Error terminal_error
+      in
       invalidate_runtime_scope t ~working_directory ~target;
-      let%map result =
-        Store.with_reconciled_lease t.store
-          ~application_key:
-            (Operation_receipt.prune_application_key authorization)
-          ~working_directory ~target (fun () ->
-            let open Deferred.Or_error.Let_syntax in
+      let%bind.Deferred result =
+        Store.with_reconciled_lease t.store ~application_key ~working_directory
+          ~target ~exclude_id:(Store.id operation) (fun () ->
+            let%bind () =
+              Store.bind_prune_operation t.store ~id:(Store.id operation)
+                ~application_key ~working_directory ~target ~canonical_intent
+                ~candidate_snapshot
+            in
+            let%bind () =
+              Deferred.return
+                (Operation_receipt.bind_prune_operation authorization
+                   ~operation_id:(Store.id operation) ~working_directory ~target
+                   ~canonical_intent ~candidate_snapshot)
+            in
             let%bind () =
               match prepared with
               | None -> Deferred.Or_error.return ()
               | Some prepared ->
-                  Deferred.return (Prune.validate_bound ~authorization prepared)
+                  Deferred.return
+                    (Prune.validate_bound ~authorization prepared
+                       ~operation_id:(Store.id operation))
+            in
+            let%bind () =
+              Store.record_stage t.store ~id:(Store.id operation) ~stage:"bound"
+                ~message:"Prune receipt bound to canonical cleanup intent"
             in
             let%bind () =
               Store.set_resource_state t.store ~working_directory ~target
                 Unknown
             in
-            let%bind result = t.prune_operation ~authorization ~prepared in
-            let%map () =
+            remote_started := true;
+            let%bind result =
+              t.prune_operation ~authorization ~prepared
+                ~operation_id:(Store.id operation)
+            in
+            let%bind () =
               Store.set_resource_state t.store ~working_directory ~target Absent
+            in
+            let%map () =
+              Store.succeed_prune t.store ~id:(Store.id operation)
+                ~message:"Prune completed"
             in
             result)
       in
+      let%bind.Deferred result =
+        match result with
+        | Ok result -> Deferred.return (Ok result)
+        | Error error -> terminal_error error
+      in
       invalidate_runtime_scope t ~working_directory ~target;
-      result
+      Deferred.return result
 
 let prune_non_production ?application_key ?expected_project ?repository_identity
     t ~working_directory ~target =

@@ -72,6 +72,22 @@ val prune_working_directory : prune -> string
 val prune_target : prune -> Target_name.t
 val claim_prune : prune -> unit Or_error.t
 
-val validate_prune : prune -> unit Or_error.t
-(** Confirms that this exact consumed prune capability was claimed before a
-    leased mutation begins. *)
+val bind_prune_operation :
+  prune ->
+  operation_id:string ->
+  working_directory:string ->
+  target:Target_name.t ->
+  canonical_intent:string ->
+  candidate_snapshot:string ->
+  unit Or_error.t
+(** Binds a claimed receipt to one durable prune admission. *)
+
+val validate_prune_operation :
+  prune ->
+  operation_id:string ->
+  working_directory:string ->
+  target:Target_name.t ->
+  canonical_intent:string ->
+  candidate_snapshot:string ->
+  unit Or_error.t
+(** Confirms the exact receipt-to-operation binding before mutation. *)

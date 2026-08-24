@@ -35,6 +35,58 @@ let run_git ?working_directory args =
     ~args ()
   >>| Or_error.ok_exn
 
+let durable_event_stages path ~operation_id =
+  let db = Sqlite3.db_open path in
+  Exn.protect
+    ~f:(fun () ->
+      let statement =
+        Sqlite3.prepare db
+          "SELECT stage FROM deployment_events WHERE deployment_id = ? ORDER \
+           BY id"
+      in
+      Exn.protect
+        ~f:(fun () ->
+          assert (
+            phys_equal
+              (Sqlite3.bind_values statement [ Sqlite3.Data.TEXT operation_id ])
+              Sqlite3.Rc.OK);
+          let rec collect stages =
+            match Sqlite3.step statement with
+            | Sqlite3.Rc.ROW ->
+                collect (Sqlite3.column_text statement 0 :: stages)
+            | DONE -> List.rev stages
+            | code -> failwith (Sqlite3.Rc.to_string code)
+          in
+          collect [])
+        ~finally:(fun () -> ignore (Sqlite3.finalize statement : Sqlite3.Rc.t)))
+    ~finally:(fun () -> assert (Sqlite3.db_close db))
+
+let latest_prune_operation_id path =
+  let db = Sqlite3.db_open path in
+  Exn.protect
+    ~f:(fun () ->
+      let statement =
+        Sqlite3.prepare db
+          "SELECT id FROM deployments WHERE operation_kind = 'prune' ORDER BY \
+           requested_at_ms DESC, rowid DESC LIMIT 1"
+      in
+      Exn.protect
+        ~f:(fun () ->
+          match Sqlite3.step statement with
+          | Sqlite3.Rc.ROW -> Sqlite3.column_text statement 0
+          | _ -> failwith "expected durable prune operation")
+        ~finally:(fun () -> ignore (Sqlite3.finalize statement : Sqlite3.Rc.t)))
+    ~finally:(fun () -> assert (Sqlite3.db_close db))
+
+let install_trigger path sql =
+  let db = Sqlite3.db_open path in
+  Exn.protect
+    ~f:(fun () ->
+      match Sqlite3.exec db sql with
+      | Sqlite3.Rc.OK -> ()
+      | _ -> failwith (Sqlite3.errmsg db))
+    ~finally:(fun () -> assert (Sqlite3.db_close db))
+
 let run_tests () =
   let open Deferred.Let_syntax in
   let root = Filename_unix.temp_dir "nixploy-prune-test-" "" in
@@ -390,6 +442,14 @@ exit 99
       [%test_eq: int] 2 (Nixploy.Application.prune_secrets_removed non_web);
       [%test_eq: Nixploy.Application.prune_route_state] Not_configured
         (Nixploy.Application.prune_route_state non_web);
+      let operation_id =
+        latest_prune_operation_id (Filename.concat root "state.sqlite")
+      in
+      [%test_eq: string list]
+        [ "requested"; "bound"; "succeeded" ]
+        (durable_event_stages
+           (Filename.concat root "state.sqlite")
+           ~operation_id);
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 3 (count lines "|container|exists|");
       [%test_eq: int] 2 (count lines "|inspect|--type|container|");
@@ -654,11 +714,47 @@ exit 99
       clear_scenario legacy_key;
       Caml_unix.putenv "NIXPLOY_TEST_REMOTE_RESOURCE" legacy_key;
       Caml_unix.putenv "NIXPLOY_TEST_LEGACY_CONNECTION" "1";
-      let%map adopted_resource = prune () in
+      let%bind adopted_resource = prune () in
       let adopted_resource = assert_ok adopted_resource in
       [%test_eq: string] legacy_key
         (Nixploy.Application.prune_resource_key adopted_resource
-        |> Nixploy.Resource_key.to_string))
+        |> Nixploy.Resource_key.to_string);
+
+      (* A real SQLite trigger proves that a durable bind failure terminalizes
+         admission before Unknown or any Podman/Caddy process. *)
+      let state_path = Filename.concat root "state.sqlite" in
+      install_trigger state_path
+        {|CREATE TRIGGER reject_prune_bind
+          BEFORE INSERT ON deployment_events
+          WHEN NEW.stage = 'bound'
+          BEGIN SELECT RAISE(ABORT, 'prune bind event rejected'); END;|};
+      clear_scenario canonical_key;
+      let%bind marked_present =
+        Nixploy.Store.set_resource_state (assert_ok opened)
+          ~working_directory:project_directory ~target:target_name Present
+      in
+      assert_ok marked_present;
+      let%bind bind_failure = prune () in
+      expect_error_containing bind_failure "prune bind event rejected";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "|container|exists|" = 0);
+      assert (count lines "|rm|-f|" = 0);
+      assert (count lines "|secret|rm|" = 0);
+      let failed_operation = latest_prune_operation_id state_path in
+      [%test_eq: string list] [ "requested"; "failed" ]
+        (durable_event_stages state_path ~operation_id:failed_operation);
+      let%bind state_after_bind_failure =
+        Nixploy.Application.resource_state application
+          ~working_directory:project_directory ~target:target_name
+      in
+      [%test_eq: Nixploy.Application.resource_state] Present
+        (assert_ok state_after_bind_failure);
+      let%map lease_reused =
+        Nixploy.Store.with_reconciled_lease (assert_ok opened)
+          ~application_key:None ~working_directory:project_directory
+          ~target:target_name (fun () -> Deferred.Or_error.return ())
+      in
+      assert_ok lease_reused)
 
 let () =
   don't_wait_for

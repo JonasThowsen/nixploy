@@ -14,14 +14,22 @@ val prepare :
     mutation. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
+val canonical_intent : prepared -> string
+val candidate_snapshot : prepared -> string
 
 val validate_bound :
-  authorization:Operation_receipt.prune -> prepared -> unit Or_error.t
-(** Confirms the exact claimed prune capability before the lease holder records
-    current resource state or starts remote cleanup. *)
+  authorization:Operation_receipt.prune ->
+  prepared ->
+  operation_id:string ->
+  unit Or_error.t
+(** Confirms the exact receipt-to-operation binding before the lease holder
+    records current resource state or starts remote cleanup. *)
 
 val execute :
-  authorization:Operation_receipt.prune -> prepared -> t Deferred.Or_error.t
+  authorization:Operation_receipt.prune ->
+  prepared ->
+  operation_id:string ->
+  t Deferred.Or_error.t
 
 val prune :
   authorization:Operation_receipt.prune -> unit -> t Deferred.Or_error.t

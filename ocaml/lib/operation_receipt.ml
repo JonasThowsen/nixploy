@@ -31,7 +31,19 @@ type deploy = {
   mutable operation_id : string option;
 }
 
-type prune = { payload : prune_payload; mutable claimed : bool }
+type prune_binding = {
+  operation_id : string;
+  working_directory : string;
+  target : Target_name.t;
+  canonical_intent : string;
+  candidate_snapshot : string;
+}
+
+type prune = {
+  payload : prune_payload;
+  mutable claimed : bool;
+  mutable binding : prune_binding option;
+}
 
 let create_deploy_store ?capacity ?ttl_seconds ?now ?random_bytes () =
   Deployment_receipt_store.create ?capacity ?ttl_seconds ?now ?random_bytes ()
@@ -89,7 +101,7 @@ let consume_prune store ~application_key ~receipt =
   let%map.Or_error payload =
     Deployment_receipt_store.consume store ~application_key ~receipt
   in
-  { payload; claimed = false }
+  { payload; claimed = false; binding = None }
 
 let deploy_application_key (t : deploy) = t.payload.application_key
 let deploy_expected_project (t : deploy) = t.payload.expected_project
@@ -142,6 +154,38 @@ let claim_prune (t : prune) =
     t.claimed <- true;
     Ok ())
 
-let validate_prune (t : prune) =
-  if t.claimed then Ok ()
-  else Or_error.error_string "prune capability must be claimed before mutation"
+let bind_prune_operation t ~operation_id ~working_directory ~target
+    ~canonical_intent ~candidate_snapshot =
+  if not t.claimed then
+    Or_error.error_string
+      "prune capability must be claimed before operation binding"
+  else
+    match t.binding with
+    | Some _ ->
+        Or_error.error_string
+          "prune capability is already bound to an operation"
+    | None ->
+        t.binding <-
+          Some
+            {
+              operation_id;
+              working_directory;
+              target;
+              canonical_intent;
+              candidate_snapshot;
+            };
+        Ok ()
+
+let validate_prune_operation t ~operation_id ~working_directory ~target
+    ~canonical_intent ~candidate_snapshot =
+  match t.binding with
+  | Some binding
+    when String.equal binding.operation_id operation_id
+         && String.equal binding.working_directory working_directory
+         && Target_name.equal binding.target target
+         && String.equal binding.canonical_intent canonical_intent
+         && String.equal binding.candidate_snapshot candidate_snapshot ->
+      Ok ()
+  | Some _ ->
+      Or_error.error_string "prune capability does not match this operation"
+  | None -> Or_error.error_string "prune capability has no bound operation"

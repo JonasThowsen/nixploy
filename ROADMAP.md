@@ -51,7 +51,10 @@ New work should improve or preserve the quality of the OCaml codebase:
 
 The UI renders persisted operations and observed runtime facts. It must
 distinguish running, succeeded, failed, cancelled, unavailable, and stale state
-without inferring success from an optimistic client transition.
+without inferring success from an optimistic client transition. Prune admission
+is also durable: the one-use receipt is bound to one operation id and canonical
+candidate snapshot before cleanup; ambiguous remote cleanup ends in an explicit
+non-replayable review stage.
 
 ## Production baseline
 

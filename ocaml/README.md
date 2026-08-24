@@ -111,12 +111,14 @@ remote state nor provides distributed target authority, rollback, or readiness
 semantics.
 
 SQLite also stores resource presence by canonical working directory and target.
-A verified deploy records `Present`; prune records `Unknown` before cleanup,
-`Absent` after complete cleanup, and leaves `Unknown` after an error because
-partial safe cleanup may already have happened. Deployment history is retained
-independently. The application card renders these resource states rather than
-presenting a historical successful deployment as proof that resources still
-exist.
+A verified deploy records `Present`; an admitted prune first persists its
+canonical candidate snapshot, then binds its single-use receipt to that exact
+operation under the target lease before recording `Unknown` or invoking cleanup.
+It records `Absent` only after complete cleanup and leaves `Unknown` after an
+error because partial cleanup may already have happened. A remote cleanup error
+ends in a non-replayable `review` stage. Operation history is retained
+independently, so an observer can reopen the durable prune operation rather
+than infer resource state from a historical success.
 
 Unset `NIXPLOY_AUTH_MODE` is the explicit local-development default. Set it to
 `unrestricted` for an explicitly unrestricted development process or to
