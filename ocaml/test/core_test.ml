@@ -844,14 +844,14 @@ let%test_unit
   in
   let pre_start =
     Nixploy.Podman.For_testing.pre_start_argvs ~connection:"connection" ~run
-      ~port:(Some 8080)
+      ~port:(Some 8080) ~revision:None
       ~secret_args:[ "--secret"; "typed-secret" ]
       ~image_reference:"image"
     |> List.hd_exn
   in
   let runtime =
     Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
-      ~name:"owned" ~run ~port:(Some 8080)
+      ~name:"owned" ~run ~port:(Some 8080) ~revision:None
       ~secret_args:[ "--secret"; "typed-secret" ]
       ~labels:[] ~image_reference:"image"
   in
@@ -904,7 +904,7 @@ let%test_unit "configuration preserves empty environment and argv values" =
     (Nixploy.Configuration.Run.pre_start run);
   let argv =
     Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
-      ~name:"owned" ~run ~port:None ~secret_args:[] ~labels:[]
+      ~name:"owned" ~run ~port:None ~revision:None ~secret_args:[] ~labels:[]
       ~image_reference:"image"
   in
   [%test_eq: string list]
@@ -923,7 +923,8 @@ let%test_unit "configuration preserves empty environment and argv values" =
     ]
     argv
 
-let%test_unit "deployment configuration renders the selected slot port" =
+let%test_unit
+    "deployment configuration renders source revision and selected slot port" =
   let configuration =
     Nixploy.Configuration.of_json
       {|{
@@ -933,7 +934,7 @@ let%test_unit "deployment configuration renders the selected slot port" =
           "production":{
             "image":"docker",
             "ip":"host",
-            "run":{"environment":{"PORT":"{port}","URL":"http://0.0.0.0:{port}"}},
+            "run":{"environment":{"PORT":"{port}","RELEASE":"{revision}","IDENTITY":"{revision}:{port}","URL":"http://0.0.0.0:{port}"}},
             "web":{"domain":"app.example.com","slots":{"blue":8080,"green":8081}},
             "secrets":{}
           }
@@ -947,11 +948,27 @@ let%test_unit "deployment configuration renders the selected slot port" =
   in
   let web = Nixploy.Configuration.Target.require_web target |> assert_ok in
   [%test_eq: int] 8081 (Nixploy.Configuration.Web.green_port web);
+  let revision = "0123456789abcdef0123456789abcdef01234567" in
   [%test_eq: (string * string) list]
-    [ ("PORT", "8081"); ("URL", "http://0.0.0.0:8081") ]
+    [
+      ("PORT", "8081");
+      ("RELEASE", revision);
+      ("IDENTITY", revision ^ ":8081");
+      ("URL", "http://0.0.0.0:8081");
+    ]
     (Nixploy.Configuration.Run.rendered_environment
        (Nixploy.Configuration.Target.run target)
-       ~port:(Some 8081))
+       ~port:(Some 8081) ~revision:(Some revision));
+  [%test_eq: (string * string) list]
+    [
+      ("PORT", "{port}");
+      ("RELEASE", "{revision}");
+      ("IDENTITY", "{revision}:{port}");
+      ("URL", "http://0.0.0.0:{port}");
+    ]
+    (Nixploy.Configuration.Run.rendered_environment
+       (Nixploy.Configuration.Target.run target)
+       ~port:None ~revision:None)
 
 let%test_unit "secret-bearing web targets remain deployable" =
   let configuration =
@@ -1336,11 +1353,13 @@ let%test_unit "non-web command construction preserves ordering and options" =
   let run = Nixploy.Configuration.Target.run target in
   [%test_eq: (string * string) list]
     [ ("PORT", "{port}"); ("MODE", "worker") ]
-    (Nixploy.Configuration.Run.rendered_environment run ~port:None);
+    (Nixploy.Configuration.Run.rendered_environment run ~port:None
+       ~revision:None);
   let secret_args = [ "--secret"; "source=owned-db,type=env,target=DB" ] in
   let pre_start =
     Nixploy.Podman.For_testing.pre_start_argvs ~connection:"connection" ~run
-      ~port:None ~secret_args ~image_reference:"loaded@sha256:immutable"
+      ~port:None ~revision:None ~secret_args
+      ~image_reference:"loaded@sha256:immutable"
   in
   [%test_eq: string list list]
     [
@@ -1381,7 +1400,8 @@ let%test_unit "non-web command construction preserves ordering and options" =
     pre_start;
   let runtime =
     Nixploy.Podman.For_testing.runtime_argv ~connection:"connection"
-      ~name:"nixploy-sample-owned-worker" ~run ~port:None ~secret_args
+      ~name:"nixploy-sample-owned-worker" ~run ~port:None ~revision:None
+      ~secret_args
       ~labels:
         [
           ("io.nixploy.managed", "true");

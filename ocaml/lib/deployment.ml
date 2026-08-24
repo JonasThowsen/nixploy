@@ -430,8 +430,8 @@ let execute ~store ~authorization ~operation_id prepared =
           "Running flake-declared pre-start commands"
       in
       let%bind () =
-        Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
-          ~secret_mounts
+        Podman.run_pre_start ~connection ~target ~placement ~source ~image
+          ~secrets ~secret_mounts
       in
       let%bind () =
         record_stage Preparing_candidate
@@ -528,8 +528,8 @@ let execute ~store ~authorization ~operation_id prepared =
           "Running flake-declared pre-start commands"
       in
       let%bind () =
-        Podman.run_pre_start ~connection ~target ~placement ~image ~secrets
-          ~secret_mounts
+        Podman.run_pre_start ~connection ~target ~placement ~source ~image
+          ~secrets ~secret_mounts
       in
       let%bind () =
         record_stage Starting "Starting the inactive candidate slot"

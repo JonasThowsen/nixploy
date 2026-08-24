@@ -62,6 +62,7 @@ Add nixploy as an input and expose a `nixploy` output:
           network = "host";
           environment = {
             ASPNETCORE_URLS = "http://0.0.0.0:{port}";
+            RELEASE_REVISION = "{revision}";
           };
           preStart = [
             [ "/app/bin/migrate" ]
@@ -108,7 +109,7 @@ Example resource identity:
 nixploy-my-app-5d46b2643e-production
 ```
 
-Containers also receive labels with the project, target, git commit, and deployment timestamp for debugging.
+Containers also receive labels with the project, target, git commit, and deployment timestamp for debugging. Runtime environment values may use `{port}` for the selected web slot and `{revision}` for the exact source revision. nixploy renders `{revision}` from the same verified source authority used by the deployment intent and immutable ownership labels for both pre-start and application containers; it is never read from the ambient process environment.
 
 ## Deploy
 

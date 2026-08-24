@@ -587,13 +587,13 @@ let read_only_bind_args run =
           (Configuration.Read_only_bind.destination bind);
       ])
 
-let runtime_args ?(include_ports = true) run ~port =
+let runtime_args ?(include_ports = true) run ~port ~revision =
   let network =
     Configuration.Run.network run
     |> Option.value_map ~default:[] ~f:(fun network -> [ "--network"; network ])
   in
   let environment =
-    Configuration.Run.rendered_environment run ~port
+    Configuration.Run.rendered_environment run ~port ~revision
     |> List.concat_map ~f:(fun (name, value) -> [ "-e"; name ^ "=" ^ value ])
   in
   let ports =
@@ -604,16 +604,16 @@ let runtime_args ?(include_ports = true) run ~port =
   in
   network @ environment @ ports
 
-let pre_start_argvs ~connection ~run:run_config ~port ~secret_args
+let pre_start_argvs ~connection ~run:run_config ~port ~revision ~secret_args
     ~image_reference =
   List.map (Configuration.Run.pre_start run_config) ~f:(fun command ->
       [ "--connection"; connection; "run"; "--rm" ]
       @ secret_args
       @ read_only_bind_args run_config
-      @ runtime_args ~include_ports:false run_config ~port
+      @ runtime_args ~include_ports:false run_config ~port ~revision
       @ [ image_reference ] @ command)
 
-let runtime_argv ~connection ~name ~run:run_config ~port ~secret_args
+let runtime_argv ~connection ~name ~run:run_config ~port ~revision ~secret_args
     ~labels:metadata ~image_reference =
   let command =
     Configuration.Run.command run_config |> Option.value ~default:[]
@@ -621,16 +621,17 @@ let runtime_argv ~connection ~name ~run:run_config ~port ~secret_args
   [ "--connection"; connection; "run"; "-d"; "--name"; name ]
   @ secret_args
   @ read_only_bind_args run_config
-  @ runtime_args run_config ~port
+  @ runtime_args run_config ~port ~revision
   @ labels metadata @ [ image_reference ] @ command
 
-let run_pre_start ~connection ~target ~placement ~image ~secrets ~secret_mounts
-    =
+let run_pre_start ~connection ~target ~placement ~source ~image ~secrets
+    ~secret_mounts =
   let open Deferred.Or_error.Let_syntax in
   let run_config = Configuration.Target.run target in
   let port = Deployment_plan.runtime_port placement in
   Deferred.Or_error.List.iter
     (pre_start_argvs ~connection ~run:run_config ~port
+       ~revision:(Some (Source.revision source))
        ~secret_args:(secret_args secret_mounts)
        ~image_reference:image.reference)
     ~how:`Sequential
@@ -721,6 +722,7 @@ let start_candidate ~connection ~project ~target ~resource_key
   let run_config = Configuration.Target.run target in
   let argv =
     runtime_argv ~connection ~name ~run:run_config ~port
+      ~revision:(Some (Source.revision source))
       ~secret_args:(secret_args secret_mounts)
       ~labels:metadata ~image_reference:image.reference
   in

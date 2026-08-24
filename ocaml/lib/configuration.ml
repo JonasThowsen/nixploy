@@ -155,13 +155,17 @@ module Run = struct
   let ports t = t.ports
   let read_only_binds t = t.read_only_binds
 
-  let rendered_environment t ~port =
-    match port with
-    | None -> t.environment
-    | Some port ->
-        let port = Int.to_string port in
-        List.map t.environment ~f:(fun (name, value) ->
-            (name, String.substr_replace_all value ~pattern:"{port}" ~with_:port))
+  let rendered_environment t ~port ~revision =
+    let render value =
+      let value =
+        Option.value_map port ~default:value ~f:(fun port ->
+            String.substr_replace_all value ~pattern:"{port}"
+              ~with_:(Int.to_string port))
+      in
+      Option.value_map revision ~default:value ~f:(fun revision ->
+          String.substr_replace_all value ~pattern:"{revision}" ~with_:revision)
+    in
+    List.map t.environment ~f:(fun (name, value) -> (name, render value))
 
   let empty =
     {

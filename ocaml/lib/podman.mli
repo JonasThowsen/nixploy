@@ -76,6 +76,7 @@ val run_pre_start :
   connection:string ->
   target:Configuration.Target.t ->
   placement:Deployment_plan.placement ->
+  source:Source.t ->
   image:image ->
   secrets:Secrets.t list ->
   secret_mounts:secret_mount list ->
@@ -172,6 +173,7 @@ module For_testing : sig
     connection:string ->
     run:Configuration.Run.t ->
     port:int option ->
+    revision:string option ->
     secret_args:string list ->
     image_reference:string ->
     string list list
@@ -181,6 +183,7 @@ module For_testing : sig
     name:string ->
     run:Configuration.Run.t ->
     port:int option ->
+    revision:string option ->
     secret_args:string list ->
     labels:(string * string) list ->
     image_reference:string ->

@@ -15,7 +15,12 @@ module Run : sig
 
   val command : t -> string list option
   val environment : t -> (string * string) list
-  val rendered_environment : t -> port:int option -> (string * string) list
+
+  (* None preserves the corresponding literal placeholder for explicit
+     source-free inspection and tests. *)
+  val rendered_environment :
+    t -> port:int option -> revision:string option -> (string * string) list
+
   val pre_start : t -> string list list
   val network : t -> string option
   val ports : t -> string list

@@ -74,7 +74,7 @@ JSON
 JSON
     else
       cat <<'JSON'
-{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
+{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
 JSON
     fi
     ;;
@@ -286,6 +286,7 @@ exit 99
       "NIXPLOY_TEST_SECRETS";
       "NIXPLOY_TEST_SECRET_PATH";
       "NIXPLOY_TEST_EXPECTED_SECRET";
+      "NIXPLOY_REVISION";
       "SOPS_AGE_KEY_FILE";
       "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE";
       "SOPS_AGE_SSH_PRIVATE_KEY_FILE";
@@ -316,6 +317,7 @@ exit 99
         "NIXPLOY_TEST_SECRETS";
         "NIXPLOY_TEST_SECRET_PATH";
         "NIXPLOY_TEST_EXPECTED_SECRET";
+        "NIXPLOY_REVISION";
         "SOPS_AGE_KEY_FILE";
         "NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE";
         "SOPS_AGE_SSH_PRIVATE_KEY_FILE";
@@ -355,6 +357,7 @@ exit 99
         Nixploy.Source.preview_main ~working_directory:repository
       in
       let commit = assert_ok commit in
+      let expected_revision = Nixploy.Source.commit_revision commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
       let deploy_receipts =
         Nixploy.Operation_receipt.create_deploy_store () |> assert_ok
@@ -466,7 +469,7 @@ exit 99
       in
 
       let expected_configuration_json =
-        {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","nonProduction":{"coordinationScope":"test-staging"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
+        {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","nonProduction":{"coordinationScope":"test-staging"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
       in
       let expected_configuration =
         Nixploy.Configuration.of_json expected_configuration_json |> assert_ok
@@ -619,6 +622,8 @@ exit 99
           assert (not (String.is_substring line ~substring:"ro=false")));
 
       clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_REVISION"
+        "ffffffffffffffffffffffffffffffffffffffff";
       let record_stage _stage _message = Deferred.Or_error.return () in
       let%bind deployed = deploy ~record_stage "operation-1" in
       let deployed = assert_ok deployed in
@@ -633,11 +638,11 @@ exit 99
       [%test_eq: string list]
         [
           sprintf
-            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|loaded@sha256:immutable|/app/migrate"
-            expected_name;
+            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|loaded@sha256:immutable|/app/migrate"
+            expected_name expected_revision;
           sprintf
-            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|loaded@sha256:immutable|/app/seed"
-            expected_name;
+            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|loaded@sha256:immutable|/app/seed"
+            expected_name expected_revision;
         ]
         pre_starts;
       let first_pre_start =
@@ -673,12 +678,14 @@ exit 99
         [
           "|--network|private|";
           "|-e|PORT={port}|";
+          "|-e|RELEASE_REVISION=" ^ expected_revision ^ "|";
           "|-p|127.0.0.1:9000:9000|";
           "|--label|io.nixploy.managed=true|";
           "|--label|io.nixploy.project=sample|";
           "|--label|io.nixploy.target=worker|";
           "|--label|io.nixploy.resource_key=" ^ expected_name ^ "|";
           "|--label|io.nixploy.repository_identity=git@example.invalid:test.git|";
+          "|--label|io.nixploy.revision=" ^ expected_revision ^ "|";
           "|--label|io.nixploy.operation_id="
           ^ Nixploy.Deployment.operation_id deployed
           ^ "|";
@@ -688,6 +695,12 @@ exit 99
           assert (String.is_substring runtime_line ~substring));
       assert (
         not (String.is_substring runtime_line ~substring:"|--label|nixploy."));
+      List.iter (pre_starts @ [ runtime_line ]) ~f:(fun line ->
+          assert (not (String.is_substring line ~substring:"{revision}"));
+          assert (
+            not
+              (String.is_substring line
+                 ~substring:"ffffffffffffffffffffffffffffffffffffffff")));
       let secret_directory = Filename.concat repository "config" in
       Core_unix.mkdir secret_directory;
       write (Filename.concat secret_directory "secrets.env") "encrypted\n";

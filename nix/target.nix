@@ -94,11 +94,14 @@ with lib;
             example = {
               ASPNETCORE_URLS = "http://0.0.0.0:{port}";
               PORT = "{port}";
+              RELEASE_REVISION = "{revision}";
             };
             description = ''
               Environment variables passed to pre-start and application
               containers. The placeholder {port} is replaced with the selected
-              web slot port for blue/green deployments.
+              web slot port for blue/green deployments. The placeholder
+              {revision} is replaced with the exact source revision already
+              verified and bound to the deployment intent and ownership labels.
             '';
           };
 
