@@ -313,21 +313,73 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("! pgrep -f '[s]ocat -t 4'", timeout=30)
 
     # Bind MainPID to the exact VM-only helper, request, and transient-unit
-    # cgroup immediately before SIGKILL.  This neither targets a wrapper nor
-    # relies on a pidfile that could become stale or be reused.
+    # cgroup immediately before SIGKILL.  Record the kernel start time as part
+    # of the identity proof: a later PID cannot silently stand in for this
+    # holder.  This neither targets a wrapper nor relies on a pidfile that
+    # could become stale or be reused.
+    flood_pid_file = "/tmp/flood-holder.pid"
+    flood_starttime_file = "/tmp/flood-holder.starttime"
+    flood_cgroup_file = "/tmp/flood-holder.cgroup"
     machine.succeed(
         f"pid=$(systemctl show --property=MainPID --value {flood_service}); "
         "test \"$pid\" -gt 1; "
         f"test \"$(readlink -f /proc/$pid/exe)\" = {flood_holder}; "
         f"tr '\\000' ' ' < /proc/$pid/cmdline | grep -F -- "
         f"'{flood_holder} --socket {socket} --authority {authority} --identity {identity} --scope {scope_one} --operation {flood_operation}'; "
-        f"grep -Fx '0::/system.slice/{flood_service}' /proc/$pid/cgroup; "
+        f"cgroup=$(awk -F: '$1 == 0 {{ print $3 }}' /proc/$pid/cgroup); "
+        f"test \"$cgroup\" = /system.slice/{flood_service}; "
+        "test -r /proc/$pid/stat; "
+        "starttime=$(awk '{ print $22 }' /proc/$pid/stat); "
+        "test -n \"$starttime\"; printf '%s\\n' \"$starttime\" | grep -Eq '^[0-9]+$'; "
+        f"grep -Fx \"$pid\" /sys/fs/cgroup$cgroup/cgroup.procs; "
+        f"printf '%s\\n' \"$pid\" > {flood_pid_file}; "
+        f"printf '%s\\n' \"$starttime\" > {flood_starttime_file}; "
+        f"printf '%s\\n' \"$cgroup\" > {flood_cgroup_file}; "
         f"systemctl kill --kill-who=main --signal=SIGKILL {flood_service}"
     )
+
+    def assert_flood_holder_absent(phase):
+        """Reject PID reuse rather than ever treating a new process as holder."""
+        pid = machine.succeed(f"cat {flood_pid_file}").strip()
+        expected_starttime = machine.succeed(f"cat {flood_starttime_file}").strip()
+        if machine.execute(f"test ! -e /proc/{pid}")[0] != 0:
+            observed_starttime = machine.succeed(
+                f"awk '{{ print $22 }}' /proc/{pid}/stat"
+            ).strip()
+            raise RuntimeError(
+                f"{phase}: captured holder PID {pid} was reused "
+                f"(recorded starttime {expected_starttime}, observed {observed_starttime})"
+            )
+
+    def assert_flood_holder_reaped(phase):
+        # Every later observation of the captured PID begins by requiring it
+        # absent, so PID reuse cannot weaken this proof.
+        assert_flood_holder_absent(phase)
+        main_pid = machine.succeed(
+            f"systemctl show --property=MainPID --value {flood_service}"
+        ).strip()
+        if main_pid != "0":
+            raise RuntimeError(f"{phase}: transient unit MainPID was {main_pid}, not 0")
+        cgroup = machine.succeed(f"cat {flood_cgroup_file}").strip()
+        machine.succeed(
+            f"test ! -e /sys/fs/cgroup{cgroup}/cgroup.procs || "
+            f"test ! -s /sys/fs/cgroup{cgroup}/cgroup.procs"
+        )
+
     machine.wait_until_succeeds(
         f"test \"$(systemctl show --property=ActiveState --value {flood_service})\" = failed",
         timeout=30,
     )
+    machine.wait_until_succeeds(
+        f"pid=$(cat {flood_pid_file}); "
+        f"cgroup=$(cat {flood_cgroup_file}); "
+        f"test \"$(systemctl show --property=MainPID --value {flood_service})\" = 0; "
+        "test ! -e /proc/$pid; "
+        "test ! -e /sys/fs/cgroup$cgroup/cgroup.procs || "
+        "test ! -s /sys/fs/cgroup$cgroup/cgroup.procs",
+        timeout=30,
+    )
+    assert_flood_holder_reaped("immediately after SIGKILL")
     machine.succeed(
         f"test \"$(systemctl show --property=ExecMainCode --value {flood_service})\" = 2"
     )
@@ -403,5 +455,8 @@ pkgs.testers.runNixOSTest {
             f"removed-marker response was not exact READY+RELEASED: {removed_marker_output!r}"
         )
     machine.succeed("systemctl is-active --quiet nixploy-target-lease.service")
+    # The complete disk-only/restart proof window must never observe the old
+    # holder again, even if the VM recycles numeric PIDs under load.
+    assert_flood_holder_reaped("at final test end")
   '';
 }
