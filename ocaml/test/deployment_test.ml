@@ -70,7 +70,7 @@ JSON
 JSON
     elif [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
       cat <<'JSON'
-{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
+{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}","RELEASE_BINDING":"{revision}:{port}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
 JSON
     else
       cat <<'JSON'
@@ -876,10 +876,34 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
       Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
+      Caml_unix.putenv "NIXPLOY_REVISION"
+        "ffffffffffffffffffffffffffffffffffffffff";
       let%bind transitioned = deploy "operation-single-transition" in
       let transitioned = assert_ok transitioned in
       assert (Option.is_none (Nixploy.Deployment.warning transitioned));
       let lines = In_channel.read_lines trace in
+      let web_pre_starts =
+        List.filter lines ~f:(String.is_substring ~substring:"|run|--rm|")
+      in
+      [%test_eq: int] 2 (List.length web_pre_starts);
+      let web_runtime =
+        List.find_exn lines
+          ~f:(String.is_substring ~substring:"|run|-d|--name|")
+      in
+      List.iter (web_pre_starts @ [ web_runtime ]) ~f:(fun line ->
+          List.iter
+            [
+              "|-e|PORT=8080|";
+              "|-e|RELEASE_REVISION=" ^ expected_revision ^ "|";
+              "|-e|RELEASE_BINDING=" ^ expected_revision ^ ":8080|";
+            ]
+            ~f:(fun expected ->
+              assert (String.is_substring line ~substring:expected));
+          List.iter
+            [
+              "{revision}"; "{port}"; "ffffffffffffffffffffffffffffffffffffffff";
+            ] ~f:(fun forbidden ->
+              assert (not (String.is_substring line ~substring:forbidden))));
       let single_inspect =
         index_of lines (fun line ->
             String.is_suffix line
