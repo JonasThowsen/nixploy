@@ -115,23 +115,31 @@ let start ~authorization ~prepared ~store () =
               Store.request store ~application_key ~working_directory ~target
                 ~commit:(Source.selection_commit source)
             in
-            let%bind () =
+            let%bind.Deferred binding =
               Deferred.return
                 (Operation_receipt.bind_deploy_operation authorization
                    ~operation_id:(Store.id operation))
             in
-            let%bind.Deferred resource_state =
-              Store.set_resource_state store ~working_directory ~target Unknown
-            in
-            match resource_state with
-            | Ok () ->
-                Ivar.fill_if_empty started (Ok operation);
-                run_requested ~store ~authorization ~prepared operation
+            match binding with
             | Error error ->
                 let%map.Deferred terminal =
                   Store.fail store ~id:(Store.id operation) ~error
                 in
-                Result.bind terminal ~f:(fun () -> Error error)))
+                Result.bind terminal ~f:(fun () -> Error error)
+            | Ok () -> (
+                let%bind.Deferred resource_state =
+                  Store.set_resource_state store ~working_directory ~target
+                    Unknown
+                in
+                match resource_state with
+                | Ok () ->
+                    Ivar.fill_if_empty started (Ok operation);
+                    run_requested ~store ~authorization ~prepared operation
+                | Error error ->
+                    let%map.Deferred terminal =
+                      Store.fail store ~id:(Store.id operation) ~error
+                    in
+                    Result.bind terminal ~f:(fun () -> Error error))))
   in
   don't_wait_for
     ( Monitor.try_with launch >>| function

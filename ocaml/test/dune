@@ -71,6 +71,13 @@
   (pps ppx_jane)))
 
 (test
+ (name tracked_deployment_failure_test)
+ (modules tracked_deployment_failure_test)
+ (libraries nixploy core core_unix.command_unix async sqlite3)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name deploy_state_test)
  (modules deploy_state_test)
  (libraries core nixploy_web_client_state)
