@@ -21,9 +21,8 @@ type prepared
 
 val prepare :
   authorization:Operation_receipt.deploy -> prepared Deferred.Or_error.t
-(** Claims one synchronously consumed deploy capability, then materializes,
-    evaluates, and revalidates every bound application, source, target,
-    destination, scope, and identity before mutation. *)
+(** Materializes one selected source snapshot, evaluates its explicit target,
+    and validates any managed application destination before mutation. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
 

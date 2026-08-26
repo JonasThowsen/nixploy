@@ -43,10 +43,7 @@ let commit_confirmation ~application ~preview ~deploy_state ~dispatch_deploy
     in
     let%bind.Effect response =
       dispatch_deploy
-        {
-          Protocol.Deploy.Query.application;
-          receipt = preview.Protocol.Deployment_preview.receipt;
-        }
+        { Protocol.Deploy.Query.application }
     in
     if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
     else
@@ -235,7 +232,7 @@ let prune_confirmation ~application ~receipt ~dispatch_prune ~prune_state
     ]
 
 let deployment_action ~application ~deployment ~deploy_state ~prune_state
-    ~cancel_confirmation ~dispatch_preview ~dispatch_cancel ~set_preview
+    ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_preview
     ~set_deploy_state ~set_cancel_confirmation ~set_prune_state ~set_notice =
   let prune_busy = Prune_state.is_busy prune_state in
   let deploy_busy = Deploy_state.is_busy deploy_state in
@@ -318,51 +315,48 @@ let deployment_action ~application ~deployment ~deploy_state ~prune_state
           ()
   | _ ->
       let key = application.Protocol.Application.key in
-      let previewing = Deploy_state.is_previewing deploy_state ~key in
-      let request_preview =
+      let submitting = Deploy_state.is_pending deploy_state in
+      let request_deploy =
         let%bind.Effect owner = Browser_navigation.application_owner key in
         let%bind.Effect () =
           Effect.Many
             [
-              set_deploy_state (Deploy_state.start_preview deploy_state ~key);
+              set_deploy_state (Deploy_state.start_submission deploy_state ~key);
               set_preview None;
               set_cancel_confirmation None;
               set_prune_state Prune_state.Idle;
-              set_notice ("Reading main for " ^ key ^ "…");
+              set_notice ("Starting deployment for " ^ key ^ "…");
             ]
         in
         let%bind.Effect response =
-          dispatch_preview
-            { Protocol.Preview_deployment.Query.application = key }
-        in
-        let finished =
-          set_deploy_state
-            (Deploy_state.finish_preview (Deploy_state.Previewing key) ~key)
+          dispatch_deploy { Protocol.Deploy.Query.application = key }
         in
         if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
         else
+          let pending = Deploy_state.Submitting key in
+          let finished =
+            set_deploy_state (Deploy_state.finish_submission pending ~key)
+          in
           match response with
           | Error error ->
               Effect.Many
-                [
-                  finished;
-                  set_notice ("Preview RPC failed: " ^ Error.to_string_hum error);
-                ]
+                [ finished;
+                  set_notice ("Deploy RPC failed: " ^ Error.to_string_hum error) ]
           | Ok (Error error) ->
               Effect.Many
-                [
-                  finished;
-                  set_notice
-                    ("Commit preview failed: " ^ Error.to_string_hum error);
-                ]
-          | Ok (Ok preview) ->
+                [ finished;
+                  set_notice ("Deployment rejected: " ^ Error.to_string_hum error) ]
+          | Ok (Ok operation_id) ->
               Effect.Many
-                [ finished; set_preview (Some (key, preview)); set_notice "" ]
+                [ set_deploy_state
+                    (Deploy_state.accept_submission pending ~key ~operation_id);
+                  set_notice ("Deployment started: " ^ operation_id);
+                  focus_primary_action ]
       in
       Ui_helpers.button ~id:primary_action_id ~kind:"primary"
         ~disabled:(prune_busy || deploy_busy)
-        ~label:(if previewing then "Reading main…" else "Preview main")
-        ~on_click:request_preview ()
+        ~label:(if submitting then "Starting deployment…" else "Deploy")
+        ~on_click:request_deploy ()
 
 let occurrences text pattern =
   if String.is_empty pattern then 0
@@ -619,7 +613,7 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
   in
   let action =
     deployment_action ~application ~deployment ~deploy_state ~prune_state
-      ~cancel_confirmation ~dispatch_preview ~dispatch_cancel ~set_preview
+      ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_preview
       ~set_deploy_state ~set_cancel_confirmation ~set_prune_state ~set_notice
   in
   let deploy_confirmation =

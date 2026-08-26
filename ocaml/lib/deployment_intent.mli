@@ -12,8 +12,9 @@ val create :
   configuration:Configuration.t ->
   configuration_json:string ->
   t Or_error.t
-(** Builds immutable intent from one root-owned mutation contract and, for
-    production, verified source custody evidence. *)
+(** Builds immutable intent from one managed application contract and the
+    evaluated deployment configuration.  Source custody is a selection policy,
+    not mutation authority. *)
 
 val validate_application : t -> Managed_application.t -> unit Or_error.t
 (** Rejects pairing an intent with any application other than the exact
@@ -35,9 +36,8 @@ val authorize_local :
   configuration:Configuration.t ->
   target:Configuration.Target.t ->
   identity_policy Or_error.t
-(** Rejects every local request intersecting a protected production domain. On
-    managed hosts, only an exact root-owned non-production contract is allowed.
-*)
+(** Permits a direct local checkout deployment. Managed application contracts
+    constrain the web surface and are validated separately. *)
 
 val resource_key : t -> Resource_key.t
 val identity_policy : t -> identity_policy

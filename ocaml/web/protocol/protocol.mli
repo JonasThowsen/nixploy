@@ -72,7 +72,7 @@ end
 
 module Deploy : sig
   module Query : sig
-    type t = { application : string; receipt : string }
+    type t = { application : string }
     [@@deriving bin_io, equal, sexp]
   end
 

@@ -219,9 +219,7 @@ let prepare ~authorization =
     Operation_receipt.deploy_application authorization
   in
   let managed_applications =
-    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
-      Managed_application.load_authority_file () |> Or_error.ok_exn
-    else Operation_receipt.deploy_managed_applications authorization
+    Operation_receipt.deploy_managed_applications authorization
   in
   let working_directory =
     Operation_receipt.deploy_working_directory authorization
@@ -234,9 +232,18 @@ let prepare ~authorization =
         Deferred.return
           (validate_managed_capability authorization intent application)
     | None, None -> Deferred.Or_error.return ()
-    | Some _, None | None, Some _ ->
+    | None, Some application ->
+        if
+          Option.value_map expected_project ~default:false
+            ~f:(Project_name.equal (Managed_application.project application))
+          && Target_name.equal target_name (Managed_application.target application)
+        then Deferred.Or_error.return ()
+        else
+          Deferred.Or_error.error_string
+            "managed direct deployment does not match its application or target"
+    | Some _, None ->
         Deferred.Or_error.error_string
-          "deploy capability has incomplete managed-operation bindings"
+          "deploy request has an intent without its managed application"
   in
   let%bind source_authority =
     match (expected_intent, managed_application) with
@@ -298,51 +305,64 @@ let prepare ~authorization =
       configuration_json |> Digestif.SHA256.digest_string
       |> Digestif.SHA256.to_hex
     in
-    let%bind identity_policy =
-      match expected_intent with
-      | Some expected ->
+    let%bind identity_policy, repository_identity, candidates =
+      match (expected_intent, managed_application) with
+      | Some expected, Some _ ->
           let%map () =
             Deferred.return
               (Deployment_intent.validate_evaluated expected ~source_authority
                  ~revision:(Source.revision source) ~configuration
                  ~configuration_json)
           in
-          Deployment_intent.identity_policy expected
-      | None ->
-          Deferred.return
-            (Deployment_intent.authorize_local
-               ~applications:managed_applications ~working_directory
-               ~configuration ~target)
+          ( Deployment_intent.identity_policy expected,
+            Deployment_intent.repository_identity expected,
+            [ Deployment_intent.resource_key expected ] )
+      | None, Some application ->
+          let%map intent =
+            Deferred.return
+              (Deployment_intent.create ~application ~source_authority:None
+                 ~revision:(Source.revision source) ~configuration
+                 ~configuration_json)
+          in
+          ( Deployment_intent.identity_policy intent,
+            Deployment_intent.repository_identity intent,
+            [ Deployment_intent.resource_key intent ] )
+      | None, None ->
+          let repository_identity = Source.repository source in
+          let%bind identity_policy =
+            Deferred.return
+              (Deployment_intent.authorize_local
+                 ~applications:managed_applications ~working_directory
+                 ~configuration ~target)
+          in
+          let%map candidates =
+            Deferred.return
+              (match identity_policy with
+              | Canonical_only ->
+                  Resource_key.derive ~project ~target:target_name
+                    ~repository_identity
+                  |> Or_error.map ~f:List.return
+              | Migration_candidates ->
+                  Resource_key.candidates ~project ~target:target_name
+                    ~repository_identity)
+          in
+          (identity_policy, repository_identity, candidates)
+      | Some _, None ->
+          Deferred.Or_error.error_string
+            "deploy request has an intent without its managed application"
     in
-    let repository_identity =
-      match expected_intent with
-      | Some intent -> Deployment_intent.repository_identity intent
-      | None -> Source.repository source
-    in
-    let%map candidates =
-      match (identity_policy, expected_intent) with
-      | Canonical_only, Some intent ->
-          Deferred.Or_error.return [ Deployment_intent.resource_key intent ]
-      | Canonical_only, None ->
-          Deferred.return
-            (Resource_key.derive ~project ~target:target_name
-               ~repository_identity
-            |> Or_error.map ~f:List.return)
-      | Migration_candidates, _ ->
-          Deferred.return
-            (Resource_key.candidates ~project ~target:target_name
-               ~repository_identity)
-    in
-    {
-      authorization;
-      source;
-      project;
-      target_name;
-      target;
-      repository_identity;
-      configuration_digest;
-      candidates;
-    }
+    ignore identity_policy;
+    Deferred.Or_error.return
+      {
+        authorization;
+        source;
+        project;
+        target_name;
+        target;
+        repository_identity;
+        configuration_digest;
+        candidates;
+      }
   in
   let%bind.Deferred result = Monitor.try_with_or_error validate in
   match Or_error.join result with

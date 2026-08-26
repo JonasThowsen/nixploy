@@ -21,6 +21,20 @@ val create_prune_store :
   unit ->
   prune_store Or_error.t
 
+val direct_deploy :
+  application_key:string option ->
+  expected_project:Project_name.t option ->
+  intent:Deployment_intent.t option ->
+  application:Managed_application.t option ->
+  managed_applications:Managed_application.t list ->
+  working_directory:string ->
+  source:Source.selection ->
+  target:Target_name.t ->
+  deploy Or_error.t
+(** Creates an in-process deployment request.  It is not a browser receipt,
+    capability, or proof of source custody; callers use it only to pass one
+    already-selected source and target through the shared engine. *)
+
 val issue_deploy :
   deploy_store ->
   application_key:string option ->

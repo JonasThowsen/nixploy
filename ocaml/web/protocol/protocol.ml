@@ -80,7 +80,7 @@ end
 
 module Deploy = struct
   module Query = struct
-    type t = { application : string; receipt : string }
+    type t = { application : string }
     [@@deriving bin_io, equal, sexp]
   end
 

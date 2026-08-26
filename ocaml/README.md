@@ -36,14 +36,14 @@ the Nix, OCaml, CLI, and existing-host identity path without mutating a running
 application. This path has been verified against an existing hosted
 application.
 
-Local-snapshot preparation remains covered as a non-production library
-compatibility path, including tracked working-tree changes and intent-to-add
-files while excluding ignored output. The packaged standalone CLI, however,
-categorically refuses deploy and prune because a process launched by an
-unprivileged user or mount namespace cannot self-attest protected host authority.
-Managed mutation goes through the root-started web/RPC daemon with separate
-single-use deploy and prune receipts. The control plane requires an explicitly
-previewed full commit and materializes that exact immutable revision.
+`nixploy deploy -t TARGET` snapshots the local checkout once, including tracked
+working-tree changes and intent-to-add files while excluding ignored output, and
+runs the shared deployment engine directly. Non-ignored untracked files are
+rejected before evaluation so the build, secrets, and image all consume the same
+prepared source. The authenticated web Deploy action is restricted to its
+managed checkout allowlist and uses that same engine after validating the
+evaluated target destination. Browser preview is advisory; neither preview,
+receipt, commit confirmation, nor Git custody proof authorizes ordinary deploy.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and

@@ -68,8 +68,7 @@ let deploy state _connection_state query =
   | Error _ as error -> Deferred.return error
   | Ok managed ->
       let%map started =
-        Application.start_managed_preview state.application managed
-          ~receipt:query.Protocol.Deploy.Query.receipt
+        Application.start_managed_deployment state.application managed
       in
       Result.map started ~f:Application.started_deployment_id
 
@@ -244,7 +243,8 @@ let run ~port ~state_db =
   let authorization = Authorization.load_environment () |> Or_error.ok_exn in
   let origin_policy = Authorization.load_origin_policy () |> Or_error.ok_exn in
   let%bind application =
-    Application.open_ ~state_path:state_db >>| Or_error.ok_exn
+    Application.open_ ~managed_applications:applications ~state_path:state_db ()
+    >>| Or_error.ok_exn
   in
   let state = { applications; application } in
   let%bind server =

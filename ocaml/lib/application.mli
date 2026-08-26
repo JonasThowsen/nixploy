@@ -73,7 +73,11 @@ val create : store:Store.t -> unit -> t
 (** Loads the host authority file when present; a linked caller cannot replace
     it with an empty allowlist. *)
 
-val open_ : state_path:string -> t Deferred.Or_error.t
+val open_ :
+  ?managed_applications:Managed_application.t list ->
+  state_path:string ->
+  unit ->
+  t Deferred.Or_error.t
 
 val begin_shutdown : t -> shutdown_transition
 (** Atomically rejects new deploy and prune mutations. *)
@@ -98,6 +102,29 @@ val preview_managed_deployment :
 val deployment_preview_commit : deployment_preview -> commit
 val deployment_preview_receipt : deployment_preview -> string
 val deployment_preview_prune_receipt : deployment_preview -> string
+
+val start_managed_deployment :
+  t -> Managed_application.t -> started_deployment Deferred.Or_error.t
+(** Deploys the configured managed checkout directly.  The allowlist and the
+    evaluated target destination remain checked; no preview receipt authorizes
+    this mutation. *)
+
+val deploy_managed_deployment :
+  t -> Managed_application.t -> deployment Deferred.Or_error.t
+
+val start_local_deployment :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  started_deployment Deferred.Or_error.t
+(** Snapshots the local tracked source once and runs the shared deployment
+    engine.  Non-ignored untracked files are rejected during preparation. *)
+
+val deploy_local_deployment :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  deployment Deferred.Or_error.t
 
 val start_managed_preview :
   t ->

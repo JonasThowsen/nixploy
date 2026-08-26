@@ -37,4 +37,4 @@ must_not_compile tracked_within_lease_without_receipt \
 must_not_compile swap_prune_for_deploy \
   'let f (authorization : Nixploy.Operation_receipt.prune) = Nixploy.Deployment.prepare ~authorization'
 
-echo 'lower mutation interfaces require operation-specific consumed capabilities'
+echo 'lower mutation interfaces require a deployment-specific request'

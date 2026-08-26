@@ -632,8 +632,7 @@ let%test_unit
        ])
 
 let%test_unit
-    "root mutation policy blocks production stanza removal and destination \
-     aliases" =
+    "local deployment policy permits direct configured targets" =
   let directory = Filename_unix.temp_dir "nixploy-authority-policy-" "" in
   let applications =
     Nixploy.Managed_application.all_of_json
@@ -666,12 +665,13 @@ let%test_unit
   let staging =
     {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy","nonProduction":{"coordinationScope":"sample-staging"}}}}|}
   in
-  assert (Result.is_error (authorize removed_profile "production"));
-  assert (Result.is_error (authorize target_alias "alias"));
-  assert (Result.is_error (authorize domain_alias "alias"));
-  ignore
-    (assert_ok (authorize staging "staging")
-      : Nixploy.Deployment_intent.identity_policy);
+  List.iter
+    [ (removed_profile, "production"); (target_alias, "alias");
+      (domain_alias, "alias"); (staging, "staging") ]
+    ~f:(fun (json, target) ->
+      ignore
+        (assert_ok (authorize json target)
+          : Nixploy.Deployment_intent.identity_policy));
   Core_unix.rmdir directory
 
 let%test_unit "configuration reads the current flake schema" =

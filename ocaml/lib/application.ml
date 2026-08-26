@@ -262,12 +262,7 @@ let create_with_managed_applications ~managed_applications ~store () =
   }
 
 let create ~store () =
-  let managed_applications =
-    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
-      Managed_application.load_authority_file () |> Or_error.ok_exn
-    else []
-  in
-  create_with_managed_applications ~managed_applications ~store ()
+  create_with_managed_applications ~managed_applications:[] ~store ()
 
 let begin_shutdown t =
   if not t.mutations.accepting then Already_shutting_down
@@ -308,13 +303,8 @@ let finish_mutation t =
   if (not t.mutations.accepting) && Int.equal t.mutations.active_count 0 then
     Ivar.fill_if_empty t.mutations.drained ()
 
-let open_ ~state_path =
+let open_ ?(managed_applications = []) ~state_path () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind managed_applications =
-    if Sys_unix.file_exists_exn "/etc/nixploy/managed-applications.json" then
-      Deferred.return (Managed_application.load_authority_file ())
-    else Deferred.Or_error.return []
-  in
   let%map store = Store.open_ ~path:state_path in
   create_with_managed_applications ~managed_applications ~store ()
 
@@ -572,20 +562,47 @@ let start_non_production ?application_key ?expected_project t ~working_directory
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory -> (
-      let receipt_key =
-        Option.value application_key ~default:"non-production"
-      in
       match
-        Operation_receipt.issue_deploy t.deployment_receipts ~application_key
-          ~expected_project ~intent:None ~application:None
+        Operation_receipt.direct_deploy ~application_key ~expected_project
+          ~intent:None ~application:None
           ~managed_applications:t.managed_applications ~working_directory
           ~source ~target
       with
       | Error error -> Deferred.return (Error error)
-      | Ok receipt -> (
-          match consume_deploy t ~application_key:receipt_key ~receipt with
-          | Error error -> Deferred.return (Error error)
-          | Ok authorization -> start_authorization t ~authorization))
+      | Ok authorization -> start_authorization t ~authorization)
+
+let start_local_deployment t ~working_directory ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind source = local_source t ~working_directory in
+  start_non_production t ~working_directory ~source ~target ()
+
+let deploy_local_deployment t ~working_directory ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started = start_local_deployment t ~working_directory ~target in
+  await_started_deployment started
+
+let start_managed_deployment t requested_application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind application =
+    Deferred.return (authoritative_application t requested_application)
+  in
+  let working_directory = Managed_application.working_directory application in
+  let%bind source = local_source t ~working_directory in
+  let%bind authorization =
+    Deferred.return
+      (Operation_receipt.direct_deploy
+         ~application_key:(Some (Managed_application.key application))
+         ~expected_project:(Some (Managed_application.project application))
+         ~intent:None ~application:(Some application)
+         ~managed_applications:t.managed_applications ~working_directory ~source
+         ~target:(Managed_application.target application))
+  in
+  start_authorization t ~authorization
+
+let deploy_managed_deployment t application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started = start_managed_deployment t application in
+  await_started_deployment started
 
 let deploy_non_production ?application_key ?expected_project t
     ~working_directory ~source ~target () =

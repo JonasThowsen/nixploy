@@ -156,8 +156,6 @@ pkgs.testers.runNixOSTest {
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example | grep -E '^preview [0-9a-f]{40} smoke$'")
-    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --reject-forged-receipt example | grep -Fx 'forged receipt rejected'")
-    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --reject-cross-operation-receipts example | grep -Fx 'cross-operation receipts rejected'")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 
@@ -202,33 +200,12 @@ pkgs.testers.runNixOSTest {
     machine.succeed("rm /var/lib/nixploy-custody/example.evidence.json && mv /var/lib/nixploy-custody/example.evidence.real /var/lib/nixploy-custody/example.evidence.json")
     machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx '{revision} {flake_digest}'")
 
-    # The standalone packaged CLI categorically has no mutation authority.
-    # A mutable clone cannot downgrade production by deleting its stanza.
-    machine.succeed("rm -rf /tmp/removed-production && runuser -u nixploy -- git -c 'safe.directory=*' clone /var/lib/nixploy-custody/example /tmp/removed-production")
-    machine.succeed("runuser -u nixploy -- git -C /tmp/removed-production remote set-url origin ssh://git@example.invalid/example.git")
-    machine.succeed("sed -i '/production.coordinationScope/d' /tmp/removed-production/flake.nix")
-    machine.fail("runuser -u nixploy -- nixploy deploy --directory /tmp/removed-production --target production --state-db /tmp/removed-production.sqlite")
-    machine.succeed("test ! -e /tmp/removed-production.sqlite")
-
-    machine.succeed("runuser -u nixploy -- git -C /tmp/removed-production checkout -- flake.nix")
-    machine.succeed("sed -i 's/production.example.invalid/changed.example.invalid/' /tmp/removed-production/flake.nix")
-    machine.fail("runuser -u nixploy -- nixploy deploy --directory /tmp/removed-production --target production --state-db /tmp/changed-production.sqlite")
-    machine.succeed("test ! -e /tmp/changed-production.sqlite")
-
-    # An arbitrary checkout claiming the configured origin and using an alias
-    # for the protected endpoint is not source or production authority.
-    machine.succeed("install -d -m 0755 -o nixploy -g nixploy /tmp/forged-alias")
-    machine.succeed("cat > /tmp/forged-alias/flake.nix <<'EOF'\n{ outputs = _: { nixploy = { __schema = \"v0.4\"; project = \"unrelated\"; targets.alias = { image = \"unused\"; ip = \"production.example.invalid\"; user = \"deploy\"; port = 2222; }; }; }; }\nEOF\nchown nixploy:nixploy /tmp/forged-alias/flake.nix\necho '{\"nodes\":{\"root\":{}},\"root\":\"root\",\"version\":7}' > /tmp/forged-alias/flake.lock\nchown nixploy:nixploy /tmp/forged-alias/flake.lock\nrunuser -u nixploy -- git -C /tmp/forged-alias init --initial-branch=main\nrunuser -u nixploy -- git -C /tmp/forged-alias config user.name forged\nrunuser -u nixploy -- git -C /tmp/forged-alias config user.email forged@example.invalid\nrunuser -u nixploy -- git -C /tmp/forged-alias config remote.origin.url ssh://git@example.invalid/example.git\nrunuser -u nixploy -- git -C /tmp/forged-alias add flake.nix flake.lock\nrunuser -u nixploy -- git -C /tmp/forged-alias commit -m forged")
-    machine.fail("runuser -u nixploy -- nixploy deploy --directory /tmp/forged-alias --target alias --state-db /tmp/forged-alias.sqlite")
-    machine.succeed("test ! -e /tmp/forged-alias.sqlite")
-
-    # Real user+mount namespace attacks make the caller UID 0 in its namespace,
-    # replace the managed policy, and hide the service runtime/socket path. The
-    # packaged CLI still cannot self-attest deploy or prune authority.
-    machine.succeed("install -d -o nixploy -g nixploy /tmp/fake-etc-nixploy /tmp/fake-runtime && printf '{}\\n' > /tmp/fake-etc-nixploy/managed-applications.json && chown nixploy:nixploy /tmp/fake-etc-nixploy/managed-applications.json && chmod 0444 /tmp/fake-etc-nixploy/managed-applications.json")
-    namespace_attack = "runuser -u nixploy -- unshare --user --map-root-user --mount sh -ceu 'test $(id -u) -eq 0; mount --bind /tmp/fake-etc-nixploy /etc/nixploy; mount --bind /tmp/fake-runtime /run/nixploy-test-runtime; test $(stat -c %u /etc/nixploy/managed-applications.json) -eq 0; ! nixploy deploy --directory /tmp/forged-alias --target alias --state-db /tmp/namespace-deploy.sqlite; ! nixploy prune --directory /tmp/forged-alias --target alias --state-db /tmp/namespace-prune.sqlite; test ! -e /tmp/namespace-deploy.sqlite; test ! -e /tmp/namespace-prune.sqlite'"
-    machine.succeed(namespace_attack)
-    machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
+    # The packaged CLI deploys a checked-out flake directly without web RPC,
+    # preview, or receipt authority.  The normal target lease/store path still
+    # records the operation.
+    machine.succeed("rm -rf /tmp/direct-production && runuser -u nixploy -- git -c 'safe.directory=*' clone /var/lib/nixploy-custody/example /tmp/direct-production")
+    machine.fail("runuser -u nixploy -- nixploy deploy --directory /tmp/direct-production --target production --state-db /tmp/direct-production.sqlite")
+    machine.succeed("test $(sqlite3 /tmp/direct-production.sqlite \"select count(*) from deployments\") -eq 1")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")

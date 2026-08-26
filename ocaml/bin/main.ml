@@ -25,7 +25,7 @@ let status_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"
@@ -86,11 +86,41 @@ let deploy_command =
          ~doc:"PATH durable control-plane state database"
      in
      fun () ->
-       ignore (target, working_directory, state_db);
-       eprintf
-         "Deploy refused: the standalone CLI has no protected mutation \
-          authority; use the managed control-plane RPC.\n";
-       Shutdown.exit 1)
+       let open Deferred.Let_syntax in
+       match Nixploy.Target_name.of_string target with
+       | Error error ->
+           eprintf "%s\n" (Error.to_string_hum error);
+           Shutdown.exit 2
+       | Ok target ->
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+           (match opened with
+           | Error error ->
+               eprintf "Could not open deployment state: %s\n"
+                 (Error.to_string_hum error);
+               Shutdown.exit 1
+           | Ok application ->
+               let%bind deployed =
+                 Nixploy.Application.deploy_local_deployment application
+                   ~working_directory ~target
+               in
+               match deployed with
+                   | Error error ->
+                       eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
+                       Shutdown.exit 1
+                   | Ok deployment -> (
+                       match Nixploy.Application.deployment_state deployment with
+                       | Nixploy.Application.Succeeded ->
+                           printf "Deployment %s succeeded\n%!"
+                             (Nixploy.Application.deployment_id deployment);
+                           Deferred.unit
+                       | Nixploy.Application.Requested
+                       | Nixploy.Application.Running
+                       | Nixploy.Application.Failed
+                       | Nixploy.Application.Cancelled ->
+                           eprintf "Deploy failed at %s: %s\n"
+                             (Nixploy.Application.deployment_stage deployment)
+                             (Nixploy.Application.deployment_message deployment);
+                           Shutdown.exit 1)))
 
 let print_history deployments =
   printf "%s%!" (Inspection_output.history deployments)
@@ -120,7 +150,7 @@ let history_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Application.open_ ~state_path:state_db in
+           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"

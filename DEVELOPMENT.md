@@ -30,51 +30,25 @@ Legacy sources are archived under `legacy/` now that the OCaml API, package, and
 
 ## Source policy
 
-The application API represents source selection explicitly:
+`nixploy deploy -t TARGET` is the normal direct deployment path. It selects the
+local checkout once, snapshots committed files, tracked modifications, and
+intent-to-add files, then evaluates, builds, decrypts secrets, and deploys from
+that one prepared source. Non-ignored untracked files fail preflight rather than
+being silently omitted. The target is explicit and evaluated from that snapshot.
 
-- library tests retain local-snapshot preparation for non-production compatibility;
-- the packaged standalone CLI refuses deploy and prune rather than self-attesting host authority;
-- the managed web/RPC daemon deploys or prunes only with an operation-bound receipt for an explicitly previewed Git revision from an allowlisted repository.
+The authenticated web surface deploys only an application in its configured
+managed-checkout allowlist, but its Deploy action calls the same application
+operation and engine as the CLI. It independently checks that the evaluated
+project, target, destination, and coordination scope agree with the managed
+application contract. A browser preview is advisory only; neither a preview,
+Git custody evidence, a confirmation SHA, an RPC receipt, nor a capability token
+is mutation authority for an ordinary deploy.
 
-Both policies resolve to one stable prepared deployment source before the shared deployment engine performs configuration evaluation, build, and remote mutation. Local preparation snapshots the repository's committed files, tracked modifications, and intent-to-add files once, while excluding ignored build output; evaluation, secrets, and image building all consume that same snapshot. Ordinary non-ignored untracked files fail preflight with an instruction to add or ignore them, avoiding both silently omitted source and copied dependency trees. Immutable preparation materializes exactly the selected full commit. Relative source inputs such as SOPS files resolve beneath that prepared root. Source selection is a caller policy; deployment semantics are shared.
-
-Browser preview reads one root-owned machine authority file, verifies a
-root-protected Git custody repository plus a bounded fresh manifest naming the
-provenance identifier, full ref, and exact commit object, then materializes and
-evaluates that exact commit. Mutable `remote.origin.url` is diagnostic only and
-never provenance authority. Stable ownership identity remains separate from
-observed source evidence. Preview also validates target destination, canonical
-resource key, configuration digest, and declared coordination scope.
-Confirmation supplies only an opaque single-use process-local receipt; expiry,
-bounded-cache eviction, replay, mismatch, or restart fails closed. Deployment
-consumes the receipt and, inside the target lease, revalidates source,
-configuration, and destination before resource-state/history writes and before
-Podman, SSH, SOPS, secret, or Caddy effects. The standalone packaged CLI cannot mutate. The root-started daemon may retain
-an explicitly configured non-production snapshot flow only under an exact
-root-owned non-production contract; production-domain aliases fail closed. A
-deploy receipt cannot authorize prune and a prune receipt cannot authorize
-deploy. The receipt is freshness evidence only and has no lease or takeover
-semantics. Protected Git admission performs no fetch, while protected Nix
-evaluation is offline/no-write-lock and therefore fails closed unless every
-immutable input is already realized. Deployment builds may still use configured
-Nix fetchers or substituters unless an external host policy forbids them.
-
-Preview and any offline or read-only plan are operator advice, not mutation
-authority. After confirmation, the application must acquire the declared
-per-target coordination-domain lease and, while holding it, recompute or
-revalidate the authoritative plan from fresh observations before any mutation.
-
-For a deploy, consume and validate the exact receipt while preparing immutable
-source, then acquire the lease, reconcile a dead predecessor, create the durable
-`requested` admission record needed by the opaque handle, bind that exact
-capability to its operation id, and only then mark resource state `Unknown`,
-write active-stage history, or run a remote process. The admission record is
-history of a consumed request, not evidence that a resource changed. Production
-V1 deliberately disables prune: deployment's durable operation model cannot
-honestly represent destructive cleanup yet. A future prune slice must add a
-resource-scoped durable admission, exact receipt-to-operation binding, canonical
-candidate snapshot, terminal review for ambiguous remote effects, and observer
-rehydration before it may mutate resource state or invoke Podman/Caddy.
+Both surfaces keep the target lease, durable `Unknown` state before ambiguous
+remote effects, strict SSH host-key verification, SOPS stdin/redaction,
+resource-label verification, bounded health/rollback, and scoped bounded prune
+rules. Prune remains disabled in Production V1 until it has a separately durable
+destructive-operation lifecycle.
 
 ## Architecture
 

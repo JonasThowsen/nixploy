@@ -359,9 +359,6 @@ exit 99
       let commit = assert_ok commit in
       let expected_revision = Nixploy.Source.commit_revision commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let deploy_receipts =
-        Nixploy.Operation_receipt.create_deploy_store () |> assert_ok
-      in
       let authorization ?expected_project ?expected_intent ?managed_application
           ?(managed_applications = []) source =
         let application_key =
@@ -372,17 +369,9 @@ exit 99
             (Option.map managed_application
                ~f:Nixploy.Managed_application.project)
         in
-        let receipt =
-          Nixploy.Operation_receipt.issue_deploy deploy_receipts
-            ~application_key ~expected_project ~intent:expected_intent
-            ~application:managed_application ~managed_applications
-            ~working_directory:repository ~source ~target
-          |> assert_ok
-        in
-        Nixploy.Operation_receipt.consume_deploy deploy_receipts
-          ~application_key:
-            (Option.value application_key ~default:"non-production")
-          ~receipt
+        Nixploy.Operation_receipt.direct_deploy ~application_key ~expected_project
+          ~intent:expected_intent ~application:managed_application
+          ~managed_applications ~working_directory:repository ~source ~target
         |> assert_ok
       in
       let direct_store () =
@@ -509,18 +498,15 @@ exit 99
              other_managed));
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
-      let%bind production_without_receipt =
+      let%bind production_direct =
         deploy ~managed_applications:[ production_managed ]
-          "operation-production-without-receipt"
+          "operation-production-direct"
       in
-      expect_error_containing production_without_receipt
-        "production-profile mutation requires managed RPC authority";
+      ignore (assert_ok production_direct : Nixploy.Deployment.t);
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
-      [%test_eq: int] 0 (count lines "nix|build|");
-      assert (
-        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
-      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
+      [%test_eq: int] 1 (count lines "nix|build|");
+      assert (List.exists lines ~f:(String.is_prefix ~prefix:"podman|"));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

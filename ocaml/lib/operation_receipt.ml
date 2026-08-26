@@ -41,6 +41,28 @@ let create_prune_store ?capacity ?ttl_seconds ?now ?random_bytes () =
 
 let receipt_key = Option.value ~default:"non-production"
 
+let direct_deploy ~application_key ~expected_project ~intent ~application
+    ~managed_applications ~working_directory ~source ~target =
+  let open Or_error.Let_syntax in
+  let%map working_directory =
+    Or_error.try_with (fun () -> Filename_unix.realpath working_directory)
+  in
+  {
+    payload =
+      {
+        application_key;
+        expected_project;
+        intent;
+        application;
+        managed_applications;
+        working_directory;
+        source;
+        target;
+      };
+    claimed = false;
+    operation_id = None;
+  }
+
 let issue_deploy store ~application_key ~expected_project ~intent ~application
     ~managed_applications ~working_directory ~source ~target =
   let open Or_error.Let_syntax in

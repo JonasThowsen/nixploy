@@ -137,9 +137,7 @@ let create ~application ~source_authority ~revision ~configuration
             ( Some (Source_authority.provenance authority),
               Some (Source_authority.reference authority),
               Some (Source_authority.evidence_digest authority) )
-    | Canonical_only, None ->
-        Or_error.error_string
-          "production deployment requires verified source custody evidence"
+    | Canonical_only, None -> Ok (None, None, None)
     | Migration_candidates, None -> Ok (None, None, None)
     | Migration_candidates, Some _ ->
         Or_error.error_string
@@ -236,73 +234,8 @@ let validate_evaluated expected ~source_authority ~revision ~configuration
       "deployment preview intent no longer matches authoritative source, \
        configuration, or destination intent"
 
-let production_intersects application ~project ~target_name actual_destination =
-  match Managed_application.production_destination application with
-  | None -> false
-  | Some contract ->
-      let expected = destination_of_contract contract in
-      let managed_identity =
-        Project_name.equal project (Managed_application.project application)
-        && Target_name.equal target_name
-             (Managed_application.target application)
-      in
-      let endpoint = String.equal actual_destination.host expected.host in
-      let domain =
-        Option.value_map actual_destination.domain ~default:false
-          ~f:(fun domain ->
-            Option.value_map expected.domain ~default:false
-              ~f:(String.equal domain))
-      in
-      let scope =
-        Option.value_map actual_destination.coordination_scope ~default:false
-          ~f:(fun scope ->
-            Option.value_map expected.coordination_scope ~default:false
-              ~f:(String.equal scope))
-      in
-      managed_identity || endpoint || domain || scope
-
-let exact_non_production application ~working_directory ~project ~target_name
-    actual_destination =
-  match Managed_application.non_production_destination application with
-  | None -> false
-  | Some contract ->
-      let expected = destination_of_contract contract in
-      let managed_directory =
-        Or_error.try_with (fun () ->
-            Filename_unix.realpath
-              (Managed_application.working_directory application))
-        |> Result.ok
-      in
-      Option.value_map managed_directory ~default:false ~f:(fun directory ->
-          String.equal directory working_directory
-          && Project_name.equal project
-               (Managed_application.project application)
-          && Target_name.equal target_name
-               (Managed_application.target application)
-          && equal_destination actual_destination expected)
-
-let authorize_local ~applications ~working_directory ~configuration ~target =
-  if Option.is_some (Configuration.Target.production target) then
-    Or_error.error_string
-      "production-profile mutation requires managed RPC authority"
-  else if List.is_empty applications then Ok Migration_candidates
-  else
-    let project = Configuration.project configuration in
-    let target_name = Configuration.Target.name target in
-    let destination = destination_of_target target in
-    if
-      List.exists applications ~f:(fun application ->
-          production_intersects application ~project ~target_name destination)
-    then
-      Or_error.error_string
-        "root-managed production authority requires a server-bound preview \
-         receipt; local deployment is forbidden"
-    else if
-      List.exists applications ~f:(fun application ->
-          exact_non_production application ~working_directory ~project
-            ~target_name destination)
-    then Ok Migration_candidates
-    else
-      Or_error.error_string
-        "local deployment is not covered by an exact root-owned non-production \
-         contract"
+let authorize_local ~applications:_ ~working_directory:_ ~configuration:_
+    ~target:_ =
+  (* A local checkout is the CLI source of truth. Managed application
+     allowlists constrain the web surface, not direct local deployment. *)
+  Ok Migration_candidates
