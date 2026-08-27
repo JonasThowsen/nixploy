@@ -33,3 +33,76 @@ grep -F -- "target name must not be empty" <<<"$invalid_target_output" >/dev/nul
 if grep -F -- "protected mutation authority\|unknown flag" <<<"$invalid_target_output" >/dev/null; then
   exit 1
 fi
+
+# A direct deployment must report pre-admission source/evaluation work and
+# SIGINT must terminate its child process without creating a deployment row.
+root=$(mktemp -d)
+cli_pid=""
+child_pid=""
+cleanup() {
+  if [[ -n "$cli_pid" ]] && kill -0 "$cli_pid" 2>/dev/null; then
+    kill -TERM "$cli_pid" 2>/dev/null || true
+    wait "$cli_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill -KILL "$child_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$root"
+}
+trap cleanup EXIT
+
+repo="$root/repository"
+bin="$root/bin"
+runtime="$root/runtime"
+marker="$root/eval-started"
+child_marker="$root/eval-pid"
+state_db="$root/state.sqlite"
+mkdir -p "$repo" "$bin" "$runtime"
+git init -b main "$repo" >/dev/null
+git -C "$repo" config user.email test@nixploy.invalid
+git -C "$repo" config user.name Nixploy
+printf '{ outputs = _: {}; }\n' > "$repo/flake.nix"
+printf '{}\n' > "$repo/flake.lock"
+git -C "$repo" add flake.nix flake.lock
+git -C "$repo" commit -m fixture >/dev/null
+cat > "$bin/nix" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$$" > "$NIXPLOY_TEST_CHILD_PID"
+touch "$NIXPLOY_TEST_EVAL_STARTED"
+trap 'exit 130' INT TERM
+while :; do sleep 1; done
+EOF
+chmod +x "$bin/nix"
+
+TMPDIR="$runtime" NIXPLOY_TEST_CHILD_PID="$child_marker" \
+  NIXPLOY_TEST_EVAL_STARTED="$marker" PATH="$bin:$PATH" \
+  "$executable" deploy --target staging --directory "$repo" \
+  --state-db "$state_db" >"$root/stdout" 2>"$root/stderr" &
+cli_pid=$!
+for _ in $(seq 1 100); do
+  [[ -e "$marker" ]] && break
+  sleep 0.05
+done
+[[ -e "$marker" ]]
+child_pid=$(cat "$child_marker")
+grep -F -- "Preparing local source snapshot and evaluating target staging..." \
+  "$root/stderr" >/dev/null
+kill -INT "$cli_pid"
+for _ in $(seq 1 100); do
+  ! kill -0 "$cli_pid" 2>/dev/null && break
+  sleep 0.05
+done
+if kill -0 "$cli_pid" 2>/dev/null; then
+  echo "direct CLI did not exit after SIGINT" >&2
+  exit 1
+fi
+set +e
+wait "$cli_pid"
+cli_status=$?
+set -e
+[[ "$cli_status" -ne 0 ]]
+! kill -0 "$child_pid" 2>/dev/null
+! find "$runtime" -maxdepth 1 -type d -name 'nixploy-local-*' | grep -q .
+"$executable" history --target staging --directory "$repo" \
+  --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null

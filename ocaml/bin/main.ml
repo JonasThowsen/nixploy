@@ -1,5 +1,6 @@
 open Async
 open Core
+module Deployment_observer = Nixploy_cli_mapping.Deployment_observer
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
 let print_status status = printf "%s%!" (Inspection_output.status status)
@@ -87,6 +88,7 @@ let deploy_command =
      in
      fun () ->
        let open Deferred.Let_syntax in
+       Nixploy.Process_runner.handle_termination_signals ();
        match Nixploy.Target_name.of_string target with
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
@@ -99,28 +101,56 @@ let deploy_command =
                  (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok application ->
-               let%bind deployed =
-                 Nixploy.Application.deploy_local_deployment application
+               eprintf
+                 "Preparing local source snapshot and evaluating target %s...\n%!"
+                 (Nixploy.Target_name.to_string target);
+               let%bind started =
+                 Nixploy.Application.start_local_deployment application
                    ~working_directory ~target
                in
-               match deployed with
+               match started with
+               | Error error ->
+                   eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
+                   Shutdown.exit 1
+               | Ok started -> (
+                   match
+                     Nixploy.Application.local_scope ~working_directory ~target
+                   with
                    | Error error ->
                        eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
                        Shutdown.exit 1
-                   | Ok deployment -> (
-                       match Nixploy.Application.deployment_state deployment with
-                       | Nixploy.Application.Succeeded ->
-                           printf "Deployment %s succeeded\n%!"
-                             (Nixploy.Application.deployment_id deployment);
-                           Deferred.unit
-                       | Nixploy.Application.Requested
-                       | Nixploy.Application.Running
-                       | Nixploy.Application.Failed
-                       | Nixploy.Application.Cancelled ->
-                           eprintf "Deploy failed at %s: %s\n"
-                             (Nixploy.Application.deployment_stage deployment)
-                             (Nixploy.Application.deployment_message deployment);
-                           Shutdown.exit 1)))
+                   | Ok scope ->
+                       let%bind observed =
+                         Deployment_observer.observe_and_drain application
+                           ~scope started
+                           ~render_stage:(fun stage message ->
+                             eprintf "%s: %s\n%!" stage message)
+                       in
+                       match observed with
+                       | Error error ->
+                           eprintf "Deploy failed: %s\n"
+                             (Error.to_string_hum error);
+                           Shutdown.exit 1
+                       | Ok (Deployment_observer.Interrupted signal) ->
+                           eprintf "Deploy interrupted by %s\n"
+                             (Signal.to_string signal);
+                           Shutdown.exit 130
+                       | Ok (Deployment_observer.Completed deployment) -> (
+                           match
+                             Nixploy.Application.deployment_state deployment
+                           with
+                           | Nixploy.Application.Succeeded ->
+                               printf "Deployment %s succeeded\n%!"
+                                 (Nixploy.Application.deployment_id deployment);
+                               Deferred.unit
+                           | Nixploy.Application.Requested
+                           | Nixploy.Application.Running
+                           | Nixploy.Application.Failed
+                           | Nixploy.Application.Cancelled ->
+                               eprintf "Deploy failed at %s: %s\n"
+                                 (Nixploy.Application.deployment_stage deployment)
+                                 (Nixploy.Application.deployment_message deployment);
+                               Shutdown.exit 1))))
 
 let print_history deployments =
   printf "%s%!" (Inspection_output.history deployments)

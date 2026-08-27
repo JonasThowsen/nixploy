@@ -11,7 +11,8 @@ let assert_ok = function
 let target = Nixploy.Target_name.of_string "production" |> assert_ok
 let revision = String.make 40 'e'
 
-let run_case ~history ~termination ~release_child ~expect =
+let run_case ~on_operation ~render_stage ~history ~termination ~release_child
+    ~expect =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-deployment-observer-" "" in
   let%bind store =
@@ -55,6 +56,7 @@ let run_case ~history ~termination ~release_child ~expect =
           Nixploy.Application.For_testing.deployment ?application_key
             ~working_directory ~target ~id ~state:Requested ~revision ()
         in
+        on_operation id;
         let cancellation =
           Nixploy.Cancellation.current () |> Option.value_exn
         in
@@ -112,12 +114,11 @@ let run_case ~history ~termination ~release_child ~expect =
     |> assert_ok
   in
   let observed =
-    Observer.observe_and_drain ~termination
-      ~render_stage:(fun _ _ -> ())
-      application ~scope started
+    Observer.observe_and_drain ~termination ~render_stage application ~scope
+      started
   in
   let%bind () = Ivar.read child_started in
-  release_child child_gate;
+  let%bind () = release_child child_gate in
   let%bind observed = observed in
   expect observed !remote_effect;
   let%bind drained = Nixploy.Application.mutations_drained application in
@@ -134,23 +135,28 @@ let run_tests () =
   in
   let history_missing ~scope:_ ~limit:_ = Deferred.Or_error.return [] in
   let%bind () =
-    run_case ~history:history_error ~termination:no_signal
-      ~release_child:(fun _ -> ())
+    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+      ~history:history_error ~termination:no_signal
+      ~release_child:(fun _ -> Deferred.unit)
       ~expect:(fun observed remote_effect ->
         assert (Result.is_error observed);
         assert (not remote_effect))
   in
   let%bind () =
-    run_case ~history:history_missing ~termination:no_signal
-      ~release_child:(fun _ -> ())
+    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+      ~history:history_missing ~termination:no_signal
+      ~release_child:(fun _ -> Deferred.unit)
       ~expect:(fun observed remote_effect ->
         assert (Result.is_error observed);
         assert (not remote_effect))
   in
   let signal = Ivar.create () in
   let%bind () =
-    run_case ~history:history_error ~termination:(Ivar.read signal)
-      ~release_child:(fun _ -> Ivar.fill_exn signal Signal.int)
+    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+      ~history:history_error ~termination:(Ivar.read signal)
+      ~release_child:(fun _ ->
+        Ivar.fill_exn signal Signal.int;
+        Deferred.unit)
       ~expect:(fun observed remote_effect ->
         match observed with
         | Ok (Observer.Interrupted received) ->
@@ -159,10 +165,12 @@ let run_tests () =
         | Ok (Observer.Completed _) | Error _ -> assert false)
   in
   let%bind () =
-    run_case
+    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
       ~history:(fun ~scope:_ ~limit:_ -> Deferred.never ())
       ~termination:no_signal
-      ~release_child:(fun gate -> Ivar.fill_exn gate Succeed)
+      ~release_child:(fun gate ->
+        Ivar.fill_exn gate Succeed;
+        Deferred.unit)
       ~expect:(fun observed remote_effect ->
         match observed with
         | Ok (Observer.Completed deployment) ->
@@ -173,10 +181,54 @@ let run_tests () =
                 Succeeded)
         | Ok (Observer.Interrupted _) | Error _ -> assert false)
   in
-  run_case
+  let observed_operation = ref None in
+  let rendered_stages = ref [] in
+  let rec release_after_stage gate remaining =
+    if not (List.is_empty !rendered_stages) then (
+      Ivar.fill_exn gate Succeed;
+      Deferred.unit)
+    else if remaining = 0 then failwith "observer did not render a durable stage"
+    else
+      let%bind () = Clock_ns.after (Time_ns.Span.of_ms 10.) in
+      release_after_stage gate (remaining - 1)
+  in
+  let%bind () =
+    run_case
+      ~on_operation:(fun id -> observed_operation := Some id)
+      ~render_stage:(fun stage message ->
+        rendered_stages := (stage, message) :: !rendered_stages)
+      ~history:(fun ~scope:_ ~limit:_ ->
+        match !observed_operation with
+        | None -> Deferred.Or_error.return []
+        | Some id ->
+            Deferred.Or_error.return
+              [
+                Nixploy.Application.For_testing.deployment ~id ~state:Running
+                  ~stage:"building" ~message:"Building and loading the image"
+                  ();
+              ])
+      ~termination:no_signal
+      ~release_child:(fun gate -> release_after_stage gate 100)
+      ~expect:(fun observed remote_effect ->
+        assert remote_effect;
+        assert (
+          List.mem !rendered_stages
+            ("building", "Building and loading the image")
+            ~equal:[%equal: string * string]);
+        match observed with
+        | Ok (Observer.Completed deployment) ->
+            assert (
+              [%equal: Nixploy.Application.deployment_state]
+                (Nixploy.Application.deployment_state deployment)
+                Succeeded)
+        | Ok (Observer.Interrupted _) | Error _ -> assert false)
+  in
+  run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
     ~history:(fun ~scope:_ ~limit:_ -> Deferred.never ())
     ~termination:no_signal
-    ~release_child:(fun gate -> Ivar.fill_exn gate Fail)
+    ~release_child:(fun gate ->
+      Ivar.fill_exn gate Fail;
+      Deferred.unit)
     ~expect:(fun observed remote_effect ->
       match observed with
       | Ok (Observer.Completed deployment) ->
