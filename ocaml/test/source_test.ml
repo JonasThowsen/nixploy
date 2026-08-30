@@ -98,6 +98,24 @@ let run_tests () =
   let%bind () = Nixploy.Source.cleanup local in
   assert (Sys_unix.file_exists_exn directory);
   assert (not (Sys_unix.file_exists_exn local_path));
+  for index = 0 to 1_099 do
+    let path =
+      Filename.concat directory
+        (sprintf "tracked-%04d-%s" index (String.make 235 'x'))
+    in
+    write path "x\n"
+  done;
+  let%bind _ = run_git ~working_directory:directory [ "add"; "." ] in
+  let%bind large_snapshot =
+    Nixploy.Source.prepare ~working_directory:directory
+      ~selection:local_selection
+  in
+  let large_snapshot = Or_error.ok_exn large_snapshot in
+  assert (
+    Sys_unix.file_exists_exn
+      (Filename.concat (Nixploy.Source.path large_snapshot)
+         (sprintf "tracked-%04d-%s" 1_099 (String.make 235 'x'))));
+  let%bind () = Nixploy.Source.cleanup large_snapshot in
   let untracked = Filename.concat directory "new_source.ex" in
   write untracked "intentional source\n";
   let%bind rejected_untracked =

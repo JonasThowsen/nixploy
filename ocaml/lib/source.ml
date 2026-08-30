@@ -19,6 +19,7 @@ type selection =
 
 let git_timeout = Time_ns.Span.of_min 2.
 let max_git_output = 262_144
+let max_git_listing_output = 32 * 1024 * 1024
 let path (source : t) = source.path
 let nix_root (source : t) = source.nix_root
 
@@ -33,9 +34,9 @@ let commit_revision (commit : commit) = commit.revision
 let commit_subject (commit : commit) = commit.subject
 let commit_timestamp_ms (commit : commit) = commit.timestamp_ms
 
-let git ?working_directory args =
+let git ?working_directory ?(max_output_bytes = max_git_output) args =
   Process_runner.run_stdout ?working_directory ~timeout:git_timeout
-    ~max_output_bytes:max_git_output ~prog:"git" ~args
+    ~max_output_bytes ~prog:"git" ~args
     ~env:
       (`Extend
          [
@@ -106,7 +107,8 @@ let describe ~working_directory revision =
 let reject_non_ignored_untracked ~working_directory =
   let open Deferred.Or_error.Let_syntax in
   let%bind output =
-    git ~working_directory [ "ls-files"; "--others"; "--exclude-standard" ]
+    git ~working_directory ~max_output_bytes:max_git_listing_output
+      [ "ls-files"; "--others"; "--exclude-standard" ]
   in
   match
     String.split_lines output |> List.filter ~f:(Fn.non String.is_empty)
@@ -205,7 +207,8 @@ let repository_layout ~working_directory =
 let reject_gitlinks ~repository_root =
   let open Deferred.Or_error.Let_syntax in
   let%bind gitlinks =
-    git ~working_directory:repository_root [ "ls-files"; "--stage" ]
+    git ~working_directory:repository_root
+      ~max_output_bytes:max_git_listing_output [ "ls-files"; "--stage" ]
   in
   if
     String.split_lines gitlinks
@@ -221,7 +224,9 @@ let existing_path path =
 let copy_tracked_files ~repository_root ~destination =
   let open Deferred.Or_error.Let_syntax in
   let%bind output =
-    git ~working_directory:repository_root [ "ls-files"; "--cached"; "-z" ]
+    git ~working_directory:repository_root
+      ~max_output_bytes:max_git_listing_output
+      [ "ls-files"; "--cached"; "-z" ]
   in
   let paths =
     String.split output ~on:'\000'
