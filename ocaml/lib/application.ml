@@ -125,6 +125,13 @@ type cached_runtime = {
   value : Runtime_application.t Or_error.t Deferred.t;
 }
 
+type cached_live_resource_state = {
+  working_directory : string;
+  target : Target_name.t;
+  mutable expires_at : Time_ns.t;
+  value : resource_state Deferred.t;
+}
+
 type t = {
   store : Store.t;
   preview_main : working_directory:string -> commit Deferred.Or_error.t;
@@ -156,6 +163,7 @@ type t = {
   active : active_operation String.Table.t;
   cancellations : Cancellation.t list ref;
   runtime_cache : cached_runtime String.Table.t;
+  live_resource_state_cache : cached_live_resource_state String.Table.t;
   deployment_receipts : Operation_receipt.deploy_store;
   prune_receipts : Operation_receipt.prune_store;
   managed_applications : Managed_application.t list;
@@ -254,6 +262,7 @@ let create_with_managed_applications ~managed_applications ~store () =
     active = String.Table.create ();
     cancellations = ref [];
     runtime_cache = String.Table.create ();
+    live_resource_state_cache = String.Table.create ();
     deployment_receipts =
       Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
     prune_receipts = Operation_receipt.create_prune_store () |> Or_error.ok_exn;
@@ -468,6 +477,20 @@ let invalidate_runtime_scope t ~working_directory ~target =
           Hashtbl.remove t.runtime_cache key
       | Some _ | None -> ())
 
+let invalidate_live_resource_state_scope t ~working_directory ~target =
+  Hashtbl.keys t.live_resource_state_cache
+  |> List.iter ~f:(fun key ->
+      match Hashtbl.find t.live_resource_state_cache key with
+      | Some cached
+        when String.equal cached.working_directory working_directory
+             && Target_name.equal cached.target target ->
+          Hashtbl.remove t.live_resource_state_cache key
+      | Some _ | None -> ())
+
+let invalidate_runtime_observations t ~working_directory ~target =
+  invalidate_runtime_scope t ~working_directory ~target;
+  invalidate_live_resource_state_scope t ~working_directory ~target
+
 let launch_deploy t ~authorization ~prepared =
   let application_key =
     Operation_receipt.deploy_application_key authorization
@@ -484,7 +507,7 @@ let launch_deploy t ~authorization ~prepared =
           finish_mutation t;
           Deferred.return (Error error)
       | Ok working_directory -> (
-          invalidate_runtime_scope t ~working_directory ~target;
+          invalidate_runtime_observations t ~working_directory ~target;
           let scope = { application_key; working_directory; target } in
           let cancellation = Cancellation.create () in
           add_cancellation t cancellation;
@@ -516,7 +539,7 @@ let launch_deploy t ~authorization ~prepared =
               Hashtbl.set t.active ~key:deployment.id ~data:started;
               upon completion (fun _ ->
                   remove_active t deployment.id cancellation;
-                  invalidate_runtime_scope t ~working_directory ~target;
+                  invalidate_runtime_observations t ~working_directory ~target;
                   finish_mutation t);
               Ok started))
 
@@ -730,6 +753,47 @@ let cancel_deployment t ~scope ~operation_id =
 let resource_state_for_scope t ~(scope : scope) =
   Store.resource_state t.store ~working_directory:scope.working_directory
     ~target:scope.target
+
+let live_resource_state_cache_key (scope : scope) =
+  String.concat
+    [
+      scope.working_directory;
+      "\000";
+      Target_name.to_string scope.target;
+      "\000";
+      Option.value scope.application_key ~default:"";
+    ]
+
+let live_resource_state_for_scope t ~(scope : scope) =
+  let now = Time_ns.now () in
+  let key = live_resource_state_cache_key scope in
+  match Hashtbl.find t.live_resource_state_cache key with
+  | Some cached
+    when (not (Deferred.is_determined cached.value))
+         || Time_ns.compare now cached.expires_at < 0 ->
+      cached.value
+  | Some _ | None ->
+      let value =
+        let%map inspected = live_status t ~scope in
+        match inspected with
+        | Error _ -> Unknown
+        | Ok status ->
+            if List.is_empty (Status.workloads status) then Absent else Present
+      in
+      let cached =
+        {
+          working_directory = scope.working_directory;
+          target = scope.target;
+          expires_at = Time_ns.add now (Time_ns.Span.of_sec 10.);
+          value;
+        }
+      in
+      Hashtbl.set t.live_resource_state_cache ~key ~data:cached;
+      don't_wait_for
+        (Deferred.map value ~f:(fun _ ->
+             cached.expires_at <-
+               Time_ns.add (Time_ns.now ()) (Time_ns.Span.of_sec 10.)));
+      value
 
 let resource_state t ~working_directory ~target =
   match local_scope ~working_directory ~target with
@@ -1095,6 +1159,7 @@ module For_testing = struct
       active = String.Table.create ();
       cancellations = ref [];
       runtime_cache = String.Table.create ();
+      live_resource_state_cache = String.Table.create ();
       deployment_receipts =
         Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
       prune_receipts =

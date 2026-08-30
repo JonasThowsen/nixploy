@@ -156,6 +156,10 @@ esac
       let modern = assert_ok modern in
       [%test_eq: int] 1
         (modern |> Nixploy.Application.status_workloads |> List.length);
+      let%bind live_resource_state =
+        Nixploy.Application.live_resource_state_for_scope application ~scope
+      in
+      [%test_eq: Nixploy.Application.resource_state] Present live_resource_state;
       let rendered = Inspection_output.status modern in
       assert (String.is_substring rendered ~substring:"Project:  sample");
       assert (String.is_substring rendered ~substring:resource_key);

@@ -146,6 +146,16 @@ let run_tests () =
   let%bind status = Nixploy.Application.live_status fake ~scope in
   assert (Result.is_error status);
   [%test_eq: int] 1 !status_calls;
+  let%bind live_resource_state =
+    Nixploy.Application.live_resource_state_for_scope fake ~scope
+  in
+  [%test_eq: Nixploy.Application.resource_state] Unknown live_resource_state;
+  let%bind cached_live_resource_state =
+    Nixploy.Application.live_resource_state_for_scope fake ~scope
+  in
+  [%test_eq: Nixploy.Application.resource_state] Unknown
+    cached_live_resource_state;
+  [%test_eq: int] 2 !status_calls;
   let%bind logs = Nixploy.Application.application_logs fake application in
   let logs = assert_ok logs in
   [%test_eq: string] "example-production-green" logs.container_name;

@@ -24,9 +24,11 @@ let protocol_deployment state scope deployment =
 
 let find_application state key = Managed_application.find state.applications key
 let scope application = Application.managed_scope application
+let max_concurrent_application_observations = 4
 
 let list_applications state _connection_state () =
-  Deferred.Or_error.List.map state.applications ~how:`Parallel
+  Deferred.Or_error.List.map state.applications
+    ~how:(`Max_concurrent_jobs max_concurrent_application_observations)
     ~f:(fun application ->
       let open Deferred.Or_error.Let_syntax in
       let%bind scope = Deferred.return (scope application) in
@@ -34,7 +36,9 @@ let list_applications state _connection_state () =
         Application.deployment_history state.application ~scope ~limit:1
       in
       let%map resource_state =
-        Application.resource_state_for_scope state.application ~scope
+        Deferred.map
+          (Application.live_resource_state_for_scope state.application ~scope)
+          ~f:Or_error.return
       in
       Consumer_response.application application ~resource_state
         ~deployment:

@@ -232,6 +232,10 @@ val resource_state :
 val resource_state_for_scope :
   t -> scope:scope -> resource_state Deferred.Or_error.t
 
+val live_resource_state_for_scope : t -> scope:scope -> resource_state Deferred.t
+(** Queries the remote Podman resource for this scope. Failed inspection is
+    reported as [Unknown] and never overwrites the durable deployment state. *)
+
 val prune_project : prune_result -> Project_name.t
 val prune_target : prune_result -> Target_name.t
 val prune_resource_key : prune_result -> Resource_key.t
