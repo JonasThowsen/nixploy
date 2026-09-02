@@ -58,6 +58,33 @@ module Recent_deployment = struct
   [@@deriving bin_io, equal, sexp]
 end
 
+module Control_plane_capabilities = struct
+  module Query = struct
+    type t = {
+      protocol_major : int;
+      protocol_minor : int;
+      required_capabilities : string list;
+    }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  type t = {
+    control_plane_id : string;
+    package_revision : string;
+    protocol_major : int;
+    protocol_minor : int;
+    deployment_config_schemas : string list;
+    capabilities : string list;
+  }
+  [@@deriving bin_io, equal, sexp]
+
+  let t =
+    Rpc.Rpc.create ~name:"get-control-plane-capabilities" ~version:0
+      ~bin_query:[%bin_type_class: Query.t]
+      ~bin_response:[%bin_type_class: t Or_error.t]
+      ~include_in_error_count:Or_error
+end
+
 module Preview_deployment = struct
   module Query = struct
     type t = { application : string } [@@deriving bin_io, equal, sexp]
@@ -80,8 +107,7 @@ end
 
 module Deploy = struct
   module Query = struct
-    type t = { application : string }
-    [@@deriving bin_io, equal, sexp]
+    type t = { application : string } [@@deriving bin_io, equal, sexp]
   end
 
   let t =

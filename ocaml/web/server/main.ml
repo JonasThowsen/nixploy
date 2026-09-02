@@ -4,6 +4,10 @@ module Managed_application = Nixploy.Managed_application
 module Application = Nixploy.Application
 module Authorization = Nixploy_rpc_mapping.Authorization
 module Cancellation_request = Nixploy_rpc_mapping.Cancellation_request
+
+module Control_plane_capabilities =
+  Nixploy_rpc_mapping.Control_plane_capabilities
+
 module Consumer_response = Nixploy_rpc_mapping.Consumer_response
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
 module Prune_request = Nixploy_rpc_mapping.Prune_request
@@ -12,7 +16,14 @@ module Static_route = Nixploy_rpc_mapping.Static_route
 type state = {
   applications : Managed_application.t list;
   application : Application.t;
+  capabilities : Control_plane_capabilities.t;
 }
+
+type connection_state = { granted_capabilities : string list ref }
+
+(* TODO(tracer): Bind grants to an expiry and authenticated identity before
+   managed CLI mutation is introduced. This connection-scoped grant proves that
+   unhandshaken RPCs fail without changing the existing browser transport. *)
 
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
@@ -25,6 +36,29 @@ let protocol_deployment state scope deployment =
 let find_application state key = Managed_application.find state.applications key
 let scope application = Application.managed_scope application
 let max_concurrent_application_observations = 4
+
+let get_control_plane_capabilities state connection query =
+  let result =
+    Control_plane_capabilities.negotiate_client_capabilities state.capabilities
+      query
+  in
+  Option.iter (Result.ok result) ~f:(fun _ ->
+      connection.granted_capabilities := query.required_capabilities);
+  Deferred.return result
+
+let require_control_plane_capability connection ~capability =
+  if List.mem !(connection.granted_capabilities) capability ~equal:String.equal
+  then Ok ()
+  else
+    Or_error.errorf
+      "NIXPLOY_CAPABILITY_GRANT_REQUIRED: call get-control-plane-capabilities \
+       with required capability %s first"
+      capability
+
+let with_control_plane_capability ~capability handler state connection query =
+  match require_control_plane_capability connection ~capability with
+  | Error _ as error -> Deferred.return error
+  | Ok () -> handler state connection query
 
 let list_applications state _connection_state () =
   Deferred.Or_error.List.map state.applications
@@ -153,19 +187,35 @@ let implementations state =
   Rpc.Implementations.create_exn
     ~implementations:
       [
-        Rpc.Rpc.implement Protocol.List_applications.t (list_applications state);
+        Rpc.Rpc.implement Protocol.Control_plane_capabilities.t
+          (get_control_plane_capabilities state);
+        Rpc.Rpc.implement Protocol.List_applications.t
+          (with_control_plane_capability ~capability:"managed-read-v1"
+             list_applications state);
         Rpc.Rpc.implement Protocol.Preview_deployment.t
-          (preview_deployment state);
-        Rpc.Rpc.implement Protocol.Deploy.t (deploy state);
-        Rpc.Rpc.implement Protocol.List_deployments.t (list_deployments state);
+          (with_control_plane_capability ~capability:"managed-deploy-v1"
+             preview_deployment state);
+        Rpc.Rpc.implement Protocol.Deploy.t
+          (with_control_plane_capability ~capability:"managed-deploy-v1" deploy
+             state);
+        Rpc.Rpc.implement Protocol.List_deployments.t
+          (with_control_plane_capability ~capability:"managed-read-v1"
+             list_deployments state);
         Rpc.Rpc.implement Protocol.Cancel_deployment.t
-          (cancel_deployment_v0 state);
+          (with_control_plane_capability ~capability:"managed-cancel-v1"
+             cancel_deployment_v0 state);
         Rpc.Rpc.implement Protocol.Cancel_deployment_v1.t
-          (cancel_deployment state);
-        Rpc.Rpc.implement Protocol.Prune.t (prune state);
+          (with_control_plane_capability ~capability:"managed-cancel-v1"
+             cancel_deployment state);
+        Rpc.Rpc.implement Protocol.Prune.t
+          (with_control_plane_capability ~capability:"managed-prune-v1" prune
+             state);
         Rpc.Rpc.implement Protocol.Get_application_logs.t
-          (get_application_logs state);
-        Rpc.Rpc.implement Protocol.Get_metrics.t (get_metrics state);
+          (with_control_plane_capability ~capability:"managed-read-v1"
+             get_application_logs state);
+        Rpc.Rpc.implement Protocol.Get_metrics.t
+          (with_control_plane_capability ~capability:"managed-read-v1"
+             get_metrics state);
       ]
     ~on_unknown_rpc:`Continue
 
@@ -250,7 +300,17 @@ let run ~port ~state_db =
     Application.open_ ~managed_applications:applications ~state_path:state_db ()
     >>| Or_error.ok_exn
   in
-  let state = { applications; application } in
+  let capabilities =
+    Control_plane_capabilities.create
+      ~control_plane_id:
+        (Sys.getenv "NIXPLOY_CONTROL_PLANE_ID"
+        |> Option.value ~default:(Caml_unix.gethostname ()))
+      ~package_revision:
+        (Sys.getenv "NIXPLOY_PACKAGE_REVISION"
+        |> Option.value ~default:"unknown")
+    |> Or_error.ok_exn
+  in
+  let state = { applications; application; capabilities } in
   let%bind server =
     Rpc_websocket.Rpc.serve ~on_handler_error:`Raise ~mode:`TCP
       ~where_to_listen:(Tcp.Where_to_listen.bind_to Localhost (On_port port))
@@ -259,7 +319,7 @@ let run ~port ~state_db =
         (should_process_request authorization origin_policy)
       ~implementations:(implementations state)
       ~initial_connection_state:(fun () _initiated_from _address _connection ->
-        ())
+        { granted_capabilities = ref [] })
       ()
   in
   printf "Nixploy control plane listening on http://127.0.0.1:%d/\n%!" port;

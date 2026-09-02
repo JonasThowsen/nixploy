@@ -123,7 +123,7 @@ let origin_of_uri uri =
     Or_error.errorf "unsupported URI scheme %S" scheme
   else Ok (Uri.make ~scheme ~host ?port:(Uri.port uri) () |> Uri.to_string)
 
-let run ~uri ~preview ~inspect ~deploy ~cancel_started =
+let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
   let open Deferred.Or_error.Let_syntax in
   let uri = Uri.of_string uri in
   let%bind origin = origin_of_uri uri |> Deferred.return in
@@ -133,7 +133,31 @@ let run ~uri ~preview ~inspect ~deploy ~cancel_started =
     |> Option.value_map ~default:headers ~f:(fun login ->
         Cohttp.Header.add headers "Tailscale-User-Login" login)
   in
+  let required_capabilities =
+    [ "managed-read-v1" ]
+    @ (if
+         Option.is_some preview || Option.is_some inspect
+         || Option.is_some deploy
+       then [ "managed-deploy-v1" ]
+       else [])
+    @ if cancel_started then [ "managed-cancel-v1" ] else []
+  in
   let%bind connection = Rpc_websocket.Rpc.client ~headers uri in
+  let%bind () =
+    if skip_capabilities then Deferred.Or_error.return ()
+    else
+      let%bind capabilities =
+        Rpc.Rpc.dispatch Protocol.Control_plane_capabilities.t connection
+          {
+            Protocol.Control_plane_capabilities.Query.protocol_major = 1;
+            protocol_minor = 0;
+            required_capabilities;
+          }
+      in
+      let%map capabilities = Deferred.return capabilities in
+      printf "capabilities %s %d.%d\n%!" capabilities.control_plane_id
+        capabilities.protocol_major capabilities.protocol_minor
+  in
   let%bind applications =
     Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
   in
@@ -198,8 +222,11 @@ let command =
      and cancel_started =
        flag "--cancel-started" no_arg
          ~doc:" cancel a deployment immediately after it starts"
+     and skip_capabilities =
+       flag "--skip-capabilities" no_arg
+         ~doc:" test only: dispatch without the required capabilities handshake"
      in
      fun () ->
-       run ~uri ~preview ~inspect ~deploy ~cancel_started)
+       run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities)
 
 let () = Command_unix.run command

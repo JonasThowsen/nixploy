@@ -3,6 +3,7 @@
  (modules
   authorization
   cancellation_request
+  control_plane_capabilities
   consumer_response
   deployment_start
   prune_request

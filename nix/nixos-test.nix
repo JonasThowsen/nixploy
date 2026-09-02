@@ -155,6 +155,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test -s /var/lib/nixploy/test-state.sqlite3", timeout=120)
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
+    machine.fail("nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example | grep -E '^preview [0-9a-f]{40} smoke$'")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")

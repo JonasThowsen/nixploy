@@ -1,7 +1,18 @@
 (library
  (name nixploy_cli_mapping)
- (modules deployment_output inspection_output deployment_observer)
- (libraries nixploy core)
+ (modules
+  control_plane_output
+  deployment_output
+  inspection_output
+  deployment_observer)
+ (libraries nixploy protocol core)
+ (preprocess
+  (pps ppx_jane)))
+
+(library
+ (name nixploy_control_plane_client)
+ (modules control_plane_client)
+ (libraries async async_rpc_websocket cohttp core protocol uri)
  (preprocess
   (pps ppx_jane)))
 
@@ -9,7 +20,13 @@
  (name main)
  (public_name nixploy)
  (modules main)
- (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
+ (libraries
+  nixploy
+  nixploy_cli_mapping
+  nixploy_control_plane_client
+  core
+  core_unix.command_unix
+  async)
  (preprocess
   (pps ppx_jane)))
 

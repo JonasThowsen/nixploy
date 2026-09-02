@@ -191,6 +191,10 @@ let component graph =
           ~every:(Time_ns.Span.of_sec 10.) (Bonsai.return ()) graph
     | false -> Bonsai.return (empty_poll_result ())
   in
+  let dispatch_capabilities =
+    Rpc_effect.Rpc.dispatcher Protocol.Control_plane_capabilities.t
+      ~where_to_connect:Self graph
+  in
   let dispatch_deploy =
     Rpc_effect.Rpc.dispatcher Protocol.Deploy.t ~where_to_connect:Self graph
   in
@@ -259,7 +263,18 @@ let component graph =
   in
   Bonsai.Edge.on_change route ~equal:Route.equal ~callback:sync_title graph;
   let activate =
-    let%arr set_route = set_route and set_mobile_open = set_mobile_open in
+    let%arr set_route = set_route
+    and set_mobile_open = set_mobile_open
+    and dispatch_capabilities = dispatch_capabilities in
+    let%bind.Effect _response =
+      dispatch_capabilities
+        {
+          Protocol.Control_plane_capabilities.Query.protocol_major = 1;
+          protocol_minor = 0;
+          required_capabilities =
+            [ "managed-read-v1"; "managed-deploy-v1"; "managed-cancel-v1" ];
+        }
+    in
     Browser_navigation.start ~on_route:set_route ~on_escape:(fun () ->
         Effect.Many
           [

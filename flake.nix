@@ -11,6 +11,7 @@
       lib = nixpkgs.lib;
       systems = [ "x86_64-linux" ];
       forAllSystems = lib.genAttrs systems;
+      nixployPackageRevision = self.rev or "unknown";
       pkgsFor = system: import nixpkgs { inherit system; };
       ocamlPackagesFor =
         pkgs:
@@ -135,6 +136,7 @@
             postFixup = ''
               for executable in $out/bin/nixploy $out/bin/nixploy-web; do
                 wrapProgram "$executable" \
+                  --set NIXPLOY_PACKAGE_REVISION ${lib.escapeShellArg nixployPackageRevision} \
                   --set NIXPLOY_PROTECTED_GIT ${lib.escapeShellArg "${pkgs.git}/bin/git"} \
                   --prefix PATH : ${
                     lib.makeBinPath [

@@ -1,5 +1,7 @@
 open Async
 open Core
+module Control_plane_client = Nixploy_control_plane_client.Control_plane_client
+module Control_plane_output = Nixploy_cli_mapping.Control_plane_output
 module Deployment_observer = Nixploy_cli_mapping.Deployment_observer
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
@@ -26,7 +28,9 @@ let status_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+           let%bind opened =
+             Nixploy.Application.open_ ~state_path:state_db ()
+           in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"
@@ -93,16 +97,19 @@ let deploy_command =
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
-       | Ok target ->
-           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
-           (match opened with
+       | Ok target -> (
+           let%bind opened =
+             Nixploy.Application.open_ ~state_path:state_db ()
+           in
+           match opened with
            | Error error ->
                eprintf "Could not open deployment state: %s\n"
                  (Error.to_string_hum error);
                Shutdown.exit 1
-           | Ok application ->
+           | Ok application -> (
                eprintf
-                 "Preparing local source snapshot and evaluating target %s...\n%!"
+                 "Preparing local source snapshot and evaluating target %s...\n\
+                  %!"
                  (Nixploy.Target_name.to_string target);
                let%bind started =
                  Nixploy.Application.start_local_deployment application
@@ -119,11 +126,10 @@ let deploy_command =
                    | Error error ->
                        eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
                        Shutdown.exit 1
-                   | Ok scope ->
+                   | Ok scope -> (
                        let%bind observed =
                          Deployment_observer.observe_and_drain application
-                           ~scope started
-                           ~render_stage:(fun stage message ->
+                           ~scope started ~render_stage:(fun stage message ->
                              eprintf "%s: %s\n%!" stage message)
                        in
                        match observed with
@@ -148,9 +154,11 @@ let deploy_command =
                            | Nixploy.Application.Failed
                            | Nixploy.Application.Cancelled ->
                                eprintf "Deploy failed at %s: %s\n"
-                                 (Nixploy.Application.deployment_stage deployment)
-                                 (Nixploy.Application.deployment_message deployment);
-                               Shutdown.exit 1))))
+                                 (Nixploy.Application.deployment_stage
+                                    deployment)
+                                 (Nixploy.Application.deployment_message
+                                    deployment);
+                               Shutdown.exit 1))))))
 
 let print_history deployments =
   printf "%s%!" (Inspection_output.history deployments)
@@ -180,7 +188,9 @@ let history_command =
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
        | Ok target -> (
-           let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+           let%bind opened =
+             Nixploy.Application.open_ ~state_path:state_db ()
+           in
            match opened with
            | Error error ->
                eprintf "Could not open control-plane state: %s\n"
@@ -207,9 +217,32 @@ let history_command =
                          (Error.to_string_hum error);
                        Shutdown.exit 1))))
 
+let control_plane_capabilities_command =
+  Async.Command.async_or_error
+    ~summary:"Read one control-plane compatibility contract"
+    (let%map_open.Command uri =
+       flag "--uri" (required string)
+         ~doc:"URI control-plane HTTP or HTTPS authority"
+     and required_capabilities =
+       flag "--require" (listed string)
+         ~doc:"CAPABILITY require one named server capability"
+     in
+     fun () ->
+       let open Deferred.Or_error.Let_syntax in
+       let%map capabilities =
+         Control_plane_client.request_control_plane_capabilities ~uri
+           ~required_capabilities
+       in
+       printf "%s%!" (Control_plane_output.capabilities capabilities))
+
+let control_plane_command =
+  Command.group ~summary:"Inspect a remote nixploy control plane"
+    [ ("capabilities", control_plane_capabilities_command) ]
+
 let command =
   Command.group ~summary:"Deploy and manage Nix-built applications"
     [
+      ("control-plane", control_plane_command);
       ("deploy", deploy_command);
       ("history", history_command);
       ("prune", prune_command);

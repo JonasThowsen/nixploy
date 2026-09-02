@@ -36,6 +36,13 @@
   (pps ppx_jane)))
 
 (test
+ (name control_plane_capabilities_test)
+ (modules control_plane_capabilities_test)
+ (libraries core nixploy_rpc_mapping protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name authorization_test)
  (modules authorization_test)
  (libraries core nixploy_rpc_mapping)

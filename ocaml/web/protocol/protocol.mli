@@ -58,6 +58,29 @@ module Recent_deployment : sig
   [@@deriving bin_io, equal, sexp]
 end
 
+module Control_plane_capabilities : sig
+  module Query : sig
+    type t = {
+      protocol_major : int;
+      protocol_minor : int;
+      required_capabilities : string list;
+    }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  type t = {
+    control_plane_id : string;
+    package_revision : string;
+    protocol_major : int;
+    protocol_minor : int;
+    deployment_config_schemas : string list;
+    capabilities : string list;
+  }
+  [@@deriving bin_io, equal, sexp]
+
+  val t : (Query.t, t Or_error.t) Rpc.Rpc.t
+end
+
 module Preview_deployment : sig
   module Query : sig
     type t = { application : string } [@@deriving bin_io, equal, sexp]
@@ -72,8 +95,7 @@ end
 
 module Deploy : sig
   module Query : sig
-    type t = { application : string }
-    [@@deriving bin_io, equal, sexp]
+    type t = { application : string } [@@deriving bin_io, equal, sexp]
   end
 
   val t : (Query.t, string Or_error.t) Rpc.Rpc.t

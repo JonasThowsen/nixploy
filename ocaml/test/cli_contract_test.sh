@@ -6,8 +6,9 @@ root_help=$($executable --help 2>&1)
 prune_help=$($executable prune --help 2>&1)
 history_help=$($executable history --help 2>&1)
 deploy_help=$($executable deploy --help 2>&1)
+control_plane_help=$($executable control-plane capabilities --help 2>&1)
 
-for expected in "prune" "deploy" "history" "status"; do
+for expected in "control-plane" "prune" "deploy" "history" "status"; do
   grep -F -- "$expected" <<<"$root_help" >/dev/null
 done
 for expected in "--target TARGET" "-t" "--directory DIRECTORY" "-C" "--state-db PATH"; do
@@ -16,6 +17,8 @@ for expected in "--target TARGET" "-t" "--directory DIRECTORY" "-C" "--state-db 
   grep -F -- "$expected" <<<"$deploy_help" >/dev/null
 done
 grep -F -- "--limit COUNT" <<<"$history_help" >/dev/null
+grep -F -- "--uri URI" <<<"$control_plane_help" >/dev/null
+grep -F -- "--require CAPABILITY" <<<"$control_plane_help" >/dev/null
 
 set +e
 missing_output=$($executable prune 2>&1)
