@@ -23,8 +23,6 @@ val render :
   current_match:int ->
   follow:bool ->
   paused_snapshot:Protocol.Log_snapshot.t option ->
-  dispatch_deploy:
-    (Protocol.Deploy.Query.t -> string Or_error.t Or_error.t Effect.t) ->
   dispatch_cancel:
     (Protocol.Cancel_deployment_v1.Query.t ->
     unit Or_error.t Or_error.t Effect.t) ->
