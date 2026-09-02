@@ -44,6 +44,11 @@ let assert_request_validation () =
   [%test_eq: string] "example" (Admission.managed_application_key accepted);
   [%test_eq: string] "production"
     (Nixploy.Target_name.to_string (Admission.requested_target accepted));
+  let maximum_target = String.make 255 't' in
+  Admission.create ~managed_application_key:"example"
+    ~requested_target:maximum_target ~provenance:"origin"
+    ~revision:"0123456789abcdef0123456789abcdef01234567"
+  |> Or_error.ok_exn |> ignore;
   List.iter
     [
       Admission.create ~managed_application_key:"EXAMPLE"
@@ -51,6 +56,9 @@ let assert_request_validation () =
         ~revision:"0123456789abcdef0123456789abcdef01234567";
       Admission.create ~managed_application_key:"example" ~requested_target:""
         ~provenance:"origin"
+        ~revision:"0123456789abcdef0123456789abcdef01234567";
+      Admission.create ~managed_application_key:"example"
+        ~requested_target:(String.make 256 't') ~provenance:"origin"
         ~revision:"0123456789abcdef0123456789abcdef01234567";
       Admission.create ~managed_application_key:"example"
         ~requested_target:"production" ~provenance:"\n"

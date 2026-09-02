@@ -51,6 +51,13 @@ let%test_unit "termination state forces only a repeated signal" =
     Nixploy.Process_runner.For_testing.should_force_termination
       ~already_delivered:true)
 
+let%test_unit "target names are bounded to 255 bytes" =
+  let maximum_length = String.make 255 'a' in
+  let too_long = String.make 256 'a' in
+  assert (Result.is_ok (Nixploy.Target_name.of_string maximum_length));
+  assert_error_containing "at most 255 bytes"
+    (Nixploy.Target_name.of_string too_long)
+
 let%test_unit "resource identity matches the deployed host contract" =
   let cases =
     [
