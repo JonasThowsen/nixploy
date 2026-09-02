@@ -156,7 +156,10 @@ pkgs.testers.runNixOSTest {
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
     machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
     machine.fail("nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities")
-    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example | grep -E '^preview [0-9a-f]{40} smoke$'")
+    # These probes dispatch only the requested managed RPC after the handshake.
+    # They must not evaluate the custody checkout or admit a deployment.
+    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example >/tmp/nixploy-preview.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-preview.out")
+    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --deploy example >/tmp/nixploy-deploy.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-deploy.out")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 
@@ -201,12 +204,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("rm /var/lib/nixploy-custody/example.evidence.json && mv /var/lib/nixploy-custody/example.evidence.real /var/lib/nixploy-custody/example.evidence.json")
     machine.succeed(f"runuser -u nixploy -- nixploy-source-authority-probe example | grep -Fx '{revision} {flake_digest}'")
 
-    # The packaged CLI deploys a checked-out flake directly without web RPC,
-    # preview, or receipt authority.  The normal target lease/store path still
-    # records the operation.
+    # A checked-out managed target never reaches the local state or deployment
+    # path when the CLI rejects it before managed authority selection.
     machine.succeed("rm -rf /tmp/direct-production && runuser -u nixploy -- git -c 'safe.directory=*' clone /var/lib/nixploy-custody/example /tmp/direct-production")
     machine.fail("runuser -u nixploy -- nixploy deploy --directory /tmp/direct-production --target production --state-db /tmp/direct-production.sqlite")
-    machine.succeed("test $(sqlite3 /tmp/direct-production.sqlite \"select count(*) from deployments\") -eq 1")
+    machine.succeed("test ! -e /tmp/direct-production.sqlite")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")

@@ -100,8 +100,8 @@ val preview_main_commit :
 
 val preview_managed_deployment :
   t -> Managed_application.t -> deployment_preview Deferred.Or_error.t
-(** Materializes and evaluates the exact main commit, validates root-managed
-    production intent, and returns a process-local opaque receipt. *)
+(** Fails closed until immutable revision admission, root-owned source custody,
+    and authoritative target-lease broker integration are available. *)
 
 val deployment_preview_commit : deployment_preview -> commit
 val deployment_preview_receipt : deployment_preview -> string
@@ -109,9 +109,8 @@ val deployment_preview_prune_receipt : deployment_preview -> string
 
 val start_managed_deployment :
   t -> Managed_application.t -> started_deployment Deferred.Or_error.t
-(** Deploys the configured managed checkout directly. The allowlist and the
-    evaluated target destination remain checked; no preview receipt authorizes
-    this mutation. *)
+(** Fails closed before source, deployment, or remote effects until immutable
+    managed admission is implemented. *)
 
 val deploy_managed_deployment :
   t -> Managed_application.t -> deployment Deferred.Or_error.t
@@ -138,8 +137,8 @@ val start_managed_preview :
 
 val deploy_managed_preview :
   t -> Managed_application.t -> receipt:string -> deployment Deferred.Or_error.t
-(** Consumes the server-held receipt and revalidates its exact evaluated intent
-    inside deployment before any remote or secret mutation. *)
+(** Both functions fail closed before source, deployment, or remote effects
+    until immutable managed admission is implemented. *)
 
 val prune_managed_preview :
   t ->

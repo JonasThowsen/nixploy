@@ -158,13 +158,18 @@ let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
       printf "capabilities %s %d.%d\n%!" capabilities.control_plane_id
         capabilities.protocol_major capabilities.protocol_minor
   in
-  let%bind applications =
-    Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
+  let%bind () =
+    if Option.is_some preview || Option.is_some inspect || Option.is_some deploy
+    then Deferred.Or_error.return ()
+    else
+      let%bind applications =
+        Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
+      in
+      let%map applications = Deferred.return applications in
+      List.iter applications ~f:(fun application ->
+          printf "%s %s\n%!" application.Protocol.Application.key
+            (deployment_state application))
   in
-  let%bind applications = Deferred.return applications in
-  List.iter applications ~f:(fun application ->
-      printf "%s %s\n%!" application.Protocol.Application.key
-        (deployment_state application));
   let%bind () =
     match preview with
     | None -> Deferred.Or_error.return ()
@@ -178,13 +183,6 @@ let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
   match deploy with
   | None -> Deferred.Or_error.return ()
   | Some application ->
-      let%bind commit =
-        Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
-          { Protocol.Preview_deployment.Query.application }
-      in
-      let%bind preview = Deferred.return commit in
-      let commit = preview.Protocol.Deployment_preview.commit in
-      printf "preview %s %s\n%!" commit.revision commit.subject;
       let%bind operation =
         Rpc.Rpc.dispatch Protocol.Deploy.t connection
           { Protocol.Deploy.Query.application }

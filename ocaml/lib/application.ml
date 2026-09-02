@@ -168,8 +168,6 @@ type t = {
   cancellations : Cancellation.t list ref;
   runtime_cache : cached_runtime String.Table.t;
   live_resource_state_cache : cached_live_resource_state String.Table.t;
-  deployment_receipts : Operation_receipt.deploy_store;
-  prune_receipts : Operation_receipt.prune_store;
   managed_applications : Managed_application.t list;
   mutations : mutation_lifecycle;
 }
@@ -267,9 +265,6 @@ let create_with_managed_applications ~managed_applications ~store () =
     cancellations = ref [];
     runtime_cache = String.Table.create ();
     live_resource_state_cache = String.Table.create ();
-    deployment_receipts =
-      Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
-    prune_receipts = Operation_receipt.create_prune_store () |> Or_error.ok_exn;
     managed_applications;
     mutations = { accepting = true; active_count = 0; drained = Ivar.create () };
   }
@@ -323,118 +318,14 @@ let open_ ?(managed_applications = []) ~state_path () =
 
 let preview_main_commit t ~working_directory = t.preview_main ~working_directory
 
-let evaluate_managed_deployment_intent ?verified_source_authority application
-    commit =
-  let open Deferred.Or_error.Let_syntax in
-  let working_directory = Managed_application.working_directory application in
-  let%bind source_authority =
-    match
-      ( verified_source_authority,
-        Managed_application.production_destination application )
-    with
-    | Some authority, Some _
-      when String.equal
-             (Source_authority.revision authority)
-             (Source.commit_revision commit) ->
-        Deferred.Or_error.return (Some authority)
-    | Some _, Some _ ->
-        Deferred.Or_error.error_string
-          "verified source authority does not name the preview commit"
-    | None, Some _ ->
-        let%map authority =
-          Source_authority.verify
-            ~expected_revision:(Source.commit_revision commit)
-            application
-        in
-        Some authority
-    | None, None -> Deferred.Or_error.return None
-    | Some _, None ->
-        Deferred.Or_error.error_string
-          "non-production preview unexpectedly carried source authority"
-  in
-  let%bind source =
-    match source_authority with
-    | None ->
-        Source.prepare ~working_directory ~selection:(Source.immutable commit)
-    | Some authority ->
-        let%bind protected_git =
-          Deferred.return (Source_authority.protected_git authority)
-        in
-        Source.prepare_protected ~working_directory ~protected_git
-          ~repository_identity:
-            (Managed_application.repository_identity application)
-          ~commit
-  in
-  Monitor.protect
-    ~finally:(fun () -> Source.cleanup source)
-    (fun () ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind evaluated =
-        Nix_configuration.load_evaluated
-          ~offline:(Option.is_some source_authority)
-          ~working_directory:(Source.nix_root source)
-          ~flake:(Source.nix_flake source)
-      in
-      Deferred.return
-        (Deployment_intent.create ~application ~source_authority
-           ~revision:(Source.revision source)
-           ~configuration:(Nix_configuration.configuration evaluated)
-           ~configuration_json:(Nix_configuration.json evaluated)))
+let managed_deployment_unavailable () =
+  Or_error.error_string
+    "NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE: immutable revision admission, \
+     root-owned source custody, and authoritative target-lease broker \
+     integration are required before managed deployment"
 
-let authoritative_application t application =
-  Managed_application.find t.managed_applications
-    (Managed_application.key application)
-
-let preview_managed_deployment t requested_application =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind application =
-    Deferred.return (authoritative_application t requested_application)
-  in
-  let%bind commit, verified_source_authority =
-    match Managed_application.production_destination application with
-    | Some _ ->
-        let%map authority = Source_authority.verify application in
-        (Source_authority.commit authority, Some authority)
-    | None ->
-        let%map commit =
-          t.preview_main
-            ~working_directory:
-              (Managed_application.working_directory application)
-        in
-        (commit, None)
-  in
-  let%bind intent =
-    evaluate_managed_deployment_intent ?verified_source_authority application
-      commit
-  in
-  let%bind working_directory =
-    Deferred.return
-      (canonical_working_directory
-         (Managed_application.working_directory application))
-  in
-  let application_key = Managed_application.key application in
-  let%bind receipt =
-    Deferred.return
-      (Operation_receipt.issue_deploy t.deployment_receipts
-         ~application_key:(Some application_key)
-         ~expected_project:(Some (Managed_application.project application))
-         ~intent:(Some intent) ~application:(Some application)
-         ~managed_applications:t.managed_applications ~working_directory
-         ~source:(Source.immutable commit)
-         ~target:(Managed_application.target application))
-  in
-  let%map prune_receipt =
-    Deferred.return
-      (Operation_receipt.issue_prune t.prune_receipts
-         ~application_key:(Some application_key)
-         ~expected_project:(Some (Managed_application.project application))
-         ~repository_identity:
-           (Some (Managed_application.repository_identity application))
-         ~intent:(Some intent) ~application:(Some application)
-         ~commit:(Some commit) ~working_directory
-         ~target:(Managed_application.target application))
-  in
-  { commit; receipt; prune_receipt }
+let preview_managed_deployment _t _requested_application =
+  Deferred.return (managed_deployment_unavailable ())
 
 let deployment_preview_commit (preview : deployment_preview) = preview.commit
 let deployment_preview_receipt (preview : deployment_preview) = preview.receipt
@@ -580,10 +471,6 @@ let cancel_started_deployment t started =
       Deferred.Or_error.error_string
         "deployment is not active in this control-plane process"
 
-let consume_deploy t ~application_key ~receipt =
-  Operation_receipt.consume_deploy t.deployment_receipts ~application_key
-    ~receipt
-
 let direct_mode_fence t ~application_key ~working_directory ~target =
   let open Or_error.Let_syntax in
   let%bind managed_scopes =
@@ -634,28 +521,11 @@ let deploy_local_deployment t ~working_directory ~target =
   let%bind started = start_local_deployment t ~working_directory ~target in
   await_started_deployment started
 
-let start_managed_deployment t requested_application =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind application =
-    Deferred.return (authoritative_application t requested_application)
-  in
-  let working_directory = Managed_application.working_directory application in
-  let%bind source = local_source t ~working_directory in
-  let%bind authorization =
-    Deferred.return
-      (Operation_receipt.direct_deploy
-         ~application_key:(Some (Managed_application.key application))
-         ~expected_project:(Some (Managed_application.project application))
-         ~intent:None ~application:(Some application)
-         ~managed_applications:t.managed_applications ~working_directory ~source
-         ~target:(Managed_application.target application))
-  in
-  start_authorization t ~authorization
+let start_managed_deployment _t _requested_application =
+  Deferred.return (managed_deployment_unavailable ())
 
-let deploy_managed_deployment t application =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind started = start_managed_deployment t application in
-  await_started_deployment started
+let deploy_managed_deployment _t _application =
+  Deferred.return (managed_deployment_unavailable ())
 
 let deploy_non_production ?application_key ?expected_project t
     ~working_directory ~source ~target () =
@@ -666,23 +536,11 @@ let deploy_non_production ?application_key ?expected_project t
   in
   await_started_deployment started
 
-let start_managed_preview t requested_application ~receipt =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind application =
-    Deferred.return (authoritative_application t requested_application)
-  in
-  let%bind authorization =
-    Deferred.return
-      (consume_deploy t
-         ~application_key:(Managed_application.key application)
-         ~receipt)
-  in
-  start_authorization t ~authorization
+let start_managed_preview _t _requested_application ~receipt:_ =
+  Deferred.return (managed_deployment_unavailable ())
 
-let deploy_managed_preview t requested_application ~receipt =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind started = start_managed_preview t requested_application ~receipt in
-  await_started_deployment started
+let deploy_managed_preview _t _requested_application ~receipt:_ =
+  Deferred.return (managed_deployment_unavailable ())
 
 let prune_disabled t =
   ignore t.prepare_prune;
@@ -1213,10 +1071,6 @@ module For_testing = struct
       cancellations = ref [];
       runtime_cache = String.Table.create ();
       live_resource_state_cache = String.Table.create ();
-      deployment_receipts =
-        Operation_receipt.create_deploy_store () |> Or_error.ok_exn;
-      prune_receipts =
-        Operation_receipt.create_prune_store () |> Or_error.ok_exn;
       managed_applications;
       mutations =
         { accepting = true; active_count = 0; drained = Ivar.create () };

@@ -71,6 +71,13 @@
   (pps ppx_jane)))
 
 (test
+ (name managed_deploy_fence_test)
+ (modules managed_deploy_fence_test)
+ (libraries async core nixploy)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name direct_mode_configuration_test)
  (modules direct_mode_configuration_test)
  (libraries core nixploy)

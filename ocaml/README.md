@@ -51,10 +51,10 @@ then limited to an unmanaged `nonProduction` target whose coordination scope
 does not match any managed destination. Managed command transport remains
 fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket client can verify
 that configured pin on its TLS connection. The authenticated web Deploy action
-is restricted to its managed checkout allowlist and uses that same engine after
-validating the evaluated target destination. Browser preview is advisory;
-neither preview, receipt, commit confirmation, nor Git custody proof authorizes
-ordinary deploy.
+is restricted to its managed checkout allowlist and currently fails closed with
+`NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE`. It does not evaluate a managed source,
+issue a preview receipt, or start the deployment engine until immutable revision
+admission, root-owned custody, and authoritative broker integration are complete.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and
@@ -151,8 +151,7 @@ direct requests to these routes receive the same SPA shell; unrelated paths and
 missing assets remain genuine 404 responses. Unknown valid application keys keep
 their URL and render a not-found state after the server allowlist loads.
 
-The application workspace previews and confirms an exact Git commit, lists
-app-scoped deployment history, cancels active deployments cooperatively,
+The application workspace lists app-scoped deployment history, cancels active deployments cooperatively,
 searches and follows bounded logs from the positively identified active
 container, and reports remote host health plus per-application resource usage.
 `Application` owns the active cancellation registry and runtime source/cache
