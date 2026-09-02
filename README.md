@@ -340,11 +340,14 @@ start wrapper reapplies module-owned authentication, origin, and credential
 variables after systemd loads that file, while application mutation authority
 comes only from the root-owned machine file.
 
-For a deliberately trusted local-only installation, set
-`authMode = "unrestricted"`. Tailscale mode requires `operatorEmail`, but
-loopback TCP alone is not a trusted-proxy boundary because direct local clients
-can reach it. Production V1 requires direct requests in Tailscale mode to be
-rejected: the proxy must strip caller-supplied identity, inject only verified
+For a deliberately trusted local-only **development or test** installation,
+set both `authMode = "unrestricted"` and
+`allowUnrestrictedDevelopmentMode = true`. This explicit insecure opt-in is
+required because unrestricted mode must never be used for production control
+plane access. Tailscale mode requires `operatorEmail`, but loopback TCP alone
+is not a trusted-proxy boundary because direct local clients can reach it.
+Production V1 requires direct requests in Tailscale mode to be rejected: the
+proxy must strip caller-supplied identity, inject only verified
 identity, and cross an authenticated or otherwise protected proxy-to-service
 boundary inaccessible to direct local clients. A protected Unix socket or an
 equivalent design can satisfy that requirement; the implementation choice is
