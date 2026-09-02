@@ -59,23 +59,39 @@ let termination_requested () =
   | Some state -> Ivar.read state.delivered
   | None -> raise_s [%message "termination signal handler was not initialized"]
 
-let read_bounded reader ~stream ~max_output_bytes ~overflow =
-  let buffer = Buffer.create (Int.min max_output_bytes 65_536) in
+type output_budget = {
+  maximum : int;
+  mutable captured_bytes : int;
+}
+
+let can_capture budget length =
+  length <= budget.maximum - budget.captured_bytes
+
+let capture budget buffer string =
+  budget.captured_bytes <- budget.captured_bytes + String.length string;
+  Buffer.add_string buffer string
+
+let report_overflow overflow stream =
+  if Ivar.is_empty overflow then Ivar.fill_exn overflow stream
+
+let read_bounded reader ~stream ~budget ~overflow =
+  let buffer = Buffer.create (Int.min budget.maximum 65_536) in
   let%bind result =
     Reader.read_one_chunk_at_a_time reader ~handle_chunk:(fun chunk ~pos ~len ->
-        if Buffer.length buffer + len > max_output_bytes then (
-          if Ivar.is_empty overflow then Ivar.fill_exn overflow stream;
+        if not (can_capture budget len) then (
+          report_overflow overflow stream;
           Deferred.return (`Stop ()))
         else (
-          Buffer.add_string buffer (Bigstring.to_string chunk ~pos ~len);
+          capture budget buffer (Bigstring.to_string chunk ~pos ~len);
           Deferred.return `Continue))
   in
   let%map () = Reader.close reader in
   match result with
   | `Eof | `Stopped () -> Buffer.contents buffer
   | `Eof_with_unconsumed_data remaining ->
-      if Buffer.length buffer + String.length remaining <= max_output_bytes then
-        Buffer.add_string buffer remaining;
+      if can_capture budget (String.length remaining) then
+        capture budget buffer remaining
+      else report_overflow overflow stream;
       Buffer.contents buffer
 
 let terminate_process_group process wait =
@@ -147,13 +163,16 @@ let run_without_progress ?working_directory ?stdin ?env
               (fun () ->
                 let wait = Process.wait process in
                 let overflow = Ivar.create () in
+                let budget =
+                  { maximum = max_output_bytes; captured_bytes = 0 }
+                in
                 let stdout =
-                  read_bounded (Process.stdout process) ~stream:`Stdout
-                    ~max_output_bytes ~overflow
+                  read_bounded (Process.stdout process) ~stream:`Stdout ~budget
+                    ~overflow
                 in
                 let stderr =
-                  read_bounded (Process.stderr process) ~stream:`Stderr
-                    ~max_output_bytes ~overflow
+                  read_bounded (Process.stderr process) ~stream:`Stderr ~budget
+                    ~overflow
                 in
                 let stdin_closed =
                   match stdin with

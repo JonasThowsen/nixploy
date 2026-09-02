@@ -15,6 +15,12 @@ let child_mode () =
       Out_channel.output_string stdout (String.make 4096 'x');
       Out_channel.flush stdout;
       Some 0
+  | _ :: "child-combined-overflow" :: _ ->
+      Out_channel.output_string stdout (String.make 768 'x');
+      Out_channel.output_string stderr (String.make 768 'y');
+      Out_channel.flush stdout;
+      Out_channel.flush stderr;
+      Some 0
   | _ :: "child-timeout" :: _ ->
       Core_unix.sleep 10;
       Some 0
@@ -67,6 +73,12 @@ let run_tests () =
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-overflow" ] ()
   in
   assert (Result.is_error overflow);
+  let%bind combined_overflow =
+    Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_sec 5.)
+      ~max_output_bytes:1024 ~prog:executable
+      ~args:[ "child-combined-overflow" ] ()
+  in
+  assert (Result.is_error combined_overflow);
   let%bind timed_out =
     Nixploy.Process_runner.run ~timeout:(Time_ns.Span.of_ms 50.)
       ~max_output_bytes:1024 ~prog:executable ~args:[ "child-timeout" ] ()
