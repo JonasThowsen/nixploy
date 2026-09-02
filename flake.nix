@@ -283,10 +283,26 @@
                 services.nixploy-control-plane = {
                   enable = true;
                   authMode = "unrestricted";
+                  allowUnrestrictedDevelopmentMode = true;
                 };
               }
             ];
           };
+          unrestrictedAuthRejected = builtins.tryEval (
+            (lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  system.stateVersion = "26.05";
+                  services.nixploy = {
+                    enable = true;
+                    authMode = "unrestricted";
+                  };
+                }
+              ];
+            }).config.system.build.toplevel
+          );
           configContract = import ./nix/config-test.nix {
             nixployLib = self.lib;
           };
@@ -312,6 +328,7 @@
                     services.nixploy = {
                       enable = true;
                       authMode = "unrestricted";
+                      allowUnrestrictedDevelopmentMode = true;
                       applications = {
                         production = {
                           project = "production-app";
@@ -425,6 +442,9 @@
             assert !domainIntersection.success;
             assert !coordinationScopeIntersection.success;
             pkgs.runCommand "nixploy-cross-profile-intersection-rejected" { } "touch $out";
+          nixos-unrestricted-auth-rejected =
+            assert !unrestrictedAuthRejected.success;
+            pkgs.runCommand "nixploy-nixos-unrestricted-auth-rejected" { } "touch $out";
           nixos-module =
             assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
             assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];
@@ -454,6 +474,7 @@
             assert !(builtins.hasAttr "nixploy-control-plane-worker" evaluated.config.systemd.services);
             assert !evaluated.config.services.postgresql.enable;
             assert renamed.config.services.nixploy.enable;
+            assert renamed.config.services.nixploy.allowUnrestrictedDevelopmentMode;
             pkgs.runCommand "nixploy-nixos-module-evaluation" { } "touch $out";
           nixos-vm-smoke = import ./nix/nixos-test.nix {
             inherit pkgs rpcProbe;

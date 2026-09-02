@@ -413,11 +413,20 @@ in
       ];
       default = "tailscale";
       description = ''
-        HTTP and RPC operator authentication mode. Unrestricted is appropriate
-        only for an explicitly trusted local or development boundary.
+        HTTP and RPC operator authentication mode. The unrestricted mode is
+        rejected unless allowUnrestrictedDevelopmentMode is explicitly enabled.
       '';
     };
 
+    allowUnrestrictedDevelopmentMode = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        INSECURE: permit authMode = "unrestricted" for a local development or
+        test fixture only. This disables operator authentication and must never
+        be enabled for a deployed control plane.
+      '';
+    };
 
     operatorEmail = lib.mkOption {
       type = lib.types.nullOr lib.types.nonEmptyStr;
@@ -504,6 +513,14 @@ in
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = cfg.authMode != "unrestricted" || cfg.allowUnrestrictedDevelopmentMode;
+        message = ''
+          services.nixploy.authMode = "unrestricted" requires
+          services.nixploy.allowUnrestrictedDevelopmentMode = true; unrestricted
+          authentication is for development and tests only
+        '';
+      }
       {
         assertion = cfg.authMode != "tailscale" || cfg.operatorEmail != null;
         message = "services.nixploy.operatorEmail is required when authMode is tailscale";

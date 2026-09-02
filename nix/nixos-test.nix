@@ -21,6 +21,9 @@ pkgs.testers.runNixOSTest {
       enable = true;
       package = nixployPackage;
       authMode = "unrestricted";
+      # This VM exposes only unauthenticated fixture reads; production must use
+      # a verified authenticated proxy boundary instead.
+      allowUnrestrictedDevelopmentMode = true;
       port = 18080;
       stateDatabasePath = "/var/lib/nixploy/test-state.sqlite3";
       environmentFile = "/etc/nixploy-test.env";
