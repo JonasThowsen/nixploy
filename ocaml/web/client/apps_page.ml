@@ -120,8 +120,9 @@ let render ~applications ~metrics ~applications_stale ~metrics_stale ~navigate =
               Vdom.Node.p
                 [
                   Vdom.Node.text
-                    "Choose an application to deploy the current managed \
-                     revision, check its runtime, or read its history.";
+                    "Choose an application to check its runtime or read its \
+                     history. Managed deployment is unavailable until source \
+                     custody provides a verified full revision.";
                 ];
             ];
           Ui_helpers.route_link ~class_name:"button button-secondary"

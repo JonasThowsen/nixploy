@@ -25,13 +25,15 @@
  (deps
   managed_browser_deploy_fence_test.sh
   ../web/client/app.ml
-  ../web/client/application_page.ml)
+  ../web/client/application_page.ml
+  ../web/client/apps_page.ml)
  (action
   (run
    bash
    %{dep:managed_browser_deploy_fence_test.sh}
    %{dep:../web/client/app.ml}
-   %{dep:../web/client/application_page.ml})))
+   %{dep:../web/client/application_page.ml}
+   %{dep:../web/client/apps_page.ml})))
 
 (library
  (name core_test)
