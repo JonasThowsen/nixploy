@@ -17,26 +17,22 @@ let icon paths =
          Vdom.Node.create_svg "path" ~attrs:[ Vdom.Attr.create "d" path ] []))
 
 let menu_icon () = icon [ "M4 7h16"; "M4 12h16"; "M4 17h16" ]
-let exact_active route target = Route.equal route target
 
-let nav_contents ~index ~label =
-  [
-    Vdom.Node.span
-      ~attrs:
-        [ Vdom.Attr.class_ "nav-index"; Vdom.Attr.create "aria-hidden" "true" ]
-      [ Vdom.Node.text index ];
-    Vdom.Node.span [ Vdom.Node.text label ];
-  ]
+let page_copy = function
+  | Route.Home -> ("Overview", "Nixploy")
+  | Apps -> ("Applications", "Nixploy")
+  | Application key -> (Route.Application_key.to_string key, "Application")
+  | Telemetry -> ("Host health", "Nixploy")
+  | Not_found _ -> ("Not found", "Nixploy")
 
-let nav_link ~route ~target ~navigate ~label ~index ~section_active =
-  let exact = exact_active route target in
+let nav_link ~route ~target ~navigate ~label ~section_active =
+  let active = Route.equal route target || section_active in
   Ui_helpers.route_link
-    ~class_name:
-      ("nav-link" ^ if exact || section_active then " nav-link-active" else "")
+    ~class_name:("nav-link" ^ if active then " nav-link-active" else "")
     ~route:target ~navigate
-    (nav_contents ~index ~label)
+    [ Vdom.Node.text label ]
   |> fun node ->
-  if exact then
+  if active then
     Vdom.Node.a
       ~attrs:
         (Browser_navigation.link_attrs target ~on_navigate:navigate
@@ -44,55 +40,11 @@ let nav_link ~route ~target ~navigate ~label ~index ~section_active =
             Vdom.Attr.class_ "nav-link nav-link-active";
             Vdom.Attr.create "aria-current" "page";
           ])
-      (nav_contents ~index ~label)
+      [ Vdom.Node.text label ]
   else node
 
-let application_link ~route ~application ~navigate =
-  match
-    Route.Application_key.of_string application.Protocol.Application.key
-  with
-  | Error _ -> Vdom.Node.none
-  | Ok key ->
-      let target = Route.Application key in
-      let active = Route.equal route target in
-      Vdom.Node.a ~key:application.key
-        ~attrs:
-          (Browser_navigation.link_attrs target ~on_navigate:navigate
-          @ [
-              Vdom.Attr.class_
-                ("rail-app" ^ if active then " rail-app-active" else "");
-            ]
-          @ if active then [ Vdom.Attr.create "aria-current" "page" ] else [])
-        [
-          Vdom.Node.span
-            ~attrs:
-              [
-                Vdom.Attr.class_ "rail-app-dot";
-                Vdom.Attr.create "aria-hidden" "true";
-              ]
-            [];
-          Vdom.Node.span
-            [
-              Vdom.Node.strong [ Vdom.Node.text application.key ];
-              Vdom.Node.small
-                [
-                  Vdom.Node.text
-                    (application.project ^ " · " ^ application.target);
-                ];
-            ];
-        ]
-
-let page_copy route =
-  match route with
-  | Route.Home -> ("Overview", "Control plane")
-  | Apps -> ("Applications", "Recognized sources")
-  | Application key ->
-      (Route.Application_key.to_string key, "Application workspace")
-  | Telemetry -> ("Telemetry", "Hosts and runtimes")
-  | Not_found _ -> ("Not found", "Unknown route")
-
-let render ~route ~applications ~connection_label ~connection_class ~mobile_open
-    ~navigate ~on_toggle_mobile ~on_close_mobile ~notice ~content =
+let render ~route ~connection_label ~connection_class ~mobile_open ~navigate
+    ~on_toggle_mobile ~on_close_mobile ~notice ~content =
   let heading, context = page_copy route in
   Vdom.Node.div
     ~attrs:[ Vdom.Attr.class_ "app-shell" ]
@@ -114,15 +66,7 @@ let render ~route ~applications ~connection_label ~connection_class ~mobile_open
               ]
             [ menu_icon () ];
           Ui_helpers.route_link ~class_name:"brand" ~route:Route.Home ~navigate
-            [
-              Vdom.Node.span
-                ~attrs:[ Vdom.Attr.class_ "brand-mark" ]
-                [ Vdom.Node.text "N" ];
-              Vdom.Node.span
-                [
-                  Vdom.Node.strong [ Vdom.Node.text "nixploy · control plane" ];
-                ];
-            ];
+            [ Vdom.Node.strong [ Vdom.Node.text "nixploy" ] ];
           Vdom.Node.div
             ~attrs:[ Vdom.Attr.class_ "header-context" ]
             [
@@ -170,51 +114,12 @@ let render ~route ~applications ~connection_label ~connection_class ~mobile_open
             Vdom.Attr.create "tabindex" "-1";
           ]
         [
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "navigation-index" ]
-            [
-              Vdom.Node.div
-                ~attrs:[ Vdom.Attr.class_ "primary-links" ]
-                [
-                  nav_link ~route ~target:Route.Home ~navigate ~label:"Home"
-                    ~index:"01" ~section_active:false;
-                  nav_link ~route ~target:Route.Apps ~navigate
-                    ~label:"Applications" ~index:"02"
-                    ~section_active:(Route.is_apps_section route);
-                  nav_link ~route ~target:Route.Telemetry ~navigate
-                    ~label:"Telemetry" ~index:"03" ~section_active:false;
-                ];
-              Vdom.Node.div
-                ~attrs:[ Vdom.Attr.class_ "rail-applications" ]
-                ([
-                   Vdom.Node.p
-                     ~attrs:[ Vdom.Attr.class_ "rail-label" ]
-                     [ Vdom.Node.text "Applications" ];
-                 ]
-                @
-                match applications with
-                | Some values ->
-                    if List.is_empty values then
-                      [
-                        Vdom.Node.p
-                          ~attrs:[ Vdom.Attr.class_ "rail-empty" ]
-                          [ Vdom.Node.text "No recognized applications" ];
-                      ]
-                    else
-                      List.map values ~f:(fun application ->
-                          application_link ~route ~application ~navigate)
-                | None ->
-                    [
-                      Vdom.Node.p
-                        ~attrs:[ Vdom.Attr.class_ "rail-empty" ]
-                        [ Vdom.Node.text "Loading applications…" ];
-                    ]);
-            ];
-          Vdom.Node.p
-            ~attrs:[ Vdom.Attr.class_ "rail-footnote" ]
-            [
-              Vdom.Node.text "Immutable Git revisions · remote Podman runtimes";
-            ];
+          nav_link ~route ~target:Route.Home ~navigate ~label:"Overview"
+            ~section_active:false;
+          nav_link ~route ~target:Route.Apps ~navigate ~label:"Applications"
+            ~section_active:(Route.is_apps_section route);
+          nav_link ~route ~target:Route.Telemetry ~navigate ~label:"Host health"
+            ~section_active:false;
         ];
       Vdom.Node.main
         ~attrs:

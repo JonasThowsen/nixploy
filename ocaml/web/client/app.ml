@@ -3,7 +3,6 @@ open! Bonsai_web.Cont
 open Bonsai.Let_syntax
 module Deploy_state = Nixploy_web_client_state.Deploy_state
 module Last_good = Nixploy_web_client_state.Last_good
-module Prune_state = Nixploy_web_client_state.Prune_state
 
 let empty_poll_result () =
   {
@@ -37,10 +36,8 @@ let component graph =
     Bonsai.state (Browser_navigation.initial_route ()) graph
   in
   let mobile_open, set_mobile_open = Bonsai.state false graph in
-  let preview, set_preview = Bonsai.state None graph in
   let deploy_state, set_deploy_state = Bonsai.state Deploy_state.Idle graph in
   let cancel_confirmation, set_cancel_confirmation = Bonsai.state None graph in
-  let prune_state, set_prune_state = Bonsai.state Prune_state.Idle graph in
   let search, set_search = Bonsai.state "" graph in
   let current_match, set_current_match = Bonsai.state 0 graph in
   let follow, set_follow = Bonsai.state true graph in
@@ -194,10 +191,6 @@ let component graph =
           ~every:(Time_ns.Span.of_sec 10.) (Bonsai.return ()) graph
     | false -> Bonsai.return (empty_poll_result ())
   in
-  let dispatch_preview =
-    Rpc_effect.Rpc.dispatcher Protocol.Preview_deployment.t
-      ~where_to_connect:Self graph
-  in
   let dispatch_deploy =
     Rpc_effect.Rpc.dispatcher Protocol.Deploy.t ~where_to_connect:Self graph
   in
@@ -205,19 +198,14 @@ let component graph =
     Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.t
       ~where_to_connect:Self graph
   in
-  let dispatch_prune =
-    Rpc_effect.Rpc.dispatcher Protocol.Prune.t ~where_to_connect:Self graph
-  in
   let route_key =
     let%arr route = route in
     Option.map (Route.application_key route) ~f:Route.Application_key.to_string
   in
   let reset_transient =
     let%arr deploy_state = deploy_state
-    and set_preview = set_preview
     and set_deploy_state = set_deploy_state
     and set_cancel_confirmation = set_cancel_confirmation
-    and set_prune_state = set_prune_state
     and set_search = set_search
     and set_current_match = set_current_match
     and set_follow = set_follow
@@ -226,10 +214,8 @@ let component graph =
     fun _ ->
       Effect.Many
         [
-          set_preview None;
           set_deploy_state (Deploy_state.reset_for_route_change deploy_state);
           set_cancel_confirmation None;
-          set_prune_state Prune_state.Idle;
           set_search "";
           set_current_match 0;
           set_follow true;
@@ -295,14 +281,10 @@ let component graph =
   and logs_observations = logs_observations
   and logs_query = logs_query
   and metrics_observations = metrics_observations
-  and preview = preview
-  and set_preview = set_preview
   and deploy_state = deploy_state
   and set_deploy_state = set_deploy_state
   and cancel_confirmation = cancel_confirmation
   and set_cancel_confirmation = set_cancel_confirmation
-  and prune_state = prune_state
-  and set_prune_state = set_prune_state
   and search = search
   and set_search = set_search
   and current_match = current_match
@@ -313,10 +295,8 @@ let component graph =
   and set_paused_snapshot = set_paused_snapshot
   and notice = notice
   and set_notice = set_notice
-  and dispatch_preview = dispatch_preview
   and dispatch_deploy = dispatch_deploy
-  and dispatch_cancel = dispatch_cancel
-  and dispatch_prune = dispatch_prune in
+  and dispatch_cancel = dispatch_cancel in
   let navigate next =
     let close = set_mobile_open false in
     if Route.equal route next then
@@ -413,18 +393,16 @@ let component graph =
         Application_page.render ~key ~application_state
           ~deployments:deployments_response ~logs:logs_response
           ~metrics:metrics_response ~deployments_stale:deployments_error
-          ~logs_stale:logs_error ~metrics_stale:metrics_error ~preview
-          ~deploy_state ~cancel_confirmation ~prune_state ~search ~current_match
-          ~follow ~paused_snapshot ~dispatch_preview ~dispatch_deploy
-          ~dispatch_cancel ~dispatch_prune ~set_preview ~set_deploy_state
-          ~set_cancel_confirmation ~set_prune_state ~set_search
-          ~set_current_match ~set_follow ~set_paused_snapshot ~set_notice
-          ~refresh_logs:logs.refresh ~navigate
+          ~logs_stale:logs_error ~metrics_stale:metrics_error ~deploy_state
+          ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
+          ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+          ~set_cancel_confirmation ~set_search ~set_current_match ~set_follow
+          ~set_paused_snapshot ~set_notice ~refresh_logs:logs.refresh ~navigate
     | Telemetry ->
         Telemetry_page.render ~metrics:metrics_response ~stale:metrics_error
           ~navigate
     | Not_found path -> empty_page ~path ~navigate
   in
-  Shell.render ~route ~applications:application_list ~connection_label
-    ~connection_class ~mobile_open ~navigate ~on_toggle_mobile:toggle_mobile
-    ~on_close_mobile:close_mobile ~notice ~content
+  Shell.render ~route ~connection_label ~connection_class ~mobile_open ~navigate
+    ~on_toggle_mobile:toggle_mobile ~on_close_mobile:close_mobile ~notice
+    ~content

@@ -115,18 +115,18 @@ let render ~applications ~metrics ~applications_stale ~metrics_stale ~navigate =
             [
               Vdom.Node.p
                 ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                [ Vdom.Node.text "Managed allowlist" ];
-              Vdom.Node.h2 [ Vdom.Node.text "Recognized applications" ];
+                [ Vdom.Node.text "Managed applications" ];
+              Vdom.Node.h2 [ Vdom.Node.text "Applications" ];
               Vdom.Node.p
                 [
                   Vdom.Node.text
-                    "Open an application to deploy an immutable revision, \
-                     inspect logs, or manage its resources.";
+                    "Choose an application to deploy the current managed \
+                     revision, check its runtime, or read its history.";
                 ];
             ];
           Ui_helpers.route_link ~class_name:"button button-secondary"
             ~route:Route.Telemetry ~navigate
-            [ Vdom.Node.text "View telemetry" ];
+            [ Vdom.Node.text "View host health" ];
         ];
       Ui_helpers.polling_warning
         ~has_last_good:(Option.is_some applications)

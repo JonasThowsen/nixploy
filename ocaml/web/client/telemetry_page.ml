@@ -185,20 +185,18 @@ let render ~metrics ~stale ~navigate =
             [
               Vdom.Node.p
                 ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                [ Vdom.Node.text "Point-in-time observations" ];
-              Vdom.Node.h2
-                [ Vdom.Node.text "Machine and application telemetry" ];
+                [ Vdom.Node.text "Remote Linux hosts" ];
+              Vdom.Node.h2 [ Vdom.Node.text "Host health" ];
               Vdom.Node.p
                 [
                   Vdom.Node.text
-                    "Current capacity and runtime measurements grouped by \
-                     remote target. Values are observations, not historical \
-                     trends.";
+                    "Current CPU, memory, filesystem, and runtime health for \
+                     each remote Linux host.";
                 ];
             ];
           Ui_helpers.route_link ~class_name:"button button-secondary"
             ~route:Route.Apps ~navigate
-            [ Vdom.Node.text "View applications" ];
+            [ Vdom.Node.text "Open applications" ];
         ];
       Ui_helpers.polling_warning ~has_last_good:(Option.is_some metrics) stale;
       (match metrics with

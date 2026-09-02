@@ -2,7 +2,6 @@ open! Bonsai_web.Cont
 
 val render :
   route:Route.t ->
-  applications:Protocol.Application.t list option ->
   connection_label:string ->
   connection_class:string ->
   mobile_open:bool ->

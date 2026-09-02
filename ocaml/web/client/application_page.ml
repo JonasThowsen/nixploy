@@ -1,7 +1,6 @@
 open Core
 open! Bonsai_web.Cont
 module Deploy_state = Nixploy_web_client_state.Deploy_state
-module Prune_state = Nixploy_web_client_state.Prune_state
 
 type application_state =
   | Loading
@@ -10,13 +9,7 @@ type application_state =
   | Ready of Protocol.Application.t
 
 let primary_action_id = "application-primary-action"
-let prune_action_id = "prune-resources-button"
 let focus_primary_action = Browser_navigation.focus primary_action_id
-let focus_prune_action = Browser_navigation.focus prune_action_id
-
-let id_component value =
-  String.concat_map value ~f:(fun character ->
-      sprintf "%02x" (Char.to_int character))
 
 let fact label value =
   Vdom.Node.div
@@ -25,216 +18,9 @@ let fact label value =
       Vdom.Node.dd [ Vdom.Node.text value ];
     ]
 
-let commit_confirmation ~application ~preview ~deploy_state ~dispatch_deploy
-    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
-    ~set_notice =
-  let commit = preview.Protocol.Deployment_preview.commit in
-  let pending = Deploy_state.is_pending deploy_state in
-  let confirm =
-    let%bind.Effect owner = Browser_navigation.application_owner application in
-    let%bind.Effect () =
-      Effect.Many
-        [
-          set_deploy_state
-            (Deploy_state.start_submission deploy_state ~key:application);
-          set_cancel_confirmation None;
-          set_prune_state Prune_state.Idle;
-        ]
-    in
-    let%bind.Effect response =
-      dispatch_deploy
-        { Protocol.Deploy.Query.application }
-    in
-    if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
-    else
-      let submitting = Deploy_state.Submitting application in
-      let finished =
-        set_deploy_state
-          (Deploy_state.finish_submission submitting ~key:application)
-      in
-      match response with
-      | Error error ->
-          Effect.Many
-            [
-              finished;
-              set_notice ("Deploy RPC failed: " ^ Error.to_string_hum error);
-            ]
-      | Ok (Error error) ->
-          Effect.Many
-            [
-              finished;
-              set_notice ("Deployment rejected: " ^ Error.to_string_hum error);
-            ]
-      | Ok (Ok id) ->
-          Effect.Many
-            [
-              set_deploy_state
-                (Deploy_state.accept_submission submitting ~key:application
-                   ~operation_id:id);
-              set_preview None;
-              set_notice ("Deployment started: " ^ id);
-              focus_primary_action;
-            ]
-  in
-  Vdom.Node.section
-    ~attrs:
-      [
-        Vdom.Attr.class_ "confirmation deploy-confirmation";
-        Vdom.Attr.create "aria-label" "Confirm deployment commit";
-      ]
-    [
-      Vdom.Node.div
-        [
-          Vdom.Node.p
-            ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-            [ Vdom.Node.text "Exact immutable commit" ];
-          Vdom.Node.strong [ Vdom.Node.text commit.subject ];
-          Vdom.Node.code [ Vdom.Node.text commit.revision ];
-          Vdom.Node.small
-            [ Vdom.Node.text (Ui_helpers.format_time commit.timestamp_ms) ];
-        ];
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "button-row" ]
-        [
-          Ui_helpers.button ~kind:"primary" ~disabled:pending
-            ~label:
-              (if pending then "Submitting deployment…"
-               else "Deploy this commit")
-            ~on_click:confirm ();
-          Ui_helpers.button ~disabled:pending ~label:"Cancel"
-            ~on_click:(Effect.Many [ set_preview None; focus_primary_action ])
-            ();
-        ];
-    ]
-
-let prune_route_notice = function
-  | Protocol.Prune_result.Route.Not_configured -> "not configured"
-  | Missing -> "already absent"
-  | Removed -> "removed"
-
-let prune_confirmation ~application ~receipt ~dispatch_prune ~prune_state
-    ~set_prune_state ~set_notice ~deployment_active =
-  let key = application.Protocol.Application.key in
-  let suffix = id_component key in
-  let title_id = "prune-dialog-title-" ^ suffix in
-  let description_id = "prune-dialog-description-" ^ suffix in
-  let pending =
-    match prune_state with
-    | Prune_state.Pending pending -> String.equal pending key
-    | Prune_state.Idle | Prune_state.Confirming _ -> false
-  in
-  let error =
-    match Prune_state.confirmation prune_state with
-    | Some (confirmation_key, error) when String.equal confirmation_key key ->
-        error
-    | _ -> None
-  in
-  let confirm =
-    let%bind.Effect owner = Browser_navigation.application_owner key in
-    let%bind.Effect () = set_prune_state (Prune_state.start prune_state ~key) in
-    let%bind.Effect response =
-      dispatch_prune { Protocol.Prune.Query.application = key; receipt }
-    in
-    if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
-    else
-      match response with
-      | Error rpc_error ->
-          let error = "Prune RPC failed: " ^ Error.to_string_hum rpc_error in
-          Effect.Many
-            [
-              set_prune_state
-                (Prune_state.fail (Prune_state.Pending key) ~key ~error);
-              set_notice error;
-            ]
-      | Ok (Error application_error) ->
-          let error =
-            "Prune rejected: " ^ Error.to_string_hum application_error
-          in
-          Effect.Many
-            [
-              set_prune_state
-                (Prune_state.fail (Prune_state.Pending key) ~key ~error);
-              set_notice error;
-            ]
-      | Ok (Ok result) ->
-          let notice =
-            sprintf
-              "Prune completed for %s/%s: %d containers removed; %d scoped \
-               secrets removed; Caddy route %s."
-              result.Protocol.Prune_result.project result.target
-              result.containers_removed result.secrets_removed
-              (prune_route_notice result.route)
-          in
-          Effect.Many
-            [
-              set_prune_state
-                (Prune_state.succeed (Prune_state.Pending key) ~key);
-              set_notice notice;
-              focus_prune_action;
-            ]
-  in
-  Vdom.Node.section
-    ~attrs:
-      [
-        Vdom.Attr.class_ "confirmation prune-confirmation";
-        Vdom.Attr.create "role" "alertdialog";
-        Vdom.Attr.create "aria-modal" "false";
-        Vdom.Attr.create "aria-labelledby" title_id;
-        Vdom.Attr.create "aria-describedby" description_id;
-      ]
-    [
-      Vdom.Node.div
-        [
-          Vdom.Node.p
-            ~attrs:[ Vdom.Attr.class_ "eyebrow danger-copy" ]
-            [ Vdom.Node.text "Destructive resource prune" ];
-          Vdom.Node.strong
-            ~attrs:[ Vdom.Attr.id title_id ]
-            [ Vdom.Node.text ("Application " ^ key) ];
-          Vdom.Node.p
-            ~attrs:[ Vdom.Attr.id description_id ]
-            [
-              Vdom.Node.text
-                ("Project " ^ application.project ^ " / target "
-               ^ application.target
-               ^ ". This removes owned containers, scoped secrets, and the \
-                  Caddy route. It causes downtime until resources are deployed \
-                  again.");
-            ];
-          (match error with
-          | None -> Vdom.Node.none
-          | Some error ->
-              Vdom.Node.p
-                ~attrs:
-                  [
-                    Vdom.Attr.class_ "inline-error";
-                    Vdom.Attr.create "role" "alert";
-                  ]
-                [ Vdom.Node.text error ]);
-        ];
-      Vdom.Node.div
-        ~attrs:[ Vdom.Attr.class_ "button-row" ]
-        [
-          Ui_helpers.button ~autofocus:(not pending) ~disabled:pending
-            ~label:"Keep resources"
-            ~on_click:
-              (Effect.Many
-                 [
-                   set_prune_state (Prune_state.keep prune_state ~key);
-                   focus_prune_action;
-                 ])
-            ();
-          Ui_helpers.button ~kind:"danger"
-            ~disabled:(deployment_active || pending)
-            ~label:(if pending then "Pruning resources…" else "Confirm prune")
-            ~on_click:confirm ();
-        ];
-    ]
-
-let deployment_action ~application ~deployment ~deploy_state ~prune_state
-    ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_preview
-    ~set_deploy_state ~set_cancel_confirmation ~set_prune_state ~set_notice =
-  let prune_busy = Prune_state.is_busy prune_state in
+let deployment_action ~application ~deployment ~deploy_state
+    ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+    ~set_cancel_confirmation ~set_notice =
   let deploy_busy = Deploy_state.is_busy deploy_state in
   match deployment with
   | Some deployment
@@ -244,7 +30,7 @@ let deployment_action ~application ~deployment ~deploy_state ~prune_state
          | Requested | Running -> true
          | _ -> false ->
       Ui_helpers.button ~id:primary_action_id ~disabled:true
-        ~label:"Cancelling; cleanup in progress…" ~on_click:Effect.Ignore ()
+        ~label:"Cancelling deployment…" ~on_click:Effect.Ignore ()
   | Some deployment when deployment.can_cancel ->
       if Option.equal String.equal cancel_confirmation (Some deployment.id) then
         let confirm_cancel =
@@ -289,42 +75,30 @@ let deployment_action ~application ~deployment ~deploy_state ~prune_state
             Vdom.Node.div
               ~attrs:[ Vdom.Attr.class_ "button-row" ]
               [
-                Ui_helpers.button ~autofocus:true
-                  ~disabled:(prune_busy || deploy_busy)
+                Ui_helpers.button ~autofocus:true ~disabled:deploy_busy
                   ~label:"Keep running"
                   ~on_click:
                     (Effect.Many
                        [ set_cancel_confirmation None; focus_primary_action ])
                   ();
-                Ui_helpers.button ~kind:"danger"
-                  ~disabled:(prune_busy || deploy_busy)
+                Ui_helpers.button ~kind:"danger" ~disabled:deploy_busy
                   ~label:"Confirm cancellation" ~on_click:confirm_cancel ();
               ];
           ]
       else
         Ui_helpers.button ~id:primary_action_id ~kind:"danger-outline"
-          ~disabled:(prune_busy || deploy_busy)
-          ~label:"Cancel deployment"
-          ~on_click:
-            (Effect.Many
-               [
-                 set_preview None;
-                 set_prune_state Prune_state.Idle;
-                 set_cancel_confirmation (Some deployment.id);
-               ])
+          ~disabled:deploy_busy ~label:"Cancel deployment"
+          ~on_click:(set_cancel_confirmation (Some deployment.id))
           ()
   | _ ->
       let key = application.Protocol.Application.key in
-      let submitting = Deploy_state.is_pending deploy_state in
       let request_deploy =
         let%bind.Effect owner = Browser_navigation.application_owner key in
         let%bind.Effect () =
           Effect.Many
             [
               set_deploy_state (Deploy_state.start_submission deploy_state ~key);
-              set_preview None;
               set_cancel_confirmation None;
-              set_prune_state Prune_state.Idle;
               set_notice ("Starting deployment for " ^ key ^ "…");
             ]
         in
@@ -333,29 +107,39 @@ let deployment_action ~application ~deployment ~deploy_state ~prune_state
         in
         if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
         else
-          let pending = Deploy_state.Submitting key in
+          let submitting = Deploy_state.Submitting key in
           let finished =
-            set_deploy_state (Deploy_state.finish_submission pending ~key)
+            set_deploy_state (Deploy_state.finish_submission submitting ~key)
           in
           match response with
           | Error error ->
               Effect.Many
-                [ finished;
-                  set_notice ("Deploy RPC failed: " ^ Error.to_string_hum error) ]
+                [
+                  finished;
+                  set_notice ("Deploy RPC failed: " ^ Error.to_string_hum error);
+                ]
           | Ok (Error error) ->
               Effect.Many
-                [ finished;
-                  set_notice ("Deployment rejected: " ^ Error.to_string_hum error) ]
+                [
+                  finished;
+                  set_notice
+                    ("Deployment rejected: " ^ Error.to_string_hum error);
+                ]
           | Ok (Ok operation_id) ->
               Effect.Many
-                [ set_deploy_state
-                    (Deploy_state.accept_submission pending ~key ~operation_id);
+                [
+                  set_deploy_state
+                    (Deploy_state.accept_submission submitting ~key
+                       ~operation_id);
                   set_notice ("Deployment started: " ^ operation_id);
-                  focus_primary_action ]
+                  focus_primary_action;
+                ]
       in
       Ui_helpers.button ~id:primary_action_id ~kind:"primary"
-        ~disabled:(prune_busy || deploy_busy)
-        ~label:(if submitting then "Starting deployment…" else "Deploy")
+        ~disabled:deploy_busy
+        ~label:
+          (if Deploy_state.is_pending deploy_state then "Starting deployment…"
+           else "Deploy latest revision")
         ~on_click:request_deploy ()
 
 let occurrences text pattern =
@@ -378,17 +162,16 @@ let highlighted_line ~query ~current ~first_index line =
           (List.rev (Vdom.Node.text suffix :: nodes), match_index - first_index)
       | Some index ->
           let before = String.slice line position index in
-          let global_index = match_index in
           let mark =
             Vdom.Node.create "mark"
               ~attrs:
                 ([
                    Vdom.Attr.class_
-                     (if Int.equal global_index current then "active-match"
+                     (if Int.equal match_index current then "active-match"
                       else "");
                  ]
                 @
-                if Int.equal global_index current then
+                if Int.equal match_index current then
                   [ Vdom.Attr.id "active-log-match" ]
                 else [])
               [ Vdom.Node.text query ]
@@ -422,10 +205,10 @@ let log_viewer ~key ~search ~current_match ~follow ~paused_snapshot ~set_search
           Ui_helpers.text_panel ~kind:"error" (Error.to_string_hum error)
       | Some (Ok None) ->
           Ui_helpers.text_panel ~kind:"empty"
-            "No positively identified active container is available for logs."
+            "No identified running container is available for logs."
       | None | Some (Ok (Some _)) ->
           Ui_helpers.text_panel ~kind:"loading"
-            "Reading bounded application logs…")
+            "Reading recent application logs…")
   | Some snapshot ->
       let total =
         List.sum
@@ -454,7 +237,7 @@ let log_viewer ~key ~search ~current_match ~follow ~paused_snapshot ~set_search
             in
             (first_index + count, node :: nodes))
       in
-      let pause =
+      let toggle_follow =
         if follow then
           Effect.Many [ set_paused_snapshot (Some snapshot); set_follow false ]
         else Effect.Many [ set_paused_snapshot None; set_follow true ]
@@ -472,7 +255,7 @@ let log_viewer ~key ~search ~current_match ~follow ~paused_snapshot ~set_search
                       [
                         Vdom.Attr.create "type" "search";
                         Vdom.Attr.value search;
-                        Vdom.Attr.placeholder "Literal text";
+                        Vdom.Attr.placeholder "Find text";
                         Vdom.Attr.on_input (fun _ value ->
                             Effect.Many
                               [ set_search value; set_current_match 0 ]);
@@ -496,16 +279,12 @@ let log_viewer ~key ~search ~current_match ~follow ~paused_snapshot ~set_search
                     ();
                   Ui_helpers.button
                     ~label:(if follow then "Pause" else "Resume")
-                    ~on_click:pause ();
+                    ~on_click:toggle_follow ();
                   Ui_helpers.button ~label:"Refresh" ~on_click:refresh ();
                 ];
             ];
           Vdom.Node.div
-            ~attrs:
-              [
-                Vdom.Attr.class_ "log-meta numeric";
-                Vdom.Attr.create "aria-live" "polite";
-              ]
+            ~attrs:[ Vdom.Attr.class_ "log-meta numeric" ]
             [
               Vdom.Node.span [ Vdom.Node.text snapshot.container_name ];
               Vdom.Node.span
@@ -583,16 +362,25 @@ let application_metrics ~key ~navigate metrics =
                     [ Vdom.Node.text error ]);
               Ui_helpers.route_link ~class_name:"text-link"
                 ~route:Route.Telemetry ~navigate
-                [ Vdom.Node.text "Inspect full target telemetry" ];
+                [ Vdom.Node.text "View host health" ];
             ])
 
+let deployment_list ~empty entries =
+  if List.is_empty entries then Ui_helpers.text_panel ~kind:"empty" empty
+  else
+    Vdom.Node.ol
+      ~attrs:[ Vdom.Attr.class_ "deployment-list" ]
+      (List.map entries
+         ~f:
+           (Ui_helpers.deployment_row ~link_application:false
+              ~navigate:(fun _ -> Effect.Ignore)))
+
 let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
-    ~logs_stale ~metrics_stale ~preview ~deploy_state ~cancel_confirmation
-    ~prune_state ~search ~current_match ~follow ~paused_snapshot
-    ~dispatch_preview ~dispatch_deploy ~dispatch_cancel ~dispatch_prune
-    ~set_preview ~set_deploy_state ~set_cancel_confirmation ~set_prune_state
-    ~set_search ~set_current_match ~set_follow ~set_paused_snapshot ~set_notice
-    ~refresh_logs ~navigate =
+    ~logs_stale ~metrics_stale ~deploy_state ~cancel_confirmation
+    ~dispatch_deploy ~dispatch_cancel ~set_deploy_state ~set_cancel_confirmation
+    ~set_notice ~search ~current_match ~follow ~paused_snapshot ~set_search
+    ~set_current_match ~set_follow ~set_paused_snapshot ~refresh_logs ~navigate
+    =
   let deployment = application.Protocol.Application.deployment in
   let resource_label, resource_class =
     Ui_helpers.resource_state application.resource_state
@@ -601,9 +389,9 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
     match deployment with
     | None ->
         ( "No revision",
-          "Commit details unavailable",
-          "Awaiting first deployment",
-          "No deployment has been recorded for this application." )
+          "No deployment recorded",
+          "Ready",
+          "Deploy the current managed revision when you are ready." )
     | Some deployment ->
         let revision, subject = Ui_helpers.commit_summary deployment.commit in
         ( revision,
@@ -612,85 +400,31 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
           Option.value deployment.error ~default:deployment.message )
   in
   let action =
-    deployment_action ~application ~deployment ~deploy_state ~prune_state
-      ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_preview
-      ~set_deploy_state ~set_cancel_confirmation ~set_prune_state ~set_notice
+    deployment_action ~application ~deployment ~deploy_state
+      ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+      ~set_cancel_confirmation ~set_notice
   in
-  let deploy_confirmation =
-    match preview with
-    | Some (preview_key, deployment_preview)
-      when String.equal preview_key key && not (Prune_state.is_busy prune_state)
-      ->
-        commit_confirmation ~application:key ~preview:deployment_preview
-          ~deploy_state ~dispatch_deploy ~set_preview ~set_deploy_state
-          ~set_cancel_confirmation ~set_prune_state ~set_notice
-    | _ -> Vdom.Node.none
+  let deployment_entries =
+    match deployments with
+    | Some (Ok entries) -> entries
+    | None | Some (Error _) -> []
   in
-  let prune_open =
-    match Prune_state.confirmation prune_state with
-    | Some (prune_key, _) -> String.equal prune_key key
-    | None -> (
-        match prune_state with
-        | Prune_state.Pending prune_key -> String.equal prune_key key
-        | Idle | Confirming _ -> false)
+  let active_entries =
+    List.filter deployment_entries ~f:(fun entry ->
+        Ui_helpers.deployment_is_active
+          (Some entry.Protocol.Recent_deployment.deployment))
   in
-  let deployment_active = Ui_helpers.deployment_is_active deployment in
-  let prune_receipt =
-    match preview with
-    | Some (preview_key, deployment_preview) when String.equal preview_key key
-      ->
-        Some deployment_preview.Protocol.Deployment_preview.prune_receipt
-    | _ -> None
-  in
-  let prune =
-    match (prune_open, prune_receipt) with
-    | true, Some receipt ->
-        prune_confirmation ~application ~receipt ~dispatch_prune ~prune_state
-          ~set_prune_state ~set_notice
-          ~deployment_active:
-            (deployment_active || Deploy_state.is_busy deploy_state)
-    | true, None ->
-        Vdom.Node.p
-          ~attrs:[ Vdom.Attr.class_ "inline-error" ]
-          [
-            Vdom.Node.text
-              "Prune authority is unavailable; close and preview again.";
-          ]
-    | false, _ -> Vdom.Node.none
-  in
-  let open_prune =
-    let%bind.Effect owner = Browser_navigation.application_owner key in
-    let%bind.Effect () =
-      Effect.Many
-        [
-          set_preview None;
-          set_cancel_confirmation None;
-          set_notice ("Validating prune authority for " ^ key ^ "…");
-        ]
-    in
-    let%bind.Effect response =
-      dispatch_preview { Protocol.Preview_deployment.Query.application = key }
-    in
-    if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
-    else
-      match response with
-      | Error error ->
-          set_notice ("Prune preview RPC failed: " ^ Error.to_string_hum error)
-      | Ok (Error error) ->
-          set_notice ("Prune preview rejected: " ^ Error.to_string_hum error)
-      | Ok (Ok deployment_preview) ->
-          Effect.Many
-            [
-              set_preview (Some (key, deployment_preview));
-              set_prune_state (Prune_state.confirm prune_state ~key);
-              set_notice "";
-            ]
+  let previous_entries =
+    List.filter deployment_entries ~f:(fun entry ->
+        not
+          (Ui_helpers.deployment_is_active
+             (Some entry.Protocol.Recent_deployment.deployment)))
   in
   Vdom.Node.div
     ~attrs:[ Vdom.Attr.class_ "page application-page" ]
     [
       Vdom.Node.header
-        ~attrs:[ Vdom.Attr.class_ "application-hero surface" ]
+        ~attrs:[ Vdom.Attr.class_ "page-intro application-intro" ]
         [
           Vdom.Node.div
             [
@@ -716,6 +450,22 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
                     ~class_name:(Ui_helpers.deployment_state_class deployment)
                     ~label:(Ui_helpers.deployment_state_name deployment));
             ];
+        ];
+      Vdom.Node.section
+        ~attrs:[ Vdom.Attr.classes [ "surface"; "deployment-control" ] ]
+        [
+          Vdom.Node.div
+            ~attrs:[ Vdom.Attr.class_ "surface-header" ]
+            [
+              Vdom.Node.div
+                [
+                  Vdom.Node.p
+                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
+                    [ Vdom.Node.text "Deployment" ];
+                  Vdom.Node.h3 [ Vdom.Node.text subject ];
+                  Vdom.Node.p [ Vdom.Node.text message ];
+                ];
+            ];
           Vdom.Node.dl
             ~attrs:[ Vdom.Attr.class_ "application-summary numeric" ]
             [
@@ -723,105 +473,71 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
               fact "Revision" revision;
               fact "Stage" stage;
             ];
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "deployment-copy" ]
-            [
-              Vdom.Node.strong [ Vdom.Node.text subject ];
-              Vdom.Node.p [ Vdom.Node.text message ];
-            ];
-          Vdom.Node.div
-            ~attrs:[ Vdom.Attr.class_ "primary-operation" ]
-            [ action ];
-          deploy_confirmation;
+          action;
         ];
       Vdom.Node.div
         ~attrs:[ Vdom.Attr.class_ "application-columns" ]
         [
           Vdom.Node.section
-            ~attrs:
-              [
-                Vdom.Attr.class_ "surface";
-                Vdom.Attr.create "aria-labelledby" "runtime-title";
-              ]
+            ~attrs:[ Vdom.Attr.class_ "surface" ]
             [
               Vdom.Node.header
                 ~attrs:[ Vdom.Attr.class_ "surface-header" ]
-                [
-                  Vdom.Node.div
-                    [
-                      Vdom.Node.p
-                        ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                        [ Vdom.Node.text "Current observation" ];
-                      Vdom.Node.h3
-                        ~attrs:[ Vdom.Attr.id "runtime-title" ]
-                        [ Vdom.Node.text "Runtime metrics" ];
-                    ];
-                ];
+                [ Vdom.Node.h3 [ Vdom.Node.text "Runtime health" ] ];
               Ui_helpers.polling_warning ~has_last_good:(Option.is_some metrics)
                 metrics_stale;
               application_metrics ~key ~navigate metrics;
             ];
           Vdom.Node.section
-            ~attrs:
-              [
-                Vdom.Attr.class_ "surface";
-                Vdom.Attr.create "aria-labelledby" "history-title";
-              ]
+            ~attrs:[ Vdom.Attr.class_ "surface" ]
             [
               Vdom.Node.header
                 ~attrs:[ Vdom.Attr.class_ "surface-header" ]
-                [
-                  Vdom.Node.div
-                    [
-                      Vdom.Node.p
-                        ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                        [ Vdom.Node.text "Application scope" ];
-                      Vdom.Node.h3
-                        ~attrs:[ Vdom.Attr.id "history-title" ]
-                        [ Vdom.Node.text "Deployment history" ];
-                    ];
-                ];
+                [ Vdom.Node.h3 [ Vdom.Node.text "Current deployments" ] ];
               Ui_helpers.polling_warning
                 ~has_last_good:(Option.is_some deployments)
                 deployments_stale;
               (match deployments with
               | None ->
-                  Ui_helpers.text_panel ~kind:"loading"
-                    "Reading deployment history…"
+                  Ui_helpers.text_panel ~kind:"loading" "Reading deployments…"
               | Some (Error error) ->
                   Ui_helpers.text_panel ~kind:"error"
                     (Error.to_string_hum error)
-              | Some (Ok []) ->
-                  Ui_helpers.text_panel ~kind:"empty"
-                    "No deployments have been recorded for this application."
-              | Some (Ok entries) ->
-                  Vdom.Node.ol
-                    ~attrs:[ Vdom.Attr.class_ "deployment-list" ]
-                    (List.map entries
-                       ~f:
-                         (Ui_helpers.deployment_row ~link_application:false
-                            ~navigate)));
+              | Some (Ok _) ->
+                  deployment_list ~empty:"No deployment is currently running."
+                    active_entries);
             ];
+        ];
+      Vdom.Node.section
+        ~attrs:[ Vdom.Attr.class_ "surface" ]
+        [
+          Vdom.Node.header
+            ~attrs:[ Vdom.Attr.class_ "surface-header" ]
+            [ Vdom.Node.h3 [ Vdom.Node.text "Previous deployments" ] ];
+          (match deployments with
+          | None ->
+              Ui_helpers.text_panel ~kind:"loading"
+                "Reading deployment history…"
+          | Some (Error error) ->
+              Ui_helpers.text_panel ~kind:"error" (Error.to_string_hum error)
+          | Some (Ok _) ->
+              deployment_list
+                ~empty:"No previous deployments have been recorded."
+                previous_entries);
         ];
       Vdom.Node.section
         ~attrs:
           [
-            Vdom.Attr.class_ "surface logs-surface";
+            Vdom.Attr.classes [ "surface"; "logs-surface" ];
             Vdom.Attr.create "aria-labelledby" "logs-title";
           ]
         [
           Vdom.Node.header
             ~attrs:[ Vdom.Attr.class_ "surface-header" ]
             [
-              Vdom.Node.div
-                [
-                  Vdom.Node.p
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow" ]
-                    [ Vdom.Node.text "Bounded runtime output" ];
-                  Vdom.Node.h3
-                    ~attrs:[ Vdom.Attr.id "logs-title" ]
-                    [ Vdom.Node.text "Application logs" ];
-                ];
+              Vdom.Node.h3
+                ~attrs:[ Vdom.Attr.id "logs-title" ]
+                [ Vdom.Node.text "Application logs" ];
             ];
           Ui_helpers.polling_warning ~has_last_good:(Option.is_some logs)
             logs_stale;
@@ -829,49 +545,14 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
             ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
             ~refresh:refresh_logs logs;
         ];
-      Vdom.Node.section
-        ~attrs:
-          [
-            Vdom.Attr.class_ "surface danger-zone";
-            Vdom.Attr.create "aria-labelledby" "danger-title";
-          ]
-        [
-          Vdom.Node.header
-            ~attrs:[ Vdom.Attr.class_ "surface-header" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.p
-                    ~attrs:[ Vdom.Attr.class_ "eyebrow danger-copy" ]
-                    [ Vdom.Node.text "Destructive maintenance" ];
-                  Vdom.Node.h3
-                    ~attrs:[ Vdom.Attr.id "danger-title" ]
-                    [ Vdom.Node.text "Prune managed resources" ];
-                  Vdom.Node.p
-                    [
-                      Vdom.Node.text
-                        "Prune is separate from deployment history and remains \
-                         unavailable during an active deployment.";
-                    ];
-                ];
-              Ui_helpers.button ~id:prune_action_id ~kind:"danger-outline"
-                ~disabled:
-                  (deployment_active
-                  || Prune_state.is_busy prune_state
-                  || Deploy_state.is_busy deploy_state)
-                ~label:"Prune resources" ~on_click:open_prune ();
-            ];
-          prune;
-        ];
     ]
 
 let render ~key ~application_state ~deployments ~logs ~metrics
-    ~deployments_stale ~logs_stale ~metrics_stale ~preview ~deploy_state
-    ~cancel_confirmation ~prune_state ~search ~current_match ~follow
-    ~paused_snapshot ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
-    ~dispatch_prune ~set_preview ~set_deploy_state ~set_cancel_confirmation
-    ~set_prune_state ~set_search ~set_current_match ~set_follow
-    ~set_paused_snapshot ~set_notice ~refresh_logs ~navigate =
+    ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
+    ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
+    ~dispatch_deploy ~dispatch_cancel ~set_deploy_state ~set_cancel_confirmation
+    ~set_notice ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
+    ~refresh_logs ~navigate =
   match application_state with
   | Loading ->
       Vdom.Node.div
@@ -895,18 +576,16 @@ let render ~key ~application_state ~deployments ~logs ~metrics
           Vdom.Node.p
             [
               Vdom.Node.text
-                "This key is not present in the server-managed application \
-                 allowlist. The requested URL has not been changed.";
+                "This application is not in the server-managed allowlist.";
             ];
           Ui_helpers.route_link ~class_name:"button button-primary"
             ~route:Route.Apps ~navigate
-            [ Vdom.Node.text "View recognized applications" ];
+            [ Vdom.Node.text "View applications" ];
         ]
   | Ready application ->
       ready_page ~key ~application ~deployments ~logs ~metrics
-        ~deployments_stale ~logs_stale ~metrics_stale ~preview ~deploy_state
-        ~cancel_confirmation ~prune_state ~search ~current_match ~follow
-        ~paused_snapshot ~dispatch_preview ~dispatch_deploy ~dispatch_cancel
-        ~dispatch_prune ~set_preview ~set_deploy_state ~set_cancel_confirmation
-        ~set_prune_state ~set_search ~set_current_match ~set_follow
-        ~set_paused_snapshot ~set_notice ~refresh_logs ~navigate
+        ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
+        ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+        ~set_cancel_confirmation ~set_notice ~search ~current_match ~follow
+        ~paused_snapshot ~set_search ~set_current_match ~set_follow
+        ~set_paused_snapshot ~refresh_logs ~navigate

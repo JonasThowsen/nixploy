@@ -74,7 +74,7 @@ let page_title = function
   | Home -> "Home"
   | Apps -> "Applications"
   | Application key -> Application_key.to_string key
-  | Telemetry -> "Telemetry"
+  | Telemetry -> "Host health"
   | Not_found _ -> "Not found"
 
 let application_key = function
