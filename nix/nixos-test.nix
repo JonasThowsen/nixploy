@@ -20,7 +20,8 @@ pkgs.testers.runNixOSTest {
     services.nixploy = {
       enable = true;
       package = nixployPackage;
-      authMode = "unrestricted";
+      authMode = "test-authenticated-identity";
+      testOnly = true;
       port = 18080;
       stateDatabasePath = "/var/lib/nixploy/test-state.sqlite3";
       environmentFile = "/etc/nixploy-test.env";
@@ -215,7 +216,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test ! -e /tmp/direct-production.sqlite")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=test-authenticated-identity")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_TEST_ONLY=true")
     machine.succeed(f"{service_environment} | grep -Fx RUNTIME_DIRECTORY=/run/nixploy-test-runtime")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_(OPERATOR_EMAIL|ALLOWED_ORIGIN)='")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_MANAGED_APPLICATIONS_JSON='")

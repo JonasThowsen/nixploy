@@ -21,7 +21,7 @@ let fact label value =
       Vdom.Node.dd [ Vdom.Node.text value ];
     ]
 
-let deployment_action ~application ~deployment ~deploy_state
+let deployment_action ~capability_grant ~application ~deployment ~deploy_state
     ~cancel_confirmation ~dispatch_cancel ~set_cancel_confirmation ~set_notice =
   let deploy_busy = Deploy_state.is_busy deploy_state in
   match deployment with
@@ -43,8 +43,8 @@ let deployment_action ~application ~deployment ~deploy_state
           let%bind.Effect response =
             dispatch_cancel
               {
-                Protocol.Cancel_deployment_v1.Query.application =
-                  application.Protocol.Application.key;
+                Protocol.Cancel_deployment_v1.V1.Query.capability_grant;
+                application = application.Protocol.Application.key;
                 operation_id = deployment.id;
               }
           in
@@ -336,7 +336,8 @@ let deployment_list ~empty entries =
 
 let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
     ~logs_stale ~metrics_stale ~deploy_state ~cancel_confirmation
-    ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation ~set_notice
+    ~capability_grant ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation
+    ~set_notice
     ~search ~current_match ~follow ~paused_snapshot ~set_search
     ~set_current_match ~set_follow ~set_paused_snapshot ~refresh_logs ~navigate
     =
@@ -359,7 +360,7 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
           Option.value deployment.error ~default:deployment.message )
   in
   let action =
-    deployment_action ~application ~deployment ~deploy_state
+    deployment_action ~capability_grant ~application ~deployment ~deploy_state
       ~cancel_confirmation ~dispatch_cancel ~set_cancel_confirmation ~set_notice
   in
   let deployment_entries =
@@ -508,7 +509,8 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
 let render ~key ~application_state ~deployments ~logs ~metrics
     ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
     ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
-    ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation ~set_notice
+    ~capability_grant ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation
+    ~set_notice
     ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
     ~refresh_logs ~navigate =
   match application_state with
@@ -543,7 +545,7 @@ let render ~key ~application_state ~deployments ~logs ~metrics
   | Ready application ->
       ready_page ~key ~application ~deployments ~logs ~metrics
         ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
-        ~cancel_confirmation ~dispatch_cancel ~set_deploy_state:Effect.Ignore
-        ~set_cancel_confirmation ~set_notice ~search ~current_match ~follow
+        ~cancel_confirmation ~capability_grant ~dispatch_cancel
+        ~set_deploy_state:Effect.Ignore ~set_cancel_confirmation ~set_notice ~search ~current_match ~follow
         ~paused_snapshot ~set_search ~set_current_match ~set_follow
         ~set_paused_snapshot ~refresh_logs ~navigate

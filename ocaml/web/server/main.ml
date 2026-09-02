@@ -109,6 +109,11 @@ let require_control_plane_capability state connection ~capability ~token =
             connection.grant := None;
           Error error)
 
+let with_capability_grant ~capability ~token handler state connection query =
+  match require_control_plane_capability state connection ~capability ~token:(token query) with
+  | Error error -> Deferred.return (Error error)
+  | Ok () -> handler state connection query
+
 let list_applications state _connection_state () =
   Deferred.Or_error.List.map state.applications
     ~how:(`Max_concurrent_jobs max_concurrent_application_observations)
@@ -229,32 +234,82 @@ let implementations state =
         Rpc.Rpc.implement Protocol.List_applications.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              list_applications state);
+        Rpc.Rpc.implement Protocol.List_applications.V1.t
+          (with_capability_grant ~capability:"managed-read-v1"
+             ~token:(fun query -> query.Protocol.List_applications.V1.Query.capability_grant)
+             (fun state connection _query -> list_applications state connection ()) state);
         Rpc.Rpc.implement Protocol.Preview_deployment.t
           (with_control_plane_capability ~capability:"managed-deploy-v1"
              preview_deployment state);
+        Rpc.Rpc.implement Protocol.Preview_deployment.V1.t
+          (with_capability_grant ~capability:"managed-deploy-v1"
+             ~token:(fun query -> query.Protocol.Preview_deployment.V1.Query.capability_grant)
+             (fun state connection query ->
+               preview_deployment state connection
+                 { Protocol.Preview_deployment.Query.application = query.application }) state);
         Rpc.Rpc.implement Protocol.Deploy.t
           (with_control_plane_capability ~capability:"managed-deploy-v1" deploy
              state);
+        Rpc.Rpc.implement Protocol.Deploy.V1.t
+          (with_capability_grant ~capability:"managed-deploy-v1"
+             ~token:(fun query -> query.Protocol.Deploy.V1.Query.capability_grant)
+             (fun state connection query ->
+               deploy state connection
+                 { Protocol.Deploy.Query.application = query.application }) state);
         Rpc.Rpc.implement Protocol.Admit_managed_deployment.t
           (admit_managed_deployment state);
         Rpc.Rpc.implement Protocol.List_deployments.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              list_deployments state);
+        Rpc.Rpc.implement Protocol.List_deployments.V1.t
+          (with_capability_grant ~capability:"managed-read-v1"
+             ~token:(fun query -> query.Protocol.List_deployments.V1.Query.capability_grant)
+             (fun state connection query ->
+               list_deployments state connection
+                 { Protocol.List_deployments.Query.application = query.application }) state);
         Rpc.Rpc.implement Protocol.Cancel_deployment.t
           (with_control_plane_capability ~capability:"managed-cancel-v1"
              cancel_deployment_v0 state);
         Rpc.Rpc.implement Protocol.Cancel_deployment_v1.t
           (with_control_plane_capability ~capability:"managed-cancel-v1"
              cancel_deployment state);
+        Rpc.Rpc.implement Protocol.Cancel_deployment_v1.V1.t
+          (with_capability_grant ~capability:"managed-cancel-v1"
+             ~token:(fun query -> query.Protocol.Cancel_deployment_v1.V1.Query.capability_grant)
+             (fun state connection query ->
+               cancel_deployment state connection
+                 {
+                   Protocol.Cancel_deployment_v1.Query.application = query.application;
+                   operation_id = query.operation_id;
+                 }) state);
         Rpc.Rpc.implement Protocol.Prune.t
           (with_control_plane_capability ~capability:"managed-prune-v1" prune
              state);
+        Rpc.Rpc.implement Protocol.Prune.V1.t
+          (with_capability_grant ~capability:"managed-prune-v1"
+             ~token:(fun query -> query.Protocol.Prune.V1.Query.capability_grant)
+             (fun state connection query ->
+               prune state connection
+                 {
+                   Protocol.Prune.Query.application = query.application;
+                   receipt = query.receipt;
+                 }) state);
         Rpc.Rpc.implement Protocol.Get_application_logs.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              get_application_logs state);
+        Rpc.Rpc.implement Protocol.Get_application_logs.V1.t
+          (with_capability_grant ~capability:"managed-read-v1"
+             ~token:(fun query -> query.Protocol.Get_application_logs.V1.Query.capability_grant)
+             (fun state connection query ->
+               get_application_logs state connection
+                 { Protocol.Get_application_logs.Query.application = query.application }) state);
         Rpc.Rpc.implement Protocol.Get_metrics.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              get_metrics state);
+        Rpc.Rpc.implement Protocol.Get_metrics.V1.t
+          (with_capability_grant ~capability:"managed-read-v1"
+             ~token:(fun query -> query.Protocol.Get_metrics.V1.Query.capability_grant)
+             (fun state connection _query -> get_metrics state connection ()) state);
       ]
     ~on_unknown_rpc:`Continue
 

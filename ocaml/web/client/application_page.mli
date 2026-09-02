@@ -23,8 +23,9 @@ val render :
   current_match:int ->
   follow:bool ->
   paused_snapshot:Protocol.Log_snapshot.t option ->
+  capability_grant:string ->
   dispatch_cancel:
-    (Protocol.Cancel_deployment_v1.Query.t ->
+    (Protocol.Cancel_deployment_v1.V1.Query.t ->
     unit Or_error.t Or_error.t Effect.t) ->
   set_deploy_state:(Deploy_state.t -> unit Effect.t) ->
   set_cancel_confirmation:(string option -> unit Effect.t) ->

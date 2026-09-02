@@ -105,10 +105,27 @@ module Preview_deployment : sig
   end
 
   val t : (Query.t, Deployment_preview.t Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string; application : string }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Deployment_preview.t Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module List_applications : sig
   val t : (unit, Application.t list Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string } [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Application.t list Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Deploy : sig
@@ -117,6 +134,15 @@ module Deploy : sig
   end
 
   val t : (Query.t, string Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string; application : string }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, string Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Admit_managed_deployment : sig
@@ -145,6 +171,15 @@ module List_deployments : sig
   end
 
   val t : (Query.t, Recent_deployment.t list Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string; application : string option }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Recent_deployment.t list Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Cancel_deployment : sig
@@ -162,6 +197,19 @@ module Cancel_deployment_v1 : sig
   end
 
   val t : (Query.t, unit Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = {
+        capability_grant : string;
+        application : string;
+        operation_id : string;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, unit Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Prune_result : sig
@@ -188,6 +236,19 @@ module Prune : sig
   end
 
   val t : (Query.t, Prune_result.t Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = {
+        capability_grant : string;
+        application : string;
+        receipt : string;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Prune_result.t Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Log_line : sig
@@ -213,6 +274,15 @@ module Get_application_logs : sig
   end
 
   val t : (Query.t, Log_snapshot.t option Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string; application : string option }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Log_snapshot.t option Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Health : sig
@@ -261,4 +331,12 @@ end
 
 module Get_metrics : sig
   val t : (unit, Target_metrics.t list Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Query : sig
+      type t = { capability_grant : string } [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Target_metrics.t list Or_error.t) Rpc.Rpc.t
+  end
 end

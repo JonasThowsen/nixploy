@@ -117,6 +117,19 @@ module Preview_deployment = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Deployment_preview.t Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string; application : string }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"preview-deployment" ~version:2
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Deployment_preview.t Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module List_applications = struct
@@ -125,6 +138,18 @@ module List_applications = struct
       ~bin_query:[%bin_type_class: unit]
       ~bin_response:[%bin_type_class: Application.t list Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string } [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"list-applications" ~version:3
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Application.t list Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Deploy = struct
@@ -137,6 +162,19 @@ module Deploy = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: string Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string; application : string }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"start-deployment" ~version:2
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: string Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Admit_managed_deployment = struct
@@ -173,6 +211,19 @@ module List_deployments = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Recent_deployment.t list Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string; application : string option }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"list-deployments" ~version:1
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Recent_deployment.t list Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Cancel_deployment = struct
@@ -198,6 +249,23 @@ module Cancel_deployment_v1 = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: unit Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = {
+        capability_grant : string;
+        application : string;
+        operation_id : string;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"cancel-deployment" ~version:2
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: unit Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Prune_result = struct
@@ -228,6 +296,23 @@ module Prune = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Prune_result.t Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = {
+        capability_grant : string;
+        application : string;
+        receipt : string;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"prune-application" ~version:2
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Prune_result.t Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Log_line = struct
@@ -257,6 +342,19 @@ module Get_application_logs = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Log_snapshot.t option Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string; application : string option }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"get-application-logs" ~version:1
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Log_snapshot.t option Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Health = struct
@@ -310,4 +408,16 @@ module Get_metrics = struct
       ~bin_query:[%bin_type_class: unit]
       ~bin_response:[%bin_type_class: Target_metrics.t list Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Query = struct
+      type t = { capability_grant : string } [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"get-metrics" ~version:1
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Target_metrics.t list Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end

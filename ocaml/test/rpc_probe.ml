@@ -12,34 +12,46 @@ let deployment_state application =
       | Failed -> "failed"
       | Cancelled -> "cancelled")
 
-let preview_application connection application =
+let preview_application connection ~capability_grant application =
   let open Deferred.Or_error.Let_syntax in
   let%bind response =
-    Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
-      { Protocol.Preview_deployment.Query.application }
+    Rpc.Rpc.dispatch Protocol.Preview_deployment.V1.t connection
+      {
+        Protocol.Preview_deployment.V1.Query.capability_grant;
+        application;
+      }
   in
   let%map preview = Deferred.return response in
   let commit = preview.Protocol.Deployment_preview.commit in
   printf "preview %s %s\n%!" commit.revision commit.subject
 
-let inspect_application connection application =
+let inspect_application connection ~capability_grant application =
   let open Deferred.Or_error.Let_syntax in
   let%bind commit =
-    Rpc.Rpc.dispatch Protocol.Preview_deployment.t connection
-      { Protocol.Preview_deployment.Query.application }
+    Rpc.Rpc.dispatch Protocol.Preview_deployment.V1.t connection
+      {
+        Protocol.Preview_deployment.V1.Query.capability_grant;
+        application;
+      }
   in
   let%bind preview = Deferred.return commit in
   let commit = preview.Protocol.Deployment_preview.commit in
   printf "preview %s %s\n%!" commit.revision commit.subject;
   let%bind logs =
-    Rpc.Rpc.dispatch Protocol.Get_application_logs.t connection
-      { Protocol.Get_application_logs.Query.application = Some application }
+    Rpc.Rpc.dispatch Protocol.Get_application_logs.V1.t connection
+      {
+        Protocol.Get_application_logs.V1.Query.capability_grant;
+        application = Some application;
+      }
   in
   let%bind logs = Deferred.return logs in
   let logs = Option.value_exn logs in
   printf "logs %s %d lines%s\n%!" logs.container_name (List.length logs.lines)
     (if logs.truncated then " truncated" else "");
-  let%bind metrics = Rpc.Rpc.dispatch Protocol.Get_metrics.t connection () in
+  let%bind metrics =
+    Rpc.Rpc.dispatch Protocol.Get_metrics.V1.t connection
+      { Protocol.Get_metrics.V1.Query.capability_grant }
+  in
   let%bind metrics = Deferred.return metrics in
   let%map () =
     Deferred.return
@@ -75,15 +87,18 @@ let inspect_application connection application =
            ~f:(sprintf "%.1f%%"))
         (List.length target.applications))
 
-let rec wait_for_terminal connection application operation_id attempts =
+let rec wait_for_terminal connection ~capability_grant application operation_id attempts =
   let open Deferred.Or_error.Let_syntax in
   if attempts = 0 then
     Deferred.Or_error.error_string
       "cancelled deployment did not become terminal"
   else
     let%bind deployments =
-      Rpc.Rpc.dispatch Protocol.List_deployments.t connection
-        { Protocol.List_deployments.Query.application = Some application }
+      Rpc.Rpc.dispatch Protocol.List_deployments.V1.t connection
+        {
+          Protocol.List_deployments.V1.Query.capability_grant;
+          application = Some application;
+        }
     in
     let%bind deployments = Deferred.return deployments in
     match
@@ -103,11 +118,13 @@ let rec wait_for_terminal connection application operation_id attempts =
                     recent.deployment.state))
         | Requested | Running ->
             let%bind.Deferred () = Clock_ns.after (Time_ns.Span.of_sec 1.) in
-            wait_for_terminal connection application operation_id (attempts - 1)
+            wait_for_terminal connection ~capability_grant application operation_id
+              (attempts - 1)
         )
     | None ->
         let%bind.Deferred () = Clock_ns.after (Time_ns.Span.of_sec 1.) in
-        wait_for_terminal connection application operation_id (attempts - 1)
+        wait_for_terminal connection ~capability_grant application operation_id
+          (attempts - 1)
 
 let origin_of_uri uri =
   let open Or_error.Let_syntax in
@@ -123,10 +140,10 @@ let origin_of_uri uri =
     Or_error.errorf "unsupported URI scheme %S" scheme
   else Ok (Uri.make ~scheme ~host ?port:(Uri.port uri) () |> Uri.to_string)
 
-let admission_query ~managed_application_key ~requested_target ~provenance
-    ~revision =
+let admission_query ~capability_grant ~managed_application_key ~requested_target
+    ~provenance ~revision =
   {
-    Protocol.Admit_managed_deployment.Query.capability_grant = "";
+    Protocol.Admit_managed_deployment.Query.capability_grant;
     managed_application_key;
     requested_target;
     provenance;
@@ -147,8 +164,8 @@ let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
         Some revision ) ->
         Deferred.Or_error.return
           (Some
-             (admission_query ~managed_application_key ~requested_target
-                ~provenance ~revision))
+             (admission_query ~capability_grant:"" ~managed_application_key
+                ~requested_target ~provenance ~revision))
     | _ ->
         Deferred.Or_error.error_string
           "--admit-managed-key, --admit-target, --admit-provenance, and \
@@ -172,11 +189,11 @@ let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
     @ if cancel_started then [ "managed-cancel-v1" ] else []
   in
   let%bind connection = Rpc_websocket.Rpc.client ~headers uri in
-  let%bind () =
-    if skip_capabilities then Deferred.Or_error.return ()
+  let%bind capability_grant =
+    if skip_capabilities then Deferred.Or_error.return ""
     else
       let%bind capabilities =
-        Rpc.Rpc.dispatch Protocol.Control_plane_capabilities.t connection
+        Rpc.Rpc.dispatch Protocol.Control_plane_capabilities.V1.t connection
           {
             Protocol.Control_plane_capabilities.Query.protocol_major = 1;
             protocol_minor = 0;
@@ -185,14 +202,20 @@ let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
       in
       let%map capabilities = Deferred.return capabilities in
       printf "capabilities %s %d.%d\n%!" capabilities.control_plane_id
-        capabilities.protocol_major capabilities.protocol_minor
+        capabilities.protocol_major capabilities.protocol_minor;
+      capabilities.capability_grant
+  in
+  let admission =
+    Option.map admission ~f:(fun query ->
+        { query with Protocol.Admit_managed_deployment.Query.capability_grant })
   in
   let%bind () =
     if Option.is_some preview || Option.is_some inspect || Option.is_some deploy
     then Deferred.Or_error.return ()
     else
       let%bind applications =
-        Rpc.Rpc.dispatch Protocol.List_applications.t connection ()
+        Rpc.Rpc.dispatch Protocol.List_applications.V1.t connection
+          { Protocol.List_applications.V1.Query.capability_grant }
       in
       let%map applications = Deferred.return applications in
       List.iter applications ~f:(fun application ->
@@ -202,12 +225,12 @@ let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
   let%bind () =
     match preview with
     | None -> Deferred.Or_error.return ()
-    | Some application -> preview_application connection application
+    | Some application -> preview_application connection ~capability_grant application
   in
   let%bind () =
     match inspect with
     | None -> Deferred.Or_error.return ()
-    | Some application -> inspect_application connection application
+    | Some application -> inspect_application connection ~capability_grant application
   in
   let%bind () =
     match admission with
@@ -223,22 +246,23 @@ let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
   | None -> Deferred.Or_error.return ()
   | Some application ->
       let%bind operation =
-        Rpc.Rpc.dispatch Protocol.Deploy.t connection
-          { Protocol.Deploy.Query.application }
+        Rpc.Rpc.dispatch Protocol.Deploy.V1.t connection
+          { Protocol.Deploy.V1.Query.capability_grant; application }
       in
       let%bind operation = Deferred.return operation in
       printf "started %s\n%!" operation;
       if cancel_started then
         let cancelled =
-          Rpc.Rpc.dispatch Protocol.Cancel_deployment_v1.t connection
+          Rpc.Rpc.dispatch Protocol.Cancel_deployment_v1.V1.t connection
             {
-              Protocol.Cancel_deployment_v1.Query.application;
+              Protocol.Cancel_deployment_v1.V1.Query.capability_grant;
+              application;
               operation_id = operation;
             }
         in
         let%bind cancellation = cancelled in
         let%bind () = Deferred.return cancellation in
-        wait_for_terminal connection application operation 180
+        wait_for_terminal connection ~capability_grant application operation 180
       else Deferred.Or_error.return ()
 
 let command =

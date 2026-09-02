@@ -43,11 +43,17 @@ let component graph =
   let follow, set_follow = Bonsai.state true graph in
   let paused_snapshot, set_paused_snapshot = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
+  let capability_grant, set_capability_grant = Bonsai.state "" graph in
+  let applications_query =
+    let%arr capability_grant = capability_grant in
+    { Protocol.List_applications.V1.Query.capability_grant }
+  in
   let applications_observations, inject_applications_observation =
     Bonsai.state_machine0 ~default_model:Last_good.empty
       ~apply_action:(fun _ observations (query, response) ->
-        Last_good.update ~equal_query:[%equal: unit] observations ~query
-          ~response)
+        Last_good.update
+          ~equal_query:[%equal: Protocol.List_applications.V1.Query.t]
+          observations ~query ~response)
       ~sexp_of_model:(fun _ -> Sexp.Atom "application observations")
       ~sexp_of_action:(fun _ -> Sexp.Atom "application observation")
       graph
@@ -59,19 +65,22 @@ let component graph =
   let _applications =
     Rpc_effect.Rpc.poll ~clear_when_deactivated:false
       ~on_response_received:on_applications_response
-      Protocol.List_applications.t ~where_to_connect:Self
-      ~equal_query:[%equal: unit]
+      Protocol.List_applications.V1.t ~where_to_connect:Self
+      ~equal_query:[%equal: Protocol.List_applications.V1.Query.t]
       ~equal_response:[%equal: Protocol.Application.t list Or_error.t]
-      ~every:(Time_ns.Span.of_sec 1.) (Bonsai.return ()) graph
+      ~every:(Time_ns.Span.of_sec 1.) applications_query graph
   in
   let application_list =
-    let%arr observations = applications_observations in
-    Last_good.value ~equal_query:[%equal: unit] observations ~query:()
+    let%arr observations = applications_observations
+    and query = applications_query in
+    Last_good.value ~equal_query:[%equal: Protocol.List_applications.V1.Query.t]
+      observations ~query
   in
   let deployments_query =
-    let%arr route = route in
+    let%arr route = route and capability_grant = capability_grant in
     {
-      Protocol.List_deployments.Query.application =
+      Protocol.List_deployments.V1.Query.capability_grant;
+      application =
         Option.map
           (Route.application_key route)
           ~f:Route.Application_key.to_string;
@@ -81,8 +90,8 @@ let component graph =
     Bonsai.state_machine0 ~default_model:Last_good.empty
       ~apply_action:(fun _ observations (query, response) ->
         Last_good.update
-          ~equal_query:[%equal: Protocol.List_deployments.Query.t] observations
-          ~query ~response)
+          ~equal_query:[%equal: Protocol.List_deployments.V1.Query.t]
+          observations ~query ~response)
       ~sexp_of_model:(fun _ -> Sexp.Atom "deployment observations")
       ~sexp_of_action:(fun _ -> Sexp.Atom "deployment observation")
       graph
@@ -107,16 +116,17 @@ let component graph =
     | true ->
         Rpc_effect.Rpc.poll ~clear_when_deactivated:false
           ~on_response_received:on_deployments_response
-          Protocol.List_deployments.t ~where_to_connect:Self
-          ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+          Protocol.List_deployments.V1.t ~where_to_connect:Self
+          ~equal_query:[%equal: Protocol.List_deployments.V1.Query.t]
           ~equal_response:[%equal: Protocol.Recent_deployment.t list Or_error.t]
           ~every:(Time_ns.Span.of_sec 1.) deployments_query graph
     | false -> Bonsai.return (empty_poll_result ())
   in
   let logs_query =
-    let%arr route = route in
+    let%arr route = route and capability_grant = capability_grant in
     {
-      Protocol.Get_application_logs.Query.application =
+      Protocol.Get_application_logs.V1.Query.capability_grant;
+      application =
         Option.map
           (Route.application_key route)
           ~f:Route.Application_key.to_string;
@@ -126,7 +136,7 @@ let component graph =
     Bonsai.state_machine0 ~default_model:Last_good.empty
       ~apply_action:(fun _ observations (query, response) ->
         Last_good.update
-          ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+          ~equal_query:[%equal: Protocol.Get_application_logs.V1.Query.t]
           observations ~query ~response)
       ~sexp_of_model:(fun _ -> Sexp.Atom "log observations")
       ~sexp_of_action:(fun _ -> Sexp.Atom "log observation")
@@ -150,18 +160,22 @@ let component graph =
     match%sub logs_page with
     | true ->
         Rpc_effect.Rpc.poll ~clear_when_deactivated:false
-          ~on_response_received:on_logs_response Protocol.Get_application_logs.t
+          ~on_response_received:on_logs_response Protocol.Get_application_logs.V1.t
           ~where_to_connect:Self
-          ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+          ~equal_query:[%equal: Protocol.Get_application_logs.V1.Query.t]
           ~equal_response:[%equal: Protocol.Log_snapshot.t option Or_error.t]
           ~every:(Time_ns.Span.of_sec 2.) logs_query graph
     | false -> Bonsai.return (empty_poll_result ())
   in
+  let metrics_query =
+    let%arr capability_grant = capability_grant in
+    { Protocol.Get_metrics.V1.Query.capability_grant }
+  in
   let metrics_observations, inject_metrics_observation =
     Bonsai.state_machine0 ~default_model:Last_good.empty
       ~apply_action:(fun _ observations (query, response) ->
-        Last_good.update ~equal_query:[%equal: unit] observations ~query
-          ~response)
+        Last_good.update ~equal_query:[%equal: Protocol.Get_metrics.V1.Query.t]
+          observations ~query ~response)
       ~sexp_of_model:(fun _ -> Sexp.Atom "metric observations")
       ~sexp_of_action:(fun _ -> Sexp.Atom "metric observation")
       graph
@@ -185,18 +199,19 @@ let component graph =
     match%sub metrics_page with
     | true ->
         Rpc_effect.Rpc.poll ~clear_when_deactivated:false
-          ~on_response_received:on_metrics_response Protocol.Get_metrics.t
-          ~where_to_connect:Self ~equal_query:[%equal: unit]
+          ~on_response_received:on_metrics_response Protocol.Get_metrics.V1.t
+          ~where_to_connect:Self
+          ~equal_query:[%equal: Protocol.Get_metrics.V1.Query.t]
           ~equal_response:[%equal: Protocol.Target_metrics.t list Or_error.t]
-          ~every:(Time_ns.Span.of_sec 10.) (Bonsai.return ()) graph
+          ~every:(Time_ns.Span.of_sec 10.) metrics_query graph
     | false -> Bonsai.return (empty_poll_result ())
   in
   let dispatch_capabilities =
-    Rpc_effect.Rpc.dispatcher Protocol.Control_plane_capabilities.t
+    Rpc_effect.Rpc.dispatcher Protocol.Control_plane_capabilities.V1.t
       ~where_to_connect:Self graph
   in
   let dispatch_cancel =
-    Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.t
+    Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.V1.t
       ~where_to_connect:Self graph
   in
   let route_key =
@@ -262,8 +277,9 @@ let component graph =
   let activate =
     let%arr set_route = set_route
     and set_mobile_open = set_mobile_open
+    and set_capability_grant = set_capability_grant
     and dispatch_capabilities = dispatch_capabilities in
-    let%bind.Effect _response =
+    let%bind.Effect response =
       dispatch_capabilities
         {
           Protocol.Control_plane_capabilities.Query.protocol_major = 1;
@@ -271,6 +287,12 @@ let component graph =
           required_capabilities =
             [ "managed-read-v1"; "managed-deploy-v1"; "managed-cancel-v1" ];
         }
+    in
+    let%bind.Effect () =
+      match response with
+      | Ok (Ok capabilities) ->
+          set_capability_grant capabilities.capability_grant
+      | Error _ | Ok (Error _) -> Effect.Ignore
     in
     Browser_navigation.start ~on_route:set_route ~on_escape:(fun () ->
         Effect.Many
@@ -286,6 +308,7 @@ let component graph =
   and mobile_open = mobile_open
   and set_mobile_open = set_mobile_open
   and applications_observations = applications_observations
+  and applications_query = applications_query
   and application_list = application_list
   and deployments_observations = deployments_observations
   and deployments_query = deployments_query
@@ -293,6 +316,7 @@ let component graph =
   and logs_observations = logs_observations
   and logs_query = logs_query
   and metrics_observations = metrics_observations
+  and metrics_query = metrics_query
   and deploy_state = deploy_state
   and set_deploy_state = set_deploy_state
   and cancel_confirmation = cancel_confirmation
@@ -307,7 +331,8 @@ let component graph =
   and set_paused_snapshot = set_paused_snapshot
   and notice = notice
   and set_notice = set_notice
-  and dispatch_cancel = dispatch_cancel in
+  and dispatch_cancel = dispatch_cancel
+  and capability_grant = capability_grant in
   let navigate next =
     let close = set_mobile_open false in
     if Route.equal route next then
@@ -339,33 +364,36 @@ let component graph =
     | None, None -> None
   in
   let applications_error =
-    Last_good.error ~equal_query:[%equal: unit] applications_observations
-      ~query:()
+    Last_good.error
+      ~equal_query:[%equal: Protocol.List_applications.V1.Query.t]
+      applications_observations ~query:applications_query
   in
   let applications_response = response application_list applications_error in
   let deployments_value =
-    Last_good.value ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+    Last_good.value ~equal_query:[%equal: Protocol.List_deployments.V1.Query.t]
       deployments_observations ~query:deployments_query
   in
   let deployments_error =
-    Last_good.error ~equal_query:[%equal: Protocol.List_deployments.Query.t]
+    Last_good.error ~equal_query:[%equal: Protocol.List_deployments.V1.Query.t]
       deployments_observations ~query:deployments_query
   in
   let deployments_response = response deployments_value deployments_error in
   let logs_value =
-    Last_good.value ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+    Last_good.value ~equal_query:[%equal: Protocol.Get_application_logs.V1.Query.t]
       logs_observations ~query:logs_query
   in
   let logs_error =
-    Last_good.error ~equal_query:[%equal: Protocol.Get_application_logs.Query.t]
+    Last_good.error ~equal_query:[%equal: Protocol.Get_application_logs.V1.Query.t]
       logs_observations ~query:logs_query
   in
   let logs_response = response logs_value logs_error in
   let metrics_value =
-    Last_good.value ~equal_query:[%equal: unit] metrics_observations ~query:()
+    Last_good.value ~equal_query:[%equal: Protocol.Get_metrics.V1.Query.t]
+      metrics_observations ~query:metrics_query
   in
   let metrics_error =
-    Last_good.error ~equal_query:[%equal: unit] metrics_observations ~query:()
+    Last_good.error ~equal_query:[%equal: Protocol.Get_metrics.V1.Query.t]
+      metrics_observations ~query:metrics_query
   in
   let metrics_response = response metrics_value metrics_error in
   let connection_label, connection_class =
@@ -406,7 +434,7 @@ let component graph =
           ~metrics:metrics_response ~deployments_stale:deployments_error
           ~logs_stale:logs_error ~metrics_stale:metrics_error ~deploy_state
           ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
-          ~dispatch_cancel ~set_deploy_state
+          ~capability_grant ~dispatch_cancel ~set_deploy_state
           ~set_cancel_confirmation ~set_search ~set_current_match ~set_follow
           ~set_paused_snapshot ~set_notice ~refresh_logs:logs.refresh ~navigate
     | Telemetry ->
