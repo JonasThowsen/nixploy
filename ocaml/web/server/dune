@@ -2,6 +2,7 @@
  (name nixploy_rpc_mapping)
  (modules
   authorization
+  capability_grant
   cancellation_request
   control_plane_capabilities
   consumer_response
@@ -12,7 +13,10 @@
   prune_response
   resource_state_response
   static_route)
- (libraries async cohttp core nixploy protocol)
+ (libraries async base64 cohttp core nixploy protocol)
+ (foreign_stubs
+  (language c)
+  (names capability_grant_entropy_stubs))
  (preprocess
   (pps ppx_jane)))
 

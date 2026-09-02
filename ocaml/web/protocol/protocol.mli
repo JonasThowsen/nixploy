@@ -79,6 +79,24 @@ module Control_plane_capabilities : sig
   [@@deriving bin_io, equal, sexp]
 
   val t : (Query.t, t Or_error.t) Rpc.Rpc.t
+
+  module V1 : sig
+    module Response : sig
+      type t = {
+        control_plane_id : string;
+        package_revision : string;
+        protocol_major : int;
+        protocol_minor : int;
+        deployment_config_schemas : string list;
+        capabilities : string list;
+        capability_grant : string;
+        grant_expires_at_ms : int64;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    val t : (Query.t, Response.t Or_error.t) Rpc.Rpc.t
+  end
 end
 
 module Preview_deployment : sig
@@ -104,6 +122,7 @@ end
 module Admit_managed_deployment : sig
   module Query : sig
     type t = {
+      capability_grant : string;
       managed_application_key : string;
       requested_target : string;
       provenance : string;

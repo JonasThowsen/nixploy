@@ -58,6 +58,14 @@
   (pps ppx_jane)))
 
 (test
+ (name capability_grant_test)
+ (modules capability_grant_test)
+ (libraries core nixploy_rpc_mapping)
+ (preprocess
+  (pps ppx_jane)))
+
+
+(test
  (name control_plane_authority_test)
  (modules control_plane_authority_test)
  (libraries core nixploy uri)

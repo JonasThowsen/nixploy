@@ -68,6 +68,11 @@ let
 
   moduleEnvironment = {
     NIXPLOY_AUTH_MODE = cfg.authMode;
+  }
+  // lib.optionalAttrs cfg.testOnly {
+    NIXPLOY_TEST_ONLY = "true";
+  }
+  // {
     RUNTIME_DIRECTORY = runtimeDirectoryPath;
   }
   // lib.optionalAttrs (cfg.operatorEmail != null) {
@@ -408,12 +413,19 @@ in
       type = lib.types.enum [
         "unrestricted"
         "tailscale"
+        "test-authenticated-identity"
       ];
       default = "tailscale";
       description = ''
         HTTP and RPC operator authentication mode. Unrestricted is appropriate
         only for an explicitly trusted local or development boundary.
       '';
+    };
+
+    testOnly = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Permit test-authenticated-identity mode for NixOS test fixtures only.";
     };
 
     operatorEmail = lib.mkOption {
@@ -501,6 +513,10 @@ in
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = cfg.authMode != "test-authenticated-identity" || cfg.testOnly;
+        message = "services.nixploy.test-authenticated-identity requires testOnly = true";
+      }
       {
         assertion = cfg.authMode != "tailscale" || cfg.operatorEmail != null;
         message = "services.nixploy.operatorEmail is required when authMode is tailscale";

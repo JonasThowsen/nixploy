@@ -83,6 +83,28 @@ module Control_plane_capabilities = struct
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: t Or_error.t]
       ~include_in_error_count:Or_error
+
+  module V1 = struct
+    module Response = struct
+      type t = {
+        control_plane_id : string;
+        package_revision : string;
+        protocol_major : int;
+        protocol_minor : int;
+        deployment_config_schemas : string list;
+        capabilities : string list;
+        capability_grant : string;
+        grant_expires_at_ms : int64;
+      }
+      [@@deriving bin_io, equal, sexp]
+    end
+
+    let t =
+      Rpc.Rpc.create ~name:"get-control-plane-capabilities" ~version:1
+        ~bin_query:[%bin_type_class: Query.t]
+        ~bin_response:[%bin_type_class: Response.t Or_error.t]
+        ~include_in_error_count:Or_error
+  end
 end
 
 module Preview_deployment = struct
@@ -120,6 +142,7 @@ end
 module Admit_managed_deployment = struct
   module Query = struct
     type t = {
+      capability_grant : string;
       managed_application_key : string;
       requested_target : string;
       provenance : string;
@@ -134,7 +157,7 @@ module Admit_managed_deployment = struct
   end
 
   let t =
-    Rpc.Rpc.create ~name:"admit-managed-deployment" ~version:0
+    Rpc.Rpc.create ~name:"admit-managed-deployment" ~version:1
       ~bin_query:[%bin_type_class: Query.t]
       ~bin_response:[%bin_type_class: Response.t Or_error.t]
       ~include_in_error_count:Or_error

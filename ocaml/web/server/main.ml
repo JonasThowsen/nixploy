@@ -4,6 +4,7 @@ module Managed_application = Nixploy.Managed_application
 module Application = Nixploy.Application
 module Authorization = Nixploy_rpc_mapping.Authorization
 module Cancellation_request = Nixploy_rpc_mapping.Cancellation_request
+module Capability_grant = Nixploy_rpc_mapping.Capability_grant
 
 module Control_plane_capabilities =
   Nixploy_rpc_mapping.Control_plane_capabilities
@@ -24,11 +25,10 @@ type state = {
   capabilities : Control_plane_capabilities.t;
 }
 
-type connection_state = { granted_capabilities : string list ref }
-
-(* TODO(tracer): Bind grants to an expiry and authenticated identity before
-   managed CLI mutation is introduced. This connection-scoped grant proves that
-   unhandshaken RPCs fail without changing the existing browser transport. *)
+type connection_state = {
+  identity : Capability_grant.identity option;
+  grant : Capability_grant.t option ref;
+}
 
 let now_ms () = Caml_unix.gettimeofday () *. 1000. |> Int64.of_float
 
@@ -42,28 +42,72 @@ let find_application state key = Managed_application.find state.applications key
 let scope application = Application.managed_scope application
 let max_concurrent_application_observations = 4
 
-let get_control_plane_capabilities state connection query =
-  let result =
-    Control_plane_capabilities.negotiate_client_capabilities state.capabilities
-      query
-  in
-  Option.iter (Result.ok result) ~f:(fun _ ->
-      connection.granted_capabilities := query.required_capabilities);
-  Deferred.return result
+let get_control_plane_capabilities state _connection query =
+  Deferred.return
+    (Control_plane_capabilities.negotiate_client_capabilities state.capabilities
+       query)
 
-let require_control_plane_capability connection ~capability =
-  if List.mem !(connection.granted_capabilities) capability ~equal:String.equal
-  then Ok ()
-  else
-    Or_error.errorf
-      "NIXPLOY_CAPABILITY_GRANT_REQUIRED: call get-control-plane-capabilities \
-       with required capability %s first"
-      capability
+let get_control_plane_capabilities_v1 state connection query =
+  match connection.identity with
+  | None ->
+      Deferred.Or_error.error_string
+        "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants require Tailscale authentication"
+  | Some identity -> (
+      match
+        Control_plane_capabilities.negotiate_client_capabilities state.capabilities
+          query
+      with
+      | Error _ as error -> Deferred.return error
+      | Ok capabilities ->
+          let grant =
+            Capability_grant.create (Capability_grant.system_factory ()) ~identity
+              ~capabilities:query.required_capabilities
+              ~package_revision:capabilities.package_revision
+              ~protocol_major:capabilities.protocol_major
+              ~protocol_minor:capabilities.protocol_minor
+          in
+          Or_error.map grant ~f:(fun grant ->
+              connection.grant := Some grant;
+              {
+                Protocol.Control_plane_capabilities.V1.Response.control_plane_id =
+                  capabilities.control_plane_id;
+                package_revision = capabilities.package_revision;
+                protocol_major = capabilities.protocol_major;
+                protocol_minor = capabilities.protocol_minor;
+                deployment_config_schemas = capabilities.deployment_config_schemas;
+                capabilities = capabilities.capabilities;
+                capability_grant = Capability_grant.token grant;
+                grant_expires_at_ms = Capability_grant.expires_at_ms grant;
+              })
+          |> Deferred.return)
 
-let with_control_plane_capability ~capability handler state connection query =
-  match require_control_plane_capability connection ~capability with
-  | Error _ as error -> Deferred.return error
-  | Ok () -> handler state connection query
+let legacy_managed_rpc_error () =
+  Deferred.Or_error.error_string
+    "NIXPLOY_CAPABILITY_GRANT_REQUIRED: upgrade to a grant-bearing managed RPC version"
+
+let with_control_plane_capability ~capability:_ _handler _state _connection _query =
+  legacy_managed_rpc_error ()
+
+let require_control_plane_capability state connection ~capability ~token =
+  match (connection.identity, !(connection.grant)) with
+  | _, None ->
+      Or_error.error_string
+        "NIXPLOY_CAPABILITY_GRANT_REQUIRED: call get-control-plane-capabilities version 1 first"
+  | None, Some _ ->
+      Or_error.error_string
+        "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants require Tailscale authentication"
+  | Some identity, Some grant ->
+      let result =
+        Capability_grant.validate grant ~token ~identity
+          ~package_revision:(Control_plane_capabilities.package_revision state.capabilities)
+          ~protocol_major:1 ~protocol_minor:0 ~capability ~now_ms:(now_ms ())
+      in
+      (match result with
+      | Ok () -> Ok ()
+      | Error error ->
+          if String.is_substring (Error.to_string_hum error) ~substring:"EXPIRED" then
+            connection.grant := None;
+          Error error)
 
 let list_applications state _connection_state () =
   Deferred.Or_error.List.map state.applications
@@ -92,8 +136,14 @@ let deploy state _connection_state query =
   Managed_deployment_rpc.start ~applications:state.applications
     ~application:state.application query
 
-let admit_managed_deployment state _connection_state query =
-  Managed_deployment_admission_rpc.handle ~applications:state.applications query
+let admit_managed_deployment state connection query =
+  match
+    require_control_plane_capability state connection ~capability:"managed-deploy-v1"
+      ~token:query.Protocol.Admit_managed_deployment.Query.capability_grant
+  with
+  | Error error -> Deferred.return (Error error)
+  | Ok () ->
+      Managed_deployment_admission_rpc.handle ~applications:state.applications query
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
@@ -174,6 +224,8 @@ let implementations state =
       [
         Rpc.Rpc.implement Protocol.Control_plane_capabilities.t
           (get_control_plane_capabilities state);
+        Rpc.Rpc.implement Protocol.Control_plane_capabilities.V1.t
+          (get_control_plane_capabilities_v1 state);
         Rpc.Rpc.implement Protocol.List_applications.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              list_applications state);
@@ -184,8 +236,7 @@ let implementations state =
           (with_control_plane_capability ~capability:"managed-deploy-v1" deploy
              state);
         Rpc.Rpc.implement Protocol.Admit_managed_deployment.t
-          (with_control_plane_capability ~capability:"managed-deploy-v1"
-             admit_managed_deployment state);
+          (admit_managed_deployment state);
         Rpc.Rpc.implement Protocol.List_deployments.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              list_deployments state);
@@ -274,6 +325,14 @@ let should_process_request authorization origin_policy _address = function
   | Web (headers, `is_websocket_request true) ->
       Authorization.authorize_websocket authorization origin_policy headers
 
+let identity_for_connection authorization = function
+  | Rpc_websocket.Rpc.Connection_initiated_from.Websocket_request request ->
+      Authorization.authenticated_identity authorization request.headers
+      |> Result.map ~f:(function
+           | Authorization.Tailscale_login login -> Capability_grant.Tailscale_login login)
+      |> Result.ok
+  | Tcp -> None
+
 let mutation_drain_timeout = Time_ns.Span.of_sec 25.
 
 let run ~port ~state_db =
@@ -306,8 +365,8 @@ let run ~port ~state_db =
       ~should_process_request:
         (should_process_request authorization origin_policy)
       ~implementations:(implementations state)
-      ~initial_connection_state:(fun () _initiated_from _address _connection ->
-        { granted_capabilities = ref [] })
+      ~initial_connection_state:(fun () initiated_from _address _connection ->
+        { identity = identity_for_connection authorization initiated_from; grant = ref None })
       ()
   in
   printf "Nixploy control plane listening on http://127.0.0.1:%d/\n%!" port;

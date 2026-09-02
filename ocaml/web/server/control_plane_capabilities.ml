@@ -49,6 +49,8 @@ let create ~control_plane_id ~package_revision =
         capabilities = supported_capabilities;
       }
 
+let package_revision descriptor = descriptor.package_revision
+
 let valid_requested_capability capability =
   (not (String.is_empty capability))
   && String.length capability <= max_capability_bytes

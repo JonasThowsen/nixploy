@@ -21,37 +21,48 @@ let headers ?origin ?host ?login () =
 let request_host_policy = Authorization.origin_policy_of_value None |> assert_ok
 
 let unrestricted =
-  Authorization.of_values ~mode:None ~operator_email:None |> assert_ok
+  Authorization.of_values ~test_only:None ~mode:None ~operator_email:None |> assert_ok
 
 let websocket ?origin ?host ?login authorization policy =
   Authorization.authorize_websocket authorization policy
     (headers ?origin ?host ?login ())
 
 let () =
-  assert (match unrestricted with Unrestricted -> true | Tailscale _ -> false);
+  assert (match unrestricted with Unrestricted -> true | Tailscale _ | Test_authenticated_identity -> false);
   assert (
     match
-      Authorization.of_values ~mode:(Some "unrestricted") ~operator_email:None
+      Authorization.of_values ~test_only:None ~mode:(Some "unrestricted") ~operator_email:None
     with
     | Ok Unrestricted -> true
-    | Ok (Tailscale _) | Error _ -> false);
+    | Ok (Tailscale _) | Ok Test_authenticated_identity | Error _ -> false);
   let tailscale =
-    Authorization.of_values ~mode:(Some "tailscale")
+    Authorization.of_values ~test_only:None ~mode:(Some "tailscale")
       ~operator_email:(Some " Operator@Example.com ")
     |> assert_ok
   in
   assert (
     match tailscale with Tailscale "operator@example.com" -> true | _ -> false);
   assert (
-    Authorization.of_values ~mode:(Some "tailcale")
+    Authorization.of_values ~test_only:None ~mode:(Some "tailcale")
       ~operator_email:(Some "operator@example.com")
     |> Result.is_error);
   assert (
-    Authorization.of_values ~mode:(Some "") ~operator_email:None
+    Authorization.of_values ~test_only:None ~mode:(Some "") ~operator_email:None
     |> Result.is_error);
   assert (
-    Authorization.of_values ~mode:(Some "tailscale") ~operator_email:None
+    Authorization.of_values ~test_only:None ~mode:(Some "tailscale") ~operator_email:None
     |> Result.is_error);
+  assert (
+    Authorization.of_values ~test_only:None
+      ~mode:(Some "test-authenticated-identity") ~operator_email:None
+    |> Result.is_error);
+  assert (
+    match
+      Authorization.of_values ~test_only:(Some "true")
+        ~mode:(Some "test-authenticated-identity") ~operator_email:None
+    with
+    | Ok Test_authenticated_identity -> true
+    | Ok (Unrestricted | Tailscale _) | Error _ -> false);
 
   (* Same-origin localhost remains the development default. *)
   assert (

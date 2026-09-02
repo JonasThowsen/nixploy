@@ -126,7 +126,8 @@ let origin_of_uri uri =
 let admission_query ~managed_application_key ~requested_target ~provenance
     ~revision =
   {
-    Protocol.Admit_managed_deployment.Query.managed_application_key;
+    Protocol.Admit_managed_deployment.Query.capability_grant = "";
+    managed_application_key;
     requested_target;
     provenance;
     revision;

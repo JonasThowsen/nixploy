@@ -20,7 +20,8 @@ let query ?(managed_application_key = "example")
     ?(provenance = "ssh://git@example.invalid/example.git")
     ?(revision = "0123456789abcdef0123456789abcdef01234567") () =
   {
-    Protocol.Admit_managed_deployment.Query.managed_application_key;
+    Protocol.Admit_managed_deployment.Query.capability_grant = "test-grant";
+    managed_application_key;
     requested_target;
     provenance;
     revision;
