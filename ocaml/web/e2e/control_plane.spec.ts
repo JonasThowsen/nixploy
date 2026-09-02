@@ -210,7 +210,8 @@ for (const viewport of [
 
     await expect(page.getByText(/Connected|Connection stale/)).toBeVisible();
 
-    await expect(page.getByRole("button", { name: "Deploy latest revision" })).toBeVisible();
+    await expect(page.getByText("Managed deployment unavailable")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Deploy latest revision" })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Current deployments" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Previous deployments" })).toBeVisible();
 

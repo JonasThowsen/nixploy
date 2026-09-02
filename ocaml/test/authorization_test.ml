@@ -21,48 +21,40 @@ let headers ?origin ?host ?login () =
 let request_host_policy = Authorization.origin_policy_of_value None |> assert_ok
 
 let unrestricted =
-  Authorization.of_values ~test_only:None ~mode:None ~operator_email:None |> assert_ok
+  Authorization.of_values ~mode:None ~operator_email:None |> assert_ok
 
 let websocket ?origin ?host ?login authorization policy =
   Authorization.authorize_websocket authorization policy
     (headers ?origin ?host ?login ())
 
 let () =
-  assert (match unrestricted with Unrestricted -> true | Tailscale _ | Test_authenticated_identity -> false);
+  assert (Authorization.authorized unrestricted (headers ()));
   assert (
-    match
-      Authorization.of_values ~test_only:None ~mode:(Some "unrestricted") ~operator_email:None
-    with
-    | Ok Unrestricted -> true
-    | Ok (Tailscale _) | Ok Test_authenticated_identity | Error _ -> false);
+    Authorization.of_values ~mode:(Some "unrestricted") ~operator_email:None
+    |> Result.is_ok);
   let tailscale =
-    Authorization.of_values ~test_only:None ~mode:(Some "tailscale")
+    Authorization.of_values ~mode:(Some "tailscale")
       ~operator_email:(Some " Operator@Example.com ")
     |> assert_ok
   in
   assert (
-    match tailscale with Tailscale "operator@example.com" -> true | _ -> false);
+    Authorization.authorized tailscale
+      (headers ~login:"operator@example.com" ())
+    |> not);
   assert (
-    Authorization.of_values ~test_only:None ~mode:(Some "tailcale")
+    Authorization.of_values ~mode:(Some "tailcale")
       ~operator_email:(Some "operator@example.com")
     |> Result.is_error);
   assert (
-    Authorization.of_values ~test_only:None ~mode:(Some "") ~operator_email:None
+    Authorization.of_values ~mode:(Some "") ~operator_email:None
     |> Result.is_error);
   assert (
-    Authorization.of_values ~test_only:None ~mode:(Some "tailscale") ~operator_email:None
+    Authorization.of_values ~mode:(Some "tailscale") ~operator_email:None
     |> Result.is_error);
   assert (
-    Authorization.of_values ~test_only:None
-      ~mode:(Some "test-authenticated-identity") ~operator_email:None
+    Authorization.of_values ~mode:(Some "test-authenticated-identity")
+      ~operator_email:None
     |> Result.is_error);
-  assert (
-    match
-      Authorization.of_values ~test_only:(Some "true")
-        ~mode:(Some "test-authenticated-identity") ~operator_email:None
-    with
-    | Ok Test_authenticated_identity -> true
-    | Ok (Unrestricted | Tailscale _) | Error _ -> false);
 
   (* Same-origin localhost remains the development default. *)
   assert (
@@ -128,22 +120,14 @@ let () =
   assert (
     match spoofed_tailscale with
     | Error error ->
-        String.is_substring (Error.to_string_hum error)
+        String.is_substring
+          (Error.to_string_hum error)
           ~substring:"NIXPLOY_AUTH_PROXY_UNTRUSTED"
     | Ok _ -> false);
   assert (
     websocket tailscale request_host_policy ~origin:"https://control.example"
       ~host:"control.example" ~login:"operator@example.com"
     |> Result.is_error);
-  let test_identity =
-    Authorization.of_values ~test_only:(Some "true")
-      ~mode:(Some "test-authenticated-identity") ~operator_email:None
-    |> assert_ok
-  in
-  assert (
-    match Authorization.authenticated_identity test_identity (headers ()) with
-    | Ok (Authorization.Tailscale_login "nixos-vm-test") -> true
-    | Ok _ | Error _ -> false);
   assert (
     Authorization.authenticated_identity unrestricted (headers ())
     |> Result.is_error)

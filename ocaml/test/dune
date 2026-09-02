@@ -73,6 +73,12 @@
  (preprocess
   (pps ppx_jane)))
 
+(test
+ (name browser_capability_grant_state_test)
+ (modules browser_capability_grant_state_test)
+ (libraries core nixploy_web_client_state protocol)
+ (preprocess
+  (pps ppx_jane)))
 
 (test
  (name control_plane_authority_test)

@@ -1,24 +1,25 @@
 open Core
 
-type t = Unrestricted | Tailscale of string | Test_authenticated_identity
-type authenticated_identity = Tailscale_login of string [@@deriving compare, equal, sexp]
+type t = Unrestricted | Tailscale of string
+
+type authenticated_identity = Tailscale_login of string
+[@@deriving compare, equal, sexp]
+
 type origin = { scheme : string; host : string; port : int }
 type host_authority = { host : string; port : int option }
 type origin_policy = Request_host | Allowed_origin of origin
 
 let normalized_login login = String.strip login |> String.lowercase
 
-let of_values ~test_only ~mode ~operator_email =
+let of_values ~mode ~operator_email =
   match
     Option.map mode ~f:(fun mode -> String.strip mode |> String.lowercase)
   with
   | None | Some "unrestricted" -> Ok Unrestricted
   | Some "test-authenticated-identity" ->
-      if Option.value_map test_only ~default:false ~f:(String.equal "true") then
-        Ok Test_authenticated_identity
-      else
-        Or_error.error_string
-          "NIXPLOY_TEST_AUTHENTICATED_IDENTITY_REQUIRES_TEST_ONLY: test-only authentication is disabled"
+      Or_error.error_string
+        "NIXPLOY_TEST_AUTHENTICATED_IDENTITY_UNAVAILABLE: test authentication \
+         is available only to in-process test fixtures"
   | Some "tailscale" -> (
       match operator_email with
       | Some email when not (String.is_empty (String.strip email)) ->
@@ -34,7 +35,6 @@ let load_environment () =
   of_values
     ~mode:(Sys.getenv "NIXPLOY_AUTH_MODE")
     ~operator_email:(Sys.getenv "NIXPLOY_OPERATOR_EMAIL")
-    ~test_only:(Sys.getenv "NIXPLOY_TEST_ONLY")
 
 let default_port = function "http" -> 80 | "https" -> 443 | _ -> assert false
 let valid_port port = port > 0 && port <= 65_535
@@ -91,21 +91,23 @@ let load_origin_policy () =
 
 let authenticated_identity authorization headers =
   match authorization with
-  | Test_authenticated_identity -> Ok (Tailscale_login "nixos-vm-test")
   | Unrestricted ->
-      Or_error.error_string "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants require Tailscale authentication"
+      Or_error.error_string
+        "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants \
+         require Tailscale authentication"
   | Tailscale _ ->
       (* A loopback peer can forge every forwarded HTTP header. Do not grant
          authority until a proxy-to-service channel authenticates its identity. *)
       ignore headers;
       Or_error.error_string
-        "NIXPLOY_AUTH_PROXY_UNTRUSTED: Tailscale authentication requires a verified proxy-to-service identity channel"
+        "NIXPLOY_AUTH_PROXY_UNTRUSTED: Tailscale authentication requires a \
+         verified proxy-to-service identity channel"
 
 let authorized authorization headers =
   match authenticated_identity authorization headers with
   | Ok _ -> true
   | Error _ -> (
-      match authorization with Unrestricted -> true | Tailscale _ | Test_authenticated_identity -> false)
+      match authorization with Unrestricted -> true | Tailscale _ -> false)
 
 let same_origin left right =
   String.equal left.scheme right.scheme

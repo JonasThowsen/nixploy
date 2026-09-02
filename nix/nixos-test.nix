@@ -20,8 +20,7 @@ pkgs.testers.runNixOSTest {
     services.nixploy = {
       enable = true;
       package = nixployPackage;
-      authMode = "test-authenticated-identity";
-      testOnly = true;
+      authMode = "unrestricted";
       port = 18080;
       stateDatabasePath = "/var/lib/nixploy/test-state.sqlite3";
       environmentFile = "/etc/nixploy-test.env";
@@ -155,16 +154,10 @@ pkgs.testers.runNixOSTest {
 
     machine.wait_until_succeeds("test -s /var/lib/nixploy/test-state.sqlite3", timeout=120)
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
-    machine.succeed("nixploy-rpc-probe --uri http://127.0.0.1:18080 | grep -Fx 'example not-deployed'")
-    machine.fail("nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities")
-    # These probes dispatch only the requested managed RPC after the handshake.
-    # They must not evaluate the custody checkout or admit a deployment.
-    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example >/tmp/nixploy-preview.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-preview.out")
-    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --deploy example >/tmp/nixploy-deploy.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-deploy.out")
-    admission = "--admit-managed-key example --admit-target production --admit-provenance ssh://git@example.invalid/example.git --admit-revision 0000000000000000000000000000000000000000"
-    machine.succeed(f"! nixploy-rpc-probe --uri http://127.0.0.1:18080 {admission} >/tmp/nixploy-admit.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-admit.out")
-    machine.succeed(f"! nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities {admission} >/tmp/nixploy-admit-ungranted.out 2>&1; grep -F NIXPLOY_CAPABILITY_GRANT_REQUIRED /tmp/nixploy-admit-ungranted.out")
-    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --admit-managed-key example --admit-target staging --admit-provenance ssh://git@example.invalid/example.git --admit-revision 0000000000000000000000000000000000000000 >/tmp/nixploy-admit-mismatch.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_AUTHORITY_MISMATCH /tmp/nixploy-admit-mismatch.out")
+    # Unrestricted mode serves only the unauthenticated static fixture. It may
+    # never mint a managed capability grant, even on the loopback VM service.
+    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 >/tmp/nixploy-probe.out 2>&1; grep -F NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED /tmp/nixploy-probe.out")
+    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities >/tmp/nixploy-probe-ungranted.out 2>&1; grep -F NIXPLOY_CAPABILITY_GRANT_REQUIRED /tmp/nixploy-probe-ungranted.out")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 
@@ -216,8 +209,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test ! -e /tmp/direct-production.sqlite")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=test-authenticated-identity")
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_TEST_ONLY=true")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")
+    machine.fail(f"{service_environment} | grep -E '^NIXPLOY_TEST_ONLY='")
     machine.succeed(f"{service_environment} | grep -Fx RUNTIME_DIRECTORY=/run/nixploy-test-runtime")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_(OPERATOR_EMAIL|ALLOWED_ORIGIN)='")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_MANAGED_APPLICATIONS_JSON='")

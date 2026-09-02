@@ -8,8 +8,8 @@
 
 (library
  (name nixploy_web_client_state)
- (modules deploy_state last_good prune_state)
- (libraries core)
+ (modules capability_grant_state deploy_state last_good prune_state)
+ (libraries core protocol)
  (preprocess
   (pps ppx_jane)))
 

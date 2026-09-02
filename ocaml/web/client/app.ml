@@ -1,8 +1,15 @@
 open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
+module Capability_grant_state = Nixploy_web_client_state.Capability_grant_state
 module Deploy_state = Nixploy_web_client_state.Deploy_state
 module Last_good = Nixploy_web_client_state.Last_good
+
+let now_ms () =
+  Time_ns.now ()
+  |> Time_ns.to_int63_ns_since_epoch
+  |> Int63.to_int64
+  |> fun nanoseconds -> Int64.(nanoseconds / 1_000_000L)
 
 let empty_poll_result () =
   {
@@ -43,7 +50,14 @@ let component graph =
   let follow, set_follow = Bonsai.state true graph in
   let paused_snapshot, set_paused_snapshot = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
-  let capability_grant, set_capability_grant = Bonsai.state "" graph in
+  let capability_grant_state, set_capability_grant_state =
+    Bonsai.state Capability_grant_state.empty graph
+  in
+  let capability_grant =
+    let%arr capability_grant_state = capability_grant_state in
+    Capability_grant_state.token_for_managed_rpc capability_grant_state
+      ~now_ms:(now_ms ())
+  in
   let capabilities_query =
     Bonsai.return
       {
@@ -54,15 +68,19 @@ let component graph =
       }
   in
   let on_capabilities_response =
-    let%arr set_capability_grant = set_capability_grant in
+    let%arr set_capability_grant_state = set_capability_grant_state in
     fun _query response ->
       match response with
       | Ok (Ok (capabilities : Protocol.Control_plane_capabilities.V1.Response.t)) ->
-          set_capability_grant capabilities.capability_grant
+          set_capability_grant_state
+            (Capability_grant_state.renewed Capability_grant_state.empty
+               ~capability_grant:capabilities.capability_grant
+               ~grant_expires_at_ms:capabilities.grant_expires_at_ms)
       | Error _ | Ok (Error _) ->
           (* A reconnect or failed renewal must not retain a possibly expired
              token or fall back to the legacy grant-less RPC versions. *)
-          set_capability_grant ""
+          set_capability_grant_state
+            (Capability_grant_state.renewal_failed Capability_grant_state.empty)
   in
   let _capabilities =
     (* Capability_grant.default_ttl_ms is five minutes. Renewing every thirty
