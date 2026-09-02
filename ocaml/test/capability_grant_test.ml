@@ -17,6 +17,7 @@ let valid () =
 
 let () =
   assert (String.length (Grant.token grant) = 43);
+  assert (Int64.equal (Grant.issued_at_ms grant) 1_000L);
   assert (Result.is_ok (valid ()));
   assert (Result.is_error (Grant.validate grant ~token:"not-a-grant"
     ~identity ~package_revision:"revision" ~protocol_major:1 ~protocol_minor:0

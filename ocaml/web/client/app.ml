@@ -5,11 +5,19 @@ module Capability_grant_state = Nixploy_web_client_state.Capability_grant_state
 module Deploy_state = Nixploy_web_client_state.Deploy_state
 module Last_good = Nixploy_web_client_state.Last_good
 
-let now_ms () =
-  Time_ns.now ()
-  |> Time_ns.to_int63_ns_since_epoch
-  |> Int63.to_int64
-  |> fun nanoseconds -> Int64.(nanoseconds / 1_000_000L)
+let monotonic_now_ms () =
+  try
+    let performance =
+      Js_of_ocaml.Js.Unsafe.get Js_of_ocaml.Js.Unsafe.global "performance"
+    in
+    let milliseconds : float =
+      Js_of_ocaml.Js.Unsafe.meth_call performance "now" [||]
+    in
+    if Float.(milliseconds >= 0. && milliseconds <= 9_223_372_036_854_775_807.)
+    then Some (Int64.of_float milliseconds)
+    else None
+  with
+  | _ -> None
 
 let empty_poll_result () =
   {
@@ -55,8 +63,11 @@ let component graph =
   in
   let capability_grant =
     let%arr capability_grant_state = capability_grant_state in
-    Capability_grant_state.token_for_managed_rpc capability_grant_state
-      ~now_ms:(now_ms ())
+    match monotonic_now_ms () with
+    | None -> ""
+    | Some now_monotonic_ms ->
+        Capability_grant_state.token_for_managed_rpc capability_grant_state
+          ~now_monotonic_ms
   in
   let capabilities_query =
     Bonsai.return
@@ -72,10 +83,17 @@ let component graph =
     fun _query response ->
       match response with
       | Ok (Ok (capabilities : Protocol.Control_plane_capabilities.V1.Response.t)) ->
-          set_capability_grant_state
-            (Capability_grant_state.renewed Capability_grant_state.empty
-               ~capability_grant:capabilities.capability_grant
-               ~grant_expires_at_ms:capabilities.grant_expires_at_ms)
+          let state =
+            match monotonic_now_ms () with
+            | None -> Capability_grant_state.empty
+            | Some received_at_monotonic_ms ->
+                Capability_grant_state.renewed Capability_grant_state.empty
+                  ~capability_grant:capabilities.capability_grant
+                  ~server_time_ms:capabilities.server_time_ms
+                  ~grant_expires_at_ms:capabilities.grant_expires_at_ms
+                  ~received_at_monotonic_ms
+          in
+          set_capability_grant_state state
       | Error _ | Ok (Error _) ->
           (* A reconnect or failed renewal must not retain a possibly expired
              token or fall back to the legacy grant-less RPC versions. *)

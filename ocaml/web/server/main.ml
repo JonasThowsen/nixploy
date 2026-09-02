@@ -77,6 +77,7 @@ let get_control_plane_capabilities_v1 state connection query =
                 deployment_config_schemas = capabilities.deployment_config_schemas;
                 capabilities = capabilities.capabilities;
                 capability_grant = Capability_grant.token grant;
+                server_time_ms = Capability_grant.issued_at_ms grant;
                 grant_expires_at_ms = Capability_grant.expires_at_ms grant;
               })
           |> Deferred.return)

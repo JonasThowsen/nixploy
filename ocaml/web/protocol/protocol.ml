@@ -94,6 +94,7 @@ module Control_plane_capabilities = struct
         deployment_config_schemas : string list;
         capabilities : string list;
         capability_grant : string;
+        server_time_ms : int64;
         grant_expires_at_ms : int64;
       }
       [@@deriving bin_io, equal, sexp]

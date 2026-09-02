@@ -9,6 +9,7 @@ type t = {
   package_revision : string;
   protocol_major : int;
   protocol_minor : int;
+  issued_at_ms : int64;
   expires_at_ms : int64;
 }
 
@@ -32,6 +33,7 @@ let system_factory () =
   }
 
 let token grant = grant.token
+let issued_at_ms grant = grant.issued_at_ms
 let expires_at_ms grant = grant.expires_at_ms
 
 let valid_capability capability =
@@ -57,16 +59,21 @@ let create factory ~identity ~capabilities ~package_revision ~protocol_major
       if String.length token <> token_length then
         Or_error.error_string "capability grant token encoding failed"
       else
-        Ok
-          {
-            token;
-            identity;
-            capabilities = String.Set.of_list capabilities;
-            package_revision;
-            protocol_major;
-            protocol_minor;
-            expires_at_ms = Int64.(factory.now_ms () + factory.ttl_ms);
-          }
+        let issued_at_ms = factory.now_ms () in
+        if Int64.(issued_at_ms > max_value - factory.ttl_ms) then
+          Or_error.error_string "capability grant expiry overflows server time"
+        else
+          Ok
+            {
+              token;
+              identity;
+              capabilities = String.Set.of_list capabilities;
+              package_revision;
+              protocol_major;
+              protocol_minor;
+              issued_at_ms;
+              expires_at_ms = Int64.(issued_at_ms + factory.ttl_ms);
+            }
 
 let constant_time_equal left right =
   let length = String.length left in
