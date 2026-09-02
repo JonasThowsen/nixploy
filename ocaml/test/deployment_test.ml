@@ -59,22 +59,22 @@ case "$1" in
   eval)
     if [ "${NIXPLOY_TEST_BINDS:-}" = "1" ]; then
       cat <<'JSON'
-{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"],"readOnlyBinds":[{"source":"/srv/reference data","destination":"/app/reference data"}]}}}}
+{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"},"run":{"command":["/app/worker","--once"],"environment":{"MODE":"worker"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"],"readOnlyBinds":[{"source":"/srv/reference data","destination":"/app/reference data"}]}}}}
 JSON
     elif [ "${NIXPLOY_TEST_SECRETS:-}" = "1" ]; then
       secret_path=${NIXPLOY_TEST_SECRET_PATH:-config/secrets.env}
-      printf '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker",""]},"secrets":{"app":"%s"}}}}\n' "$secret_path"
+      printf '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"},"run":{"command":["/app/worker",""]},"secrets":{"app":"%s"}}}}\n' "$secret_path"
     elif [ "${NIXPLOY_TEST_PRODUCTION:-}" = "1" ]; then
       cat <<'JSON'
 {"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","production":{"coordinationScope":"sample-worker"}}}}
 JSON
     elif [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then
       cat <<'JSON'
-{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}","RELEASE_BINDING":"{revision}:{port}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
+{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}","RELEASE_BINDING":"{revision}:{port}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]},"web":{"domain":"worker.example.invalid","healthPath":"/health","slots":{"blue":8080,"green":8081}}}}}
 JSON
     else
       cat <<'JSON'
-{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
+{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
 JSON
     fi
     ;;
@@ -502,11 +502,12 @@ exit 99
         deploy ~managed_applications:[ production_managed ]
           "operation-production-direct"
       in
-      ignore (assert_ok production_direct : Nixploy.Deployment.t);
+      expect_error_containing production_direct
+        "direct mode requires a nonProduction coordination scope";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
-      [%test_eq: int] 1 (count lines "nix|build|");
-      assert (List.exists lines ~f:(String.is_prefix ~prefix:"podman|"));
+      [%test_eq: int] 0 (count lines "nix|build|");
+      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

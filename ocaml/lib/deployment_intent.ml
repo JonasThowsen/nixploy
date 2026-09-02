@@ -234,8 +234,28 @@ let validate_evaluated expected ~source_authority ~revision ~configuration
       "deployment preview intent no longer matches authoritative source, \
        configuration, or destination intent"
 
-let authorize_local ~applications:_ ~working_directory:_ ~configuration:_
-    ~target:_ =
-  (* A local checkout is the CLI source of truth. Managed application
-     allowlists constrain the web surface, not direct local deployment. *)
-  Ok Migration_candidates
+let managed_destination_scopes applications =
+  List.concat_map applications ~f:(fun application ->
+      [ Managed_application.production_destination application;
+        Managed_application.non_production_destination application ]
+      |> List.filter_map ~f:Fn.id
+      |> List.map ~f:Managed_application.coordination_scope)
+
+let authorize_local ~applications ~working_directory:_ ~configuration:_ ~target =
+  match Configuration.Target.non_production target with
+  | None ->
+      Or_error.error_string
+        "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode requires a nonProduction \
+         coordination scope"
+  | Some non_production ->
+      let direct_scope =
+        Configuration.Non_production.coordination_scope non_production
+      in
+      if
+        List.mem (managed_destination_scopes applications) direct_scope
+          ~equal:String.equal
+      then
+        Or_error.error_string
+          "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode coordination scope \
+           overlaps a managed destination"
+      else Ok Migration_candidates

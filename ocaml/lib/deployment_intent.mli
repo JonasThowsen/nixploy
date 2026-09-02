@@ -36,8 +36,8 @@ val authorize_local :
   configuration:Configuration.t ->
   target:Configuration.Target.t ->
   identity_policy Or_error.t
-(** Permits a direct local checkout deployment. Managed application contracts
-    constrain the web surface and are validated separately. *)
+(** Permits only an explicitly non-production direct checkout whose evaluated
+    coordination scope differs from every managed destination scope. *)
 
 val resource_key : t -> Resource_key.t
 val identity_policy : t -> identity_policy

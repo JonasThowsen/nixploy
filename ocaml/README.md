@@ -41,17 +41,20 @@ working-tree changes and intent-to-add files while excluding ignored output, and
 runs the shared deployment engine directly only for an explicitly declared,
 unmanaged `nonProduction` target. Non-ignored untracked files are rejected before
 evaluation so the build, secrets, and image all consume the same prepared source.
-A flake that declares `nixploy.controlPlane.authorityAlias` and
-`managedApplicationKey` is managed: its CLI never falls back to local SQLite or
-deployment effects. The alias resolves only through the root-owned
-`/etc/nixploy/control-plane-authorities.sexp` record, whose transport URI and
-SPKI pin cannot be supplied by the flake or command line. Managed command
-transport remains fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket
-client can verify that configured pin on its TLS connection. The authenticated
-web Deploy action is restricted to its managed checkout allowlist and uses that
-same engine after validating the evaluated target destination. Browser preview
-is advisory; neither preview, receipt, commit confirmation, nor Git custody
-proof authorizes ordinary deploy.
+Managed CLI commands require `--authority-alias` and
+`--managed-application-key`; they resolve the alias only through the root-owned
+`/etc/nixploy/control-plane-authorities.sexp` record before they evaluate Nix,
+open SQLite, install signal handlers, or start deployment work. These values are
+names only: the flake and command line cannot supply a transport URI, trust
+root, SPKI pin, or credential. Local work is explicit with `--direct` and is
+then limited to an unmanaged `nonProduction` target whose coordination scope
+does not match any managed destination. Managed command transport remains
+fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket client can verify
+that configured pin on its TLS connection. The authenticated web Deploy action
+is restricted to its managed checkout allowlist and uses that same engine after
+validating the evaluated target destination. Browser preview is advisory;
+neither preview, receipt, commit confirmation, nor Git custody proof authorizes
+ordinary deploy.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and

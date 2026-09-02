@@ -653,25 +653,33 @@ let%test_unit
     Nixploy.Deployment_intent.authorize_local ~applications
       ~working_directory:directory ~configuration ~target
   in
-  let removed_profile =
-    {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"prod.invalid","user":"deploy","web":{"domain":"app.invalid"}}}}|}
-  in
-  let target_alias =
-    {|{"__schema":"v0.4","project":"other","targets":{"alias":{"image":"image","ip":"prod.invalid","user":"other"}}}|}
-  in
-  let domain_alias =
-    {|{"__schema":"v0.4","project":"other","targets":{"alias":{"image":"image","ip":"elsewhere.invalid","user":"deploy","web":{"domain":"app.invalid"}}}}|}
-  in
   let staging =
-    {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy","nonProduction":{"coordinationScope":"sample-staging"}}}}|}
+    {|{"__schema":"v0.4","project":"sample","targets":{"staging":{"image":"image","ip":"stage.invalid","user":"deploy","nonProduction":{"coordinationScope":"local-staging"}}}}|}
   in
-  List.iter
-    [ (removed_profile, "production"); (target_alias, "alias");
-      (domain_alias, "alias"); (staging, "staging") ]
-    ~f:(fun (json, target) ->
-      ignore
-        (assert_ok (authorize json target)
-          : Nixploy.Deployment_intent.identity_policy));
+  ignore
+    (assert_ok (authorize staging "staging")
+      : Nixploy.Deployment_intent.identity_policy);
+  let other_checkout =
+    Filename_unix.temp_dir "nixploy-authority-policy-other-" ""
+  in
+  let colliding_configuration =
+    Nixploy.Configuration.of_json
+      {|{"__schema":"v0.4","project":"other","targets":{"different-target":{"image":"image","ip":"other.invalid","nonProduction":{"coordinationScope":"sample-staging"}}}}|}
+    |> assert_ok
+  in
+  let colliding_target =
+    Nixploy.Target_name.of_string "different-target" |> assert_ok
+  in
+  let colliding_target =
+    Nixploy.Configuration.find_target colliding_configuration colliding_target
+    |> assert_ok
+  in
+  assert
+    (Result.is_error
+       (Nixploy.Deployment_intent.authorize_local ~applications
+          ~working_directory:other_checkout ~configuration:colliding_configuration
+          ~target:colliding_target));
+  Core_unix.rmdir other_checkout;
   Core_unix.rmdir directory
 
 let%test_unit "configuration reads the current flake schema" =

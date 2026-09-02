@@ -194,75 +194,136 @@ let validate_file_metadata ~uid ~perm ~regular =
     errorf "authority record must not be group or world writable"
   else Ok ()
 
-let rec validate_directory directory =
-  let stats = Caml_unix.lstat directory in
+type metadata = {
+  uid : int;
+  perm : int;
+  regular : bool;
+  directory : bool;
+  device : int;
+  inode : int;
+  size : int;
+  modified_at : float;
+}
+
+type filesystem = {
+  lstat : string -> metadata Or_error.t;
+  read : string -> (metadata * string * metadata) Or_error.t;
+}
+
+let rec validate_directory filesystem directory =
+  let open Or_error.Let_syntax in
+  let%bind stats = filesystem.lstat directory in
   if
-    Poly.equal stats.st_kind Caml_unix.S_DIR
-    && Int.equal stats.st_uid 0
-    && Int.equal (stats.st_perm land 0o022) 0
+    stats.directory && Int.equal stats.uid 0
+    && Int.equal (stats.perm land 0o022) 0
   then
     let parent = Filename.dirname directory in
-    if String.equal parent directory then Ok () else validate_directory parent
+    if String.equal parent directory then Ok ()
+    else validate_directory filesystem parent
   else
     errorf
       "authority directory %s must be root-owned and not group or world \
        writable"
       directory
 
-let load () =
+let same_file left right =
+  Int.equal left.device right.device
+  && Int.equal left.inode right.inode
+  && Int.equal left.size right.size
+  && Float.equal left.modified_at right.modified_at
+
+let load_with filesystem ~path =
+  let open Or_error.Let_syntax in
+  let%bind () = validate_directory filesystem (Filename.dirname path) in
+  let%bind link_stats = filesystem.lstat path in
+  let%bind () =
+    validate_file_metadata ~uid:link_stats.uid ~perm:link_stats.perm
+      ~regular:link_stats.regular
+  in
+  let%bind before, contents, after = filesystem.read path in
+  let%bind () =
+    validate_file_metadata ~uid:before.uid ~perm:before.perm ~regular:before.regular
+  in
+  let%bind () =
+    if before.size <= maximum_file_bytes then Ok ()
+    else errorf "authority record exceeds %d bytes" maximum_file_bytes
+  in
+  let%bind () =
+    if Int.equal (String.length contents) before.size then Ok ()
+    else errorf "authority record changed while being read"
+  in
+  let%bind () =
+    if same_file before after then Ok ()
+    else errorf "authority record changed while being read"
+  in
+  parse contents
+
+let metadata_of_stats stats =
+  {
+    uid = stats.Caml_unix.st_uid;
+    perm = stats.st_perm;
+    regular = Poly.equal stats.st_kind Caml_unix.S_REG;
+    directory = Poly.equal stats.st_kind Caml_unix.S_DIR;
+    device = stats.st_dev;
+    inode = stats.st_ino;
+    size = stats.st_size;
+    modified_at = stats.st_mtime;
+  }
+
+let system_lstat path =
+  Or_error.try_with (fun () -> Caml_unix.lstat path |> metadata_of_stats)
+
+let system_read path =
   Or_error.try_with_join (fun () ->
-      let open Or_error.Let_syntax in
-      let%bind () = validate_directory (Filename.dirname authority_file) in
-      let link_stats = Caml_unix.lstat authority_file in
-      let%bind () =
-        validate_file_metadata ~uid:link_stats.st_uid ~perm:link_stats.st_perm
-          ~regular:(Poly.equal link_stats.st_kind Caml_unix.S_REG)
-      in
       let descriptor =
-        Caml_unix.openfile authority_file
-          [ Caml_unix.O_RDONLY; Caml_unix.O_CLOEXEC ]
-          0
+        Caml_unix.openfile path [ Caml_unix.O_RDONLY; Caml_unix.O_CLOEXEC ] 0
       in
       Exn.protect
         ~finally:(fun () -> Caml_unix.close descriptor)
         ~f:(fun () ->
-          let before = Caml_unix.fstat descriptor in
+          let before = Caml_unix.fstat descriptor |> metadata_of_stats in
           let open Or_error.Let_syntax in
           let%bind () =
-            validate_file_metadata ~uid:before.st_uid ~perm:before.st_perm
-              ~regular:(Poly.equal before.st_kind Caml_unix.S_REG)
-          in
-          let%bind () =
-            if before.st_size <= maximum_file_bytes then Ok ()
+            if before.size <= maximum_file_bytes then Ok ()
             else errorf "authority record exceeds %d bytes" maximum_file_bytes
           in
-          let length = before.st_size in
-          let bytes = Bytes.create length in
+          let bytes = Bytes.create before.size in
           let rec read_all offset =
-            if offset < length then
+            if offset < before.size then
               let count =
-                Caml_unix.read descriptor bytes offset (length - offset)
+                Caml_unix.read descriptor bytes offset (before.size - offset)
               in
               if Int.equal count 0 then
                 failwith "unexpected EOF while reading authority record"
               else read_all (offset + count)
           in
           read_all 0;
-          let after = Caml_unix.fstat descriptor in
-          let%bind () =
-            if
-              before.st_dev = after.st_dev
-              && before.st_ino = after.st_ino
-              && Int.equal before.st_size after.st_size
-              && Float.equal before.st_mtime after.st_mtime
-            then Ok ()
-            else errorf "authority record changed while being read"
-          in
-          parse (Bytes.to_string bytes)))
+          let after = Caml_unix.fstat descriptor |> metadata_of_stats in
+          Ok (before, Bytes.to_string bytes, after)))
+
+let load () =
+  load_with { lstat = system_lstat; read = system_read } ~path:authority_file
   |> Result.map_error ~f:(fun error ->
       Error.tag error ~tag:"NIXPLOY_UNTRUSTED_CONTROL_PLANE")
 
 module For_testing = struct
+  type nonrec metadata = metadata = {
+    uid : int;
+    perm : int;
+    regular : bool;
+    directory : bool;
+    device : int;
+    inode : int;
+    size : int;
+    modified_at : float;
+  }
+
+  type nonrec filesystem = filesystem = {
+    lstat : string -> metadata Or_error.t;
+    read : string -> (metadata * string * metadata) Or_error.t;
+  }
+
   let parse = parse
   let validate_file_metadata = validate_file_metadata
+  let load filesystem ~path = load_with filesystem ~path
 end

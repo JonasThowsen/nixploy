@@ -50,6 +50,13 @@
   (pps ppx_jane)))
 
 (test
+ (name control_plane_client_test)
+ (modules control_plane_client_test)
+ (libraries async core nixploy nixploy_control_plane_client uri)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name configuration_control_plane_test)
  (modules configuration_control_plane_test)
  (libraries core nixploy)

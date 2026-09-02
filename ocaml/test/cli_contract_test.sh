@@ -71,6 +71,9 @@ git -C "$repo" commit -m fixture >/dev/null
 cat > "$bin/nix" <<'EOF'
 #!/bin/sh
 set -eu
+if [ -n "${NIXPLOY_TEST_EVAL_STARTED:-}" ]; then
+  touch "$NIXPLOY_TEST_EVAL_STARTED"
+fi
 if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ]; then
   if [ "${NIXPLOY_TEST_MANAGED:-}" = 1 ]; then
     printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"fixture-production"},"targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid"}}}'
@@ -88,7 +91,7 @@ chmod +x "$bin/nix"
 
 TMPDIR="$runtime" NIXPLOY_TEST_CHILD_PID="$child_marker" \
   NIXPLOY_TEST_EVAL_STARTED="$marker" PATH="$bin:$PATH" \
-  "$executable" deploy --target staging --directory "$repo" \
+  "$executable" deploy --direct --target staging --directory "$repo" \
   --state-db "$state_db" >"$root/stdout" 2>"$root/stderr" &
 cli_pid=$!
 for _ in $(seq 1 100); do
@@ -116,15 +119,25 @@ set -e
 ! kill -0 "$child_pid" 2>/dev/null
 ! find "$runtime" -maxdepth 1 -type d -name 'nixploy-local-*' | grep -q .
 NIXPLOY_TEST_CONFIG_ONLY=1 PATH="$bin:$PATH" \
-  "$executable" history --target staging --directory "$repo" \
+  "$executable" history --direct --target staging --directory "$repo" \
   --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null
 
-set +e
-managed_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 PATH="$bin:$PATH" \
-  "$executable" status --target staging --directory "$repo" \
-  --state-db "$root/managed-state.sqlite" 2>&1)
-managed_status=$?
-set -e
-[ "$managed_status" -ne 0 ]
-grep -F -- 'NIXPLOY_UNTRUSTED_CONTROL_PLANE' <<<"$managed_output" >/dev/null
-[ ! -e "$root/managed-state.sqlite" ]
+# Managed commands resolve their protected authority before any caller-controlled
+# Nix evaluation, local state access, deployment preparation, or signal setup.
+# The missing protected record is therefore a fail-closed error with no nix trace.
+for managed_command in status history deploy; do
+  managed_marker="$root/$managed_command-nix-started"
+  managed_state="$root/$managed_command-state.sqlite"
+  set +e
+  managed_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
+    NIXPLOY_TEST_EVAL_STARTED="$managed_marker" PATH="$bin:$PATH" \
+    "$executable" "$managed_command" --target staging --directory "$repo" \
+    --state-db "$managed_state" --authority-alias netcup \
+    --managed-application-key fixture-production 2>&1)
+  managed_status=$?
+  set -e
+  [ "$managed_status" -ne 0 ]
+  grep -F -- 'NIXPLOY_UNTRUSTED_CONTROL_PLANE' <<<"$managed_output" >/dev/null
+  [ ! -e "$managed_marker" ]
+  [ ! -e "$managed_state" ]
+done

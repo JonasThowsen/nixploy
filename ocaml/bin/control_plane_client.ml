@@ -1,13 +1,14 @@
 open Async
 open Core
 
-let require_managed_transport control_plane =
+let require_managed_transport_with ~authorities ~authority_alias
+    ~managed_application_key =
   let open Deferred.Or_error.Let_syntax in
-  let authority_alias =
-    Nixploy.Configuration.Control_plane.authority_alias control_plane
-  in
-  let%bind authorities =
-    Nixploy.Control_plane_authority.load () |> Deferred.return
+  let%bind () =
+    if String.is_empty (String.strip managed_application_key) then
+      Deferred.Or_error.error_string
+        "NIXPLOY_MANAGED_SELECTION_REQUIRED: managed application key is empty"
+    else Deferred.Or_error.return ()
   in
   let%bind _authority =
     Nixploy.Control_plane_authority.find authorities ~alias:authority_alias
@@ -16,6 +17,18 @@ let require_managed_transport control_plane =
   Deferred.Or_error.error_string
     "NIXPLOY_PIN_UNSUPPORTED: managed control-plane transport cannot verify \
      the configured server SPKI pin"
+
+let require_managed_transport ~authority_alias ~managed_application_key =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind authorities =
+    Nixploy.Control_plane_authority.load () |> Deferred.return
+  in
+  require_managed_transport_with ~authorities ~authority_alias
+    ~managed_application_key
+
+module For_testing = struct
+  let require_managed_transport = require_managed_transport_with
+end
 
 let origin_of_control_plane_uri uri_value =
   let open Or_error.Let_syntax in

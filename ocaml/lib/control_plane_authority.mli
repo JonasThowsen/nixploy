@@ -18,8 +18,28 @@ val load : unit -> t list Or_error.t
     other users. *)
 
 module For_testing : sig
+  type metadata = {
+    uid : int;
+    perm : int;
+    regular : bool;
+    directory : bool;
+    device : int;
+    inode : int;
+    size : int;
+    modified_at : float;
+  }
+
+  type filesystem = {
+    lstat : string -> metadata Or_error.t;
+    read : string -> (metadata * string * metadata) Or_error.t;
+  }
+
   val parse : string -> t list Or_error.t
 
   val validate_file_metadata :
     uid:int -> perm:int -> regular:bool -> unit Or_error.t
+
+  val load : filesystem -> path:string -> t list Or_error.t
+  (** Exercises the same parent-directory, file-metadata, replacement, and
+      parser checks as [load], with filesystem effects supplied by the test. *)
 end

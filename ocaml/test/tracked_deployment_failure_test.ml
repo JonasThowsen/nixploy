@@ -140,7 +140,7 @@ let run_tests () =
 set -eu
 case "$1" in
   eval)
-    printf '%s\n' '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid"}}}'
+    printf '%s\n' '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"}}}}'
     ;;
   build)
     printf '%s\n' "$$" > "$NIXPLOY_TEST_BUILD_LEADER_PID"
