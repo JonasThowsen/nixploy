@@ -340,6 +340,44 @@ end
 module Production = Coordination_profile
 module Non_production = Coordination_profile
 
+module Control_plane = struct
+  type t = { authority_alias : string; managed_application_key : string }
+
+  let authority_alias t = t.authority_alias
+  let managed_application_key t = t.managed_application_key
+
+  let valid_name value =
+    let valid_character = function
+      | 'a' .. 'z' | '0' .. '9' | '-' | '_' -> true
+      | _ -> false
+    in
+    (not (String.is_empty value))
+    && String.length value <= 63
+    && String.equal value (String.lowercase value)
+    && String.for_all value ~f:valid_character
+
+  let of_json ~field = function
+    | `Assoc fields ->
+        let open Or_error.Let_syntax in
+        let%bind () =
+          validate_members ~field
+            ~allowed:
+              (String.Set.of_list [ "authorityAlias"; "managedApplicationKey" ])
+            fields
+        in
+        let%bind authority_alias =
+          required fields "authorityAlias" non_empty_string
+        and managed_application_key =
+          required fields "managedApplicationKey" non_empty_string
+        in
+        if not (valid_name authority_alias) then
+          Or_error.errorf "%s.authorityAlias is invalid" field
+        else if not (valid_name managed_application_key) then
+          Or_error.errorf "%s.managedApplicationKey is invalid" field
+        else Ok { authority_alias; managed_application_key }
+    | _ -> Or_error.errorf "%s must be an object" field
+end
+
 module Target = struct
   type kind = Non_web | Web of Web.t
 
@@ -376,9 +414,14 @@ module Target = struct
     | Some web -> Ok web
 end
 
-type t = { project : Project_name.t; targets : Target.t list }
+type t = {
+  project : Project_name.t;
+  control_plane : Control_plane.t option;
+  targets : Target.t list;
+}
 
 let project t = t.project
+let control_plane t = t.control_plane
 let targets t = t.targets
 
 let secret_references ~field = function
@@ -499,7 +542,9 @@ let of_json input =
   | `Assoc fields ->
       let%bind () =
         validate_members ~field:"nixploy configuration"
-          ~allowed:(String.Set.of_list [ "__schema"; "project"; "targets" ])
+          ~allowed:
+            (String.Set.of_list
+               [ "__schema"; "project"; "controlPlane"; "targets" ])
           fields
       in
       let%bind schema = required fields "__schema" non_empty_string in
@@ -511,6 +556,16 @@ let of_json input =
       in
       let%bind project_text = required fields "project" non_empty_string in
       let%bind project = Project_name.of_string project_text in
+      let%bind control_plane =
+        optional fields "controlPlane"
+          (fun ~field:_ -> function
+            | `Null -> Ok None
+            | json ->
+                Or_error.map
+                  (Control_plane.of_json ~field:"controlPlane" json)
+                  ~f:Option.some)
+          ~default:None
+      in
       let%bind targets_json =
         match List.Assoc.find fields ~equal:String.equal "targets" with
         | Some (`Assoc targets) ->
@@ -522,7 +577,7 @@ let of_json input =
       let%map targets =
         Or_error.all (List.map targets_json ~f:(parse_target ~schema))
       in
-      { project; targets }
+      { project; control_plane; targets }
   | _ -> Or_error.error_string "nixploy configuration must be an object"
 
 let find_target t name =

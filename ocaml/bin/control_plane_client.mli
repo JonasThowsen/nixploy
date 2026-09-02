@@ -1,5 +1,11 @@
 open Async
 
+val require_managed_transport :
+  Nixploy.Configuration.Control_plane.t -> unit Deferred.Or_error.t
+(** Resolves the flake-selected authority only from the root-owned record, then
+    fails closed until the RPC WebSocket transport can verify the configured
+    SPKI pin on its TLS connection. *)
+
 val request_control_plane_capabilities :
   uri:string ->
   required_capabilities:string list ->

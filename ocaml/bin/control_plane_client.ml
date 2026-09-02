@@ -1,6 +1,22 @@
 open Async
 open Core
 
+let require_managed_transport control_plane =
+  let open Deferred.Or_error.Let_syntax in
+  let authority_alias =
+    Nixploy.Configuration.Control_plane.authority_alias control_plane
+  in
+  let%bind authorities =
+    Nixploy.Control_plane_authority.load () |> Deferred.return
+  in
+  let%bind _authority =
+    Nixploy.Control_plane_authority.find authorities ~alias:authority_alias
+    |> Deferred.return
+  in
+  Deferred.Or_error.error_string
+    "NIXPLOY_PIN_UNSUPPORTED: managed control-plane transport cannot verify \
+     the configured server SPKI pin"
+
 let origin_of_control_plane_uri uri_value =
   let open Or_error.Let_syntax in
   let uri = Uri.of_string uri_value in

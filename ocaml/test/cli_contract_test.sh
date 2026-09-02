@@ -71,6 +71,14 @@ git -C "$repo" commit -m fixture >/dev/null
 cat > "$bin/nix" <<'EOF'
 #!/bin/sh
 set -eu
+if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ]; then
+  if [ "${NIXPLOY_TEST_MANAGED:-}" = 1 ]; then
+    printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"fixture-production"},"targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid"}}}'
+  else
+    printf '%s\n' '{"__schema":"v0.4","project":"fixture","targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid","nonProduction":{"coordinationScope":"fixture-staging"}}}}'
+  fi
+  exit 0
+fi
 printf '%s\n' "$$" > "$NIXPLOY_TEST_CHILD_PID"
 touch "$NIXPLOY_TEST_EVAL_STARTED"
 trap 'exit 130' INT TERM
@@ -107,5 +115,16 @@ set -e
 [[ "$cli_status" -ne 0 ]]
 ! kill -0 "$child_pid" 2>/dev/null
 ! find "$runtime" -maxdepth 1 -type d -name 'nixploy-local-*' | grep -q .
-"$executable" history --target staging --directory "$repo" \
+NIXPLOY_TEST_CONFIG_ONLY=1 PATH="$bin:$PATH" \
+  "$executable" history --target staging --directory "$repo" \
   --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null
+
+set +e
+managed_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 PATH="$bin:$PATH" \
+  "$executable" status --target staging --directory "$repo" \
+  --state-db "$root/managed-state.sqlite" 2>&1)
+managed_status=$?
+set -e
+[ "$managed_status" -ne 0 ]
+grep -F -- 'NIXPLOY_UNTRUSTED_CONTROL_PLANE' <<<"$managed_output" >/dev/null
+[ ! -e "$root/managed-state.sqlite" ]

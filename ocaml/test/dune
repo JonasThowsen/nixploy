@@ -43,6 +43,20 @@
   (pps ppx_jane)))
 
 (test
+ (name control_plane_authority_test)
+ (modules control_plane_authority_test)
+ (libraries core nixploy uri)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name configuration_control_plane_test)
+ (modules configuration_control_plane_test)
+ (libraries core nixploy)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name authorization_test)
  (modules authorization_test)
  (libraries core nixploy_rpc_mapping)

@@ -38,12 +38,20 @@ application.
 
 `nixploy deploy -t TARGET` snapshots the local checkout once, including tracked
 working-tree changes and intent-to-add files while excluding ignored output, and
-runs the shared deployment engine directly. Non-ignored untracked files are
-rejected before evaluation so the build, secrets, and image all consume the same
-prepared source. The authenticated web Deploy action is restricted to its
-managed checkout allowlist and uses that same engine after validating the
-evaluated target destination. Browser preview is advisory; neither preview,
-receipt, commit confirmation, nor Git custody proof authorizes ordinary deploy.
+runs the shared deployment engine directly only for an explicitly declared,
+unmanaged `nonProduction` target. Non-ignored untracked files are rejected before
+evaluation so the build, secrets, and image all consume the same prepared source.
+A flake that declares `nixploy.controlPlane.authorityAlias` and
+`managedApplicationKey` is managed: its CLI never falls back to local SQLite or
+deployment effects. The alias resolves only through the root-owned
+`/etc/nixploy/control-plane-authorities.sexp` record, whose transport URI and
+SPKI pin cannot be supplied by the flake or command line. Managed command
+transport remains fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket
+client can verify that configured pin on its TLS connection. The authenticated
+web Deploy action is restricted to its managed checkout allowlist and uses that
+same engine after validating the evaluated target destination. Browser preview
+is advisory; neither preview, receipt, commit confirmation, nor Git custody
+proof authorizes ordinary deploy.
 
 The engine builds and loads the image, starts the inactive Podman slot, switches
 the owned Caddy route, and independently verifies the result. Every stage and

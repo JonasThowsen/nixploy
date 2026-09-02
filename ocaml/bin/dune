@@ -12,7 +12,7 @@
 (library
  (name nixploy_control_plane_client)
  (modules control_plane_client)
- (libraries async async_rpc_websocket cohttp core protocol uri)
+ (libraries async async_rpc_websocket cohttp core nixploy protocol uri)
  (preprocess
   (pps ppx_jane)))
 

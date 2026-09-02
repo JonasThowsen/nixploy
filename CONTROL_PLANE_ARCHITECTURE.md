@@ -156,6 +156,29 @@ proxy boundary. Operator authentication is performed only over this trusted
 transport. Deployment SSH keys, SOPS identities, and target credentials remain
 on the control plane and are never read from project clients.
 
+The production authority record is fixed at
+`/etc/nixploy/control-plane-authorities.sexp`; there is no CLI, environment, or
+project override for its path. The file and every parent directory must be
+root-owned, non-symlinked, and not group/world writable. Its version-1 form is:
+
+```lisp
+((version 1)
+ (authorities
+  (((alias netcup)
+    (uri https://control.example.com)
+    (pinned_server_spki_sha256 BASE64_SHA256_OF_SERVER_SPKI)
+    (trusted_proxy_authority https://control.example.com))))
+```
+
+A project may supply only the `nixploy.controlPlane.authorityAlias` and
+`nixploy.controlPlane.managedApplicationKey` names. It never supplies a URI,
+pin, credential destination, or authority-record path. Managed transport must
+verify `pinned_server_spki_sha256` on the same TLS connection, reject redirects,
+and require the configured trusted-proxy authority; system trust alone is not a
+substitute for the pin. Until the WebSocket transport exposes that verification,
+managed CLI operations fail closed with `NIXPLOY_PIN_UNSUPPORTED` after record
+resolution.
+
 ### Mandatory negotiated grant
 
 Every browser and CLI connection starts with versioned `Get_capabilities`.

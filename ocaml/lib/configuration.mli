@@ -36,6 +36,13 @@ module Web : sig
   val green_port : t -> int
 end
 
+module Control_plane : sig
+  type t
+
+  val authority_alias : t -> string
+  val managed_application_key : t -> string
+end
+
 module Production : sig
   type t
 
@@ -71,5 +78,6 @@ type t
 
 val of_json : string -> t Or_error.t
 val project : t -> Project_name.t
+val control_plane : t -> Control_plane.t option
 val targets : t -> Target.t list
 val find_target : t -> Target_name.t -> Target.t Or_error.t
