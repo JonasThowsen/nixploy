@@ -34,6 +34,7 @@ let
     user = "deploy";
     port = 2222;
     identityFile = "~/.ssh/id_nixploy";
+    hostKeyFingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     run = {
       command = [
         "/app/server"
@@ -93,6 +94,9 @@ assert !(builtins.hasAttr "tasks" defaultConfig.targets.production);
 assert legacyStyle.targets.production.user == "deploy";
 assert legacyStyle.targets.production.port == 2222;
 assert legacyStyle.targets.production.identityFile == "~/.ssh/id_nixploy";
+assert
+  legacyStyle.targets.production.hostKeyFingerprint
+  == "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 assert
   legacyStyle.targets.production.run.command == [
     "/app/server"

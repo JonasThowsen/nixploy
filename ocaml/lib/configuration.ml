@@ -388,6 +388,7 @@ module Target = struct
     user : string;
     port : int;
     identity_file : string option;
+    host_key_fingerprint : Ssh_host_key.t option;
     run : Run.t;
     web : Web.t option;
     secret_references : (string * string) list;
@@ -401,6 +402,7 @@ module Target = struct
   let user t = t.user
   let port t = t.port
   let identity_file t = t.identity_file
+  let host_key_fingerprint t = t.host_key_fingerprint
   let run t = t.run
   let web t = t.web
   let secret_references t = t.secret_references
@@ -454,6 +456,7 @@ let parse_target ~schema (raw_name, json) =
             "user";
             "port";
             "identityFile";
+            "hostKeyFingerprint";
             "run";
             "web";
             "secrets";
@@ -479,6 +482,15 @@ let parse_target ~schema (raw_name, json) =
       and port = optional fields "port" port_value ~default:22
       and identity_file =
         optional fields "identityFile" nullable_string ~default:None
+      and host_key_fingerprint =
+        optional fields "hostKeyFingerprint"
+          (fun ~field:_ -> function
+            | `Null -> Ok None
+            | json ->
+                non_empty_string ~field:(field ^ ".hostKeyFingerprint") json
+                >>= Ssh_host_key.of_fingerprint
+                |> Result.map ~f:Option.some)
+          ~default:None
       and run =
         optional fields "run"
           (fun ~field:_ -> Run.of_json ~schema ~field:(field ^ ".run"))
@@ -527,6 +539,7 @@ let parse_target ~schema (raw_name, json) =
             user;
             port;
             identity_file;
+            host_key_fingerprint;
             run;
             web;
             secret_references;

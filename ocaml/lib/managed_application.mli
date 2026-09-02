@@ -13,6 +13,10 @@ val all_of_json : string -> t list Or_error.t
 val load_authority_file : unit -> t list Or_error.t
 (** Loads the one root-owned machine authority shared by CLI and web. *)
 
+val load_authority_file_if_present : unit -> t list Or_error.t
+(** Loads the protected authority when installed. An absent authority means no
+    managed scopes are installed on this host. *)
+
 val key : t -> string
 val project : t -> Project_name.t
 val target : t -> Target_name.t

@@ -71,6 +71,20 @@
   (pps ppx_jane)))
 
 (test
+ (name direct_mode_configuration_test)
+ (modules direct_mode_configuration_test)
+ (libraries core nixploy)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name host_metrics_cache_test)
+ (modules host_metrics_cache_test)
+ (libraries async core nixploy)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name authorization_test)
  (modules authorization_test)
  (libraries core nixploy_rpc_mapping)

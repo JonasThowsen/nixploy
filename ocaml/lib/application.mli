@@ -41,6 +41,9 @@ type log_snapshot = {
 type health = Healthy | Unhealthy | Unavailable of string
 [@@deriving compare, equal, sexp]
 
+type metrics_freshness = Fresh | Stale | Unavailable
+[@@deriving compare, equal, sexp]
+
 type application_metrics = {
   application : string;
   container_name : string option;
@@ -56,6 +59,7 @@ type target_metrics = {
   target : string;
   host : string;
   observed_at_ms : int64;
+  freshness : metrics_freshness;
   error : string option;
   cpu_percent : float option;
   memory_used_bytes : int64 option;

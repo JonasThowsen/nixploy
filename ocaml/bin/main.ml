@@ -33,9 +33,28 @@ let require_managed_transport ~action ~authority_alias ~managed_application_key 
        ~managed_application_key)
     ~f:(Result.map_error ~f:(fun error -> Error.tag error ~tag:(action ^ " failed")))
 
+let require_direct_configuration ~working_directory ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind configuration = Nixploy.Nix_configuration.load ~working_directory in
+  Deferred.return (Nixploy.Direct_mode.validate_configuration configuration ~target)
+
+let open_direct_application ~state_db =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind managed_applications =
+    Nixploy.Managed_application.load_authority_file_if_present ()
+    |> Deferred.return
+  in
+  Nixploy.Application.open_ ~managed_applications ~state_path:state_db ()
+
 let direct_status ~working_directory ~target ~state_db =
   let open Deferred.Let_syntax in
-  let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+  let%bind permitted = require_direct_configuration ~working_directory ~target in
+  match permitted with
+  | Error error ->
+      eprintf "Status failed: %s\n" (Error.to_string_hum error);
+      Shutdown.exit 1
+  | Ok () ->
+      let%bind opened = open_direct_application ~state_db in
   match opened with
   | Error error ->
       eprintf "Could not open control-plane state: %s\n" (Error.to_string_hum error);
@@ -57,7 +76,13 @@ let direct_status ~working_directory ~target ~state_db =
 
 let direct_history ~working_directory ~target ~state_db ~limit =
   let open Deferred.Let_syntax in
-  let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+  let%bind permitted = require_direct_configuration ~working_directory ~target in
+  match permitted with
+  | Error error ->
+      eprintf "History failed: %s\n" (Error.to_string_hum error);
+      Shutdown.exit 1
+  | Ok () ->
+      let%bind opened = open_direct_application ~state_db in
   match opened with
   | Error error ->
       eprintf "Could not open control-plane state: %s\n" (Error.to_string_hum error);
@@ -81,10 +106,16 @@ let direct_history ~working_directory ~target ~state_db ~limit =
 
 let direct_deploy ~working_directory ~target ~state_db =
   let open Deferred.Let_syntax in
-  Nixploy.Process_runner.handle_termination_signals ();
   eprintf "Preparing local source snapshot and evaluating target %s...\n%!"
     (Nixploy.Target_name.to_string target);
-  let%bind opened = Nixploy.Application.open_ ~state_path:state_db () in
+  Nixploy.Process_runner.handle_termination_signals ();
+  let%bind permitted = require_direct_configuration ~working_directory ~target in
+  match permitted with
+  | Error error ->
+      eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
+      Shutdown.exit 1
+  | Ok () ->
+      let%bind opened = open_direct_application ~state_db in
   match opened with
   | Error error ->
       eprintf "Could not open deployment state: %s\n" (Error.to_string_hum error);

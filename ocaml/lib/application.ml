@@ -41,6 +41,9 @@ type log_snapshot = {
 type health = Healthy | Unhealthy | Unavailable of string
 [@@deriving compare, equal, sexp]
 
+type metrics_freshness = Fresh | Stale | Unavailable
+[@@deriving compare, equal, sexp]
+
 type application_metrics = {
   application : string;
   container_name : string option;
@@ -56,6 +59,7 @@ type target_metrics = {
   target : string;
   host : string;
   observed_at_ms : int64;
+  freshness : metrics_freshness;
   error : string option;
   cpu_percent : float option;
   memory_used_bytes : int64 option;
@@ -851,10 +855,11 @@ let runtime_cache_key application (scope : scope) =
       Managed_application.repository_identity application;
     ]
 
-let discover_runtime t application ~bootstrap_commit =
+let discover_runtime ?before_connection t application ~bootstrap_commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind identity =
-    Runtime_application.discover_identity ~commit:bootstrap_commit application
+    Runtime_application.discover_identity ?before_connection ~commit:bootstrap_commit
+      application
   in
   let revision = Runtime_application.deployed_revision identity in
   let operation_id = Runtime_application.deployed_operation_id identity in
@@ -863,7 +868,7 @@ let discover_runtime t application ~bootstrap_commit =
       ~working_directory:(Managed_application.working_directory application)
       ~revision
   in
-  Runtime_application.resolve ~commit ~operation_id application
+  Runtime_application.resolve ?before_connection ~commit ~operation_id application
 
 let cached_runtime t ~(scope : scope) ~key ~resolution_id ~mutation_id ~resolve
     =
@@ -894,7 +899,7 @@ let cached_runtime t ~(scope : scope) ~key ~resolution_id ~mutation_id ~resolve
                  (Time_ns.Span.of_sec (if Result.is_ok result then 10. else 3.))));
       value
 
-let resolve_runtime t application =
+let resolve_runtime ?before_connection t application =
   let open Deferred.Or_error.Let_syntax in
   let%bind scope, persisted_identity =
     persisted_runtime_identity t application
@@ -916,7 +921,8 @@ let resolve_runtime t application =
         "bootstrap:" ^ Source.commit_revision bootstrap_commit
       in
       cached_runtime t ~scope ~key ~resolution_id ~mutation_id
-        ~resolve:(fun () -> discover_runtime t application ~bootstrap_commit)
+        ~resolve:(fun () ->
+          discover_runtime ?before_connection t application ~bootstrap_commit)
   | Some (revision, deployment_id) ->
       let resolution_id =
         String.concat [ "persisted:"; deployment_id; ":"; revision ]
@@ -931,8 +937,8 @@ let resolve_runtime t application =
                   (Managed_application.working_directory application)
                 ~revision
             in
-            Runtime_application.resolve ~commit ~operation_id:deployment_id
-              application
+            Runtime_application.resolve ?before_connection ~commit
+              ~operation_id:deployment_id application
           in
           let%bind.Deferred exact = exact in
           match exact with
@@ -943,7 +949,8 @@ let resolve_runtime t application =
                 match bootstrap with
                 | Error error -> Deferred.return (Error error)
                 | Ok bootstrap_commit ->
-                    discover_runtime t application ~bootstrap_commit
+                    discover_runtime ?before_connection t application
+                      ~bootstrap_commit
               in
               Deferred.return
                 (Result.map_error discovered ~f:(fun discovery_error ->
@@ -999,6 +1006,7 @@ let unavailable_metrics application error =
     target = Managed_application.target application |> Target_name.to_string;
     host = "unavailable";
     observed_at_ms = now_ms ();
+    freshness = Unavailable;
     error = Some error;
     cpu_percent = None;
     memory_used_bytes = None;
@@ -1024,14 +1032,19 @@ let unavailable_metrics application error =
       ];
   }
 
+let validate_metrics_target target =
+  Host_metrics.cache_key target |> Result.map ~f:ignore |> Deferred.return
+
 let observe_application_metrics t application =
-  let%bind runtime = resolve_runtime t application in
+  let%bind runtime =
+    resolve_runtime ~before_connection:validate_metrics_target t application
+  in
   match runtime with
   | Error error -> Deferred.return (unavailable_metrics application error)
   | Ok runtime ->
       let target = Runtime_application.target runtime in
       let container = Runtime_application.container runtime in
-      let%map host = Host_metrics.observe target
+      let%map host_observation = Host_metrics.observe target
       and stats =
         Podman.read_stats
           ~connection:(Runtime_application.connection runtime)
@@ -1049,8 +1062,21 @@ let observe_application_metrics t application =
             Deferred.Or_error.error_string
               "runtime health configuration is inconsistent"
       in
-      let host_error = Result.error host |> Option.map ~f:Error.to_string_hum in
-      let host_value = Result.ok host in
+      let host_error, host_value, host_observed_at_ms, freshness =
+        match host_observation with
+        | Host_metrics.Fresh sample ->
+            ( None,
+              Some (Host_metrics.sample_value sample),
+              Host_metrics.sample_observed_at_ms sample,
+              Fresh )
+        | Host_metrics.Stale (sample, error) ->
+            ( Some ("stale host metrics: " ^ Error.to_string_hum error),
+              Some (Host_metrics.sample_value sample),
+              Host_metrics.sample_observed_at_ms sample,
+              Stale )
+        | Host_metrics.Unavailable error ->
+            (Some (Error.to_string_hum error), None, now_ms (), Unavailable)
+      in
       let stats_value = Result.ok stats in
       let health =
         match health with
@@ -1073,7 +1099,8 @@ let observe_application_metrics t application =
             (Configuration.Target.user target)
             (Configuration.Target.host target)
             (Configuration.Target.port target);
-        observed_at_ms = now_ms ();
+        observed_at_ms = host_observed_at_ms;
+        freshness;
         error = host_error;
         cpu_percent = Option.map host_value ~f:Host_metrics.cpu_percent;
         memory_used_bytes =

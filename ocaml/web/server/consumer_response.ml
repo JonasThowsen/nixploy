@@ -93,11 +93,17 @@ let protocol_health = function
   | Unhealthy -> Unhealthy
   | Unavailable error -> Unavailable error
 
+let protocol_metrics_freshness = function
+  | Application.Fresh -> Protocol.Metrics_freshness.Fresh
+  | Application.Stale -> Protocol.Metrics_freshness.Stale
+  | Application.Unavailable -> Protocol.Metrics_freshness.Unavailable
+
 let target_metrics (metrics : Application.target_metrics) =
   {
     Protocol.Target_metrics.target = metrics.target;
     host = metrics.host;
     observed_at_ms = metrics.observed_at_ms;
+    freshness = protocol_metrics_freshness metrics.freshness;
     error = metrics.error;
     cpu_percent = metrics.cpu_percent;
     memory_used_bytes = metrics.memory_used_bytes;

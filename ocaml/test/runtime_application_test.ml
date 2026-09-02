@@ -72,15 +72,21 @@ case "$*" in
   *) echo "unexpected nix command: $*" >&2; exit 97 ;;
 esac
 [ ! -e "$PWD/.git" ]
-printf '%s\n' '{"__schema":"v0.3","project":"example","targets":{"production":{"image":"worker","ip":"host","user":"deploy","port":22}}}'
+if [ "${NIXPLOY_TEST_MISSING_HOST_KEY:-}" = 1 ]; then
+  printf '%s\n' '{"__schema":"v0.3","project":"example","targets":{"production":{"image":"worker","ip":"host","user":"deploy","port":22}}}'
+else
+  printf '%s\n' '{"__schema":"v0.3","project":"example","targets":{"production":{"image":"worker","ip":"host","user":"deploy","port":22,"hostKeyFingerprint":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}}'
+fi
 |};
   write_executable (Filename.concat fake_bin "ssh") {|#!/bin/sh
+[ -z "${NIXPLOY_TEST_CONNECTION_LOG:-}" ] || echo ssh >> "$NIXPLOY_TEST_CONNECTION_LOG"
 printf '[]\n'
 |};
   write_executable
     (Filename.concat fake_bin "podman")
     (sprintf
        {|#!/bin/sh
+[ -z "${NIXPLOY_TEST_CONNECTION_LOG:-}" ] || echo podman >> "$NIXPLOY_TEST_CONNECTION_LOG"
 case "$*" in
   *"system connection list"*) printf '[]\n' ;;
   *" inspect --type container "*)
@@ -260,6 +266,24 @@ esac
   | Nixploy.Application.Unavailable message ->
       assert (String.is_substring message ~substring:"not configured")
   | Healthy | Unhealthy -> failwith "non-web health was reported as configured");
+  let connection_log = Filename.concat directory "metrics-connections" in
+  Core_unix.putenv ~key:"NIXPLOY_TEST_CONNECTION_LOG" ~data:connection_log;
+  Core_unix.putenv ~key:"NIXPLOY_TEST_MISSING_HOST_KEY" ~data:"1";
+  let missing_identity_service = Nixploy.Application.create ~store () in
+  let%bind missing_identity_metrics =
+    Nixploy.Application.application_metrics missing_identity_service application
+  in
+  Core_unix.putenv ~key:"NIXPLOY_TEST_MISSING_HOST_KEY" ~data:"";
+  Core_unix.putenv ~key:"NIXPLOY_TEST_CONNECTION_LOG" ~data:"";
+  assert (Option.is_some missing_identity_metrics.error);
+  let connection_opened =
+    try
+      ignore (Caml_unix.lstat connection_log);
+      true
+    with
+    | Caml_unix.Unix_error (Caml_unix.ENOENT, _, _) -> false
+  in
+  assert (not connection_opened);
   let%bind local_success =
     Nixploy.Store.request store ~application_key:None
       ~working_directory:directory ~target ~commit

@@ -149,6 +149,7 @@ let run_tests () =
         |> Nixploy.Target_name.to_string;
       host = "shared-host";
       observed_at_ms = 1L;
+      freshness = Application.Fresh;
       error = None;
       cpu_percent = None;
       memory_used_bytes = None;

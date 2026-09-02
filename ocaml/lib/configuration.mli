@@ -65,6 +65,7 @@ module Target : sig
   val user : t -> string
   val port : t -> int
   val identity_file : t -> string option
+  val host_key_fingerprint : t -> Ssh_host_key.t option
   val run : t -> Run.t
   val web : t -> Web.t option
   val secret_references : t -> (string * string) list

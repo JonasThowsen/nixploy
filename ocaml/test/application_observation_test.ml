@@ -66,6 +66,7 @@ let run_tests () =
             Nixploy.Application.target = "production";
             host = "deploy@example.invalid:22";
             observed_at_ms = 101L;
+            freshness = Fresh;
             error = None;
             cpu_percent = Some 10.;
             memory_used_bytes = Some 20L;

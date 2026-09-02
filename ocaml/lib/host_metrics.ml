@@ -190,19 +190,139 @@ let parse output =
       uptime_seconds;
     }
 
-let observe target =
+let bounded_diagnostic value =
+  String.prefix (String.strip value) 4_096
+
+let observe_uncached target =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
     Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 15.)
-      ~max_output_bytes:262_144 [ "sh"; "-c"; script ]
+      ~max_output_bytes:4_096 [ "sh"; "-c"; script ]
   in
   match result.exit_status with
   | Error failure ->
       Deferred.Or_error.errorf "host metrics failed (%s): %s"
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
-        (String.strip result.stderr)
+        (bounded_diagnostic result.stderr)
   | Ok () -> Deferred.return (parse result.stdout)
+
+type sample = { value : t; observed_at : Time_ns.t }
+type observation = Fresh of sample | Stale of sample * Error.t | Unavailable of Error.t
+
+type cached_observation = {
+  mutable sample : sample option;
+  mutable fresh_until : Time_ns.t;
+  mutable stale_until : Time_ns.t;
+  mutable retry_at : Time_ns.t;
+  mutable last_error : Error.t option;
+  mutable refresh : observation Deferred.t option;
+  mutable waiters : int;
+}
+
+type cache = {
+  now : unit -> Time_ns.t;
+  fresh_for : Time_ns.Span.t;
+  stale_for : Time_ns.Span.t;
+  observe_uncached : Configuration.Target.t -> t Deferred.Or_error.t;
+  entries : cached_observation String.Table.t;
+}
+
+let sample_value sample = sample.value
+let sample_observed_at_ms sample =
+  Time_ns.to_span_since_epoch sample.observed_at |> Time_ns.Span.to_ms
+  |> Int64.of_float
+
+let cache_key target =
+  match Configuration.Target.host_key_fingerprint target with
+  | None ->
+      Or_error.error_string
+        "NIXPLOY_HOST_KEY_FINGERPRINT_REQUIRED: target hostKeyFingerprint is required for remote observation"
+  | Some fingerprint ->
+      Ok
+        (sprintf "%s:%d:%s" (Configuration.Target.host target)
+           (Configuration.Target.port target) (Ssh_host_key.fingerprint fingerprint))
+
+let create_cache ~now ~fresh_for ~stale_for ~observe () =
+  { now; fresh_for; stale_for; observe_uncached = observe; entries = String.Table.create () }
+
+let unavailable error = Deferred.return (Unavailable error)
+let maximum_coalesced_waiters = 32
+
+let await_refresh entry =
+  match entry.refresh with
+  | None -> assert false
+  | Some _ when entry.waiters >= maximum_coalesced_waiters ->
+      unavailable
+        (Error.of_string
+           "NIXPLOY_HOST_METRICS_WAITERS_EXCEEDED: observation refresh already has 32 coalesced waiters")
+  | Some refresh ->
+      entry.waiters <- entry.waiters + 1;
+      upon refresh (fun _ -> entry.waiters <- entry.waiters - 1);
+      refresh
+
+let begin_observation cache ~key ~previous target =
+  let entry =
+    Option.value previous ~default:{
+      sample = None;
+      fresh_until = Time_ns.epoch;
+      stale_until = Time_ns.epoch;
+      retry_at = Time_ns.epoch;
+      last_error = None;
+      refresh = None;
+      waiters = 0;
+    }
+  in
+  let completed =
+    let%map.Deferred result = cache.observe_uncached target in
+    let observed_at = cache.now () in
+    match result with
+    | Ok value ->
+        let sample = { value; observed_at } in
+        entry.sample <- Some sample;
+        entry.fresh_until <- Time_ns.add observed_at cache.fresh_for;
+        entry.stale_until <- Time_ns.add observed_at cache.stale_for;
+        entry.retry_at <- entry.fresh_until;
+        entry.last_error <- None;
+        Fresh sample
+    | Error error ->
+        entry.last_error <- Some error;
+        entry.retry_at <- Time_ns.add observed_at cache.fresh_for;
+        (match entry.sample with
+        | Some sample when Time_ns.(observed_at <= entry.stale_until) ->
+            Stale (sample, error)
+        | Some _ | None -> Unavailable error)
+  in
+  entry.refresh <- Some completed;
+  Hashtbl.set cache.entries ~key ~data:entry;
+  upon completed (fun _ -> entry.refresh <- None);
+  completed
+
+let observe_cached cache target =
+  match cache_key target with
+  | Error error -> unavailable error
+  | Ok key -> (
+      match Hashtbl.find cache.entries key with
+      | Some { sample = Some sample; fresh_until; _ }
+        when Time_ns.(cache.now () <= fresh_until) ->
+          Deferred.return (Fresh sample)
+      | Some ({ refresh = Some _; _ } as entry) -> await_refresh entry
+      | Some ({ sample = Some sample; retry_at; last_error = Some error; _ } as _entry)
+        when Time_ns.(cache.now () < retry_at) ->
+          Deferred.return (Stale (sample, error))
+      | Some ({ sample = None; retry_at; last_error = Some error; _ } as _entry)
+        when Time_ns.(cache.now () < retry_at) ->
+          Deferred.return (Unavailable error)
+      | Some entry -> begin_observation cache ~key ~previous:(Some entry) target
+      | None -> begin_observation cache ~key ~previous:None target)
+
+let default_cache =
+  create_cache ~now:Time_ns.now ~fresh_for:(Time_ns.Span.of_sec 10.)
+    ~stale_for:(Time_ns.Span.of_sec 30.) ~observe:observe_uncached ()
+
+let observe target = observe_cached default_cache target
 
 module For_testing = struct
   let parse = parse
+  let create_cache = create_cache
+  let observe_cached = observe_cached
 end

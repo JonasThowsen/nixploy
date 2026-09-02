@@ -479,6 +479,23 @@ let load_authority_file () =
                 "managed application authority changed while being read"
             else all_of_json (Bytes.to_string bytes)))
 
+let load_authority_file_if_present () =
+  try
+    let directory = Caml_unix.lstat (Filename.dirname authority_file) in
+    if
+      Poly.equal directory.st_kind Caml_unix.S_DIR
+      && Int.equal directory.st_uid 0
+      && Int.equal (directory.st_perm land 0o022) 0
+    then
+      (try
+         ignore (Caml_unix.lstat authority_file);
+         load_authority_file ()
+       with
+       | Caml_unix.Unix_error (Caml_unix.ENOENT, _, _) -> Ok [])
+    else Ok []
+  with
+  | Caml_unix.Unix_error (Caml_unix.ENOENT, _, _) -> Ok []
+
 let find applications key =
   match
     List.find applications ~f:(fun application ->

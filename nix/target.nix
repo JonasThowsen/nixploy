@@ -72,6 +72,17 @@ with lib;
       '';
     };
 
+    hostKeyFingerprint = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      description = ''
+        Canonical unpadded SHA-256 fingerprint for this target's SSH host key.
+        Remote host observations refuse to open SSH unless this identity is
+        present and valid. The value participates in the observation cache key.
+      '';
+    };
+
     run = mkOption {
       default = { };
       description = "Container runtime configuration for this target.";

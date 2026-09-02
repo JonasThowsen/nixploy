@@ -196,11 +196,16 @@ module Application_metrics : sig
   [@@deriving bin_io, equal, sexp]
 end
 
+module Metrics_freshness : sig
+  type t = Fresh | Stale | Unavailable [@@deriving bin_io, equal, sexp]
+end
+
 module Target_metrics : sig
   type t = {
     target : string;
     host : string;
     observed_at_ms : int64;
+    freshness : Metrics_freshness.t;
     error : string option;
     cpu_percent : float option;
     memory_used_bytes : int64 option;

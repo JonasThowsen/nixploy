@@ -21,8 +21,9 @@ let container t = t.container
 let caddy t = t.caddy
 let active_port t = t.active_port
 
-let resolve_internal ~verify_deployment_identity ?commit ?operation_id
-    application =
+let resolve_internal ~verify_deployment_identity
+    ?(before_connection = fun _ -> Deferred.Or_error.return ()) ?commit
+    ?operation_id application =
   let open Deferred.Or_error.Let_syntax in
   let working_directory = Managed_application.working_directory application in
   let%bind commit =
@@ -75,6 +76,7 @@ let resolve_internal ~verify_deployment_identity ?commit ?operation_id
                  ~target:(Managed_application.target application)
                  ~repository_identity)
       in
+      let%bind () = before_connection target in
       let%bind resource_key =
         Podman.select_resource_key ~project ~target ~repository_identity
           ~candidates
@@ -141,14 +143,15 @@ let resolve_internal ~verify_deployment_identity ?commit ?operation_id
           "active container operation or revision does not match deployment \
            history")
 
-let resolve ?commit ?operation_id application =
-  resolve_internal ~verify_deployment_identity:true ?commit ?operation_id
-    application
+let resolve ?before_connection ?commit ?operation_id application =
+  resolve_internal ~verify_deployment_identity:true ?before_connection ?commit
+    ?operation_id application
 
-let discover_identity ~commit application =
+let discover_identity ?before_connection ~commit application =
   let open Deferred.Or_error.Let_syntax in
   let%bind runtime =
-    resolve_internal ~verify_deployment_identity:false ~commit application
+    resolve_internal ~verify_deployment_identity:false ?before_connection ~commit
+      application
   in
   let container = runtime.container in
   match
