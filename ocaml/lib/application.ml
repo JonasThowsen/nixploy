@@ -580,19 +580,45 @@ let consume_deploy t ~application_key ~receipt =
   Operation_receipt.consume_deploy t.deployment_receipts ~application_key
     ~receipt
 
+let direct_mode_fence t ~application_key ~working_directory ~target =
+  let open Or_error.Let_syntax in
+  let%bind managed_scopes =
+    Or_error.all (List.map t.managed_applications ~f:managed_scope)
+  in
+  if
+    Option.exists application_key ~f:(fun key ->
+        List.exists t.managed_applications ~f:(fun application ->
+            String.equal key (Managed_application.key application)))
+  then
+    Or_error.error_string
+      "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode cannot use a managed \
+       application key"
+  else if
+    List.exists managed_scopes ~f:(fun managed ->
+        String.equal managed.working_directory working_directory
+        && Target_name.equal managed.target target)
+  then
+    Or_error.error_string
+      "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode overlaps a managed \
+       application scope"
+  else Ok ()
+
 let start_non_production ?application_key ?expected_project t ~working_directory
     ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory -> (
-      match
-        Operation_receipt.direct_deploy ~application_key ~expected_project
-          ~intent:None ~application:None
-          ~managed_applications:t.managed_applications ~working_directory
-          ~source ~target
-      with
+      match direct_mode_fence t ~application_key ~working_directory ~target with
       | Error error -> Deferred.return (Error error)
-      | Ok authorization -> start_authorization t ~authorization)
+      | Ok () -> (
+          match
+            Operation_receipt.direct_deploy ~application_key ~expected_project
+              ~intent:None ~application:None
+              ~managed_applications:t.managed_applications ~working_directory
+              ~source ~target
+          with
+          | Error error -> Deferred.return (Error error)
+          | Ok authorization -> start_authorization t ~authorization))
 
 let start_local_deployment t ~working_directory ~target =
   let open Deferred.Or_error.Let_syntax in

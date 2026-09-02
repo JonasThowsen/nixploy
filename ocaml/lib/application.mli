@@ -105,7 +105,7 @@ val deployment_preview_prune_receipt : deployment_preview -> string
 
 val start_managed_deployment :
   t -> Managed_application.t -> started_deployment Deferred.Or_error.t
-(** Deploys the configured managed checkout directly.  The allowlist and the
+(** Deploys the configured managed checkout directly. The allowlist and the
     evaluated target destination remain checked; no preview receipt authorizes
     this mutation. *)
 
@@ -118,7 +118,7 @@ val start_local_deployment :
   target:Target_name.t ->
   started_deployment Deferred.Or_error.t
 (** Snapshots the local tracked source once and runs the shared deployment
-    engine.  Non-ignored untracked files are rejected during preparation. *)
+    engine. Non-ignored untracked files are rejected during preparation. *)
 
 val deploy_local_deployment :
   t ->
@@ -182,9 +182,9 @@ val deploy_non_production :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
-(** Explicit non-production mutation. The lower boundary claims a consumed
-    operation capability, production-profile targets are rejected, and any
-    installed host authority is loaded rather than caller-supplied. *)
+(** Explicit non-production mutation. The lower boundary rejects any scope
+    matching an installed managed application before it claims an operation
+    capability. *)
 
 val prune_non_production :
   ?application_key:string ->
@@ -232,7 +232,8 @@ val resource_state :
 val resource_state_for_scope :
   t -> scope:scope -> resource_state Deferred.Or_error.t
 
-val live_resource_state_for_scope : t -> scope:scope -> resource_state Deferred.t
+val live_resource_state_for_scope :
+  t -> scope:scope -> resource_state Deferred.t
 (** Queries the remote Podman resource for this scope. Failed inspection is
     reported as [Unknown] and never overwrites the durable deployment state. *)
 

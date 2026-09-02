@@ -57,6 +57,13 @@
   (pps ppx_jane)))
 
 (test
+ (name direct_mode_fence_test)
+ (modules direct_mode_fence_test)
+ (libraries async core nixploy)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name authorization_test)
  (modules authorization_test)
  (libraries core nixploy_rpc_mapping)
