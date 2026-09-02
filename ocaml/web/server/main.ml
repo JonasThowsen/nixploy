@@ -10,6 +10,7 @@ module Control_plane_capabilities =
 
 module Consumer_response = Nixploy_rpc_mapping.Consumer_response
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
+module Managed_deployment_rpc = Nixploy_rpc_mapping.Managed_deployment_rpc
 module Prune_request = Nixploy_rpc_mapping.Prune_request
 module Static_route = Nixploy_rpc_mapping.Static_route
 
@@ -80,35 +81,12 @@ let list_applications state _connection_state () =
           |> Option.map ~f:(protocol_deployment state scope)))
 
 let preview_deployment state _connection_state query =
-  match
-    find_application state query.Protocol.Preview_deployment.Query.application
-  with
-  | Error _ as error -> Deferred.return error
-  | Ok application ->
-      let%map preview =
-        Application.preview_managed_deployment state.application application
-      in
-      Or_error.map preview ~f:(fun preview ->
-          let commit = Application.deployment_preview_commit preview in
-          {
-            Protocol.Deployment_preview.commit =
-              {
-                Protocol.Commit.revision = Application.commit_revision commit;
-                subject = Application.commit_subject commit;
-                timestamp_ms = Application.commit_timestamp_ms commit;
-              };
-            receipt = Application.deployment_preview_receipt preview;
-            prune_receipt = Application.deployment_preview_prune_receipt preview;
-          })
+  Managed_deployment_rpc.preview ~applications:state.applications
+    ~application:state.application query
 
 let deploy state _connection_state query =
-  match find_application state query.Protocol.Deploy.Query.application with
-  | Error _ as error -> Deferred.return error
-  | Ok managed ->
-      let%map started =
-        Application.start_managed_deployment state.application managed
-      in
-      Result.map started ~f:Application.started_deployment_id
+  Managed_deployment_rpc.start ~applications:state.applications
+    ~application:state.application query
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications

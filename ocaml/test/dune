@@ -78,6 +78,13 @@
   (pps ppx_jane)))
 
 (test
+ (name managed_deployment_rpc_test)
+ (modules managed_deployment_rpc_test)
+ (libraries async core nixploy nixploy_rpc_mapping protocol)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name direct_mode_configuration_test)
  (modules direct_mode_configuration_test)
  (libraries core nixploy)
