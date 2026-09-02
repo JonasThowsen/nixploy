@@ -35,6 +35,15 @@
    %{dep:../web/client/application_page.ml}
    %{dep:../web/client/apps_page.ml})))
 
+(rule
+ (alias runtest)
+ (deps browser_capability_grant_test.sh ../web/client/app.ml)
+ (action
+  (run
+   bash
+   %{dep:browser_capability_grant_test.sh}
+   %{dep:../web/client/app.ml})))
+
 (library
  (name core_test)
  (modules core_test)

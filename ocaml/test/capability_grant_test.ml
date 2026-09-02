@@ -27,8 +27,16 @@ let () =
   assert (Result.is_error (Grant.validate grant ~token:(Grant.token grant)
     ~identity ~package_revision:"revision" ~protocol_major:1 ~protocol_minor:0
     ~capability:"managed-deploy-v1" ~now_ms:1_001L));
-  assert (Result.is_error (Grant.validate grant ~token:(Grant.token grant)
-    ~identity ~package_revision:"revision" ~protocol_major:1 ~protocol_minor:0
-    ~capability:"managed-read-v1" ~now_ms:1_500L));
+  let expired =
+    Grant.validate grant ~token:(Grant.token grant) ~identity
+      ~package_revision:"revision" ~protocol_major:1 ~protocol_minor:0
+      ~capability:"managed-read-v1" ~now_ms:1_500L
+  in
+  assert (
+    match expired with
+    | Error error ->
+        String.is_substring (Error.to_string_hum error)
+          ~substring:"NIXPLOY_CAPABILITY_GRANT_EXPIRED"
+    | Ok () -> false);
   assert (Result.is_error (Grant.create (factory ~entropy:"short" ()) ~identity
     ~capabilities:[] ~package_revision:"revision" ~protocol_major:1 ~protocol_minor:0))

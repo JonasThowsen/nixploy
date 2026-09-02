@@ -44,6 +44,38 @@ let component graph =
   let paused_snapshot, set_paused_snapshot = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
   let capability_grant, set_capability_grant = Bonsai.state "" graph in
+  let capabilities_query =
+    Bonsai.return
+      {
+        Protocol.Control_plane_capabilities.Query.protocol_major = 1;
+        protocol_minor = 0;
+        required_capabilities =
+          [ "managed-read-v1"; "managed-deploy-v1"; "managed-cancel-v1" ];
+      }
+  in
+  let on_capabilities_response =
+    let%arr set_capability_grant = set_capability_grant in
+    fun _query response ->
+      match response with
+      | Ok (Ok (capabilities : Protocol.Control_plane_capabilities.V1.Response.t)) ->
+          set_capability_grant capabilities.capability_grant
+      | Error _ | Ok (Error _) ->
+          (* A reconnect or failed renewal must not retain a possibly expired
+             token or fall back to the legacy grant-less RPC versions. *)
+          set_capability_grant ""
+  in
+  let _capabilities =
+    (* Capability_grant.default_ttl_ms is five minutes. Renewing every thirty
+       seconds keeps active browser polling well ahead of expiry and repeats the
+       handshake after a reconnect. *)
+    Rpc_effect.Rpc.poll ~clear_when_deactivated:false
+      ~on_response_received:on_capabilities_response
+      Protocol.Control_plane_capabilities.V1.t ~where_to_connect:Self
+      ~equal_query:[%equal: Protocol.Control_plane_capabilities.Query.t]
+      ~equal_response:
+        [%equal: Protocol.Control_plane_capabilities.V1.Response.t Or_error.t]
+      ~every:(Time_ns.Span.of_sec 30.) capabilities_query graph
+  in
   let applications_query =
     let%arr capability_grant = capability_grant in
     { Protocol.List_applications.V1.Query.capability_grant }
@@ -206,10 +238,6 @@ let component graph =
           ~every:(Time_ns.Span.of_sec 10.) metrics_query graph
     | false -> Bonsai.return (empty_poll_result ())
   in
-  let dispatch_capabilities =
-    Rpc_effect.Rpc.dispatcher Protocol.Control_plane_capabilities.V1.t
-      ~where_to_connect:Self graph
-  in
   let dispatch_cancel =
     Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.V1.t
       ~where_to_connect:Self graph
@@ -275,30 +303,12 @@ let component graph =
   in
   Bonsai.Edge.on_change route ~equal:Route.equal ~callback:sync_title graph;
   let activate =
-    let%arr set_route = set_route
-    and set_mobile_open = set_mobile_open
-    and set_capability_grant = set_capability_grant
-    and dispatch_capabilities = dispatch_capabilities in
-    let%bind.Effect response =
-      dispatch_capabilities
-        {
-          Protocol.Control_plane_capabilities.Query.protocol_major = 1;
-          protocol_minor = 0;
-          required_capabilities =
-            [ "managed-read-v1"; "managed-deploy-v1"; "managed-cancel-v1" ];
-        }
-    in
-    let%bind.Effect () =
-      match response with
-      | Ok (Ok capabilities) ->
-          set_capability_grant capabilities.capability_grant
-      | Error _ | Ok (Error _) -> Effect.Ignore
-    in
+    let%arr set_route = set_route and set_mobile_open = set_mobile_open in
     Browser_navigation.start ~on_route:set_route ~on_escape:(fun () ->
-        Effect.Many
-          [
-            set_mobile_open false; Browser_navigation.focus "mobile-menu-button";
-          ])
+      Effect.Many
+        [
+          set_mobile_open false; Browser_navigation.focus "mobile-menu-button";
+        ])
   in
   Bonsai.Edge.lifecycle ~on_activate:activate
     ~on_deactivate:(Bonsai.return (Browser_navigation.cleanup ()))

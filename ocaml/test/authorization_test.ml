@@ -121,15 +121,29 @@ let () =
     Authorization.origin_policy_of_value (Some "https://control.example/path")
     |> Result.is_error);
 
+  let spoofed_tailscale =
+    Authorization.authenticated_identity tailscale
+      (headers ~login:"operator@example.com" ())
+  in
+  assert (
+    match spoofed_tailscale with
+    | Error error ->
+        String.is_substring (Error.to_string_hum error)
+          ~substring:"NIXPLOY_AUTH_PROXY_UNTRUSTED"
+    | Ok _ -> false);
   assert (
     websocket tailscale request_host_policy ~origin:"https://control.example"
       ~host:"control.example" ~login:"operator@example.com"
-    |> Result.is_ok);
-  assert (
-    websocket tailscale request_host_policy ~origin:"https://control.example"
-      ~host:"control.example" ~login:"intruder@example.com"
     |> Result.is_error);
+  let test_identity =
+    Authorization.of_values ~test_only:(Some "true")
+      ~mode:(Some "test-authenticated-identity") ~operator_email:None
+    |> assert_ok
+  in
   assert (
-    websocket tailscale request_host_policy ~host:"control.example"
-      ~login:"operator@example.com"
+    match Authorization.authenticated_identity test_identity (headers ()) with
+    | Ok (Authorization.Tailscale_login "nixos-vm-test") -> true
+    | Ok _ | Error _ -> false);
+  assert (
+    Authorization.authenticated_identity unrestricted (headers ())
     |> Result.is_error)

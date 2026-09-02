@@ -94,13 +94,12 @@ let authenticated_identity authorization headers =
   | Test_authenticated_identity -> Ok (Tailscale_login "nixos-vm-test")
   | Unrestricted ->
       Or_error.error_string "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants require Tailscale authentication"
-  | Tailscale expected ->
-      Cohttp.Header.get headers "tailscale-user-login"
-      |> Option.map ~f:normalized_login
-      |> Option.filter ~f:(String.equal expected)
-      |> Option.map ~f:(fun login -> Tailscale_login login)
-      |> Or_error.of_option
-           ~error:(Error.of_string "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants require the configured Tailscale identity")
+  | Tailscale _ ->
+      (* A loopback peer can forge every forwarded HTTP header. Do not grant
+         authority until a proxy-to-service channel authenticates its identity. *)
+      ignore headers;
+      Or_error.error_string
+        "NIXPLOY_AUTH_PROXY_UNTRUSTED: Tailscale authentication requires a verified proxy-to-service identity channel"
 
 let authorized authorization headers =
   match authenticated_identity authorization headers with
