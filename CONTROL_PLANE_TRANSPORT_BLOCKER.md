@@ -10,7 +10,7 @@ prove the configured SPKI pin for that connection.
 
 ## Required upstream seams
 
-A maintained implementation needs all of these public APIs:
+A maintained implementation needs these public APIs:
 
 1. **Async_ssl:** obtain the SHA-256 digest of the DER-encoded
    `SubjectPublicKeyInfo` for the peer certificate on the live TLS connection.
@@ -20,12 +20,21 @@ A maintained implementation needs all of these public APIs:
    framing over caller-owned encrypted `Reader` and `Writer` values. It must not
    open a second connection or follow redirects, and its close ownership must be
    explicit.
-3. **async_rpc_websocket:** create its RPC connection from that WebSocket
-   transport. This must be an upstream-supported construction rather than a
-   copy of the RPC protocol setup into nixploy.
 
-The current `Rpc_websocket.Rpc.client` path owns TLS internally and returns only
-an RPC transport, so it cannot meet this contract.
+`async_rpc_websocket` already exposes `Websocket.transport`, and
+`Async_rpc_kernel.Rpc.Connection.create` is public. The adapter can therefore
+construct the RPC connection from the caller-owned WebSocket transport without
+copying RPC protocol setup into nixploy. The current
+`Rpc_websocket.Rpc.client` path still owns TLS internally and returns only an
+RPC connection, so it cannot meet the pinning contract.
+
+The protected authority record uses an `https` URI, while resolved
+`cohttp_async_websocket` version 0.17 establishes TLS only for `wss` URIs and
+does not select port 443 for an `https` URI. The adapter must either use
+upstream HTTPS-URI support or derive its WebSocket URI by changing only
+`https` to `wss`, preserving the normalized host and explicit-or-default port.
+The HTTPS authority remains the upgrade `Origin` and trusted-proxy authority;
+no redirect or caller-controlled URI may participate in this mapping.
 
 ## Verification requirements
 
@@ -50,9 +59,11 @@ contract, or creates an unmaintained security protocol surface.
 
 ## Next action
 
-Request and version-lock the three upstream APIs above. Once they are available,
+Request and version-lock the two upstream APIs above. Once they are available,
 compile a small CLI-bound transport adapter against the resolved Nix packages.
-Its integration test must prove that a matching pin permits one TLS WebSocket
-connection, while a mismatched pin sends no upgrade or RPC byte; it must also
-prove that an invalid hostname or certificate chain fails even with a matching
-pin. Until then, retain `NIXPLOY_PIN_UNSUPPORTED` for managed transport.
+Before its upgrade, prove the authority-preserving HTTPS-to-WSS mapping above,
+or require an upstream HTTPS-URI API with equivalent behavior. Its integration
+test must prove that a matching pin permits one TLS WebSocket connection, while
+a mismatched pin sends no upgrade or RPC byte; it must also prove that an
+invalid hostname or certificate chain fails even with a matching pin. Until
+then, retain `NIXPLOY_PIN_UNSUPPORTED` for managed transport.

@@ -177,7 +177,8 @@ verify `pinned_server_spki_sha256` on the same TLS connection, reject redirects,
 and require the configured trusted-proxy authority; system trust alone is not a
 substitute for the pin. Until the WebSocket transport exposes that verification,
 managed CLI operations fail closed with `NIXPLOY_PIN_UNSUPPORTED` after record
-resolution.
+resolution. See [the control-plane transport blocker](CONTROL_PLANE_TRANSPORT_BLOCKER.md)
+for the required upstream seams and HTTPS-to-WSS mapping.
 
 ### Mandatory negotiated grant
 
