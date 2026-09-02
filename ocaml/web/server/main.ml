@@ -10,6 +10,10 @@ module Control_plane_capabilities =
 
 module Consumer_response = Nixploy_rpc_mapping.Consumer_response
 module Deployment_start = Nixploy_rpc_mapping.Deployment_start
+
+module Managed_deployment_admission_rpc =
+  Nixploy_rpc_mapping.Managed_deployment_admission_rpc
+
 module Managed_deployment_rpc = Nixploy_rpc_mapping.Managed_deployment_rpc
 module Prune_request = Nixploy_rpc_mapping.Prune_request
 module Static_route = Nixploy_rpc_mapping.Static_route
@@ -87,6 +91,9 @@ let preview_deployment state _connection_state query =
 let deploy state _connection_state query =
   Managed_deployment_rpc.start ~applications:state.applications
     ~application:state.application query
+
+let admit_managed_deployment state _connection_state query =
+  Managed_deployment_admission_rpc.handle ~applications:state.applications query
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications
@@ -176,6 +183,9 @@ let implementations state =
         Rpc.Rpc.implement Protocol.Deploy.t
           (with_control_plane_capability ~capability:"managed-deploy-v1" deploy
              state);
+        Rpc.Rpc.implement Protocol.Admit_managed_deployment.t
+          (with_control_plane_capability ~capability:"managed-deploy-v1"
+             admit_managed_deployment state);
         Rpc.Rpc.implement Protocol.List_deployments.t
           (with_control_plane_capability ~capability:"managed-read-v1"
              list_deployments state);

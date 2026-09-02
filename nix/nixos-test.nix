@@ -160,6 +160,10 @@ pkgs.testers.runNixOSTest {
     # They must not evaluate the custody checkout or admit a deployment.
     machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --preview example >/tmp/nixploy-preview.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-preview.out")
     machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --deploy example >/tmp/nixploy-deploy.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-deploy.out")
+    admission = "--admit-managed-key example --admit-target production --admit-provenance ssh://git@example.invalid/example.git --admit-revision 0000000000000000000000000000000000000000"
+    machine.succeed(f"! nixploy-rpc-probe --uri http://127.0.0.1:18080 {admission} >/tmp/nixploy-admit.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE /tmp/nixploy-admit.out")
+    machine.succeed(f"! nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities {admission} >/tmp/nixploy-admit-ungranted.out 2>&1; grep -F NIXPLOY_CAPABILITY_GRANT_REQUIRED /tmp/nixploy-admit-ungranted.out")
+    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --admit-managed-key example --admit-target staging --admit-provenance ssh://git@example.invalid/example.git --admit-revision 0000000000000000000000000000000000000000 >/tmp/nixploy-admit-mismatch.out 2>&1; grep -F NIXPLOY_MANAGED_DEPLOY_AUTHORITY_MISMATCH /tmp/nixploy-admit-mismatch.out")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 

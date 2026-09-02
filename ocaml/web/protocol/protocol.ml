@@ -117,6 +117,29 @@ module Deploy = struct
       ~include_in_error_count:Or_error
 end
 
+module Admit_managed_deployment = struct
+  module Query = struct
+    type t = {
+      managed_application_key : string;
+      requested_target : string;
+      provenance : string;
+      revision : string;
+    }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  module Response = struct
+    type t = { operation_id : string; update_sequence : int64 }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  let t =
+    Rpc.Rpc.create ~name:"admit-managed-deployment" ~version:0
+      ~bin_query:[%bin_type_class: Query.t]
+      ~bin_response:[%bin_type_class: Response.t Or_error.t]
+      ~include_in_error_count:Or_error
+end
+
 module List_deployments = struct
   module Query = struct
     type t = { application : string option } [@@deriving bin_io, equal, sexp]

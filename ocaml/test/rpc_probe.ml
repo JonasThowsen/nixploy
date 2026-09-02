@@ -123,8 +123,36 @@ let origin_of_uri uri =
     Or_error.errorf "unsupported URI scheme %S" scheme
   else Ok (Uri.make ~scheme ~host ?port:(Uri.port uri) () |> Uri.to_string)
 
-let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
+let admission_query ~managed_application_key ~requested_target ~provenance
+    ~revision =
+  {
+    Protocol.Admit_managed_deployment.Query.managed_application_key;
+    requested_target;
+    provenance;
+    revision;
+  }
+
+let run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
+    ~admit_provenance ~admit_revision ~cancel_started ~skip_capabilities =
   let open Deferred.Or_error.Let_syntax in
+  let%bind admission =
+    match
+      (admit_managed_key, admit_target, admit_provenance, admit_revision)
+    with
+    | None, None, None, None -> Deferred.Or_error.return None
+    | ( Some managed_application_key,
+        Some requested_target,
+        Some provenance,
+        Some revision ) ->
+        Deferred.Or_error.return
+          (Some
+             (admission_query ~managed_application_key ~requested_target
+                ~provenance ~revision))
+    | _ ->
+        Deferred.Or_error.error_string
+          "--admit-managed-key, --admit-target, --admit-provenance, and \
+           --admit-revision must be supplied together"
+  in
   let uri = Uri.of_string uri in
   let%bind origin = origin_of_uri uri |> Deferred.return in
   let headers = Cohttp.Header.init_with "Origin" origin in
@@ -137,7 +165,7 @@ let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
     [ "managed-read-v1" ]
     @ (if
          Option.is_some preview || Option.is_some inspect
-         || Option.is_some deploy
+         || Option.is_some deploy || Option.is_some admission
        then [ "managed-deploy-v1" ]
        else [])
     @ if cancel_started then [ "managed-cancel-v1" ] else []
@@ -180,6 +208,16 @@ let run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities =
     | None -> Deferred.Or_error.return ()
     | Some application -> inspect_application connection application
   in
+  let%bind () =
+    match admission with
+    | None -> Deferred.Or_error.return ()
+    | Some query ->
+        let%bind response =
+          Rpc.Rpc.dispatch Protocol.Admit_managed_deployment.t connection query
+        in
+        let%map _response = Deferred.return response in
+        ()
+  in
   match deploy with
   | None -> Deferred.Or_error.return ()
   | Some application ->
@@ -214,6 +252,18 @@ let command =
      and preview =
        flag "--preview" (optional string)
          ~doc:"APPLICATION preview one managed application"
+     and admit_managed_key =
+       flag "--admit-managed-key" (optional string)
+         ~doc:"KEY test-only managed admission application key"
+     and admit_target =
+       flag "--admit-target" (optional string)
+         ~doc:"TARGET test-only managed admission target"
+     and admit_provenance =
+       flag "--admit-provenance" (optional string)
+         ~doc:"PROVENANCE test-only managed admission provenance"
+     and admit_revision =
+       flag "--admit-revision" (optional string)
+         ~doc:"SHA test-only managed admission full commit SHA"
      and inspect =
        flag "--inspect" (optional string)
          ~doc:"APPLICATION preview and inspect runtime reads"
@@ -225,6 +275,7 @@ let command =
          ~doc:" test only: dispatch without the required capabilities handshake"
      in
      fun () ->
-       run ~uri ~preview ~inspect ~deploy ~cancel_started ~skip_capabilities)
+       run ~uri ~preview ~inspect ~deploy ~admit_managed_key ~admit_target
+         ~admit_provenance ~admit_revision ~cancel_started ~skip_capabilities)
 
 let () = Command_unix.run command

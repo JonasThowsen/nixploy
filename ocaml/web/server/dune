@@ -6,6 +6,7 @@
   control_plane_capabilities
   consumer_response
   deployment_start
+  managed_deployment_admission_rpc
   managed_deployment_rpc
   prune_request
   prune_response

@@ -101,6 +101,25 @@ module Deploy : sig
   val t : (Query.t, string Or_error.t) Rpc.Rpc.t
 end
 
+module Admit_managed_deployment : sig
+  module Query : sig
+    type t = {
+      managed_application_key : string;
+      requested_target : string;
+      provenance : string;
+      revision : string;
+    }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  module Response : sig
+    type t = { operation_id : string; update_sequence : int64 }
+    [@@deriving bin_io, equal, sexp]
+  end
+
+  val t : (Query.t, Response.t Or_error.t) Rpc.Rpc.t
+end
+
 module List_deployments : sig
   module Query : sig
     type t = { application : string option } [@@deriving bin_io, equal, sexp]
