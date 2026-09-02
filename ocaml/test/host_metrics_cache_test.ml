@@ -6,14 +6,14 @@ let assert_ok = function
   | Ok value -> value
   | Error error -> failwith (Error.to_string_hum error)
 
-let target ?host_key_fingerprint () =
+let target ?(user = "root") ?host_key_fingerprint () =
   let host_key_fingerprint =
     Option.value_map host_key_fingerprint ~default:"null" ~f:(sprintf "\"%s\"")
   in
   let configuration =
     sprintf
-      {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"HOST.example.","port":2222,"hostKeyFingerprint":%s,"nonProduction":{"coordinationScope":"sample-production"}}}}|}
-      host_key_fingerprint
+      {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"HOST.example.","user":"%s","port":2222,"hostKeyFingerprint":%s,"nonProduction":{"coordinationScope":"sample-production"}}}}|}
+      user host_key_fingerprint
     |> Nixploy.Configuration.of_json |> assert_ok
   in
   Nixploy.Configuration.find_target configuration
@@ -46,6 +46,8 @@ let run () =
     Result.is_error
       (Nixploy.Configuration.of_json
          {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"host.example","hostKeyFingerprint":"SHA256:not-a-fingerprint"}}}|}));
+  [%test_eq: int] 262_144
+    Nixploy.Host_metrics.For_testing.maximum_command_output_bytes;
   let missing_identity_calls = ref 0 in
   let missing_identity_cache =
     Nixploy.Host_metrics.For_testing.create_cache ~now:(fun () -> Time_ns.epoch)
@@ -66,6 +68,35 @@ let run () =
           ~substring:"NIXPLOY_HOST_KEY_FINGERPRINT_REQUIRED")
   | Fresh _ | Stale _ -> failwith "missing SSH identity opened an observation");
   [%test_eq: int] 0 !missing_identity_calls;
+  let partition_calls = ref 0 in
+  let partition_cache =
+    Nixploy.Host_metrics.For_testing.create_cache ~now:(fun () -> Time_ns.epoch)
+      ~fresh_for:(Time_ns.Span.of_sec 1.) ~stale_for:(Time_ns.Span.of_sec 10.)
+      ~observe:(fun _ ->
+        Int.incr partition_calls;
+        Deferred.Or_error.return metric)
+      ()
+  in
+  let root_target = target ~host_key_fingerprint:fingerprint () in
+  let deploy_target =
+    target ~user:"deploy" ~host_key_fingerprint:fingerprint ()
+  in
+  assert (
+    not
+      (String.equal
+         (Nixploy.Host_metrics.cache_key root_target |> assert_ok)
+         (Nixploy.Host_metrics.cache_key deploy_target |> assert_ok)));
+  let%bind root_observation =
+    Nixploy.Host_metrics.For_testing.observe_cached partition_cache root_target
+  in
+  let%bind deploy_observation =
+    Nixploy.Host_metrics.For_testing.observe_cached partition_cache deploy_target
+  in
+  (match (root_observation, deploy_observation) with
+  | Fresh _, Fresh _ -> ()
+  | (Stale _ | Unavailable _), _ | _, (Stale _ | Unavailable _) ->
+      failwith "distinct SSH users must have independent fresh observations");
+  [%test_eq: int] 2 !partition_calls;
   let waiter_first = Ivar.create () in
   let waiter_cache =
     Nixploy.Host_metrics.For_testing.create_cache ~now:(fun () -> Time_ns.epoch)

@@ -17,8 +17,8 @@ val sample_observed_at_ms : sample -> int64
 type cache
 
 val cache_key : Configuration.Target.t -> string Or_error.t
-(** The canonical endpoint key contains normalized host, port, and the exact
-    validated SSH host-key fingerprint. *)
+(** The canonical endpoint key contains the exact SSH user, normalized host,
+    port, and validated SSH host-key fingerprint. *)
 
 val observe : Configuration.Target.t -> observation Deferred.t
 val cpu_percent : t -> float
@@ -33,6 +33,7 @@ val uptime_seconds : t -> int64
 
 module For_testing : sig
   val parse : string -> t Or_error.t
+  val maximum_command_output_bytes : int
 
   val create_cache :
     now:(unit -> Time_ns.t) ->

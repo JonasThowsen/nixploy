@@ -190,14 +190,14 @@ let parse output =
       uptime_seconds;
     }
 
-let bounded_diagnostic value =
-  String.prefix (String.strip value) 4_096
+let maximum_command_output_bytes = 256 * 1024
+let bounded_diagnostic value = String.prefix (String.strip value) 4_096
 
 let observe_uncached target =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
     Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 15.)
-      ~max_output_bytes:4_096 [ "sh"; "-c"; script ]
+      ~max_output_bytes:maximum_command_output_bytes [ "sh"; "-c"; script ]
   in
   match result.exit_status with
   | Error failure ->
@@ -239,8 +239,13 @@ let cache_key target =
         "NIXPLOY_HOST_KEY_FINGERPRINT_REQUIRED: target hostKeyFingerprint is required for remote observation"
   | Some fingerprint ->
       Ok
-        (sprintf "%s:%d:%s" (Configuration.Target.host target)
-           (Configuration.Target.port target) (Ssh_host_key.fingerprint fingerprint))
+        (String.concat ~sep:"\000"
+           [
+             Configuration.Target.user target;
+             Configuration.Target.host target;
+             Int.to_string (Configuration.Target.port target);
+             Ssh_host_key.fingerprint fingerprint;
+           ])
 
 let create_cache ~now ~fresh_for ~stale_for ~observe () =
   { now; fresh_for; stale_for; observe_uncached = observe; entries = String.Table.create () }
@@ -323,6 +328,7 @@ let observe target = observe_cached default_cache target
 
 module For_testing = struct
   let parse = parse
+  let maximum_command_output_bytes = maximum_command_output_bytes
   let create_cache = create_cache
   let observe_cached = observe_cached
 end
