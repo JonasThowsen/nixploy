@@ -91,7 +91,7 @@ chmod +x "$bin/nix"
 
 TMPDIR="$runtime" NIXPLOY_TEST_CHILD_PID="$child_marker" \
   NIXPLOY_TEST_EVAL_STARTED="$marker" PATH="$bin:$PATH" \
-  "$executable" deploy --direct --target staging --directory "$repo" \
+  "$executable" deploy --target staging --directory "$repo" \
   --state-db "$state_db" >"$root/stdout" 2>"$root/stderr" &
 cli_pid=$!
 for _ in $(seq 1 100); do
@@ -119,8 +119,32 @@ set -e
 ! kill -0 "$child_pid" 2>/dev/null
 ! find "$runtime" -maxdepth 1 -type d -name 'nixploy-local-*' | grep -q .
 NIXPLOY_TEST_CONFIG_ONLY=1 PATH="$bin:$PATH" \
-  "$executable" history --direct --target staging --directory "$repo" \
+  "$executable" history --target staging --directory "$repo" \
   --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null
+
+# A flake declaring a managed control-plane identity cannot silently become a
+# local operation when no execution-mode flags are supplied.
+managed_default_marker="$root/managed-default-nix-started"
+managed_default_state="$root/managed-default-state.sqlite"
+set +e
+managed_default_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
+  NIXPLOY_TEST_EVAL_STARTED="$managed_default_marker" PATH="$bin:$PATH" \
+  "$executable" deploy --target staging --directory "$repo" \
+  --state-db "$managed_default_state" 2>&1)
+managed_default_status=$?
+set -e
+[ "$managed_default_status" -ne 0 ]
+grep -F -- 'NIXPLOY_DIRECT_MANAGED_DECLARATION' <<<"$managed_default_output" >/dev/null
+[ -e "$managed_default_marker" ]
+[ ! -e "$managed_default_state" ]
+
+set +e
+invalid_mode_output=$("$executable" deploy --direct --authority-alias netcup \
+  --managed-application-key fixture-production --target staging 2>&1)
+invalid_mode_status=$?
+set -e
+[ "$invalid_mode_status" -ne 0 ]
+grep -F -- 'NIXPLOY_EXECUTION_MODE_INVALID' <<<"$invalid_mode_output" >/dev/null
 
 # Managed commands resolve their protected authority before any caller-controlled
 # Nix evaluation, local state access, deployment preparation, or signal setup.

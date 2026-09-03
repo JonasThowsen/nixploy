@@ -21,11 +21,11 @@ let execution_mode ~direct ~authority_alias ~managed_application_key =
          managed authority selection"
   | false, Some authority_alias, Some managed_application_key ->
       Ok (Managed { authority_alias; managed_application_key })
+  | false, None, None -> Ok Direct
   | false, _, _ ->
       Or_error.error_string
-        "NIXPLOY_MANAGED_SELECTION_REQUIRED: managed commands require \
-         --authority-alias and --managed-application-key; use --direct only \
-         for an unmanaged nonProduction target"
+        "NIXPLOY_MANAGED_SELECTION_INVALID: supply both --authority-alias and \
+         --managed-application-key, or neither for a nonProduction target"
 
 let require_managed_transport ~action ~authority_alias ~managed_application_key =
   Deferred.map
@@ -167,7 +167,7 @@ let mode_flags =
   let open Command.Let_syntax in
   let%map direct =
     flag "--direct" no_arg
-      ~doc:" run only an unmanaged nonProduction target from the local checkout"
+      ~doc:" require local execution for an unmanaged nonProduction target"
   and authority_alias =
     flag "--authority-alias" (optional string)
       ~doc:"ALIAS protected control-plane authority alias for a managed command"
