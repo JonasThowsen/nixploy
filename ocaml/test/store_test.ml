@@ -153,30 +153,53 @@ let run_tests () =
   Ivar.fill_exn release_lease ();
   let%bind lease_results = Deferred.all [ first_lease; second_lease ] in
   List.iter lease_results ~f:Or_error.ok_exn;
-  let%bind requested =
-    Nixploy.Store.request store ~application_key:(Some "test")
-      ~working_directory:"/tmp/project" ~target ~commit
+  let managed_request ~plan_digest =
+    Nixploy.Store.request_managed_with_evidence store
+      ~managed_application_key:"test" ~working_directory:"/tmp/project" ~target
+      ~commit ~source_provenance:"git@example.invalid:test"
+      ~source_reference:"refs/heads/main" ~source_evidence_digest:"evidence"
+      ~endpoint:"deploy@example.invalid:22" ~coordination_scope:"test-production"
+      ~plan_digest
   in
-  let requested = Or_error.ok_exn requested in
-  assert (
-    [%equal: Nixploy.Store.state] (Nixploy.Store.state requested) Requested);
-  let operation_id = Nixploy.Store.id requested in
-  let%bind created_evidence =
-    Nixploy.Store.create_managed_operation_evidence store ~operation_id
-      ~managed_application_key:"test" ~target
-      ~revision:"0123456789abcdef0123456789abcdef01234567"
+  (* The evidence insert fails after the request insert; the transaction leaves
+     no requested operation behind. *)
+  let%bind rejected_atomic_request = managed_request ~plan_digest:"" in
+  assert (Result.is_error rejected_atomic_request);
+  let%bind deployments_after_rollback = Nixploy.Store.list store ~limit:10 in
+  assert (List.is_empty (Or_error.ok_exn deployments_after_rollback));
+  let other_target = Nixploy.Target_name.of_string "other" |> Or_error.ok_exn in
+  let%bind mismatched_identity =
+    Nixploy.Store.For_testing.request_managed_with_evidence_with_identity store
+      ~managed_application_key:"test" ~working_directory:"/tmp/project" ~target
+      ~evidence_target:other_target ~commit
+      ~evidence_revision:"ffffffffffffffffffffffffffffffffffffffff"
       ~source_provenance:"git@example.invalid:test"
       ~source_reference:"refs/heads/main" ~source_evidence_digest:"evidence"
       ~endpoint:"deploy@example.invalid:22" ~coordination_scope:"test-production"
       ~plan_digest:"plan"
   in
-  Or_error.ok_exn created_evidence;
+  assert (Result.is_error mismatched_identity);
+  let%bind deployments_after_identity_rejection = Nixploy.Store.list store ~limit:10 in
+  assert (List.is_empty (Or_error.ok_exn deployments_after_identity_rejection));
+  let%bind requested = managed_request ~plan_digest:"plan" in
+  let requested = Or_error.ok_exn requested in
+  assert (
+    [%equal: Nixploy.Store.state] (Nixploy.Store.state requested) Requested);
+  let operation_id = Nixploy.Store.id requested in
   let%bind evidence =
     Nixploy.Store.find_managed_operation_evidence store ~operation_id
   in
   let evidence = Option.value_exn (Or_error.ok_exn evidence) in
   assert (String.equal (Nixploy.Store.managed_operation_id evidence) operation_id);
   assert (Option.is_none (Nixploy.Store.managed_lease_receipt evidence));
+  let%bind release_before_receipt =
+    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"receipt"
+  in
+  assert (Result.is_error release_before_receipt);
+  let%bind terminal_before_receipt =
+    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
+  in
+  assert (Result.is_error terminal_before_receipt);
   let%bind receipt =
     Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"receipt"
   in
@@ -185,12 +208,28 @@ let run_tests () =
     Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"other"
   in
   assert (Result.is_error duplicate_receipt);
+  let%bind wrong_receipt =
+    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"other"
+  in
+  assert (Result.is_error wrong_receipt);
   let%bind released =
-    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~evidence:"released"
+    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"receipt"
   in
   Or_error.ok_exn released;
+  let%bind terminal_before_deployment =
+    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
+  in
+  assert (Result.is_error terminal_before_deployment);
+  let%bind failed_before_terminal =
+    Nixploy.Store.fail store ~id:operation_id ~error:(Error.of_string "managed failed")
+  in
+  Or_error.ok_exn failed_before_terminal;
+  let%bind wrong_terminal_state =
+    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
+  in
+  assert (Result.is_error wrong_terminal_state);
   let%bind terminal =
-    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~evidence:"succeeded"
+    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Failed
   in
   Or_error.ok_exn terminal;
   let%bind evidence =
@@ -198,17 +237,22 @@ let run_tests () =
   in
   let evidence = Option.value_exn (Or_error.ok_exn evidence) in
   assert (Option.equal String.equal (Nixploy.Store.managed_lease_receipt evidence) (Some "receipt"));
-  assert (Option.equal String.equal (Nixploy.Store.managed_release_evidence evidence) (Some "released"));
-  assert (Option.equal String.equal (Nixploy.Store.managed_terminal_evidence evidence) (Some "succeeded"));
+  assert (Option.equal String.equal (Nixploy.Store.managed_release_evidence evidence) (Some "receipt"));
+  assert (Option.equal String.equal (Nixploy.Store.managed_terminal_evidence evidence) (Some "failed"));
+  let%bind direct_requested =
+    Nixploy.Store.request store ~application_key:(Some "test")
+      ~working_directory:"/tmp/project" ~target ~commit
+  in
+  let direct_requested = Or_error.ok_exn direct_requested in
   let%bind staged =
     Nixploy.Store.record_stage store
-      ~id:(Nixploy.Store.id requested)
+      ~id:(Nixploy.Store.id direct_requested)
       ~stage:"building" ~message:"Building"
   in
   Or_error.ok_exn staged;
   let%bind failed =
     Nixploy.Store.fail store
-      ~id:(Nixploy.Store.id requested)
+      ~id:(Nixploy.Store.id direct_requested)
       ~error:(Error.of_string "nix interrupted by sigint")
   in
   Or_error.ok_exn failed;

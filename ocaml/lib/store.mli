@@ -30,29 +30,32 @@ val with_reconciled_lease :
     includes matching unkeyed CLI history but never history keyed to another
     application. *)
 
-val create_managed_operation_evidence :
+val request_managed_with_evidence :
   t ->
-  operation_id:string ->
   managed_application_key:string ->
+  working_directory:string ->
   target:Target_name.t ->
-  revision:string ->
+  commit:Source.commit ->
   source_provenance:string ->
   source_reference:string ->
   source_evidence_digest:string ->
   endpoint:string ->
   coordination_scope:string ->
   plan_digest:string ->
-  unit Deferred.Or_error.t
-(** Persists immutable requested managed-operation evidence before lease acquisition.
-    The operation must already exist; conflicting duplicate requests are rejected. *)
+  deployment Deferred.Or_error.t
+(** Atomically creates a requested managed deployment and its immutable admission
+    evidence. The evidence key, target, and revision are verified against the
+    newly-created operation before commit. *)
 
 val attach_managed_lease_receipt :
   t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
 val attach_managed_release_evidence :
-  t -> operation_id:string -> evidence:string -> unit Deferred.Or_error.t
+  t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
 val attach_managed_terminal_evidence :
-  t -> operation_id:string -> evidence:string -> unit Deferred.Or_error.t
-(** Each later evidence field is write-once; conflicting reattachment is rejected. *)
+  t -> operation_id:string -> state:state -> unit Deferred.Or_error.t
+(** The exact lease receipt binds once. Release and terminal evidence must use
+    that receipt, and terminal evidence is written only after the deployment
+    reaches the corresponding terminal state. *)
 
 val find_managed_operation_evidence :
   t -> operation_id:string -> managed_operation_evidence option Deferred.Or_error.t
@@ -60,6 +63,25 @@ val managed_operation_id : managed_operation_evidence -> string
 val managed_lease_receipt : managed_operation_evidence -> string option
 val managed_release_evidence : managed_operation_evidence -> string option
 val managed_terminal_evidence : managed_operation_evidence -> string option
+
+module For_testing : sig
+  val request_managed_with_evidence_with_identity :
+    t ->
+    managed_application_key:string ->
+    working_directory:string ->
+    target:Target_name.t ->
+    evidence_target:Target_name.t ->
+    commit:Source.commit ->
+    evidence_revision:string ->
+    source_provenance:string ->
+    source_reference:string ->
+    source_evidence_digest:string ->
+    endpoint:string ->
+    coordination_scope:string ->
+    plan_digest:string ->
+    deployment Deferred.Or_error.t
+  (** Exercises identity mismatch rejection before immutable evidence commits. *)
+end
 
 val request :
   t ->
