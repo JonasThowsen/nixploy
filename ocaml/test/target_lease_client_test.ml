@@ -1,4 +1,5 @@
 open Core
+open Async
 module U = Caml_unix
 
 let authority = "11111111-2222-3333-4444-555555555555"
@@ -20,6 +21,11 @@ let assert_error_prefix prefix = function
   | Error error ->
       if not (String.is_prefix (Error.to_string_hum error) ~prefix) then
         failwith (Error.to_string_hum error)
+
+let assert_ok_deferred deferred = Deferred.map deferred ~f:assert_ok
+
+let assert_error_prefix_deferred prefix deferred =
+  Deferred.map deferred ~f:(assert_error_prefix prefix)
 
 let counter = ref 0
 
@@ -85,59 +91,92 @@ let configuration paths ?(authority_value = authority) ?(scope_value = scope)
     ~authority:authority_value ~scope:scope_value ~identity:identity_value
   |> assert_ok
 
-let with_broker test =
-  let paths = fresh_paths () in
-  let _thread, stop = start_broker paths in
-  Exn.protect ~f:(fun () -> test paths) ~finally:(fun () ->
+let stop_broker paths stop =
+  In_thread.run (fun () ->
       stop ();
       remove_tree paths.base)
 
-let () =
-  with_broker (fun paths ->
-      let lease =
-        Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation
-        |> assert_ok
-      in
-      Nixploy.Target_lease_client.release lease |> assert_ok)
-
-let () =
-  with_broker (fun paths ->
-      Nixploy.Target_lease_client.acquire
-        (configuration paths ~authority_value:other_authority ()) ~operation
-      |> assert_error_prefix "NIXPLOY_TARGET_LEASE_V1 DENIED")
-
-let () =
-  with_broker (fun paths ->
-      Nixploy.Target_lease_client.acquire
-        (configuration paths ~scope_value:other_scope ()) ~operation
-      |> assert_error_prefix "NIXPLOY_TARGET_LEASE_V1 DENIED")
-
-let () =
-  with_broker (fun paths ->
-      Nixploy.Target_lease_client.acquire
-        (configuration paths ~identity_value:other_identity ()) ~operation
-      |> assert_error_prefix "NIXPLOY_TARGET_LEASE_READY_MISMATCH")
-
-let () =
-  with_broker (fun paths ->
-      let lease =
-        Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation
-        |> assert_ok
-      in
-      Nixploy.Target_lease_client.For_testing.release_with_receipt lease
-        ~receipt:other_receipt
-      |> assert_error_prefix "NIXPLOY_TARGET_LEASE_V1 MALFORMED")
-
-let () =
+let with_broker test =
   let paths = fresh_paths () in
   let _thread, stop = start_broker paths in
-  let first =
-    Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation
-    |> assert_ok
+  Monitor.protect (fun () -> test paths) ~finally:(fun () -> stop_broker paths stop)
+
+let unavailable_socket_path_test () =
+  let paths = fresh_paths () in
+  Monitor.protect
+    (fun () ->
+      let%bind () =
+        assert_error_prefix_deferred "broker connection failed"
+          (Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation)
+      in
+      let _thread, stop = start_broker paths in
+      Monitor.protect
+        (fun () ->
+          let%bind lease =
+            assert_ok_deferred
+              (Nixploy.Target_lease_client.acquire (configuration paths ())
+                 ~operation)
+          in
+          assert_ok_deferred (Nixploy.Target_lease_client.release lease))
+        ~finally:(fun () -> In_thread.run stop))
+    ~finally:(fun () -> In_thread.run (fun () -> remove_tree paths.base))
+
+let main () =
+  let%bind () =
+    with_broker (fun paths ->
+        let%bind lease =
+          assert_ok_deferred
+            (Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation)
+        in
+        assert_ok_deferred (Nixploy.Target_lease_client.release lease))
   in
-  Nixploy.Target_lease_client.acquire (configuration paths ())
-    ~operation:other_operation
-  |> assert_error_prefix "NIXPLOY_TARGET_LEASE_V1 BUSY";
-  Nixploy.Target_lease_client.release first |> assert_ok;
-  stop ();
-  remove_tree paths.base
+  let%bind () =
+    with_broker (fun paths ->
+        assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_V1 DENIED"
+          (Nixploy.Target_lease_client.acquire
+             (configuration paths ~authority_value:other_authority ()) ~operation))
+  in
+  let%bind () =
+    with_broker (fun paths ->
+        assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_V1 DENIED"
+          (Nixploy.Target_lease_client.acquire
+             (configuration paths ~scope_value:other_scope ()) ~operation))
+  in
+  let%bind () =
+    with_broker (fun paths ->
+        assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_READY_MISMATCH"
+          (Nixploy.Target_lease_client.acquire
+             (configuration paths ~identity_value:other_identity ()) ~operation))
+  in
+  let%bind () =
+    with_broker (fun paths ->
+        let%bind lease =
+          assert_ok_deferred
+            (Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation)
+        in
+        let%bind () =
+          assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_V1 MALFORMED"
+            (Nixploy.Target_lease_client.For_testing.release_with_receipt lease
+               ~receipt:other_receipt)
+        in
+        assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_ALREADY_CLOSED"
+          (Nixploy.Target_lease_client.release lease))
+  in
+  let%bind () =
+    with_broker (fun paths ->
+        let%bind first =
+          assert_ok_deferred
+            (Nixploy.Target_lease_client.acquire (configuration paths ()) ~operation)
+        in
+        let%bind () =
+          assert_error_prefix_deferred "NIXPLOY_TARGET_LEASE_V1 BUSY"
+            (Nixploy.Target_lease_client.acquire (configuration paths ())
+               ~operation:other_operation)
+        in
+        assert_ok_deferred (Nixploy.Target_lease_client.release first))
+  in
+  unavailable_socket_path_test ()
+
+let () =
+  don't_wait_for (main ());
+  never_returns (Scheduler.go ())

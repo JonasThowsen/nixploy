@@ -363,6 +363,6 @@
 (test
  (name target_lease_client_test)
  (modules target_lease_client_test)
- (libraries nixploy core threads.posix core_unix.command_unix)
+ (libraries async nixploy core threads.posix core_unix.command_unix)
  (preprocess
   (pps ppx_jane)))
