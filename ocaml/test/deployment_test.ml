@@ -149,12 +149,20 @@ case "$last" in
       proxy_id=$(printf '%s' "$route_id" | sed 's/nixploy-route-/nixploy-proxy-/')
       port=$(sed -n '1p' "$NIXPLOY_TEST_ROUTE_STATE")
       domain=$(sed -n '2p' "$NIXPLOY_TEST_ROUTE_STATE")
-      printf '{"@id":"%s","match":[{"host":["%s"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:%s"}]}]}]}],"terminal":true}\n200' "$route_id" "$domain" "$proxy_id" "$port"
+      reported_port=$port
+      if [ "${NIXPLOY_TEST_FAIL_CADDY_READBACK:-}" = "1" ] && [ "$port" = "8081" ]; then
+        reported_port=65535
+      fi
+      printf '{"@id":"%s","match":[{"host":["%s"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"@id":"%s","handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:%s"}]}]}]}],"terminal":true}\n200' "$route_id" "$domain" "$proxy_id" "$reported_port"
     fi
     ;;
   *"'-X' 'GET'"*"/id/nixploy-proxy-"*"/upstreams"*)
     port=$(sed -n '1p' "$NIXPLOY_TEST_ROUTE_STATE")
-    printf '[{"dial":"127.0.0.1:%s"}]\n200' "$port"
+    reported_port=$port
+    if [ "${NIXPLOY_TEST_FAIL_CADDY_READBACK:-}" = "1" ] && [ "$port" = "8081" ]; then
+      reported_port=65535
+    fi
+    printf '[{"dial":"127.0.0.1:%s"}]\n200' "$reported_port"
     ;;
   *) echo "unexpected ssh command: $last" >&2; exit 98 ;;
 esac
@@ -281,6 +289,7 @@ exit 99
       "NIXPLOY_TEST_FOREIGN_SINGLE";
       "NIXPLOY_TEST_LABEL_MODE";
       "NIXPLOY_TEST_FAIL_RETIREMENT";
+      "NIXPLOY_TEST_FAIL_CADDY_READBACK";
       "NIXPLOY_TEST_BINDS";
       "NIXPLOY_TEST_MISSING_BIND";
       "NIXPLOY_TEST_SECRETS";
@@ -312,6 +321,7 @@ exit 99
         "NIXPLOY_TEST_FOREIGN_SINGLE";
         "NIXPLOY_TEST_LABEL_MODE";
         "NIXPLOY_TEST_FAIL_RETIREMENT";
+        "NIXPLOY_TEST_FAIL_CADDY_READBACK";
         "NIXPLOY_TEST_BINDS";
         "NIXPLOY_TEST_MISSING_BIND";
         "NIXPLOY_TEST_SECRETS";
@@ -840,6 +850,35 @@ exit 99
             assert (count lines "|rm|-f|" = 0);
             assert (count lines "|run|-d|--name|" = 0))
       in
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_CADDY_READBACK" "1";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind restored_after_readback_failure =
+        deploy "operation-caddy-readback-failure"
+      in
+      expect_error_containing restored_after_readback_failure
+        "Caddy readback did not select candidate";
+      [%test_eq: string list]
+        [ "8080"; "worker.example.invalid" ]
+        (In_channel.read_lines route_state);
+      assert (not (Sys_unix.file_exists_exn state));
+      let lines = In_channel.read_lines trace in
+      let route_switches =
+        List.filter lines
+          ~f:(String.is_substring ~substring:"'-X' 'PATCH'")
+      in
+      [%test_eq: int] 2 (List.length route_switches);
+      let restoration = List.nth_exn route_switches 1 in
+      let candidate_removal =
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|candidate-id")
+      in
+      let restored_route =
+        index_of lines (fun line -> String.equal line restoration)
+      in
+      assert (restored_route < candidate_removal);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_VERIFY_MISMATCH" "1";
