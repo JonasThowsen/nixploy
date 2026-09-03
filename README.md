@@ -274,6 +274,10 @@ publish the loopback endpoint.
 
     authMode = "tailscale";
     operatorEmail = "operator@example.com";
+    # Required when Tailscale Serve forwards verified identity headers to this
+    # loopback listener. The module installs a root-only nftables OUTPUT rule
+    # for this exact port before the service accepts those headers.
+    trustedTailscaleLoopbackProxy = true;
     # Set only when the browser's public origin differs from the forwarded Host.
     allowedOrigin = "https://nixploy.example.com";
 
@@ -344,14 +348,19 @@ For a deliberately trusted local-only **development or test** installation,
 set both `authMode = "unrestricted"` and
 `allowUnrestrictedDevelopmentMode = true`. This explicit insecure opt-in is
 required because unrestricted mode must never be used for production control
-plane access. Tailscale mode requires `operatorEmail`, but loopback TCP alone
-is not a trusted-proxy boundary because direct local clients can reach it.
-Production V1 requires direct requests in Tailscale mode to be rejected: the
-proxy must strip caller-supplied identity, inject only verified
-identity, and cross an authenticated or otherwise protected proxy-to-service
-boundary inaccessible to direct local clients. A protected Unix socket or an
-equivalent design can satisfy that requirement; the implementation choice is
-intentionally not fixed here. The health endpoint is `GET /healthz`.
+plane access.
+
+Tailscale mode requires `operatorEmail`. Loopback TCP alone is not a trusted
+proxy boundary, so forwarded `Tailscale-User-Login` headers remain rejected by
+default. For a root-managed Tailscale Serve frontend targeting the exact
+`http://127.0.0.1:<port>` listener, set
+`trustedTailscaleLoopbackProxy = true`. The NixOS module then installs an
+nftables OUTPUT rule before nixploy starts: only UID 0 (the NixOS `tailscaled`
+service) may connect to that IPv4 or IPv6 loopback port. Other local users are
+dropped even if they forge the header. Configure Tailscale Serve itself as a
+root-owned systemd service, keep its target fixed to that loopback origin, and
+never enable this option without that protected proxy boundary. The health
+endpoint is `GET /healthz`.
 
 `services.nixploy-control-plane` is a rename alias for `services.nixploy` to
 make the namespace transition explicit. It does not restore the removed
