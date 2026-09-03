@@ -149,7 +149,8 @@ let admit_managed_deployment state connection query =
   with
   | Error error -> Deferred.return (Error error)
   | Ok () ->
-      Managed_deployment_admission_rpc.handle ~applications:state.applications query
+      Managed_deployment_admission_rpc.handle ~applications:state.applications
+        ~application:state.application query
 
 let prune state _connection_state query =
   Prune_request.handle ~applications:state.applications

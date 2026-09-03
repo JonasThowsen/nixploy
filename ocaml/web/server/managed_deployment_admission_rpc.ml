@@ -10,12 +10,6 @@ let authority_mismatch format =
       Or_error.errorf "NIXPLOY_MANAGED_DEPLOY_AUTHORITY_MISMATCH: %s" message)
     format
 
-let unavailable () =
-  Or_error.error_string
-    "NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE: immutable revision admission, \
-     root-owned source custody, and authoritative target-lease broker \
-     integration are required before managed deployment"
-
 let matches_authority managed request =
   let requested_target = Admission.requested_target request in
   if
@@ -31,7 +25,7 @@ let matches_authority managed request =
         authority_mismatch "provenance does not match managed application"
     | Some _ -> Ok ()
 
-let handle ~applications query =
+let handle ~applications ~application query =
   match
     Admission.create
       ~managed_application_key:
@@ -51,8 +45,21 @@ let handle ~applications query =
       | Ok managed -> (
           match matches_authority managed request with
           | Error _ as error -> Deferred.return error
-          | Ok () -> Deferred.return (unavailable ())))
+          | Ok () ->
+              let%map result =
+                Nixploy.Application.admit_managed_deployment application managed
+                  ~revision:(Admission.revision request)
+              in
+              match result with
+              | Ok started ->
+                  Ok
+                    {
+                      Protocol.Admit_managed_deployment.Response.operation_id =
+                        Nixploy.Application.started_deployment_id started;
+                      update_sequence = 0L;
+                    }
+              | Error error -> Error error))
 
-(* TODO(tracer): Replace this unavailable result only after source custody verifies
-   the exact revision and the Application lifecycle persists broker-backed
-   admission evidence before any deployment effect. *)
+(* TODO(tracer): Replace the broker-unconfigured admission result only after the
+   Application persists broker-backed admission evidence before any deployment
+   effect. The operation-id response is reserved for that successful path. *)

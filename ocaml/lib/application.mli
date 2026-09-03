@@ -107,6 +107,15 @@ val deployment_preview_commit : deployment_preview -> commit
 val deployment_preview_receipt : deployment_preview -> string
 val deployment_preview_prune_receipt : deployment_preview -> string
 
+val admit_managed_deployment :
+  t ->
+  Managed_application.t ->
+  revision:string ->
+  started_deployment Deferred.Or_error.t
+(** Verifies the root-owned custody evidence for the exact requested revision at
+    the VPS application boundary. It fails closed before deployment effects
+    until authoritative broker admission is configured. *)
+
 val start_managed_deployment :
   t -> Managed_application.t -> started_deployment Deferred.Or_error.t
 (** Fails closed before source, deployment, or remote effects until immutable
@@ -271,6 +280,10 @@ module For_testing : sig
     ?status:(scope:scope -> status Deferred.Or_error.t) ->
     ?logs:(Managed_application.t -> log_snapshot Deferred.Or_error.t) ->
     ?metrics:(Managed_application.t -> target_metrics Deferred.t) ->
+    ?verify_managed_source:
+      (Managed_application.t ->
+      revision:string ->
+      Source_authority.t Deferred.Or_error.t) ->
     ?deployment_history:
       (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) ->
     ?managed_applications:Managed_application.t list ->

@@ -162,6 +162,8 @@ type t = {
     (Managed_application.t -> log_snapshot Deferred.Or_error.t) option;
   metrics_override :
     (Managed_application.t -> target_metrics Deferred.t) option;
+  verify_managed_source :
+    Managed_application.t -> revision:string -> Source_authority.t Deferred.Or_error.t;
   deployment_history_override :
     (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) option;
   active : active_operation String.Table.t;
@@ -260,6 +262,8 @@ let create_with_managed_applications ~managed_applications ~store () =
           ~target:scope.target);
     logs_override = None;
     metrics_override = None;
+    verify_managed_source = (fun application ~revision ->
+      Source_authority.verify ~expected_revision:revision application);
     deployment_history_override = None;
     active = String.Table.create ();
     cancellations = ref [];
@@ -520,6 +524,16 @@ let deploy_local_deployment t ~working_directory ~target =
   let open Deferred.Or_error.Let_syntax in
   let%bind started = start_local_deployment t ~working_directory ~target in
   await_started_deployment started
+
+let admit_managed_deployment t requested_application ~revision =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind _source_authority =
+    t.verify_managed_source requested_application ~revision
+  in
+  Deferred.Or_error.error_string
+    "NIXPLOY_MANAGED_DEPLOY_BROKER_UNCONFIGURED: the requested revision passed \
+     root-owned source custody verification, but authoritative target-lease \
+     broker admission is not configured"
 
 let start_managed_deployment _t _requested_application =
   Deferred.return (managed_deployment_unavailable ())
@@ -1049,9 +1063,9 @@ let deployment_updated_at_ms (deployment : deployment) =
 let deployment_state_name = Store.state_name
 
 module For_testing = struct
-  let create ?status ?logs ?metrics ?deployment_history
-      ?(managed_applications = []) ~store ~preview_main ~find_commit ~deploy
-      ~prune () =
+  let create ?status ?logs ?metrics ?verify_managed_source ?deployment_history
+      ?(managed_applications = []) ~store ~preview_main
+      ~find_commit ~deploy ~prune () =
     {
       store;
       preview_main;
@@ -1066,6 +1080,10 @@ module For_testing = struct
               ~target:scope.target);
       logs_override = logs;
       metrics_override = metrics;
+      verify_managed_source =
+        Option.value verify_managed_source
+          ~default:(fun _application ~revision:_ ->
+            Deferred.Or_error.error_string "managed source verification must not run");
       deployment_history_override = deployment_history;
       active = String.Table.create ();
       cancellations = ref [];
