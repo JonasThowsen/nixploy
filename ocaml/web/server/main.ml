@@ -393,13 +393,16 @@ let identity_for_connection authorization = function
 
 let mutation_drain_timeout = Time_ns.Span.of_sec 25.
 
-let run ~port ~state_db =
+let run ~port ~state_db ~trusted_tailscale_loopback_proxy =
   let open Deferred.Let_syntax in
   Nixploy.Process_runner.handle_termination_signals ();
   let applications =
     Managed_application.load_authority_file () |> Or_error.ok_exn
   in
-  let authorization = Authorization.load_environment () |> Or_error.ok_exn in
+  let authorization =
+    Authorization.load_environment ~trusted_tailscale_loopback_proxy ()
+    |> Or_error.ok_exn
+  in
   let origin_policy = Authorization.load_origin_policy () |> Or_error.ok_exn in
   let%bind application =
     Application.open_ ~managed_applications:applications ~state_path:state_db ()
@@ -474,7 +477,11 @@ let command =
        flag "--state-db"
          (optional_with_default (Nixploy.State_path.default ()) string)
          ~doc:"PATH durable control-plane state database"
+     and trusted_tailscale_loopback_proxy =
+       flag "--trusted-tailscale-loopback-proxy" no_arg
+         ~doc:
+           "Allow Tailscale identity headers only behind a root-owned loopback output-firewall policy"
      in
-     fun () -> run ~port ~state_db)
+     fun () -> run ~port ~state_db ~trusted_tailscale_loopback_proxy)
 
 let () = Command_unix.run command

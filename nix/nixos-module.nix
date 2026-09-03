@@ -78,12 +78,16 @@ let
   // lib.optionalAttrs (cfg.allowedOrigin != null) {
     NIXPLOY_ALLOWED_ORIGIN = cfg.allowedOrigin;
   }
+  // lib.optionalAttrs cfg.trustedTailscaleLoopbackProxy {
+    NIXPLOY_TRUSTED_TAILSCALE_LOOPBACK_PROXY = "true";
+  }
   // credentialEnvironment;
 
   protectedEnvironmentNames = [
     "NIXPLOY_AUTH_MODE"
     "NIXPLOY_OPERATOR_EMAIL"
     "NIXPLOY_ALLOWED_ORIGIN"
+    "NIXPLOY_TRUSTED_TAILSCALE_LOOPBACK_PROXY"
     "NIXPLOY_MANAGED_APPLICATIONS_JSON"
     "NIXPLOY_SSH_IDENTITY_FILE"
     "NIXPLOY_SSH_KNOWN_HOSTS_FILE"
@@ -445,6 +449,19 @@ in
       '';
     };
 
+    trustedTailscaleLoopbackProxy = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Trust the Tailscale-User-Login header only when this exact loopback
+        listener is protected by a root-owned NixOS output-firewall policy that
+        permits only tailscaled (or another root-owned verified proxy) to
+        connect to 127.0.0.1 on services.nixploy.port. This option does not
+        install that firewall policy. Leaving it false rejects every forwarded
+        Tailscale identity header.
+      '';
+    };
+
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -524,6 +541,13 @@ in
       {
         assertion = cfg.authMode != "tailscale" || cfg.operatorEmail != null;
         message = "services.nixploy.operatorEmail is required when authMode is tailscale";
+      }
+      {
+        assertion = !cfg.trustedTailscaleLoopbackProxy || cfg.authMode == "tailscale";
+        message = ''
+          services.nixploy.trustedTailscaleLoopbackProxy requires
+          services.nixploy.authMode = "tailscale"
+        '';
       }
       {
         assertion = !cfg.manageUser || cfg.user != "root";

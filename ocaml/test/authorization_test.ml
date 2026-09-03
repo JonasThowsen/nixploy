@@ -20,8 +20,14 @@ let headers ?origin ?host ?login () =
 
 let request_host_policy = Authorization.origin_policy_of_value None |> assert_ok
 
+let authorization ~trusted_tailscale_loopback_proxy ~mode ~operator_email () =
+  Authorization.of_values ~mode ~operator_email
+    ~trusted_tailscale_loopback_proxy
+  |> assert_ok
+
 let unrestricted =
-  Authorization.of_values ~mode:None ~operator_email:None |> assert_ok
+  authorization ~trusted_tailscale_loopback_proxy:false ~mode:None
+    ~operator_email:None ()
 
 let websocket ?origin ?host ?login authorization policy =
   Authorization.authorize_websocket authorization policy
@@ -31,11 +37,11 @@ let () =
   assert (Authorization.authorized unrestricted (headers ()));
   assert (
     Authorization.of_values ~mode:(Some "unrestricted") ~operator_email:None
+      ~trusted_tailscale_loopback_proxy:false
     |> Result.is_ok);
   let tailscale =
-    Authorization.of_values ~mode:(Some "tailscale")
-      ~operator_email:(Some " Operator@Example.com ")
-    |> assert_ok
+    authorization ~trusted_tailscale_loopback_proxy:false ~mode:(Some "tailscale")
+      ~operator_email:(Some " Operator@Example.com ") ()
   in
   assert (
     Authorization.authorized tailscale
@@ -44,16 +50,19 @@ let () =
   assert (
     Authorization.of_values ~mode:(Some "tailcale")
       ~operator_email:(Some "operator@example.com")
+      ~trusted_tailscale_loopback_proxy:false
     |> Result.is_error);
   assert (
     Authorization.of_values ~mode:(Some "") ~operator_email:None
+      ~trusted_tailscale_loopback_proxy:false
     |> Result.is_error);
   assert (
     Authorization.of_values ~mode:(Some "tailscale") ~operator_email:None
+      ~trusted_tailscale_loopback_proxy:false
     |> Result.is_error);
   assert (
     Authorization.of_values ~mode:(Some "test-authenticated-identity")
-      ~operator_email:None
+      ~operator_email:None ~trusted_tailscale_loopback_proxy:false
     |> Result.is_error);
 
   (* Same-origin localhost remains the development default. *)
@@ -130,4 +139,34 @@ let () =
     |> Result.is_error);
   assert (
     Authorization.authenticated_identity unrestricted (headers ())
+    |> Result.is_error);
+
+  let protected_tailscale =
+    authorization ~trusted_tailscale_loopback_proxy:true ~mode:(Some "tailscale")
+      ~operator_email:(Some "operator@example.com") ()
+  in
+  assert (
+    match
+      Authorization.authenticated_identity protected_tailscale
+        (headers ~login:"Operator@Example.com" ())
+    with
+    | Ok (Authorization.Tailscale_login "operator@example.com") -> true
+    | Ok _ | Error _ -> false);
+  List.iter
+    [ " operator@example.com"; "operator@example.com "; "operator@example.com,evil@example.com"; "" ]
+    ~f:(fun login ->
+      assert (
+        Authorization.authenticated_identity protected_tailscale (headers ~login ())
+        |> Result.is_error));
+  let repeated_identity =
+    headers ~login:"operator@example.com" ()
+    |> fun headers ->
+    Cohttp.Header.add headers "Tailscale-User-Login" "operator@example.com"
+  in
+  assert (
+    Authorization.authenticated_identity protected_tailscale repeated_identity
+    |> Result.is_error);
+  assert (
+    Authorization.authenticated_identity protected_tailscale
+      (headers ~login:"attacker@example.com" ())
     |> Result.is_error)

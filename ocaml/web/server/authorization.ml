@@ -1,6 +1,11 @@
 open Core
 
-type t = Unrestricted | Tailscale of string
+type t =
+  | Unrestricted
+  | Tailscale of {
+      operator_login : string;
+      trusted_loopback_proxy : bool;
+    }
 
 type authenticated_identity = Tailscale_login of string
 [@@deriving compare, equal, sexp]
@@ -11,7 +16,7 @@ type origin_policy = Request_host | Allowed_origin of origin
 
 let normalized_login login = String.strip login |> String.lowercase
 
-let of_values ~mode ~operator_email =
+let of_values ~mode ~operator_email ~trusted_tailscale_loopback_proxy =
   match
     Option.map mode ~f:(fun mode -> String.strip mode |> String.lowercase)
   with
@@ -23,7 +28,12 @@ let of_values ~mode ~operator_email =
   | Some "tailscale" -> (
       match operator_email with
       | Some email when not (String.is_empty (String.strip email)) ->
-          Ok (Tailscale (normalized_login email))
+          Ok
+            (Tailscale
+               {
+                 operator_login = normalized_login email;
+                 trusted_loopback_proxy = trusted_tailscale_loopback_proxy;
+               })
       | _ ->
           Or_error.error_string
             "NIXPLOY_OPERATOR_EMAIL is required in Tailscale auth mode")
@@ -31,10 +41,26 @@ let of_values ~mode ~operator_email =
       Or_error.errorf
         "unknown NIXPLOY_AUTH_MODE %S (expected tailscale or unrestricted)" mode
 
-let load_environment () =
+let trusted_loopback_proxy_of_value = function
+  | None -> Ok false
+  | Some "true" | Some "1" -> Ok true
+  | Some "false" | Some "0" -> Ok false
+  | Some value ->
+      Or_error.errorf
+        "NIXPLOY_TRUSTED_TAILSCALE_LOOPBACK_PROXY must be true, false, 1, or 0 (got %S)"
+        value
+
+let load_environment ~trusted_tailscale_loopback_proxy () =
+  let open Or_error.Let_syntax in
+  let%bind trusted_by_environment =
+    trusted_loopback_proxy_of_value
+      (Sys.getenv "NIXPLOY_TRUSTED_TAILSCALE_LOOPBACK_PROXY")
+  in
   of_values
     ~mode:(Sys.getenv "NIXPLOY_AUTH_MODE")
     ~operator_email:(Sys.getenv "NIXPLOY_OPERATOR_EMAIL")
+    ~trusted_tailscale_loopback_proxy:
+      (trusted_tailscale_loopback_proxy || trusted_by_environment)
 
 let default_port = function "http" -> 80 | "https" -> 443 | _ -> assert false
 let valid_port port = port > 0 && port <= 65_535
@@ -89,19 +115,44 @@ let origin_policy_of_value = function
 let load_origin_policy () =
   origin_policy_of_value (Sys.getenv "NIXPLOY_ALLOWED_ORIGIN")
 
+let valid_tailscale_login login =
+  (not (String.is_empty login))
+  && String.length login <= 320
+  && String.equal login (String.strip login)
+  && not (String.exists login ~f:(fun character ->
+         let code = Char.to_int character in
+         Char.is_whitespace character || code < 32 || Int.equal code 127
+         || Char.equal character ','))
+
 let authenticated_identity authorization headers =
   match authorization with
   | Unrestricted ->
       Or_error.error_string
         "NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED: managed capability grants \
          require Tailscale authentication"
-  | Tailscale _ ->
+  | Tailscale { trusted_loopback_proxy = false; _ } ->
       (* A loopback peer can forge every forwarded HTTP header. Do not grant
          authority until a proxy-to-service channel authenticates its identity. *)
       ignore headers;
       Or_error.error_string
         "NIXPLOY_AUTH_PROXY_UNTRUSTED: Tailscale authentication requires a \
          verified proxy-to-service identity channel"
+  | Tailscale { operator_login; trusted_loopback_proxy = true } -> (
+      match Cohttp.Header.get_multi headers "tailscale-user-login" with
+      | [ login ] when valid_tailscale_login login ->
+          let login = normalized_login login in
+          if String.equal login operator_login then Ok (Tailscale_login login)
+          else
+            Or_error.error_string
+              "NIXPLOY_TAILSCALE_IDENTITY_UNAUTHORIZED: Tailscale identity is \
+               not authorized for nixploy"
+      | [ _ ] ->
+          Or_error.error_string
+            "NIXPLOY_TAILSCALE_IDENTITY_INVALID: malformed Tailscale identity"
+      | [] | _ :: _ :: _ ->
+          Or_error.error_string
+            "NIXPLOY_TAILSCALE_IDENTITY_INVALID: exactly one Tailscale identity \
+             header is required")
 
 let authorized authorization headers =
   match authenticated_identity authorization headers with
