@@ -241,16 +241,33 @@ let managed_destination_scopes applications =
       |> List.filter_map ~f:Fn.id
       |> List.map ~f:Managed_application.coordination_scope)
 
-let authorize_local ~applications ~working_directory:_ ~configuration:_ ~target =
-  match Configuration.Target.non_production target with
-  | None ->
+let declared_direct_scope target =
+  match
+    ( Configuration.Target.production target,
+      Configuration.Target.non_production target )
+  with
+  | Some production, None ->
+      Ok (Configuration.Production.coordination_scope production)
+  | None, Some non_production ->
+      Ok (Configuration.Non_production.coordination_scope non_production)
+  | None, None ->
       Or_error.error_string
-        "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode requires a nonProduction \
-         coordination scope"
-  | Some non_production ->
-      let direct_scope =
-        Configuration.Non_production.coordination_scope non_production
-      in
+        "NIXPLOY_DIRECT_MODE_FORBIDDEN: direct mode requires an explicit \
+         production or nonProduction coordination scope"
+  | Some _, Some _ ->
+      Or_error.error_string
+        "NIXPLOY_DIRECT_MODE_FORBIDDEN: target cannot declare both production \
+         and nonProduction coordination scopes"
+
+let authorize_local ~applications ~working_directory:_ ~configuration ~target =
+  match Configuration.control_plane configuration with
+  | Some _ ->
+      Or_error.error_string
+        "NIXPLOY_DIRECT_MODE_FORBIDDEN: a controlPlane-declared configuration \
+         cannot use direct mode"
+  | None ->
+      let open Or_error.Let_syntax in
+      let%bind direct_scope = declared_direct_scope target in
       if
         List.mem (managed_destination_scopes applications) direct_scope
           ~equal:String.equal

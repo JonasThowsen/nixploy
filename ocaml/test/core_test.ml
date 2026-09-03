@@ -682,13 +682,13 @@ let%test_unit
          directory directory)
     |> assert_ok
   in
-  let authorize json target_name =
+  let authorize ?(installed_applications = applications) json target_name =
     let configuration = Nixploy.Configuration.of_json json |> assert_ok in
     let target_name = Nixploy.Target_name.of_string target_name |> assert_ok in
     let target =
       Nixploy.Configuration.find_target configuration target_name |> assert_ok
     in
-    Nixploy.Deployment_intent.authorize_local ~applications
+    Nixploy.Deployment_intent.authorize_local ~applications:installed_applications
       ~working_directory:directory ~configuration ~target
   in
   let staging =
@@ -697,6 +697,37 @@ let%test_unit
   ignore
     (assert_ok (authorize staging "staging")
       : Nixploy.Deployment_intent.identity_policy);
+  let direct_production =
+    {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"prod.invalid","user":"deploy","production":{"coordinationScope":"local-production"}}}}|}
+  in
+  ignore
+    (assert_ok
+       (authorize ~installed_applications:[] direct_production "production")
+      : Nixploy.Deployment_intent.identity_policy);
+  let direct_commit =
+    Nixploy.Source.For_testing.commit ~revision:(String.make 40 'a')
+      ~subject:"Direct production" ~timestamp_ms:0L
+    |> assert_ok
+  in
+  let direct_receipt =
+    Nixploy.Operation_receipt.direct_deploy ~application_key:None
+      ~expected_project:None ~intent:None ~application:None
+      ~managed_applications:[] ~working_directory:directory
+      ~source:(Nixploy.Source.For_testing.local ~working_directory:directory direct_commit)
+      ~target:(Nixploy.Target_name.of_string "production" |> assert_ok)
+    |> assert_ok
+  in
+  assert (Option.is_none (Nixploy.Operation_receipt.deploy_application_key direct_receipt));
+  let profileless =
+    {|{"__schema":"v0.4","project":"sample","targets":{"production":{"image":"image","ip":"prod.invalid","user":"deploy"}}}|}
+  in
+  assert (Result.is_error (authorize ~installed_applications:[] profileless "production"));
+  let control_plane_declared =
+    {|{"__schema":"v0.4","project":"sample","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"sample-production"},"targets":{"production":{"image":"image","ip":"prod.invalid","user":"deploy","production":{"coordinationScope":"local-production"}}}}|}
+  in
+  assert
+    (Result.is_error
+       (authorize ~installed_applications:[] control_plane_declared "production"));
   let other_checkout =
     Filename_unix.temp_dir "nixploy-authority-policy-other-" ""
   in
