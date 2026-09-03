@@ -39,12 +39,7 @@ let require_direct_configuration ~working_directory ~target =
   Deferred.return (Nixploy.Direct_mode.validate_configuration configuration ~target)
 
 let open_direct_application ~state_db =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind managed_applications =
-    Nixploy.Managed_application.load_authority_file_if_present ()
-    |> Deferred.return
-  in
-  Nixploy.Application.open_ ~managed_applications ~state_path:state_db ()
+  Nixploy.Application.open_ ~state_path:state_db ()
 
 let direct_status ~working_directory ~target ~state_db =
   let open Deferred.Let_syntax in
