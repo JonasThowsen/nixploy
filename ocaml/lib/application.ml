@@ -498,7 +498,7 @@ let direct_mode_fence t ~application_key ~working_directory ~target =
        application scope"
   else Ok ()
 
-let start_non_production ?application_key ?expected_project t ~working_directory
+let start_direct_deployment ?application_key ?expected_project t ~working_directory
     ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
@@ -518,7 +518,7 @@ let start_non_production ?application_key ?expected_project t ~working_directory
 let start_local_deployment t ~working_directory ~target =
   let open Deferred.Or_error.Let_syntax in
   let%bind source = local_source t ~working_directory in
-  start_non_production t ~working_directory ~source ~target ()
+  start_direct_deployment t ~working_directory ~source ~target ()
 
 let deploy_local_deployment t ~working_directory ~target =
   let open Deferred.Or_error.Let_syntax in
@@ -541,11 +541,11 @@ let start_managed_deployment _t _requested_application =
 let deploy_managed_deployment _t _application =
   Deferred.return (managed_deployment_unavailable ())
 
-let deploy_non_production ?application_key ?expected_project t
+let deploy_direct_deployment ?application_key ?expected_project t
     ~working_directory ~source ~target () =
   let open Deferred.Or_error.Let_syntax in
   let%bind started =
-    start_non_production ?application_key ?expected_project t ~working_directory
+    start_direct_deployment ?application_key ?expected_project t ~working_directory
       ~source ~target ()
   in
   await_started_deployment started
