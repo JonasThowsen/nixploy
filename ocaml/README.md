@@ -41,12 +41,13 @@ working-tree changes and intent-to-add files while excluding ignored output, and
 runs the shared deployment engine directly only for an explicitly declared,
 unmanaged `nonProduction` target. Non-ignored untracked files are rejected before
 evaluation so the build, secrets, and image all consume the same prepared source.
-Managed CLI commands require `--authority-alias` and
-`--managed-application-key`; they resolve the alias only through the root-owned
-`/etc/nixploy/control-plane-authorities.sexp` record before they evaluate Nix,
-open SQLite, install signal handlers, or start deployment work. These values are
-names only: the flake and command line cannot supply a transport URI, trust
-root, SPKI pin, or credential. An unmanaged `nonProduction` target uses this direct local path by default;
+A flake-declared `controlPlane` identity selects managed CLI transport by
+default, so `nixploy deploy -t production` needs no authority flags. The
+optional `--authority-alias` and `--managed-application-key` pair remains an
+explicit managed selection. Both forms resolve the alias only through the
+root-owned `/etc/nixploy/control-plane-authorities.sexp` record; the flake and
+command line can supply names only, never a transport URI, trust root, SPKI
+pin, or credential. An unmanaged `nonProduction` target uses this direct local path by default;
 `--direct` remains available as an explicit equivalent. Its coordination scope
 must not match any managed destination. Managed command transport remains
 fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket client can verify

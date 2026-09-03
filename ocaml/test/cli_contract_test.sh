@@ -74,9 +74,15 @@ set -eu
 if [ -n "${NIXPLOY_TEST_EVAL_STARTED:-}" ]; then
   touch "$NIXPLOY_TEST_EVAL_STARTED"
 fi
-if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ]; then
+if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ] || {
+  [ -n "${NIXPLOY_TEST_DIRECT_CONFIG_ONCE:-}" ] &&
+    [ ! -e "$NIXPLOY_TEST_DIRECT_CONFIG_ONCE" ];
+}; then
+  if [ -n "${NIXPLOY_TEST_DIRECT_CONFIG_ONCE:-}" ]; then
+    touch "$NIXPLOY_TEST_DIRECT_CONFIG_ONCE"
+  fi
   if [ "${NIXPLOY_TEST_MANAGED:-}" = 1 ]; then
-    printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"fixture-production"},"targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid"}}}'
+    printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"fixture-production"},"targets":{"production":{"image":"fixture-image","ip":"target.example.invalid"}}}'
   else
     printf '%s\n' '{"__schema":"v0.4","project":"fixture","targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid","nonProduction":{"coordinationScope":"fixture-staging"}}}}'
   fi
@@ -90,6 +96,7 @@ EOF
 chmod +x "$bin/nix"
 
 TMPDIR="$runtime" NIXPLOY_TEST_CHILD_PID="$child_marker" \
+  NIXPLOY_TEST_DIRECT_CONFIG_ONCE="$root/direct-config-loaded" \
   NIXPLOY_TEST_EVAL_STARTED="$marker" PATH="$bin:$PATH" \
   "$executable" deploy --target staging --directory "$repo" \
   --state-db "$state_db" >"$root/stdout" 2>"$root/stderr" &
@@ -122,21 +129,39 @@ NIXPLOY_TEST_CONFIG_ONLY=1 PATH="$bin:$PATH" \
   "$executable" history --target staging --directory "$repo" \
   --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null
 
-# A flake declaring a managed control-plane identity cannot silently become a
-# local operation when no execution-mode flags are supplied.
+# A flake-declared managed control plane selects remote transport by default.
+# The configuration evaluation needed to discover the protected alias is allowed,
+# but no local state, source snapshot, or deployment work may start.
 managed_default_marker="$root/managed-default-nix-started"
 managed_default_state="$root/managed-default-state.sqlite"
 set +e
 managed_default_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
   NIXPLOY_TEST_EVAL_STARTED="$managed_default_marker" PATH="$bin:$PATH" \
-  "$executable" deploy --target staging --directory "$repo" \
+  "$executable" deploy --target production --directory "$repo" \
   --state-db "$managed_default_state" 2>&1)
 managed_default_status=$?
 set -e
 [ "$managed_default_status" -ne 0 ]
-grep -F -- 'NIXPLOY_DIRECT_MANAGED_DECLARATION' <<<"$managed_default_output" >/dev/null
+grep -F -- 'NIXPLOY_UNTRUSTED_CONTROL_PLANE' <<<"$managed_default_output" >/dev/null
+! grep -F -- 'Preparing local source snapshot' <<<"$managed_default_output" >/dev/null
 [ -e "$managed_default_marker" ]
 [ ! -e "$managed_default_state" ]
+
+# --direct remains a local-only escape hatch and therefore rejects a flake that
+# declares managed control-plane identity before opening local state.
+managed_direct_marker="$root/managed-direct-nix-started"
+managed_direct_state="$root/managed-direct-state.sqlite"
+set +e
+managed_direct_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
+  NIXPLOY_TEST_EVAL_STARTED="$managed_direct_marker" PATH="$bin:$PATH" \
+  "$executable" deploy --direct --target production --directory "$repo" \
+  --state-db "$managed_direct_state" 2>&1)
+managed_direct_status=$?
+set -e
+[ "$managed_direct_status" -ne 0 ]
+grep -F -- 'NIXPLOY_DIRECT_MANAGED_DECLARATION' <<<"$managed_direct_output" >/dev/null
+[ -e "$managed_direct_marker" ]
+[ ! -e "$managed_direct_state" ]
 
 set +e
 invalid_mode_output=$("$executable" deploy --direct --authority-alias netcup \

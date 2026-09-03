@@ -27,6 +27,27 @@ let execution_mode ~direct ~authority_alias ~managed_application_key =
         "NIXPLOY_MANAGED_SELECTION_INVALID: supply both --authority-alias and \
          --managed-application-key, or neither for a nonProduction target"
 
+let resolve_execution_mode ~working_directory ~direct ~authority_alias
+    ~managed_application_key =
+  match execution_mode ~direct ~authority_alias ~managed_application_key with
+  | Error error -> Deferred.return (Error error)
+  | Ok (Managed _ as mode) -> Deferred.return (Ok mode)
+  | Ok Direct when direct -> Deferred.return (Ok Direct)
+  | Ok Direct ->
+      let open Deferred.Or_error.Let_syntax in
+      let%map configuration = Nixploy.Nix_configuration.load ~working_directory in
+      match Nixploy.Configuration.control_plane configuration with
+      | None -> Direct
+      | Some control_plane ->
+          Managed
+            {
+              authority_alias =
+                Nixploy.Configuration.Control_plane.authority_alias control_plane;
+              managed_application_key =
+                Nixploy.Configuration.Control_plane.managed_application_key
+                  control_plane;
+            }
+
 let require_managed_transport ~action ~authority_alias ~managed_application_key =
   Deferred.map
     (Control_plane_client.require_managed_transport ~authority_alias
@@ -190,13 +211,17 @@ let status_command =
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
-       | Ok target -> (
-           match execution_mode ~direct ~authority_alias ~managed_application_key with
+       | Ok target ->
+           let open Deferred.Let_syntax in
+           let%bind mode =
+             resolve_execution_mode ~working_directory ~direct ~authority_alias
+               ~managed_application_key
+           in
+           (match mode with
            | Error error ->
                eprintf "Status failed: %s\n" (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok (Managed { authority_alias; managed_application_key }) ->
-               let open Deferred.Let_syntax in
                let%bind result =
                  require_managed_transport ~action:"Status" ~authority_alias
                    ~managed_application_key
@@ -247,13 +272,17 @@ let deploy_command =
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
-       | Ok target -> (
-           match execution_mode ~direct ~authority_alias ~managed_application_key with
+       | Ok target ->
+           let open Deferred.Let_syntax in
+           let%bind mode =
+             resolve_execution_mode ~working_directory ~direct ~authority_alias
+               ~managed_application_key
+           in
+           (match mode with
            | Error error ->
                eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok (Managed { authority_alias; managed_application_key }) ->
-               let open Deferred.Let_syntax in
                let%bind result =
                  require_managed_transport ~action:"Deploy" ~authority_alias
                    ~managed_application_key
@@ -288,13 +317,17 @@ let history_command =
        | Error error ->
            eprintf "%s\n" (Error.to_string_hum error);
            Shutdown.exit 2
-       | Ok target -> (
-           match execution_mode ~direct ~authority_alias ~managed_application_key with
+       | Ok target ->
+           let open Deferred.Let_syntax in
+           let%bind mode =
+             resolve_execution_mode ~working_directory ~direct ~authority_alias
+               ~managed_application_key
+           in
+           (match mode with
            | Error error ->
                eprintf "History failed: %s\n" (Error.to_string_hum error);
                Shutdown.exit 1
            | Ok (Managed { authority_alias; managed_application_key }) ->
-               let open Deferred.Let_syntax in
                let%bind result =
                  require_managed_transport ~action:"History" ~authority_alias
                    ~managed_application_key
