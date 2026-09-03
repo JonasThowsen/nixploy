@@ -93,7 +93,7 @@ Add nixploy as an input and expose a `nixploy` output:
 }
 ```
 
-The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names. A target with a `production` declaration must use a non-root SSH user and can deploy only through a matching root-managed browser preview receipt. An exact root-owned `nonProduction` contract retains daemon-side local-snapshot compatibility, but the packaged CLI never mutates either profile. The coordination scope is bound into preview intent now and is reserved for the authoritative lifecycle lease integration; a preview receipt is not a lease and never permits takeover.
+The `project` name is required. nixploy combines it with a stable project id and target name when creating containers, secrets, Caddy route IDs, and local Podman connection names. A target with a `production` declaration must use a non-root SSH user and can deploy only through a matching root-managed browser preview receipt. An exact root-owned `nonProduction` contract retains local-snapshot compatibility and is deployed directly by the packaged CLI with `nixploy deploy -t TARGET`. Production deployment remains available only through the managed control-plane flow. The coordination scope is bound into preview intent now and is reserved for the authoritative lifecycle lease integration; a preview receipt is not a lease and never permits takeover.
 
 When `identityFile` points at a passphrase-protected key, load it into `ssh-agent` before deploying:
 
@@ -113,9 +113,9 @@ Containers also receive labels with the project, target, git commit, and deploym
 
 ## Deploy
 
-Deploy through the managed browser/RPC confirmation flow. The service previews an exact commit and evaluated destination, returns an opaque single-use deploy receipt, and consumes that receipt synchronously when the operator confirms.
+`nixploy deploy -t TARGET` preserves the direct CLI workflow for an exact unmanaged `nonProduction` target. It uses Git-aware local-snapshot semantics: committed files, tracked modifications, and intent-to-add files are eligible, while ignored build artifacts such as `deps/`, `_build/`, and `node_modules/` are excluded. Ordinary non-ignored untracked files are rejected rather than silently omitted. `--direct` remains available to state that selection explicitly.
 
-The packaged `nixploy deploy` command exits nonzero before creating deployment or resource-state rows. It cannot self-attest protected host authority. For an exact root-owned `nonProduction` contract, the daemon may use Git-aware local-snapshot semantics: committed files, tracked modifications, and intent-to-add files are eligible, while ignored build artifacts such as `deps/`, `_build/`, and `node_modules/` are excluded. Ordinary non-ignored untracked files are rejected rather than silently omitted.
+A target with a managed control-plane declaration is never silently deployed locally: the no-flag command rejects it before opening local state or evaluating Nix, and an explicit managed selection uses the protected authority transport. Protected production deployment remains in the managed browser/RPC confirmation flow, which previews an exact commit and evaluated destination before it can admit work.
 
 For a `web` target, nixploy uses blue/green deployment:
 
@@ -319,11 +319,12 @@ scope. Preview materializes and evaluates the exact protected commit, binds
 these values plus the canonical resource key and configuration digest in
 bounded server memory, and returns only an opaque single-use receipt. Expiry,
 eviction, replay, mismatch, or service restart requires a new preview and fails
-before remote or secret mutation. The packaged standalone CLI exposes status and
-history but categorically refuses deploy and prune; protected mutation is
-available only through the managed control-plane RPC. Exact `nonProduction`
-contracts remain available to the root-started daemon and cannot intersect a
-protected production project/target, SSH host, domain, or coordination scope.
+before remote or secret mutation. The packaged standalone CLI directly deploys an unmanaged exact
+`nonProduction` target by default, while managed targets are routed only through
+the protected control-plane selection and cannot fall back to local effects.
+Prune remains a managed control-plane operation. Exact `nonProduction` contracts
+cannot intersect a protected production project/target, SSH host, domain, or
+coordination scope.
 Deployment prepares and validates source, configuration, and destination before
 resource-state or deployment-history writes. The current local SQLite `flock`
 only serializes processes sharing that state path; it is not the Production V1

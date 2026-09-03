@@ -46,9 +46,9 @@ Managed CLI commands require `--authority-alias` and
 `/etc/nixploy/control-plane-authorities.sexp` record before they evaluate Nix,
 open SQLite, install signal handlers, or start deployment work. These values are
 names only: the flake and command line cannot supply a transport URI, trust
-root, SPKI pin, or credential. Local work is explicit with `--direct` and is
-then limited to an unmanaged `nonProduction` target whose coordination scope
-does not match any managed destination. Managed command transport remains
+root, SPKI pin, or credential. An unmanaged `nonProduction` target uses this direct local path by default;
+`--direct` remains available as an explicit equivalent. Its coordination scope
+must not match any managed destination. Managed command transport remains
 fail-closed with `NIXPLOY_PIN_UNSUPPORTED` until the WebSocket client can verify
 that configured pin on its TLS connection. The authenticated web Deploy action
 is restricted to its managed checkout allowlist and currently fails closed with
