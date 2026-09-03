@@ -71,8 +71,8 @@ git -C "$repo" commit -m fixture >/dev/null
 cat > "$bin/nix" <<'EOF'
 #!/bin/sh
 set -eu
-if [ -n "${NIXPLOY_TEST_EVAL_STARTED:-}" ]; then
-  touch "$NIXPLOY_TEST_EVAL_STARTED"
+if [ -n "${NIXPLOY_TEST_CONFIGURATION_MARKER:-}" ]; then
+  touch "$NIXPLOY_TEST_CONFIGURATION_MARKER"
 fi
 if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ] || {
   [ -n "${NIXPLOY_TEST_DIRECT_CONFIG_ONCE:-}" ] &&
@@ -87,6 +87,9 @@ if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ] || {
     printf '%s\n' '{"__schema":"v0.4","project":"fixture","targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid","nonProduction":{"coordinationScope":"fixture-staging"}}}}'
   fi
   exit 0
+fi
+if [ -n "${NIXPLOY_TEST_EVAL_STARTED:-}" ]; then
+  touch "$NIXPLOY_TEST_EVAL_STARTED"
 fi
 printf '%s\n' "$$" > "$NIXPLOY_TEST_CHILD_PID"
 touch "$NIXPLOY_TEST_EVAL_STARTED"
@@ -136,7 +139,7 @@ managed_default_marker="$root/managed-default-nix-started"
 managed_default_state="$root/managed-default-state.sqlite"
 set +e
 managed_default_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
-  NIXPLOY_TEST_EVAL_STARTED="$managed_default_marker" PATH="$bin:$PATH" \
+  NIXPLOY_TEST_CONFIGURATION_MARKER="$managed_default_marker" PATH="$bin:$PATH" \
   "$executable" deploy --target production --directory "$repo" \
   --state-db "$managed_default_state" 2>&1)
 managed_default_status=$?
@@ -153,7 +156,7 @@ managed_direct_marker="$root/managed-direct-nix-started"
 managed_direct_state="$root/managed-direct-state.sqlite"
 set +e
 managed_direct_output=$(NIXPLOY_TEST_CONFIG_ONLY=1 NIXPLOY_TEST_MANAGED=1 \
-  NIXPLOY_TEST_EVAL_STARTED="$managed_direct_marker" PATH="$bin:$PATH" \
+  NIXPLOY_TEST_CONFIGURATION_MARKER="$managed_direct_marker" PATH="$bin:$PATH" \
   "$executable" deploy --direct --target production --directory "$repo" \
   --state-db "$managed_direct_state" 2>&1)
 managed_direct_status=$?
