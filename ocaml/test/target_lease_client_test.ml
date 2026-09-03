@@ -178,5 +178,10 @@ let main () =
   unavailable_socket_path_test ()
 
 let () =
-  don't_wait_for (main ());
+  don't_wait_for
+    ( Monitor.try_with main >>| function
+      | Ok () -> Shutdown.shutdown 0
+      | Error error ->
+          eprintf "%s\n" (Exn.to_string error);
+          Shutdown.shutdown 1 );
   never_returns (Scheduler.go ())
