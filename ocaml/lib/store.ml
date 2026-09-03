@@ -9,6 +9,13 @@ type state = Requested | Running | Succeeded | Failed | Cancelled
 type resource_state = Unknown | Present | Absent
 [@@deriving compare, equal, sexp]
 
+type managed_operation_evidence = {
+  operation_id : string;
+  lease_receipt : string option;
+  release_evidence : string option;
+  terminal_evidence : string option;
+}
+
 type deployment = {
   id : string;
   application_key : string option;
@@ -94,6 +101,25 @@ let with_db t ~f =
       f db)
     ~finally:(fun () ->
       if not (Sqlite3.db_close db) then failwith "SQLite database remained busy")
+
+let managed_operation_evidence_schema =
+  {|
+    CREATE TABLE managed_operation_evidence (
+      operation_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
+      managed_application_key TEXT NOT NULL,
+      target TEXT NOT NULL,
+      revision TEXT NOT NULL,
+      source_provenance TEXT NOT NULL,
+      source_reference TEXT NOT NULL,
+      source_evidence_digest TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      coordination_scope TEXT NOT NULL,
+      plan_digest TEXT NOT NULL,
+      lease_receipt TEXT,
+      release_evidence TEXT,
+      terminal_evidence TEXT
+    );
+  |}
 
 let schema_v2 =
   {|
@@ -192,14 +218,19 @@ let migrate db =
       (match user_version db with
       | 0 ->
           exec db schema_v2;
-          exec db resource_state_schema
+          exec db resource_state_schema;
+          exec db managed_operation_evidence_schema
       | 1 ->
           migrate_v1_within_transaction db;
-          exec db resource_state_schema
-      | 2 -> exec db resource_state_schema
-      | 3 -> ()
+          exec db resource_state_schema;
+          exec db managed_operation_evidence_schema
+      | 2 ->
+          exec db resource_state_schema;
+          exec db managed_operation_evidence_schema
+      | 3 -> exec db managed_operation_evidence_schema
+      | 4 -> ()
       | version -> failwithf "unsupported SQLite schema version %d" version ());
-      exec db "PRAGMA user_version = 3";
+      exec db "PRAGMA user_version = 4";
       exec db "COMMIT";
       committed := true)
     ~finally:(fun () ->
@@ -215,6 +246,76 @@ let open_ ~path =
           let store = { path } in
           with_db store ~f:migrate;
           store))
+
+let managed_operation_id evidence = evidence.operation_id
+let managed_lease_receipt evidence = evidence.lease_receipt
+let managed_release_evidence evidence = evidence.release_evidence
+let managed_terminal_evidence evidence = evidence.terminal_evidence
+
+let create_managed_operation_evidence t ~operation_id ~managed_application_key
+    ~target ~revision ~source_provenance ~source_reference
+    ~source_evidence_digest ~endpoint ~coordination_scope ~plan_digest =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                "INSERT INTO managed_operation_evidence (operation_id, managed_application_key, target, revision, source_provenance, source_reference, source_evidence_digest, endpoint, coordination_scope, plan_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ~f:(fun statement ->
+                  bind db statement
+                    [ TEXT operation_id; TEXT managed_application_key;
+                      TEXT (Target_name.to_string target); TEXT revision;
+                      TEXT source_provenance; TEXT source_reference;
+                      TEXT source_evidence_digest; TEXT endpoint;
+                      TEXT coordination_scope; TEXT plan_digest ];
+                  check db "create managed operation evidence" (Sqlite3.step statement)))))
+
+let attach_managed_evidence t ~operation_id ~column ~value =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                ("UPDATE managed_operation_evidence SET " ^ column
+               ^ " = ? WHERE operation_id = ? AND " ^ column ^ " IS NULL")
+                ~f:(fun statement ->
+                  bind db statement [ TEXT value; TEXT operation_id ];
+                  check db "attach managed operation evidence" (Sqlite3.step statement);
+                  if Sqlite3.changes db <> 1 then
+                    failwith "managed operation evidence is absent or already attached"))))
+
+let attach_managed_lease_receipt t ~operation_id ~receipt =
+  attach_managed_evidence t ~operation_id ~column:"lease_receipt" ~value:receipt
+
+let attach_managed_release_evidence t ~operation_id ~evidence =
+  attach_managed_evidence t ~operation_id ~column:"release_evidence" ~value:evidence
+
+let attach_managed_terminal_evidence t ~operation_id ~evidence =
+  attach_managed_evidence t ~operation_id ~column:"terminal_evidence" ~value:evidence
+
+let find_managed_operation_evidence t ~operation_id =
+  Monitor.try_with_or_error (fun () ->
+      In_thread.run (fun () ->
+          with_db t ~f:(fun db ->
+              with_statement db
+                "SELECT operation_id, lease_receipt, release_evidence, terminal_evidence FROM managed_operation_evidence WHERE operation_id = ?"
+                ~f:(fun statement ->
+                  bind db statement [ TEXT operation_id ];
+                  match Sqlite3.step statement with
+                  | ROW ->
+                      let optional_column index =
+                        match Sqlite3.column statement index with
+                        | Sqlite3.Data.TEXT value -> Some value
+                        | Sqlite3.Data.NULL -> None
+                        | _ -> failwith "managed operation evidence column type"
+                      in
+                      Some
+                        { operation_id = Sqlite3.column_text statement 0;
+                          lease_receipt = optional_column 1;
+                          release_evidence = optional_column 2;
+                          terminal_evidence = optional_column 3 }
+                  | DONE -> None
+                  | code ->
+                      check db "find managed operation evidence" code;
+                      assert false))))
 
 let lease_path t ~working_directory ~target =
   let identity =

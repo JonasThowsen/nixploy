@@ -160,6 +160,46 @@ let run_tests () =
   let requested = Or_error.ok_exn requested in
   assert (
     [%equal: Nixploy.Store.state] (Nixploy.Store.state requested) Requested);
+  let operation_id = Nixploy.Store.id requested in
+  let%bind created_evidence =
+    Nixploy.Store.create_managed_operation_evidence store ~operation_id
+      ~managed_application_key:"test" ~target
+      ~revision:"0123456789abcdef0123456789abcdef01234567"
+      ~source_provenance:"git@example.invalid:test"
+      ~source_reference:"refs/heads/main" ~source_evidence_digest:"evidence"
+      ~endpoint:"deploy@example.invalid:22" ~coordination_scope:"test-production"
+      ~plan_digest:"plan"
+  in
+  Or_error.ok_exn created_evidence;
+  let%bind evidence =
+    Nixploy.Store.find_managed_operation_evidence store ~operation_id
+  in
+  let evidence = Option.value_exn (Or_error.ok_exn evidence) in
+  assert (String.equal (Nixploy.Store.managed_operation_id evidence) operation_id);
+  assert (Option.is_none (Nixploy.Store.managed_lease_receipt evidence));
+  let%bind receipt =
+    Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"receipt"
+  in
+  Or_error.ok_exn receipt;
+  let%bind duplicate_receipt =
+    Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"other"
+  in
+  assert (Result.is_error duplicate_receipt);
+  let%bind released =
+    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~evidence:"released"
+  in
+  Or_error.ok_exn released;
+  let%bind terminal =
+    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~evidence:"succeeded"
+  in
+  Or_error.ok_exn terminal;
+  let%bind evidence =
+    Nixploy.Store.find_managed_operation_evidence store ~operation_id
+  in
+  let evidence = Option.value_exn (Or_error.ok_exn evidence) in
+  assert (Option.equal String.equal (Nixploy.Store.managed_lease_receipt evidence) (Some "receipt"));
+  assert (Option.equal String.equal (Nixploy.Store.managed_release_evidence evidence) (Some "released"));
+  assert (Option.equal String.equal (Nixploy.Store.managed_terminal_evidence evidence) (Some "succeeded"));
   let%bind staged =
     Nixploy.Store.record_stage store
       ~id:(Nixploy.Store.id requested)
