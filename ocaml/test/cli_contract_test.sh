@@ -83,6 +83,8 @@ if [ "${NIXPLOY_TEST_CONFIG_ONLY:-}" = 1 ] || {
   fi
   if [ "${NIXPLOY_TEST_MANAGED:-}" = 1 ]; then
     printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"netcup","managedApplicationKey":"fixture-production"},"targets":{"production":{"image":"fixture-image","ip":"target.example.invalid"}}}'
+  elif [ "${NIXPLOY_TEST_DIRECT_PRODUCTION:-}" = 1 ]; then
+    printf '%s\n' '{"__schema":"v0.4","project":"fixture","targets":{"production":{"image":"fixture-image","ip":"target.example.invalid","production":{"coordinationScope":"fixture-production"}}}}'
   else
     printf '%s\n' '{"__schema":"v0.4","project":"fixture","targets":{"staging":{"image":"fixture-image","ip":"target.example.invalid","nonProduction":{"coordinationScope":"fixture-staging"}}}}'
   fi
@@ -131,6 +133,47 @@ set -e
 NIXPLOY_TEST_CONFIG_ONLY=1 PATH="$bin:$PATH" \
   "$executable" history --target staging --directory "$repo" \
   --state-db "$state_db" | grep -Fx 'No deployment history found.' >/dev/null
+
+# An explicitly declared production profile reaches the existing direct seam
+# without selecting managed authority transport.
+direct_production_marker="$root/direct-production-nix-started"
+direct_production_state="$root/direct-production-state.sqlite"
+NIXPLOY_TEST_DIRECT_PRODUCTION=1 \
+  NIXPLOY_TEST_DIRECT_CONFIG_ONCE="$root/direct-production-config-loaded" \
+  NIXPLOY_TEST_EVAL_STARTED="$direct_production_marker" \
+  NIXPLOY_TEST_CHILD_PID="$child_marker" PATH="$bin:$PATH" \
+  "$executable" deploy --target production --directory "$repo" \
+  --state-db "$direct_production_state" >"$root/direct-production-stdout" \
+  2>"$root/direct-production-stderr" &
+cli_pid=$!
+for _ in $(seq 1 100); do
+  [[ -e "$direct_production_marker" ]] && break
+  sleep 0.05
+done
+[[ -e "$direct_production_marker" ]]
+child_pid=$(cat "$child_marker")
+grep -F -- "Preparing local source snapshot and evaluating target production..." \
+  "$root/direct-production-stderr" >/dev/null
+! grep -F -- 'NIXPLOY_UNTRUSTED_CONTROL_PLANE' \
+  "$root/direct-production-stderr" >/dev/null
+kill -INT "$cli_pid"
+for _ in $(seq 1 100); do
+  ! kill -0 "$cli_pid" 2>/dev/null && break
+  sleep 0.05
+done
+if kill -0 "$cli_pid" 2>/dev/null; then
+  echo "direct production CLI did not exit after SIGINT" >&2
+  exit 1
+fi
+set +e
+wait "$cli_pid"
+direct_production_status=$?
+set -e
+[[ "$direct_production_status" -ne 0 ]]
+! kill -0 "$child_pid" 2>/dev/null
+! find "$runtime" -maxdepth 1 -type d -name 'nixploy-local-*' | grep -q .
+cli_pid=""
+child_pid=""
 
 # A flake-declared managed control plane selects remote transport by default.
 # The configuration evaluation needed to discover the protected alias is allowed,

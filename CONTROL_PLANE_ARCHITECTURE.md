@@ -27,8 +27,8 @@ to one or more Linux deployment targets.
    machine.
 5. A project flake remains the declarative source of application configuration;
    it does not grant a local client mutation authority for a managed target.
-6. Explicit local/offline work remains possible only for an un-managed,
-   non-production target with a distinct coordination scope.
+6. Explicit local/offline work remains possible only for an un-managed target
+   with an explicit production or non-production coordination scope.
 
 ## Non-goals
 
