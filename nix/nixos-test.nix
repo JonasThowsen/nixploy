@@ -20,10 +20,9 @@ pkgs.testers.runNixOSTest {
     services.nixploy = {
       enable = true;
       package = nixployPackage;
-      authMode = "unrestricted";
-      # This VM exposes only unauthenticated fixture reads; production must use
-      # a verified authenticated proxy boundary instead.
-      allowUnrestrictedDevelopmentMode = true;
+      authMode = "tailscale";
+      operatorEmail = "operator@example.com";
+      trustedTailscaleLoopbackProxy = true;
       port = 18080;
       stateDatabasePath = "/var/lib/nixploy/test-state.sqlite3";
       environmentFile = "/etc/nixploy-test.env";
@@ -128,6 +127,7 @@ pkgs.testers.runNixOSTest {
       pkgs.git
       pkgs.iproute2
       pkgs.jq
+      pkgs.nftables
       pkgs.sqlite
       pkgs.util-linux
       rpcProbe
@@ -143,24 +143,26 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("nixploy.service", timeout=300)
     machine.wait_for_open_port(18080, timeout=120)
 
-    machine.succeed("curl --fail --silent http://127.0.0.1:18080/healthz | grep -Fx ok")
-    machine.succeed("curl --fail --silent http://127.0.0.1:18080/ | grep -F '<!doctype html>'")
+    authenticated_curl = "curl --silent -H 'Tailscale-User-Login: operator@example.com'"
+    machine.succeed(f"{authenticated_curl} http://127.0.0.1:18080/healthz | grep -Fx ok")
+    machine.succeed(f"{authenticated_curl} http://127.0.0.1:18080/ | grep -F '<!doctype html>'")
     for path in ["apps", "apps/example", "telemetry"]:
-        machine.succeed(f"curl --fail --silent http://127.0.0.1:18080/{path} | grep -F '<div id=\"app\"></div>'")
-    machine.succeed("curl --silent --output /dev/null --write-out '%{http_code}\\n' http://127.0.0.1:18080/arbitrary-unknown-path | grep -Fx 404")
-    machine.succeed("curl --fail --silent --output /tmp/nixploy-main.js http://127.0.0.1:18080/main.js && test -s /tmp/nixploy-main.js")
-    machine.succeed("curl --fail --silent http://127.0.0.1:18080/app.css | grep -F ':root {'")
+        machine.succeed(f"{authenticated_curl} http://127.0.0.1:18080/{path} | grep -F '<div id=\"app\"></div>'")
+    machine.succeed(f"{authenticated_curl} --output /dev/null --write-out '%{{http_code}}\\n' http://127.0.0.1:18080/arbitrary-unknown-path | grep -Fx 404")
+    machine.succeed(f"{authenticated_curl} --output /tmp/nixploy-main.js http://127.0.0.1:18080/main.js && test -s /tmp/nixploy-main.js")
+    machine.succeed(f"{authenticated_curl} http://127.0.0.1:18080/app.css | grep -F ':root {{'")
     for font in ["ibm-plex-mono-400.ttf", "ibm-plex-mono-600.ttf"]:
-        machine.succeed(f"curl --fail --silent --dump-header /tmp/{font}.headers --output /tmp/{font} http://127.0.0.1:18080/fonts/{font} && test -s /tmp/{font} && grep -i '^content-type: font/ttf' /tmp/{font}.headers")
+        machine.succeed(f"{authenticated_curl} --dump-header /tmp/{font}.headers --output /tmp/{font} http://127.0.0.1:18080/fonts/{font} && test -s /tmp/{font} && grep -i '^content-type: font/ttf' /tmp/{font}.headers")
     machine.succeed("ss --listening --tcp --numeric | grep -E '127\\.0\\.0\\.1:18080([[:space:]]|$)'")
     machine.fail("ss --listening --tcp --numeric | grep -E '(^|[[:space:]])(0\\.0\\.0\\.0|\\[::\\]):18080([[:space:]]|$)'")
+    machine.succeed("nft list ruleset | grep -E 'ip daddr 127\\.0\\.0\\.1 tcp dport 18080 meta skuid 0 counter.*accept'")
+    machine.succeed("nft list ruleset | grep -E 'ip daddr 127\\.0\\.0\\.1 tcp dport 18080 counter.*drop'")
+    machine.succeed("nft list ruleset | grep -E 'ip6 daddr ::1 tcp dport 18080 meta skuid 0 counter.*accept'")
+    machine.succeed("nft list ruleset | grep -E 'ip6 daddr ::1 tcp dport 18080 counter.*drop'")
+    machine.fail("runuser -u nobody -- curl --fail --silent --show-error --max-time 2 -H 'Tailscale-User-Login: operator@example.com' http://127.0.0.1:18080/healthz")
 
     machine.wait_until_succeeds("test -s /var/lib/nixploy/test-state.sqlite3", timeout=120)
     machine.succeed("sqlite3 /var/lib/nixploy/test-state.sqlite3 \"select name from sqlite_master where type='table'\" | grep -Fx deployments")
-    # Unrestricted mode serves only the unauthenticated static fixture. It may
-    # never mint a managed capability grant, even on the loopback VM service.
-    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 >/tmp/nixploy-probe.out 2>&1; grep -F NIXPLOY_AUTHENTICATED_IDENTITY_REQUIRED /tmp/nixploy-probe.out")
-    machine.succeed("! nixploy-rpc-probe --uri http://127.0.0.1:18080 --skip-capabilities >/tmp/nixploy-probe-ungranted.out 2>&1; grep -F NIXPLOY_CAPABILITY_GRANT_REQUIRED /tmp/nixploy-probe-ungranted.out")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from deployments') -eq 0")
     machine.succeed("test $(sqlite3 /var/lib/nixploy/test-state.sqlite3 'select count(*) from resource_states') -eq 0")
 
@@ -212,10 +214,12 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test ! -e /tmp/direct-production.sqlite")
 
     service_environment = "tr '\\0' '\\n' < /proc/$(systemctl show --property MainPID --value nixploy.service)/environ"
-    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=unrestricted")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_AUTH_MODE=tailscale")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_OPERATOR_EMAIL=operator@example.com")
+    machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_TRUSTED_TAILSCALE_LOOPBACK_PROXY=true")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_TEST_ONLY='")
     machine.succeed(f"{service_environment} | grep -Fx RUNTIME_DIRECTORY=/run/nixploy-test-runtime")
-    machine.fail(f"{service_environment} | grep -E '^NIXPLOY_(OPERATOR_EMAIL|ALLOWED_ORIGIN)='")
+    machine.fail(f"{service_environment} | grep -E '^NIXPLOY_ALLOWED_ORIGIN='")
     machine.fail(f"{service_environment} | grep -E '^NIXPLOY_MANAGED_APPLICATIONS_JSON='")
     machine.succeed("jq -e '.example.repository == \"/var/lib/nixploy-custody/example\"' /etc/nixploy/managed-applications.json")
     machine.succeed(f"{service_environment} | grep -Fx NIXPLOY_SSH_IDENTITY_FILE=/run/nixploy-test-runtime/ssh-identity")

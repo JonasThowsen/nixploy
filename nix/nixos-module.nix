@@ -453,11 +453,10 @@ in
       type = lib.types.bool;
       default = false;
       description = ''
-        Trust the Tailscale-User-Login header only when this exact loopback
-        listener is protected by a root-owned NixOS output-firewall policy that
-        permits only tailscaled (or another root-owned verified proxy) to
-        connect to 127.0.0.1 on services.nixploy.port. This option does not
-        install that firewall policy. Leaving it false rejects every forwarded
+        Trust Tailscale-User-Login only behind the root-owned loopback
+        firewall installed by this module. The firewall permits only UID 0
+        (tailscaled) to connect to this exact port on 127.0.0.1 or ::1 before
+        ordinary output rules. Leaving this false rejects every forwarded
         Tailscale identity header.
       '';
     };
@@ -593,10 +592,29 @@ in
       };
     };
 
+    networking.nftables = lib.mkIf cfg.trustedTailscaleLoopbackProxy {
+      enable = true;
+      ruleset = ''
+        table inet nixploy-tailscale-loopback-proxy {
+          chain output {
+            type filter hook output priority filter - 1; policy accept;
+            ip daddr 127.0.0.1 tcp dport ${toString cfg.port} meta skuid 0 counter accept
+            ip daddr 127.0.0.1 tcp dport ${toString cfg.port} counter drop
+            ip6 daddr ::1 tcp dport ${toString cfg.port} meta skuid 0 counter accept
+            ip6 daddr ::1 tcp dport ${toString cfg.port} counter drop
+          }
+        }
+      '';
+    };
+
     systemd.services.nixploy = {
       description = "nixploy OCaml deployment control plane";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
+      after = [
+        "network-online.target"
+      ]
+      ++ lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service";
+      requires = lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service";
       wants = [ "network-online.target" ];
 
       environment = {
