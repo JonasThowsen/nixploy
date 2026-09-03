@@ -139,6 +139,7 @@ type cached_live_resource_state = {
 type t = {
   store : Store.t;
   preview_main : working_directory:string -> commit Deferred.Or_error.t;
+  local_source : working_directory:string -> source Deferred.Or_error.t;
   find_commit :
     working_directory:string -> revision:string -> commit Deferred.Or_error.t;
   prepare_deploy :
@@ -246,6 +247,7 @@ let create_with_managed_applications ~managed_applications ~store () =
   {
     store;
     preview_main = Source.preview_main;
+    local_source = Source.local;
     find_commit = Source.find_commit;
     prepare_deploy = Some Deployment.prepare;
     prepare_prune = Some Prune.prepare;
@@ -340,7 +342,7 @@ let deployment_preview_prune_receipt (preview : deployment_preview) =
 let resolve_commit t ~working_directory ~revision =
   t.find_commit ~working_directory ~revision
 
-let local_source _t ~working_directory = Source.local ~working_directory
+let local_source t ~working_directory = t.local_source ~working_directory
 let immutable_source commit = Source.immutable commit
 
 let source_revision source =
@@ -535,11 +537,29 @@ let admit_managed_deployment t requested_application ~revision =
      root-owned source custody verification, but authoritative target-lease \
      broker admission is not configured"
 
-let start_managed_deployment _t _requested_application =
-  Deferred.return (managed_deployment_unavailable ())
+let start_managed_deployment t requested_application =
+  let working_directory = Managed_application.working_directory requested_application in
+  let target = Managed_application.target requested_application in
+  let open Deferred.Or_error.Let_syntax in
+  let%bind source = local_source t ~working_directory in
+  let%bind _source_authority =
+    t.verify_managed_source requested_application
+      ~revision:(source_revision source)
+  in
+  match
+    Operation_receipt.direct_deploy
+      ~application_key:(Some (Managed_application.key requested_application))
+      ~expected_project:(Some (Managed_application.project requested_application))
+      ~intent:None ~application:(Some requested_application)
+      ~managed_applications:t.managed_applications ~working_directory ~source ~target
+  with
+  | Error error -> Deferred.return (Error error)
+  | Ok authorization -> start_authorization t ~authorization
 
-let deploy_managed_deployment _t _application =
-  Deferred.return (managed_deployment_unavailable ())
+let deploy_managed_deployment t application =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind started = start_managed_deployment t application in
+  await_started_deployment started
 
 let deploy_direct_deployment ?application_key ?expected_project t
     ~working_directory ~source ~target () =
@@ -1064,11 +1084,12 @@ let deployment_state_name = Store.state_name
 
 module For_testing = struct
   let create ?status ?logs ?metrics ?verify_managed_source ?deployment_history
-      ?(managed_applications = []) ~store ~preview_main
+      ?local_source ?(managed_applications = []) ~store ~preview_main
       ~find_commit ~deploy ~prune () =
     {
       store;
       preview_main;
+      local_source = Option.value local_source ~default:Source.local;
       find_commit;
       prepare_deploy = None;
       prepare_prune = None;

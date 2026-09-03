@@ -118,8 +118,8 @@ val admit_managed_deployment :
 
 val start_managed_deployment :
   t -> Managed_application.t -> started_deployment Deferred.Or_error.t
-(** Fails closed before source, deployment, or remote effects until immutable
-    managed admission is implemented. *)
+(** Resolves the allowlisted application's canonical checkout and target, then
+    starts the same shared deployment operation used by the CLI. *)
 
 val deploy_managed_deployment :
   t -> Managed_application.t -> deployment Deferred.Or_error.t
@@ -288,6 +288,7 @@ module For_testing : sig
       Source_authority.t Deferred.Or_error.t) ->
     ?deployment_history:
       (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) ->
+    ?local_source:(working_directory:string -> source Deferred.Or_error.t) ->
     ?managed_applications:Managed_application.t list ->
     store:Store.t ->
     preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->

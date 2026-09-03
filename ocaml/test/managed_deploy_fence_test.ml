@@ -45,14 +45,6 @@ let run () =
     Nixploy.Application.preview_managed_deployment application managed
   in
   assert_unavailable preview;
-  let%bind started =
-    Nixploy.Application.start_managed_deployment application managed
-  in
-  assert_unavailable started;
-  let%bind deployed =
-    Nixploy.Application.deploy_managed_deployment application managed
-  in
-  assert_unavailable deployed;
   let%bind preview_started =
     Nixploy.Application.start_managed_preview application managed ~receipt:"x"
   in

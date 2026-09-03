@@ -3,19 +3,6 @@ open Core
 
 module Managed_deployment_rpc = Nixploy_rpc_mapping.Managed_deployment_rpc
 
-let unavailable =
-  "NIXPLOY_MANAGED_DEPLOY_UNAVAILABLE: immutable revision admission, \
-   root-owned source custody, and authoritative target-lease broker \
-   integration are required before managed deployment"
-
-let assert_unavailable = function
-  | Ok _ -> failwith "managed deployment RPC unexpectedly succeeded"
-  | Error error -> [%test_eq: string] unavailable (Error.to_string_hum error)
-
-let assert_no_deployments store =
-  let%map deployments = Nixploy.Store.list store ~limit:10 in
-  [%test_eq: int] 0 (List.length (Or_error.ok_exn deployments))
-
 let run () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-managed-deploy-rpc-" "" in
@@ -26,40 +13,86 @@ let run () =
   let managed =
     Nixploy.Managed_application.all_of_json
       (sprintf
-         {|{"example":{"project":"example","target":"production","repository":"%s","repositoryIdentity":"owner/example","nonProduction":{"host":"target.example.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"example-production"}}}|}
+         {|{"example":{"project":"example","target":"production","repository":"%s","repositoryIdentity":"owner/example","repositoryProvenance":"ssh://git@example.invalid/example.git","repositoryReference":"refs/heads/main","repositoryEvidenceFile":"/var/lib/nixploy/example.evidence.json","production":{"host":"target.example.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"example-production"}}}|}
          directory)
     |> Or_error.ok_exn |> List.hd_exn
   in
-  let preview_calls = ref 0 in
+  let commit =
+    Nixploy.Application.For_testing.commit
+      ~revision:"0123456789abcdef0123456789abcdef01234567"
+      ~subject:"managed fixture" ~timestamp_ms:0L
+    |> Or_error.ok_exn
+  in
+  let source =
+    Nixploy.Application.For_testing.local_source ~working_directory:directory
+      commit
+  in
+  let source_authority_commit =
+    Nixploy.Source.For_testing.commit
+      ~revision:"0123456789abcdef0123456789abcdef01234567"
+      ~subject:"managed fixture" ~timestamp_ms:0L
+    |> Or_error.ok_exn
+  in
+  let source_authority =
+    Nixploy.Source_authority.For_testing.create ~commit:source_authority_commit
+      ~provenance:"ssh://git@example.invalid/example.git"
+      ~reference:"refs/heads/main" ~evidence_digest:"fixture"
+      ~repository_root:directory
+  in
+  let source_verifications = ref 0 in
   let deploy_calls = ref 0 in
   let application =
     Nixploy.Application.For_testing.create ~store
       ~managed_applications:[ managed ]
       ~preview_main:(fun ~working_directory:_ ->
-        incr preview_calls;
         Deferred.Or_error.error_string "preview must not run")
+      ~local_source:(fun ~working_directory ->
+        [%test_eq: string] directory working_directory;
+        Deferred.Or_error.return source)
       ~find_commit:(fun ~working_directory:_ ~revision:_ ->
         Deferred.Or_error.error_string "commit lookup must not run")
-      ~deploy:(fun ~authorization:_ ~prepared:_ ->
+      ~verify_managed_source:(fun verified ~revision ->
+        incr source_verifications;
+        [%test_eq: string] "example" (Nixploy.Managed_application.key verified);
+        [%test_eq: string] "0123456789abcdef0123456789abcdef01234567" revision;
+        Deferred.Or_error.return source_authority)
+      ~deploy:(fun ~authorization ~prepared:_ ->
         incr deploy_calls;
-        Deferred.Or_error.error_string "deployment must not run")
+        [%test_eq: string] "example"
+          (Nixploy.Operation_receipt.deploy_application_key authorization
+          |> Option.value_exn);
+        [%test_eq: string] directory
+          (Nixploy.Operation_receipt.deploy_working_directory authorization);
+        [%test_eq: string] "production"
+          (Nixploy.Operation_receipt.deploy_target authorization
+          |> Nixploy.Target_name.to_string);
+        [%test_eq: string] "example"
+          (Nixploy.Operation_receipt.deploy_application authorization
+          |> Option.value_exn |> Nixploy.Managed_application.key);
+        let deployment =
+          Nixploy.Application.For_testing.deployment ~id:"managed-operation"
+            ~state:Nixploy.Application.Requested ()
+        in
+        Deferred.Or_error.return
+          (deployment, Deferred.Or_error.return deployment))
       ~prune:(fun ~authorization:_ ~prepared:_ ->
         Deferred.Or_error.error_string "prune must not run")
       ()
   in
-  let%bind preview =
-    Managed_deployment_rpc.preview ~applications:[ managed ] ~application
-      { Protocol.Preview_deployment.Query.application = "example" }
-  in
-  assert_unavailable preview;
   let%bind started =
     Managed_deployment_rpc.start ~applications:[ managed ] ~application
       { Protocol.Deploy.Query.application = "example" }
   in
-  assert_unavailable started;
-  let%bind () = assert_no_deployments store in
-  [%test_eq: int] 0 !preview_calls;
-  [%test_eq: int] 0 !deploy_calls;
+  [%test_eq: string] "managed-operation" (Or_error.ok_exn started);
+  [%test_eq: int] 1 !source_verifications;
+  [%test_eq: int] 1 !deploy_calls;
+  let%bind invalid =
+    Managed_deployment_rpc.start ~applications:[ managed ] ~application
+      { Protocol.Deploy.Query.application = "other" }
+  in
+  assert (Result.is_error invalid);
+  [%test_eq: int] 1 !source_verifications;
+  [%test_eq: int] 1 !deploy_calls;
   Deferred.unit
 
 let () =
