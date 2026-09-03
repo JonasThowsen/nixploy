@@ -145,6 +145,37 @@ let%test_unit "managed applications preserve host-owned deployment identity" =
            }
          }|}))
 
+let%test_unit "managed target leases use fixed validated broker UUIDs" =
+  let json =
+    {|{
+      "app": {
+        "project": "sample",
+        "target": "staging",
+        "repository": "/srv/sample",
+        "targetLease": {
+          "authority": "11111111-2222-3333-4444-555555555555",
+          "scope": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "identity": "12345678-1234-4234-9234-123456789abc"
+        }
+      }
+    }|}
+  in
+  let application =
+    Nixploy.Managed_application.all_of_json json |> assert_ok |> List.hd_exn
+  in
+  let lease = Nixploy.Managed_application.target_lease application |> Option.value_exn in
+  [%test_eq: string] "11111111-2222-3333-4444-555555555555"
+    (Nixploy.Managed_application.target_lease_authority lease);
+  [%test_eq: string] "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    (Nixploy.Managed_application.target_lease_scope lease);
+  [%test_eq: string] "12345678-1234-4234-9234-123456789abc"
+    (Nixploy.Managed_application.target_lease_identity lease);
+  let malformed =
+    String.substr_replace_first json
+      ~pattern:"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" ~with_:"not-a-uuid"
+  in
+  assert (Result.is_error (Nixploy.Managed_application.all_of_json malformed))
+
 let%test_unit "production managed applications require exact root-owned intent"
     =
   let valid =

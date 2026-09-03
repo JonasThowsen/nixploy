@@ -11,6 +11,12 @@ type production_destination = {
   coordination_scope : string;
 }
 
+type target_lease = {
+  authority : Target_lease.uuid;
+  scope : Target_lease.uuid;
+  identity : Target_lease.uuid;
+}
+
 type t = {
   key : string;
   project : Project_name.t;
@@ -21,6 +27,7 @@ type t = {
   repository_reference : string option;
   repository_evidence_file : string option;
   repository_evidence_max_age_seconds : int;
+  target_lease : target_lease option;
   subdirectory : string;
   production_destination : production_destination option;
   non_production_destination : production_destination option;
@@ -38,6 +45,11 @@ let repository_evidence_file t = t.repository_evidence_file
 
 let repository_evidence_max_age_seconds t =
   t.repository_evidence_max_age_seconds
+
+let target_lease t = t.target_lease
+let target_lease_authority t = Target_lease.uuid_to_string t.authority
+let target_lease_scope t = Target_lease.uuid_to_string t.scope
+let target_lease_identity t = Target_lease.uuid_to_string t.identity
 
 let production_destination t = t.production_destination
 let non_production_destination t = t.non_production_destination
@@ -169,6 +181,7 @@ let parse (key, json) =
                    "repositoryReference";
                    "repositoryEvidenceFile";
                    "repositoryEvidenceMaxAgeSeconds";
+                   "targetLease";
                    "subdirectory";
                    "production";
                    "nonProduction";
@@ -242,6 +255,24 @@ let parse (key, json) =
               Or_error.error_string
                 "repositoryEvidenceMaxAgeSeconds must be between 1 and 3600"
         in
+        let%bind target_lease =
+          match List.Assoc.find fields ~equal:String.equal "targetLease" with
+          | None | Some `Null -> Ok None
+          | Some (`Assoc lease_fields) ->
+              let%bind () =
+                validate_members ~field:"targetLease"
+                  ~allowed:(String.Set.of_list [ "authority"; "scope"; "identity" ])
+                  lease_fields
+              in
+              let%bind authority = required_string lease_fields "authority"
+              and scope = required_string lease_fields "scope"
+              and identity = required_string lease_fields "identity" in
+              let%bind authority = Target_lease.uuid_of_string authority
+              and scope = Target_lease.uuid_of_string scope
+              and identity = Target_lease.uuid_of_string identity in
+              Ok (Some { authority; scope; identity })
+          | Some _ -> Or_error.error_string "targetLease must be an object"
+        in
         let%bind subdirectory =
           optional_string fields "subdirectory" ~default:"."
         in
@@ -295,6 +326,7 @@ let parse (key, json) =
               repository_reference;
               repository_evidence_file;
               repository_evidence_max_age_seconds;
+              target_lease;
               subdirectory;
               production_destination;
               non_production_destination;

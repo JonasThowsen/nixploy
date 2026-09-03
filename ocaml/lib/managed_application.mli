@@ -2,6 +2,7 @@ open Core
 
 type t
 type production_destination
+type target_lease
 type destination_kind = Non_web | Web [@@deriving compare, equal, sexp]
 
 val maximum_count : int
@@ -26,6 +27,10 @@ val repository_provenance : t -> string option
 val repository_reference : t -> string option
 val repository_evidence_file : t -> string option
 val repository_evidence_max_age_seconds : t -> int
+val target_lease : t -> target_lease option
+val target_lease_authority : target_lease -> string
+val target_lease_scope : target_lease -> string
+val target_lease_identity : target_lease -> string
 val production_destination : t -> production_destination option
 val non_production_destination : t -> production_destination option
 val destination_host : production_destination -> string

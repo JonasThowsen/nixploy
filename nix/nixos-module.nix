@@ -8,6 +8,8 @@
 
 let
   cfg = config.services.nixploy;
+  leaseCfg = config.services.nixploy.targetLease;
+  uuidType = lib.types.strMatching "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
   runtimeDirectoryPath = "/run/${config.systemd.services.nixploy.serviceConfig.RuntimeDirectory}";
 
   publicApplications = lib.mapAttrs (_key: application: {
@@ -24,6 +26,12 @@ let
       production
       nonProduction
       ;
+    targetLease =
+      if leaseCfg.enable && application.targetLease != null then {
+        authority = leaseCfg.authority;
+        scope = application.targetLease.scope;
+        identity = leaseCfg.identity;
+      } else null;
   }) cfg.applications;
 
   managedApplicationsFile = pkgs.writeText "nixploy-managed-applications.json" (
@@ -198,6 +206,19 @@ let
   nonProductionApplications = lib.filter (application: application.nonProduction != null) (
     lib.attrValues cfg.applications
   );
+  configuredLeaseScope = scope: lib.any (entry: entry.scope == scope) leaseCfg.scopes;
+  leaseUserAuthorized = scope: lib.any (
+    entry: entry.scope == scope && lib.elem cfg.user entry.users
+  ) leaseCfg.scopes;
+  allApplicationsHaveLease = lib.all (application: application.targetLease != null) (
+    lib.attrValues cfg.applications
+  );
+  allLeaseApplicationsUseConfiguredScope = lib.all (
+    application: configuredLeaseScope application.targetLease.scope
+  ) (lib.filter (application: application.targetLease != null) (lib.attrValues cfg.applications));
+  allLeaseApplicationsAuthorizeServiceUser = lib.all (
+    application: leaseUserAuthorized application.targetLease.scope
+  ) (lib.filter (application: application.targetLease != null) (lib.attrValues cfg.applications));
   noCrossProfileIntersections = lib.all (
     productionApplication:
     lib.all (
@@ -341,6 +362,22 @@ in
               type = lib.types.str;
               default = ".";
               description = "Relative flake directory within repository; parent traversal is rejected.";
+            };
+            targetLease = lib.mkOption {
+              type = lib.types.nullOr (
+                lib.types.submodule {
+                  options.scope = lib.mkOption {
+                    type = uuidType;
+                    description = "Fixed broker scope UUID for this managed application.";
+                  };
+                }
+              );
+              default = null;
+              description = ''
+                Immutable managed target-lease scope. Broker authority and
+                identity come only from services.nixploy.targetLease; project
+                flakes and RPC requests cannot select either value or a socket.
+              '';
             };
             production = lib.mkOption {
               default = null;
@@ -574,6 +611,22 @@ in
         assertion = noCrossProfileIntersections;
         message = "services.nixploy production and nonProduction applications must not intersect by project/target, SSH host, domain, or coordination scope";
       }
+      {
+        assertion = !leaseCfg.enable || allApplicationsHaveLease;
+        message = "services.nixploy.targetLease requires every managed application to declare targetLease.scope";
+      }
+      {
+        assertion = !leaseCfg.enable || allLeaseApplicationsUseConfiguredScope;
+        message = "each services.nixploy application targetLease.scope must be configured by services.nixploy.targetLease.scopes";
+      }
+      {
+        assertion = !leaseCfg.enable || allLeaseApplicationsAuthorizeServiceUser;
+        message = "each services.nixploy application targetLease.scope must authorize services.nixploy.user";
+      }
+      {
+        assertion = leaseCfg.enable || lib.all (application: application.targetLease == null) (lib.attrValues cfg.applications);
+        message = "services.nixploy application targetLease.scope requires services.nixploy.targetLease.enable";
+      }
     ];
 
     environment.etc."nixploy/managed-applications.json".source = managedApplicationsFile;
@@ -613,8 +666,10 @@ in
       after = [
         "network-online.target"
       ]
-      ++ lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service";
-      requires = lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service";
+      ++ lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service"
+      ++ lib.optional leaseCfg.enable "nixploy-target-lease.service";
+      requires = lib.optional cfg.trustedTailscaleLoopbackProxy "nftables.service"
+        ++ lib.optional leaseCfg.enable "nixploy-target-lease.service";
       wants = [ "network-online.target" ];
 
       environment = {

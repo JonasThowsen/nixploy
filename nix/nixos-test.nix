@@ -39,6 +39,7 @@ pkgs.testers.runNixOSTest {
         repositoryReference = "refs/heads/main";
         repositoryEvidenceFile = "/var/lib/nixploy-custody/example.evidence.json";
         repositoryEvidenceMaxAgeSeconds = 3600;
+        targetLease.scope = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         subdirectory = ".";
         production = {
           host = "production.example.invalid";
@@ -49,6 +50,20 @@ pkgs.testers.runNixOSTest {
         };
       };
     };
+
+    services.nixploy.targetLease = {
+      enable = true;
+      authority = "11111111-2222-3333-4444-555555555555";
+      identity = "12345678-1234-4234-9234-123456789abc";
+      scopes = [
+        {
+          scope = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+          users = [ "nixploy" ];
+        }
+      ];
+    };
+
+    users.users.nixploy.extraGroups = [ "nixploy-target-lease" ];
 
     # Prove private credential destinations follow the effective systemd
     # runtime directory rather than a module-hardcoded path.
@@ -140,8 +155,10 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     start_all()
+    machine.wait_for_unit("nixploy-target-lease.service", timeout=300)
     machine.wait_for_unit("nixploy.service", timeout=300)
     machine.wait_for_open_port(18080, timeout=120)
+    machine.succeed("systemctl show --property=Requires nixploy.service | grep -F nixploy-target-lease.service")
 
     authenticated_curl = "curl --silent -H 'Tailscale-User-Login: operator@example.com'"
     machine.succeed(f"{authenticated_curl} http://127.0.0.1:18080/healthz | grep -Fx ok")
@@ -239,7 +256,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"test $(stat --format='%a:%U:%G' {copied}) = 600:nixploy:nixploy")
 
     machine.succeed("pid=$(systemctl show --property MainPID --value nixploy.service); nsenter --target $pid --mount -- runuser -u nixploy -- git -c 'safe.directory=*' -C /var/lib/nixploy-custody/example rev-parse --is-inside-work-tree | grep -Fx true")
-    machine.succeed("test $(systemctl list-unit-files 'nixploy*' --no-legend | wc -l) -eq 1")
+    machine.succeed("test $(systemctl list-unit-files 'nixploy*' --no-legend | wc -l) -eq 2")
     machine.fail("systemctl list-unit-files --no-legend | grep -E 'nixploy.*worker|postgresql|ecto'")
     machine.succeed("systemctl is-active nixploy.service")
   '';
