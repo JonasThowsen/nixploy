@@ -42,13 +42,13 @@ let run () =
       commit
   in
   let%bind overlapping_scope =
-    Nixploy.Application.start_direct_deployment application
+    Nixploy.Application.start_non_production application
       ~working_directory:directory ~source ~target ()
   in
   assert (Result.is_error overlapping_scope);
   let other_target = Nixploy.Target_name.of_string "other" |> assert_ok in
   let%map managed_key =
-    Nixploy.Application.start_direct_deployment ~application_key:"app" application
+    Nixploy.Application.start_non_production ~application_key:"app" application
       ~working_directory:directory ~source ~target:other_target ()
   in
   assert (Result.is_error managed_key)

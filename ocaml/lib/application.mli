@@ -130,8 +130,7 @@ val start_local_deployment :
   target:Target_name.t ->
   started_deployment Deferred.Or_error.t
 (** Snapshots the local tracked source once and runs the shared deployment
-    engine for an explicitly declared direct [production] or [nonProduction]
-    target. Non-ignored untracked files are rejected during preparation. *)
+    engine. Non-ignored untracked files are rejected during preparation. *)
 
 val deploy_local_deployment :
   t ->
@@ -176,7 +175,7 @@ val await_started_deployment :
 val cancel_started_deployment :
   t -> started_deployment -> cancellation_result Deferred.Or_error.t
 
-val start_direct_deployment :
+val start_non_production :
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
@@ -186,7 +185,7 @@ val start_direct_deployment :
   unit ->
   started_deployment Deferred.Or_error.t
 
-val deploy_direct_deployment :
+val deploy_non_production :
   ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
@@ -195,10 +194,9 @@ val deploy_direct_deployment :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
-(** Explicit declared direct mutation. The lower boundary accepts exactly one
-    [production] or [nonProduction] profile, rejects [controlPlane] configurations,
-    and rejects scopes matching installed managed applications before it claims
-    an operation capability. *)
+(** Explicit non-production mutation. The lower boundary rejects any scope
+    matching an installed managed application before it claims an operation
+    capability. *)
 
 val prune_non_production :
   ?application_key:string ->

@@ -166,7 +166,7 @@ let run_tests () =
   [%test_eq: string list] [ "example" ] (List.rev !log_calls);
   [%test_eq: string list] [ "example" ] (List.rev !metric_calls);
   let%bind started_handle =
-    Nixploy.Application.start_direct_deployment ~application_key:"example" fake
+    Nixploy.Application.start_non_production ~application_key:"example" fake
       ~working_directory:directory ~source ~target ()
   in
   let started_handle = assert_ok started_handle in
@@ -222,7 +222,7 @@ let run_tests () =
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 1.) in
   assert (Deferred.is_determined (Nixploy.Application.mutations_drained fake));
   let%bind web_started =
-    Nixploy.Application.start_direct_deployment ~application_key:"example" fake
+    Nixploy.Application.start_non_production ~application_key:"example" fake
       ~working_directory:directory ~source ~target ()
   in
   let web_started = assert_ok web_started in

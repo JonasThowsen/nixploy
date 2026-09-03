@@ -448,7 +448,7 @@ exit 99
         in
         assert_ok marked_present;
         let%bind deployment =
-          Nixploy.Application.deploy_direct_deployment application
+          Nixploy.Application.deploy_non_production application
             ~working_directory:repository
             ~source:(Nixploy.Application.immutable_source application_commit)
             ~target ()
@@ -513,21 +513,11 @@ exit 99
           "operation-production-direct"
       in
       expect_error_containing production_direct
-        "direct mode coordination scope overlaps a managed destination";
+        "direct mode requires a nonProduction coordination scope";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
       [%test_eq: int] 0 (count lines "nix|build|");
       assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
-
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
-      let%bind declared_direct_production =
-        deploy "operation-declared-direct-production"
-      in
-      ignore (assert_ok declared_direct_production : Nixploy.Deployment.t);
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 1 (count lines "nix|eval|");
-      assert (List.exists lines ~f:(String.is_prefix ~prefix:"nix|build|"));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
@@ -566,7 +556,7 @@ exit 99
       in
       assert_ok marked_present;
       let%bind rejected_application =
-        Nixploy.Application.deploy_direct_deployment
+        Nixploy.Application.deploy_non_production
           ~expected_project:wrong_project application
           ~working_directory:repository
           ~source:(Nixploy.Application.immutable_source application_commit)

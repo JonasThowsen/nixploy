@@ -36,10 +36,8 @@ val authorize_local :
   configuration:Configuration.t ->
   target:Configuration.Target.t ->
   identity_policy Or_error.t
-(** Permits only a configuration without [controlPlane] and with exactly one
-    declared direct profile ([production] or [nonProduction]). Its evaluated
-    coordination scope must differ from every locally installed managed
-    destination scope. *)
+(** Permits only an explicitly non-production direct checkout whose evaluated
+    coordination scope differs from every managed destination scope. *)
 
 val resource_key : t -> Resource_key.t
 val identity_policy : t -> identity_policy

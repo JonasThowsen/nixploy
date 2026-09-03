@@ -105,7 +105,7 @@ let run_case ~on_operation ~render_stage ~history ~termination ~release_child
       commit
   in
   let%bind started =
-    Nixploy.Application.start_direct_deployment application
+    Nixploy.Application.start_non_production application
       ~working_directory:directory ~source ~target ()
   in
   let started = assert_ok started in

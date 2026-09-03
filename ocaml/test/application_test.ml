@@ -126,7 +126,7 @@ let run_tests () =
       preview
   in
   let%bind cli_result =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory ~source:local_source ~target ()
   in
   let cli_deployment = assert_ok cli_result in
@@ -143,7 +143,7 @@ let run_tests () =
     String.equal selected_revision
       (Nixploy.Application.commit_revision resolved));
   let%bind rpc_result =
-    Nixploy.Application.deploy_direct_deployment ~application_key:"example"
+    Nixploy.Application.deploy_non_production ~application_key:"example"
       ~expected_project:project application ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
@@ -215,7 +215,7 @@ let run_tests () =
   let stale_cli_deployment = assert_ok stale_cli_deployment in
   deployment_state := Failed;
   let%bind failed_deployment =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
@@ -246,7 +246,7 @@ let run_tests () =
       Present);
   deployment_state := Cancelled;
   let%bind cancelled_deployment =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
@@ -270,7 +270,7 @@ let run_tests () =
   deployment_started := Some deploy_started;
   deployment_gate := Some release_deploy;
   let waiting_deploy =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
@@ -310,7 +310,7 @@ let run_tests () =
   deployment_started := Some shutdown_started;
   deployment_gate := Some release_shutdown_mutation;
   let active_at_shutdown =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
@@ -327,7 +327,7 @@ let run_tests () =
       (Nixploy.Application.begin_shutdown application)
       Already_shutting_down);
   let%bind rejected_deploy =
-    Nixploy.Application.deploy_direct_deployment application
+    Nixploy.Application.deploy_non_production application
       ~working_directory:directory
       ~source:(Nixploy.Application.immutable_source resolved)
       ~target ()
