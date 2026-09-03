@@ -24,6 +24,8 @@ val render :
   follow:bool ->
   paused_snapshot:Protocol.Log_snapshot.t option ->
   capability_grant:string ->
+  dispatch_deploy:
+    (Protocol.Deploy.V1.Query.t -> string Or_error.t Or_error.t Effect.t) ->
   dispatch_cancel:
     (Protocol.Cancel_deployment_v1.V1.Query.t ->
     unit Or_error.t Or_error.t Effect.t) ->

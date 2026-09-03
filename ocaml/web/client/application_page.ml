@@ -11,9 +11,6 @@ type application_state =
 let primary_action_id = "application-primary-action"
 let focus_primary_action = Browser_navigation.focus primary_action_id
 
-let managed_deployment_unavailable =
-  "Managed deployment is unavailable until control-plane source custody provides a verified full revision."
-
 let fact label value =
   Vdom.Node.div
     [
@@ -22,7 +19,8 @@ let fact label value =
     ]
 
 let deployment_action ~capability_grant ~application ~deployment ~deploy_state
-    ~cancel_confirmation ~dispatch_cancel ~set_cancel_confirmation ~set_notice =
+    ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+    ~set_cancel_confirmation ~set_notice =
   let deploy_busy = Deploy_state.is_busy deploy_state in
   match deployment with
   | Some deployment
@@ -93,13 +91,52 @@ let deployment_action ~capability_grant ~application ~deployment ~deploy_state
           ~on_click:(set_cancel_confirmation (Some deployment.id))
           ()
   | _ ->
-      Vdom.Node.div
-        [
-          Vdom.Node.p ~attrs:[ Vdom.Attr.class_ "inline-error" ]
-            [ Vdom.Node.text managed_deployment_unavailable ];
-          Ui_helpers.button ~id:primary_action_id ~kind:"primary" ~disabled:true
-            ~label:"Managed deployment unavailable" ~on_click:Effect.Ignore ();
-        ]
+      let start_deployment =
+        let%bind.Effect owner =
+          Browser_navigation.application_owner application.Protocol.Application.key
+        in
+        let%bind.Effect response =
+          dispatch_deploy
+            {
+              Protocol.Deploy.V1.Query.capability_grant;
+              application = application.Protocol.Application.key;
+            }
+        in
+        if not (Browser_navigation.is_current_owner owner) then Effect.Ignore
+        else
+          match response with
+          | Ok (Ok operation_id) ->
+              set_deploy_state
+                (Deploy_state.accept_submission deploy_state
+                   ~key:application.Protocol.Application.key ~operation_id)
+          | Error error ->
+              Effect.Many
+                [
+                  set_deploy_state
+                    (Deploy_state.finish_submission deploy_state
+                       ~key:application.Protocol.Application.key);
+                  set_notice ("Deploy RPC failed: " ^ Error.to_string_hum error);
+                ]
+          | Ok (Error error) ->
+              Effect.Many
+                [
+                  set_deploy_state
+                    (Deploy_state.finish_submission deploy_state
+                       ~key:application.Protocol.Application.key);
+                  set_notice ("Deployment rejected: " ^ Error.to_string_hum error);
+                ]
+      in
+      Ui_helpers.button ~id:primary_action_id ~kind:"primary" ~disabled:deploy_busy
+        ~label:(if deploy_busy then "Starting deployment…" else "Deploy")
+        ~on_click:
+          (Effect.Many
+             [
+               set_deploy_state
+                 (Deploy_state.start_submission deploy_state
+                    ~key:application.Protocol.Application.key);
+               start_deployment;
+             ])
+        ()
 
 let occurrences text pattern =
   if String.is_empty pattern then 0
@@ -336,7 +373,7 @@ let deployment_list ~empty entries =
 
 let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
     ~logs_stale ~metrics_stale ~deploy_state ~cancel_confirmation
-    ~capability_grant ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation
+    ~capability_grant ~dispatch_deploy ~dispatch_cancel ~set_deploy_state ~set_cancel_confirmation
     ~set_notice
     ~search ~current_match ~follow ~paused_snapshot ~set_search
     ~set_current_match ~set_follow ~set_paused_snapshot ~refresh_logs ~navigate
@@ -350,8 +387,8 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
     | None ->
         ( "No revision",
           "No deployment recorded",
-          "Managed deployment unavailable",
-          managed_deployment_unavailable )
+          "Ready to deploy",
+          "No deployment recorded for this target." )
     | Some deployment ->
         let revision, subject = Ui_helpers.commit_summary deployment.commit in
         ( revision,
@@ -361,7 +398,8 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
   in
   let action =
     deployment_action ~capability_grant ~application ~deployment ~deploy_state
-      ~cancel_confirmation ~dispatch_cancel ~set_cancel_confirmation ~set_notice
+      ~cancel_confirmation ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
+      ~set_cancel_confirmation ~set_notice
   in
   let deployment_entries =
     match deployments with
@@ -509,7 +547,7 @@ let ready_page ~key ~application ~deployments ~logs ~metrics ~deployments_stale
 let render ~key ~application_state ~deployments ~logs ~metrics
     ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
     ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
-    ~capability_grant ~dispatch_cancel ~set_deploy_state:_ ~set_cancel_confirmation
+    ~capability_grant ~dispatch_deploy ~dispatch_cancel ~set_deploy_state ~set_cancel_confirmation
     ~set_notice
     ~set_search ~set_current_match ~set_follow ~set_paused_snapshot
     ~refresh_logs ~navigate =
@@ -545,7 +583,7 @@ let render ~key ~application_state ~deployments ~logs ~metrics
   | Ready application ->
       ready_page ~key ~application ~deployments ~logs ~metrics
         ~deployments_stale ~logs_stale ~metrics_stale ~deploy_state
-        ~cancel_confirmation ~capability_grant ~dispatch_cancel
-        ~set_deploy_state:Effect.Ignore ~set_cancel_confirmation ~set_notice ~search ~current_match ~follow
+        ~cancel_confirmation ~capability_grant ~dispatch_deploy ~dispatch_cancel
+        ~set_deploy_state ~set_cancel_confirmation ~set_notice ~search ~current_match ~follow
         ~paused_snapshot ~set_search ~set_current_match ~set_follow
         ~set_paused_snapshot ~refresh_logs ~navigate

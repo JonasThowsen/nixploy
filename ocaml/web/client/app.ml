@@ -274,6 +274,9 @@ let component graph =
           ~every:(Time_ns.Span.of_sec 10.) metrics_query graph
     | false -> Bonsai.return (empty_poll_result ())
   in
+  let dispatch_deploy =
+    Rpc_effect.Rpc.dispatcher Protocol.Deploy.V1.t ~where_to_connect:Self graph
+  in
   let dispatch_cancel =
     Rpc_effect.Rpc.dispatcher Protocol.Cancel_deployment_v1.V1.t
       ~where_to_connect:Self graph
@@ -377,6 +380,7 @@ let component graph =
   and set_paused_snapshot = set_paused_snapshot
   and notice = notice
   and set_notice = set_notice
+  and dispatch_deploy = dispatch_deploy
   and dispatch_cancel = dispatch_cancel
   and capability_grant = capability_grant in
   let navigate next =
@@ -480,7 +484,7 @@ let component graph =
           ~metrics:metrics_response ~deployments_stale:deployments_error
           ~logs_stale:logs_error ~metrics_stale:metrics_error ~deploy_state
           ~cancel_confirmation ~search ~current_match ~follow ~paused_snapshot
-          ~capability_grant ~dispatch_cancel ~set_deploy_state
+          ~capability_grant ~dispatch_deploy ~dispatch_cancel ~set_deploy_state
           ~set_cancel_confirmation ~set_search ~set_current_match ~set_follow
           ~set_paused_snapshot ~set_notice ~refresh_logs:logs.refresh ~navigate
     | Telemetry ->
