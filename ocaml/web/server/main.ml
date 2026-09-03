@@ -347,7 +347,9 @@ let not_found =
 
 let http_handler ~authorization ~body:_ _address request =
   match Uri.path (Cohttp.Request.uri request) with
-  | "/healthz" -> respond_string ~content_type:"text/plain" "ok\n"
+  | "/healthz" when Authorization.authorized authorization request.headers ->
+      respond_string ~content_type:"text/plain" "ok\n"
+  | "/healthz" -> forbidden ()
   | path
     when Static_route.serves_spa_shell path
          && Authorization.authorized authorization request.headers ->
