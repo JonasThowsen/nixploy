@@ -9,11 +9,8 @@ let validate_configuration configuration ~target =
   | None ->
       let open Or_error.Let_syntax in
       let%bind target = Configuration.find_target configuration target in
-      if
-        Option.is_some (Configuration.Target.production target)
-        || Option.is_some (Configuration.Target.non_production target)
-      then Ok ()
+      if Option.is_some (Configuration.Target.non_production target) then Ok ()
       else
         Or_error.error_string
-          "NIXPLOY_DIRECT_DEPLOYMENT_PROFILE_REQUIRED: local execution requires \
-           an explicitly declared production or nonProduction target"
+          "NIXPLOY_DIRECT_NON_PRODUCTION_REQUIRED: local execution requires \
+           an explicitly declared nonProduction target"
