@@ -1,10 +1,40 @@
 # Nixploy context
 
-## Glossary
+Nixploy concerns deploying applications and operating their running workloads.
 
-- **Control plane** — The single trusted service that admits, records, observes, and executes managed deployment operations.
-- **Operator client** — A CLI or browser UI that requests an operation from the control plane and renders its result; it does not directly mutate a managed target.
-- **Managed application** — An allowlisted application identity whose repository, target, and resource scope are owned by the control plane.
-- **Deployment target** — The remote Linux host and Podman/Caddy runtime that receives an application's workload. A target is not the control-plane host.
-- **Deployment operation** — The durable, target-scoped lifecycle record from admission through terminal result or explicit review.
-- **Target observation** — A timestamped, bounded report of deployment-target host and runtime health. It is separate from a deployment operation.
+## Language
+
+**Application**:
+The software being deployed, with its image and runtime requirements.
+_Avoid_: Managed application, registered application
+
+**Deployment target**:
+A named destination and runtime configuration for an application, such as staging
+or production. Different targets may share a remote server.
+
+**Operator**:
+The human or automation explicitly invoking a deployment or operational command.
+_Avoid_: Operator client
+
+**Deployment**:
+An attempt to replace a target's running application with a selected build,
+including preparation, verification, and any necessary failure recovery.
+
+**Active container**:
+The running container currently serving the selected application's target. For a
+blue/green web application, it is the slot receiving application traffic.
+
+**Runbook**:
+A target's collection of named, described operational commands.
+
+**Runbook command**:
+An operator-invoked command executed inside the target's active container.
+_Avoid_: Workflow, job, task
+
+**Pre-start command**:
+An automatic deployment step run before the application starts, such as a
+migration. It is distinct from an operator-invoked runbook command.
+
+**Owned resource**:
+A remote resource positively identified as belonging to an application's target,
+rather than merely resembling one of its resource names.

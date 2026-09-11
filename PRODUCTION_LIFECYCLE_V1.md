@@ -1,5 +1,10 @@
 # Production lifecycle V1 contract
 
+> Historical, superseded by [DEVELOPMENT.md](DEVELOPMENT.md) and
+> [ROADMAP.md](ROADMAP.md). Retain relevant deployment safety evidence while
+> removing service-only machinery; the lifecycle below is not the new product's
+> required architecture.
+
 This document bounds the next production milestone. Nixploy is Kamal-like for
 Nix: project flakes keep application intent, while Nixploy gives applications as
 uniform an operator lifecycle and runtime shape as practical. The canonical

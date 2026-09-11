@@ -1,5 +1,8 @@
 # Control-plane UI direction
 
+> Historical, superseded by [DEVELOPMENT.md](DEVELOPMENT.md). The web UI is being
+> removed from product scope. This document is not an active implementation plan.
+
 ## Purpose
 
 This document defines the design and implementation direction for the OCaml

@@ -1,5 +1,9 @@
 # Nixploy control-plane architecture
 
+> Historical, superseded by [DEVELOPMENT.md](DEVELOPMENT.md). Nixploy's agreed
+> direction is a daemonless CLI. The gates below apply to the retired service
+> design, not to the new CLI-only architecture.
+
 **Status:** Proposed and independently reviewed. See
 [`CONTROL_PLANE_ARCHITECTURE_REVIEW.md`](CONTROL_PLANE_ARCHITECTURE_REVIEW.md)
 for the independent findings incorporated here. This specification is the

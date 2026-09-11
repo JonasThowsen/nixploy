@@ -1,6 +1,6 @@
 ---
 name: ocaml-application-design
-description: Design, implement, refactor, and review OCaml in nixploy using idiomatic modules, signatures, abstract invariant-bearing types, pure domain decisions, Async effect boundaries, and one shared application API for CLI and web. Use this skill for every OCaml source, test, Dune, CLI, RPC, Bonsai-server, deployment, Podman, Caddy, SOPS, or architecture change in this repository, even when the request does not explicitly mention OCaml style.
+description: Design, implement, refactor, and review the daemonless nixploy OCaml CLI using intentional interfaces, validated types, pure domain decisions, and Async effect boundaries. Use for every OCaml source, test, Dune, CLI, runbook, deployment, Podman, Caddy, SOPS, Nix packaging, architecture, or control-plane removal change in this repository.
 compatibility: nixploy repository; Nix development shell; OCaml 5.2, Dune, Core, Async
 ---
 
@@ -8,21 +8,10 @@ compatibility: nixploy repository; Nix development shell; OCaml 5.2, Dune, Core,
 
 ## Product boundary
 
-Keep nixploy a pragmatic tool for deploying Nix-built application containers.
-
-The active OCaml product owns:
-
-- evaluating project flake deployment configuration;
-- building the selected Nix image;
-- deploying it to Podman over SSH;
-- SOPS dotenv secrets and fixed pre-start commands;
-- non-web replacement and Caddy blue/green deployment;
-- scoped status and prune operations;
-- a small SQLite operation history where it serves CLI and web.
-
-Do not extend active OCaml code with Phoenix, PostgreSQL, Oban, MoonBit policy, release registration, general workflow orchestration, or plugin architecture. Code under `legacy/` is reference material, not an active dependency.
-
-For parity questions, treat the original user-facing C# CLI on Git `main` as the capability reference: `deploy`, `prune`, web and non-web targets, configuration, resource ownership, Podman, SOPS, pre-start commands, and Caddy. Preserve deliberate OCaml safety improvements rather than copying old bugs or unsafe failure behavior.
+Follow the daemonless CLI product and runbook contract in `DEVELOPMENT.md` and
+the removal sequence in `ROADMAP.md`. Keep the working deployment engine while
+subtracting control-plane infrastructure. Code under `legacy/` is compatibility
+evidence, not an active dependency or a template for a new rewrite.
 
 ## Required reading
 
@@ -68,17 +57,20 @@ Keep expected failures in `Or_error.t` or `Deferred.Or_error.t`. Reserve excepti
 
 ### Use one application facade
 
-CLI and web must call the same application-level operations. They may differ in transport, authorization, rendering, and source-selection policy, but not in deployment or prune orchestration.
+Keep deployment and runbook orchestration behind application-level operations.
+The CLI is the sole consumer; additional transports are not a design requirement.
 
 The intended dependency direction is:
 
 ```text
 pure domain -> Application -> adapters
                     ^
-                 CLI/RPC
+                   CLI
 ```
 
-CLI modules parse arguments, call `Application`, render results, and select exit codes. RPC handlers authorize, call `Application`, and serialize shared API values. Neither surface may orchestrate Git, Nix, Podman, Caddy, SOPS, or Store directly.
+CLI modules parse arguments, call `Application`, render results, and select exit
+codes. Keep Git, Nix, Podman, Caddy, SOPS, and Store orchestration out of parsing
+and rendering code.
 
 ### Parameterize only real effects
 
@@ -88,7 +80,9 @@ Use one restrained application functor when compile-time dependency injection ma
 module Make (Runtime : Runtime.S) : Application.S
 ```
 
-Group concrete effect modules behind `Runtime.S`; keep domain types outside the functor so CLI, RPC, tests, and adapters share them without type-sharing gymnastics.
+Group concrete effect modules behind `Runtime.S` when using that functor; keep
+domain types outside it so CLI, tests, and adapters share them without type-sharing
+gymnastics. Do not introduce this seam solely for a hypothetical second frontend.
 
 Do not create chains of tiny functors. Do not use first-class modules unless runtime selection among heterogeneous implementations is a demonstrated requirement. A record of closures is acceptable for a small capability with no associated types.
 
@@ -108,6 +102,8 @@ Pass cancellation and stage observation explicitly through application requests 
 - Preserve strict SSH host-key verification.
 - Keep output, time, line, and byte bounds explicit.
 - Prefer verified compensation over reproducing legacy failure quirks.
+- Preserve mutation coordination when removing the daemon; local locks alone do not coordinate independent operator machines.
+- Runbook commands select a positively owned running container by ID, use literal argv, and are never retried automatically after an uncertain failure.
 
 ## Tracer workflow
 
@@ -116,18 +112,10 @@ For each slice:
 1. Name one operator-visible behavior and its acceptance criterion.
 2. Add or update the application API first.
 3. Implement the smallest complete domain-to-adapter path.
-4. Exercise it through a real consumer (CLI or RPC) rather than only isolated layers.
+4. Exercise it through the packaged CLI rather than only isolated layers.
 5. Add focused pure tests and one boundary/integration test.
 6. Run the repository checks in the Nix development shell.
-7. Leave broader deferred behavior in `DEVELOPMENT.md`, not speculative abstractions.
-
-The first parity slices are:
-
-1. shared `Application` facade around existing deploy behavior;
-2. non-web deployment;
-3. scoped prune;
-4. CLI and web migration to the facade;
-5. OCaml NixOS service cutover.
+7. Track deferred work in `ROADMAP.md`, not speculative abstractions.
 
 ## Validation
 
@@ -138,6 +126,9 @@ nix develop . -c dune runtest --root ocaml
 nix build .#nixploy
 ```
 
-For command-surface changes, run the packaged executable and inspect help/output. For RPC changes, run focused RPC tests. For deployment command construction, assert ordered argv and important failure compensation with fakes.
+For command-surface changes, run the packaged executable and inspect help/output.
+For deployment and runbook command construction, assert ordered argv, ownership,
+stream/exit behavior, and important failure compensation with fakes. Remove
+web-only tests with web code, not the deployment safety tests it shared.
 
 Read and follow `.agents/skills/commit-and-push/SKILL.md` for delivery.

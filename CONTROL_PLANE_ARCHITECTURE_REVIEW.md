@@ -1,5 +1,8 @@
 # Control-plane architecture review
 
+> Historical review of the retired service design. Follow
+> [DEVELOPMENT.md](DEVELOPMENT.md) and [ROADMAP.md](ROADMAP.md) for active work.
+
 This review was performed independently before implementation against
 `CONTROL_PLANE_ARCHITECTURE.md`, the active OCaml CLI/web/Application modules,
 the lifecycle contract, and the Netcup NixOS configuration.

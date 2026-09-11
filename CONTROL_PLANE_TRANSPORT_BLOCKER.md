@@ -1,5 +1,9 @@
 # Control-plane transport blocker
 
+> Historical, superseded by [DEVELOPMENT.md](DEVELOPMENT.md). RPC transport is
+> being removed rather than completed. Existing fail-closed behavior remains
+> until the affected code is removed; this is not an instruction to bypass it.
+
 ## Decision
 
 Managed CLI reads and mutations remain fail-closed with

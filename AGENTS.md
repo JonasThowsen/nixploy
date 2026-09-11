@@ -1,8 +1,8 @@
 # nixploy agent instructions
 
-nixploy is a pragmatic OCaml application for deploying Nix-built containers. The original user-facing C# CLI on `main` is the capability-parity reference; Elixir/Phoenix and MoonBit are legacy and must not shape new production architecture.
+nixploy is a daemonless OCaml CLI for deploying Nix-built applications to remote Podman servers and running named commands inside their running containers. `DEVELOPMENT.md` is the authoritative product contract; `ROADMAP.md` tracks the CLI-only cutover. Historical control-plane plans are superseded. The original user-facing C# CLI under `legacy/` is compatibility evidence, not the architectural template.
 
-Before changing OCaml, Dune, CLI, RPC, web-server, deployment, Podman, Caddy, SOPS, or Nix packaging code, read and follow:
+Before changing OCaml, Dune, CLI, runbook, deployment, Podman, Caddy, SOPS, or Nix packaging code, or removing control-plane code, read and follow:
 
 - `.agents/skills/ocaml-application-design/SKILL.md`
 - `DEVELOPMENT.md`
