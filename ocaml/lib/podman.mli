@@ -161,12 +161,27 @@ val read_logs :
   container:runtime_container ->
   log_snapshot Deferred.Or_error.t
 
+val exec_runbook :
+  connection:string ->
+  container:runtime_container ->
+  command:Configuration.Runbook_command.t ->
+  Core_unix.Exit_or_signal.t Deferred.Or_error.t
+(** Executes literal argv once by inspected immutable ID. The caller must hold
+    the daemonless target guard continuously from resolution until completion.
+*)
+
 val read_stats :
   connection:string ->
   container:runtime_container ->
   runtime_stats Deferred.Or_error.t
 
 module For_testing : sig
+  val runbook_argv :
+    connection:string ->
+    container_id:string ->
+    command:Configuration.Runbook_command.t ->
+    string list
+
   val prepared_prune : prepared_prune
 
   val pre_start_argvs :

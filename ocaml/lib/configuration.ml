@@ -245,7 +245,9 @@ module Run = struct
         let%bind () =
           match List.Assoc.find fields ~equal:String.equal "readOnlyBinds" with
           | None -> Ok ()
-          | Some _ when String.equal schema "v0.4" -> Ok ()
+          | Some _ when List.mem [ "v0.4"; "v0.5" ] schema ~equal:String.equal
+            ->
+              Ok ()
           | Some _ ->
               Or_error.errorf
                 "%s.readOnlyBinds requires nixploy configuration schema v0.4"
@@ -378,6 +380,73 @@ module Control_plane = struct
     | _ -> Or_error.errorf "%s must be an object" field
 end
 
+module Runbook_command = struct
+  type t = {
+    name : string;
+    description : string;
+    command : string list;
+    interactive : bool;
+  }
+
+  let name t = t.name
+  let description t = t.description
+  let command t = t.command
+  let interactive t = t.interactive
+
+  let parse (name, json) =
+    let open Or_error.Let_syntax in
+    let field = "runbook." ^ name in
+    let%bind () =
+      if
+        String.length name > 0
+        && String.length name <= 63
+        && Char.is_alphanum name.[0]
+        && String.for_all name ~f:(function
+          | 'a' .. 'z' | '0' .. '9' | '-' | '_' -> true
+          | _ -> false)
+      then Ok ()
+      else
+        Or_error.error_string
+          "runbook command name must match [a-z0-9][a-z0-9_-]{0,62}"
+    in
+    match json with
+    | `Assoc fields ->
+        let%bind () =
+          validate_members ~field
+            ~allowed:
+              (String.Set.of_list [ "description"; "command"; "interactive" ])
+            fields
+        in
+        let%bind description = required fields "description" non_empty_string in
+        let%bind command = required fields "command" argv in
+        let%bind () =
+          match command with
+          | executable :: _ ->
+              non_empty_string
+                ~field:(field ^ ".command executable")
+                (`String executable)
+              |> Or_error.map ~f:ignore
+          | [] -> Or_error.error_string "runbook command argv must not be empty"
+        in
+        let%map interactive =
+          optional fields "interactive"
+            (fun ~field -> function
+              | `Bool value -> Ok value
+              | _ -> Or_error.errorf "%s must be a boolean" field)
+            ~default:false
+        in
+        { name; description; command; interactive }
+    | _ -> Or_error.errorf "%s must be an object" field
+
+  let of_json ~field = function
+    | `Assoc fields ->
+        let open Or_error.Let_syntax in
+        let%bind () = validate_map_members ~field fields in
+        let%map commands = Or_error.all (List.map fields ~f:parse) in
+        List.sort commands ~compare:(fun a b -> String.compare a.name b.name)
+    | _ -> Or_error.errorf "%s must be an object" field
+end
+
 module Target = struct
   type kind = Non_web | Web of Web.t
 
@@ -390,6 +459,7 @@ module Target = struct
     identity_file : string option;
     host_key_fingerprint : Ssh_host_key.t option;
     run : Run.t;
+    runbook : Runbook_command.t list;
     web : Web.t option;
     secret_references : (string * string) list;
     production : Production.t option;
@@ -404,6 +474,7 @@ module Target = struct
   let identity_file t = t.identity_file
   let host_key_fingerprint t = t.host_key_fingerprint
   let run t = t.run
+  let runbook t = t.runbook
   let web t = t.web
   let secret_references t = t.secret_references
   let production t = t.production
@@ -424,6 +495,16 @@ type t = {
 
 let project t = t.project
 let control_plane t = t.control_plane
+
+let require_daemonless t =
+  match t.control_plane with
+  | None -> Ok ()
+  | Some _ ->
+      Or_error.error_string
+        "controlPlane configuration is obsolete: explicitly migrate this \
+         managed application to daemonless operation before removing \
+         controlPlane"
+
 let targets t = t.targets
 
 let secret_references ~field = function
@@ -458,6 +539,7 @@ let parse_target ~schema (raw_name, json) =
             "identityFile";
             "hostKeyFingerprint";
             "run";
+            "runbook";
             "web";
             "secrets";
             "production";
@@ -467,6 +549,15 @@ let parse_target ~schema (raw_name, json) =
         if String.equal schema "v0.3" then Set.add allowed "tasks" else allowed
       in
       let%bind () = validate_members ~field ~allowed fields in
+      let%bind () =
+        if
+          List.Assoc.mem fields ~equal:String.equal "runbook"
+          && not (String.equal schema "v0.5")
+        then
+          Or_error.error_string
+            "runbook requires nixploy configuration schema v0.5"
+        else Ok ()
+      in
       let%bind () =
         match List.Assoc.find fields ~equal:String.equal "tasks" with
         | None | Some (`Assoc []) -> Ok ()
@@ -504,6 +595,8 @@ let parse_target ~schema (raw_name, json) =
                   (Web.of_json ~field:(field ^ ".web") json)
                   ~f:Option.some)
           ~default:None
+      and runbook =
+        optional fields "runbook" Runbook_command.of_json ~default:[]
       and secret_references =
         optional fields "secrets"
           (fun ~field:_ -> secret_references ~field:(field ^ ".secrets"))
@@ -541,6 +634,7 @@ let parse_target ~schema (raw_name, json) =
             identity_file;
             host_key_fingerprint;
             run;
+            runbook;
             web;
             secret_references;
             production;
@@ -562,8 +656,9 @@ let of_json input =
       in
       let%bind schema = required fields "__schema" non_empty_string in
       let%bind () =
-        if List.mem [ "v0.2"; "v0.3"; "v0.4" ] schema ~equal:String.equal then
-          Ok ()
+        if
+          List.mem [ "v0.2"; "v0.3"; "v0.4"; "v0.5" ] schema ~equal:String.equal
+        then Ok ()
         else
           Or_error.errorf "unsupported nixploy configuration schema %s" schema
       in

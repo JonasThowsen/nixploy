@@ -866,7 +866,7 @@ let%test_unit "configuration rejects unsafe or ambiguous read-only binds" =
 
 let%test_unit
     "configuration rejects bind fields in old schemas and unknown members" =
-  List.iter [ "v0.1"; "v0.5" ] ~f:(fun schema ->
+  List.iter [ "v0.1"; "v0.6" ] ~f:(fun schema ->
       sprintf {|{"__schema":"%s","project":"sample","targets":{}}|} schema
       |> Nixploy.Configuration.of_json
       |> assert_error_containing "unsupported nixploy configuration schema");

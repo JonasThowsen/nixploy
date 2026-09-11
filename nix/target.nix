@@ -196,6 +196,40 @@ with lib;
       };
     };
 
+    runbook = mkOption {
+      default = { };
+      description = "Named literal argv commands executed in the existing running container.";
+      apply =
+        commands:
+        if
+          lib.all (name: builtins.match "[a-z0-9][a-z0-9_-]{0,62}" name != null) (builtins.attrNames commands)
+        then
+          commands
+        else
+          throw "runbook command name must match [a-z0-9][a-z0-9_-]{0,62}";
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            description = mkOption {
+              type = types.addCheck types.str (value: builtins.match ".*[^[:space:]].*" value != null);
+              description = "Human-readable purpose of the command.";
+            };
+            command = mkOption {
+              type = types.addCheck (types.listOf types.str) (
+                argv: argv != [ ] && builtins.match ".*[^[:space:]].*" (builtins.head argv) != null
+              );
+              description = "Nonempty literal argv; no implicit shell or extra CLI arguments.";
+            };
+            interactive = mkOption {
+              type = types.bool;
+              default = false;
+              description = "Requires an attached terminal and enables stdin and terminal allocation.";
+            };
+          };
+        }
+      );
+    };
+
     web = mkOption {
       default = null;
       description = "HTTP routing and blue/green deployment configuration.";

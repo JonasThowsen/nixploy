@@ -55,6 +55,17 @@ module Non_production : sig
   val coordination_scope : t -> string
 end
 
+module Runbook_command : sig
+  type t
+
+  val name : t -> string
+  (** Named command definitions contain only validated literal argv. *)
+
+  val description : t -> string
+  val command : t -> string list
+  val interactive : t -> bool
+end
+
 module Target : sig
   type t
   type kind = Non_web | Web of Web.t
@@ -67,6 +78,7 @@ module Target : sig
   val identity_file : t -> string option
   val host_key_fingerprint : t -> Ssh_host_key.t option
   val run : t -> Run.t
+  val runbook : t -> Runbook_command.t list
   val web : t -> Web.t option
   val secret_references : t -> (string * string) list
   val production : t -> Production.t option
@@ -80,5 +92,10 @@ type t
 val of_json : string -> t Or_error.t
 val project : t -> Project_name.t
 val control_plane : t -> Control_plane.t option
+
+val require_daemonless : t -> unit Or_error.t
+(** Refuses obsolete managed configuration rather than silently running it
+    directly. *)
+
 val targets : t -> Target.t list
 val find_target : t -> Target_name.t -> Target.t Or_error.t

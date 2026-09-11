@@ -38,6 +38,20 @@ val run_stdout :
   unit ->
   string Deferred.Or_error.t
 
+val terminal_attached : unit -> bool Deferred.t
+(** Checks real stdin/stdout terminals off the Async scheduler. *)
+
+val run_streaming :
+  interactive:bool ->
+  prog:string ->
+  args:string list ->
+  unit ->
+  Core_unix.Exit_or_signal.t Deferred.Or_error.t
+(** Inherits stdout/stderr separately without retaining any output.
+    Noninteractive stdin is /dev/null; interactive stdin is the attached
+    terminal. No timeout or retry. Interrupt errors mean the remote command may
+    still be running. *)
+
 module For_testing : sig
   val should_force_termination : already_delivered:bool -> bool
 end

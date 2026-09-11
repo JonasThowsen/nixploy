@@ -248,6 +248,111 @@ let run_stdout ?working_directory ?stdin ?env ?ignore_termination ~timeout
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip result.stderr)
 
+let terminal_attached () =
+  In_thread.run (fun () ->
+      Core_unix.isatty Core_unix.stdin && Core_unix.isatty Core_unix.stdout)
+
+let run_streaming ~interactive ~prog ~args () =
+  let open Deferred.Or_error.Let_syntax in
+  handle_termination_signals ();
+  let%bind attached = terminal_attached () |> Deferred.ok in
+  let%bind () =
+    Deferred.return
+      (if interactive && not attached then
+         Or_error.error_string
+           "runbook interactive command requires attached stdin and stdout \
+            terminals"
+       else Ok ())
+  in
+  let interrupted () = Deferred.is_determined (termination_requested ()) in
+  let cancellation = Cancellation.current () in
+  let cancelled () =
+    Option.exists cancellation ~f:(fun token ->
+        Deferred.is_determined (Cancellation.requested token))
+  in
+  if interrupted () || cancelled () then
+    Deferred.Or_error.error_string "runbook interrupted before exec"
+  else
+    let%bind () = Writer.flushed (Lazy.force Writer.stdout) |> Deferred.ok in
+    let%bind () = Writer.flushed (Lazy.force Writer.stderr) |> Deferred.ok in
+    let%bind pid, terminal_state =
+      In_thread.run (fun () ->
+          Or_error.try_with (fun () ->
+              let terminal_state =
+                if interactive then
+                  Some (Core_unix.Terminal_io.tcgetattr Core_unix.stdin)
+                else None
+              in
+              let stdin =
+                if interactive then Core_unix.stdin
+                else Core_unix.openfile "/dev/null" ~mode:[ Core_unix.O_RDONLY ]
+              in
+              Exn.protect
+                ~finally:(fun () ->
+                  if not interactive then Core_unix.close stdin)
+                ~f:(fun () ->
+                  let process =
+                    Core_unix.create_process_with_fds ~prog ~args
+                      ?setpgid:
+                        (if interactive then None
+                         else Some Core_unix.Pgid.new_process_group)
+                      ~stdin:(Use_this stdin)
+                      ~stdout:(Use_this Core_unix.stdout)
+                      ~stderr:(Use_this Core_unix.stderr) ()
+                  in
+                  (process.pid, terminal_state))))
+      |> Deferred.map
+           ~f:
+             (Result.map_error ~f:(fun _ ->
+                  Error.of_string "runbook could not start local exec client"))
+    in
+    if not interactive then
+      active_process_groups := pid :: !active_process_groups;
+    Monitor.protect
+      ~finally:(fun () ->
+        unregister_process_group pid;
+        In_thread.run (fun () ->
+            Option.iter terminal_state ~f:(fun state ->
+                Core_unix.Terminal_io.tcsetattr state Core_unix.stdin
+                  ~mode:TCSANOW)))
+      (fun () ->
+        let wait = Async.Unix.waitpid pid in
+        let%bind completion =
+          Deferred.choose
+            ([
+               Deferred.choice wait (fun status -> `Completed status);
+               Deferred.choice (termination_requested ()) (fun _ ->
+                   `Interrupted);
+             ]
+            @ Option.value_map cancellation ~default:[] ~f:(fun token ->
+                [
+                  Deferred.choice (Cancellation.requested token) (fun () ->
+                      `Interrupted);
+                ]))
+          |> Deferred.ok
+        in
+        match completion with
+        | `Completed status -> Deferred.Or_error.return status
+        | `Interrupted ->
+            if cancelled () then
+              ignore (Cancellation.acknowledge_current () : bool);
+            let destination = if interactive then `Pid pid else `Group pid in
+            Signal_unix.send_i Signal.term destination;
+            let%bind _ =
+              Deferred.choose
+                [
+                  Deferred.choice wait (fun _ -> ());
+                  Deferred.choice (Clock_ns.after termination_grace) Fn.id;
+                ]
+              |> Deferred.ok
+            in
+            if (not interactive) || not (Deferred.is_determined wait) then
+              Signal_unix.send_i Signal.kill destination;
+            let%bind _ = wait |> Deferred.ok in
+            Deferred.Or_error.error_string
+              "runbook interrupted: remote command may still be running; do \
+               not retry automatically")
+
 module For_testing = struct
   let should_force_termination = should_force_termination
 end

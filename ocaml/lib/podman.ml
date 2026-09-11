@@ -928,6 +928,31 @@ let find_running_slot ~connection ~project ~target ~resource_key
     ~repository_identity
     ~placement:(Deployment_plan.Web_slot { slot; port = 0 })
 
+let runbook_argv ~connection ~container_id ~command =
+  [ "--connection"; connection; "exec" ]
+  @ (if Configuration.Runbook_command.interactive command then
+       [ "--interactive"; "--tty" ]
+     else [])
+  @ [ "--"; container_id ]
+  @ Configuration.Runbook_command.command command
+
+let exec_runbook ~connection ~container ~command =
+  if
+    String.length container.id <> 64
+    || not
+         (String.for_all container.id ~f:(function
+           | '0' .. '9' | 'a' .. 'f' -> true
+           | _ -> false))
+  then
+    Deferred.Or_error.error_string
+      "runbook requires a full immutable Podman container ID"
+  else
+    Process_runner.run_streaming
+      ~interactive:(Configuration.Runbook_command.interactive command)
+      ~prog:"podman"
+      ~args:(runbook_argv ~connection ~container_id:container.id ~command)
+      ()
+
 let parse_log_line line =
   match String.lsplit2 line ~on:' ' with
   | Some (timestamp, text)
@@ -1153,6 +1178,7 @@ let read_stats ~connection ~container =
   Deferred.return (parse_stats result.stdout)
 
 module For_testing = struct
+  let runbook_argv = runbook_argv
   let prepared_prune = Disabled_prune
   let pre_start_argvs = pre_start_argvs
   let runtime_argv = runtime_argv

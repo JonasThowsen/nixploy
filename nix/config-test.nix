@@ -83,8 +83,72 @@ let
   delControl = builtins.fromJSON ''"\u007f"'';
   c1Control = builtins.fromJSON ''"\u0085"'';
 in
-assert nixployLib.schema == "v0.4";
-assert defaultConfig.__schema == "v0.4";
+assert nixployLib.schema == "v0.5";
+assert defaultConfig.__schema == "v0.5";
+assert defaultConfig.targets.production.runbook == { };
+assert
+  (evaluate {
+    runbook.migrate = {
+      description = "Migrate";
+      command = [
+        "/app/bin/app"
+        "migrate"
+        ""
+        "; touch /tmp/no"
+      ];
+    };
+  }).targets.production.runbook.migrate.interactive == false;
+assert
+  (evaluate {
+    runbook.console = {
+      description = "Console";
+      command = [ "/app/bin/app" ];
+      interactive = true;
+    };
+  }).targets.production.runbook.console.interactive;
+assert rejects {
+  runbook."-bad" = {
+    description = "Bad";
+    command = [ "app" ];
+  };
+};
+assert rejects {
+  runbook.bad = {
+    command = [ "app" ];
+  };
+};
+assert rejects {
+  runbook.bad = {
+    description = "";
+    command = [ "app" ];
+  };
+};
+assert rejects {
+  runbook.bad = {
+    description = "Bad";
+    command = [ ];
+  };
+};
+assert rejects {
+  runbook.bad = {
+    description = "Bad";
+    command = [ "" ];
+  };
+};
+assert rejects {
+  runbook.bad = {
+    description = "Bad";
+    command = [ "app" ];
+    interactive = "true";
+  };
+};
+assert rejects {
+  runbook.bad = {
+    description = "Bad";
+    command = [ "app" ];
+    extra = true;
+  };
+};
 assert defaultConfig.targets.production.run.readOnlyBinds == [ ];
 assert defaultConfig.targets.production.production == null;
 assert
