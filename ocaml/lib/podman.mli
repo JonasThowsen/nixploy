@@ -5,7 +5,6 @@ type image
 type candidate
 type secret_mount
 type runtime_container
-type prepared_prune
 type prepared_secret_prune
 
 val preflight_prune_owned_secrets :
@@ -144,18 +143,6 @@ val verify_candidate :
 val remove_candidate :
   connection:string -> candidate:candidate -> unit Deferred.Or_error.t
 
-val preflight_prune_owned_resources :
-  connection:string ->
-  project:Project_name.t ->
-  target:Configuration.Target.t ->
-  resource_key:Resource_key.t ->
-  repository_identity:string ->
-  prepared_prune Deferred.Or_error.t
-(** Always fails before Podman inspection or listing in Production V1. *)
-
-val execute_prepared_prune : prepared_prune -> (int * int) Deferred.Or_error.t
-(** Always fails before container or secret removal in Production V1. *)
-
 val image_reference : image -> string
 val image_id : image -> string
 val candidate_name : candidate -> string
@@ -211,8 +198,6 @@ module For_testing : sig
     container_id:string ->
     command:Configuration.Runbook_command.t ->
     string list
-
-  val prepared_prune : prepared_prune
 
   val pre_start_argvs :
     connection:string ->

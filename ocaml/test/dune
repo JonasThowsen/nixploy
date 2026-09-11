@@ -55,6 +55,18 @@
    %{bin:ocamlfind}
    %{dep:../lib/nixploy.cma})))
 
+(test
+ (name runbook_test)
+ (modules runbook_test)
+ (libraries nixploy nixploy_runbook_cli core core_unix.command_unix async)
+ (preprocess (pps ppx_jane)))
+
+(test
+ (name podman_prune_safety_test)
+ (modules podman_prune_safety_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess (pps ppx_jane)))
+
 (library
  (name core_test)
  (modules core_test)

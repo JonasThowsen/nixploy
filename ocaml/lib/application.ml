@@ -487,6 +487,7 @@ let prune_target = Prune.target
 let prune_resource_key = Prune.resource_key
 let prune_containers_removed = Prune.containers_removed
 let prune_secrets_removed = Prune.secrets_removed
+let prune_secrets_retained = Prune.secrets_retained
 
 let prune_route_state result =
   match Prune.route result with

@@ -8,6 +8,13 @@
  (preprocess
   (pps ppx_jane)))
 
+(library
+ (name nixploy_runbook_cli)
+ (modules runbook_commands)
+ (libraries nixploy core async yojson)
+ (preprocess
+  (pps ppx_jane)))
+
 (executable
  (name main)
  (public_name nixploy)
@@ -15,6 +22,7 @@
  (libraries
   nixploy
   nixploy_cli_mapping
+  nixploy_runbook_cli
   core
   core_unix.command_unix
   async)

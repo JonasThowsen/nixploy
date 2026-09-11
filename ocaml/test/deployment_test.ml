@@ -176,6 +176,7 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$*" in
   "system connection list --format json") printf '[]\n'; exit 0 ;;
+  *" secret ls "*) exit 0 ;;
   *" secret rm "*) exit 1 ;;
   *" secret create "*) cat >/dev/null; exit 0 ;;
   system\ connection\ add\ *) exit 0 ;;

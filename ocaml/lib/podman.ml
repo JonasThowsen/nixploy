@@ -510,9 +510,6 @@ let remove_owned_placement ~connection ~project ~target ~resource_key
       ()
 
 let prepare_candidate = remove_owned_placement
-
-type prepared_prune = Disabled_prune
-
 let max_secret_name_bytes = 253
 let max_listed_secrets = 4_096
 
@@ -544,17 +541,6 @@ let secret_names_of_output output =
               (index + 1)
           else Ok name)
       |> Or_error.all
-
-let prune_disabled_error () =
-  Or_error.error_string
-    "prune is disabled in Production V1: durable prune operation lifecycle is \
-     not implemented"
-
-let preflight_prune_owned_resources ~connection:_ ~project:_ ~target:_
-    ~resource_key:_ ~repository_identity:_ =
-  Deferred.return (prune_disabled_error ())
-
-let execute_prepared_prune _prepared = Deferred.return (prune_disabled_error ())
 
 let find_owned_slot ~connection ~project ~target ~resource_key
     ~repository_identity ~slot =
@@ -1418,7 +1404,6 @@ let read_stats ~connection ~container =
 
 module For_testing = struct
   let runbook_argv = runbook_argv
-  let prepared_prune = Disabled_prune
   let pre_start_argvs = pre_start_argvs
   let runtime_argv = runtime_argv
   let loaded_reference = loaded_reference

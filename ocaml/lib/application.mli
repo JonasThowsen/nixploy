@@ -157,6 +157,7 @@ val prune_target : prune_result -> Target_name.t
 val prune_resource_key : prune_result -> Resource_key.t
 val prune_containers_removed : prune_result -> int
 val prune_secrets_removed : prune_result -> int
+val prune_secrets_retained : prune_result -> int
 val prune_route_state : prune_result -> prune_route_state
 val commit_revision : commit -> string
 val commit_subject : commit -> string

@@ -10,6 +10,7 @@ type t = {
   resource_key : Resource_key.t;
   containers_removed : int;
   secrets_removed : int;
+  secrets_retained : int;
   route : route;
 }
 
@@ -18,6 +19,7 @@ let target (t : t) = t.target
 let resource_key (t : t) = t.resource_key
 let containers_removed (t : t) = t.containers_removed
 let secrets_removed (t : t) = t.secrets_removed
+let secrets_retained (t : t) = t.secrets_retained
 let route (t : t) = t.route
 
 let prune_local ~store ~working_directory ~target:target_name ~confirmed =
@@ -50,8 +52,8 @@ let prune_local ~store ~working_directory ~target:target_name ~confirmed =
   in
   let%bind () =
     record
-      "requested: scoped containers and configured route only; secrets, \
-       images, volumes and data retained"
+      "requested: scoped containers, owned secrets and configured route; \
+       unlabelled secrets, images, volumes and data retained"
   in
   let%bind.Deferred result =
     Mutation_guard.with_mutation ~project ~target (fun () ->
@@ -98,6 +100,10 @@ let prune_local ~store ~working_directory ~target:target_name ~confirmed =
               in
               Some deletion
         in
+        let%bind secrets =
+          Podman.preflight_prune_owned_secrets ~connection ~project ~target
+            ~resource_key ~repository_identity
+        in
         let%bind () =
           record "ownership preflight complete; removing configured route"
         in
@@ -118,13 +124,24 @@ let prune_local ~store ~working_directory ~target:target_name ~confirmed =
               let%bind () = Podman.remove_candidate ~connection ~candidate in
               record ("removed container " ^ Podman.candidate_id candidate))
         in
-        let%map () = record "remote removals complete" in
+        let%bind () = record "removing preflighted owned secrets" in
+        let%bind secrets_removed, secrets_retained =
+          Podman.execute_prepared_secret_prune secrets
+        in
+        let%map () =
+          record
+            (sprintf
+               "remote removals complete: %d secrets removed, %d unlabelled \
+                secrets retained"
+               secrets_removed secrets_retained)
+        in
         {
           project;
           target = target_name;
           resource_key;
           containers_removed = List.length containers;
-          secrets_removed = 0;
+          secrets_removed;
+          secrets_retained;
           route;
         })
   in

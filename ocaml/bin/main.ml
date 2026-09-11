@@ -104,7 +104,7 @@ let logs_command =
 let prune_command =
   Async.Command.async
     ~summary:
-      "Remove owned containers and configured route; retain secrets, images, \
+      "Remove owned containers, secrets and configured route; retain images, \
        volumes and data"
     (let%map_open.Command flags = common_flags
      and confirmed =
@@ -127,14 +127,25 @@ let prune_command =
                  ~confirmed
              in
              if json then
-               printf "{\"containersRemoved\":%d,\"secretsRemoved\":0}\n%!"
+               printf
+                 "{\"containersRemoved\":%d,\"secretsRemoved\":%d,\"secretsRetained\":%d}\n\
+                  %!"
                  (Application.prune_containers_removed result)
+                 (Application.prune_secrets_removed result)
+                 (Application.prune_secrets_retained result)
              else
                printf
-                 "Removed %d owned containers and processed the configured \
-                  route. Secrets, images, volumes and data retained.\n\
+                 "Removed %d owned containers and %d owned secrets; processed \
+                  the configured route. Images, volumes and data retained.\n\
                   %!"
-                 (Application.prune_containers_removed result))))
+                 (Application.prune_containers_removed result)
+                 (Application.prune_secrets_removed result);
+             if Application.prune_secrets_retained result > 0 then
+               eprintf
+                 "Warning: retained %d unlabelled legacy secrets; explicit \
+                  ownership migration required.\n\
+                  %!"
+                 (Application.prune_secrets_retained result))))
 
 let deploy_command =
   Async.Command.async
@@ -192,12 +203,14 @@ let command =
        by the Podman adapter. Failed mutations retain remote uncertainty \
        evidence: never retry or remove it until remote effects have been \
        reconciled.")
-    [
-      ("deploy", deploy_command);
-      ("status", status_command);
-      ("history", history_command);
-      ("logs", logs_command);
-      ("prune", prune_command);
-    ]
+    ([
+       ("deploy", deploy_command);
+       ("status", status_command);
+       ("history", history_command);
+       ("logs", logs_command);
+       ("prune", prune_command);
+     ]
+    @ Nixploy_runbook_cli.Runbook_commands.commands ~list:Application.runbook
+        ~run:Application.run)
 
 let () = Command_unix.run ~version:"0.1.0-ocaml" command

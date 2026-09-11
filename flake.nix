@@ -75,6 +75,7 @@
               yojson
             ];
             doCheck = true;
+            nativeCheckInputs = [ pkgs.util-linux ];
             preCheck = ''
               export TZDIR=${pkgs.tzdata}/share/zoneinfo
             '';
@@ -102,6 +103,22 @@
           config-contract =
             assert configContract;
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";
+          cli-package-contract =
+            pkgs.runCommand "nixploy-cli-package-contract"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.gnugrep
+                ];
+              }
+              ''
+                bash ${./nix/cli-package-contract-test.sh} ${self.packages.${system}.nixploy}
+                touch $out
+              '';
+          cli-vm-smoke = import ./nix/cli-smoke-test.nix {
+            inherit pkgs;
+            nixployPackage = self.packages.${system}.nixploy;
+          };
           mix-expo-source = import ./nix/test-fixtures/mix-expo/package.nix { inherit pkgs; };
         }
       );
