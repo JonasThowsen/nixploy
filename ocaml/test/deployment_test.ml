@@ -366,68 +366,52 @@ exit 99
         run_git ~working_directory:repository [ "commit"; "-m"; "Test" ]
       in
       let%bind commit =
-        Nixploy.Source.preview_main ~working_directory:repository
+        Nixploy.Source.main_commit ~working_directory:repository
       in
       let commit = assert_ok commit in
       let expected_revision = Nixploy.Source.commit_revision commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let authorization ?expected_project ?expected_intent ?managed_application
-          ?(managed_applications = []) source =
-        let application_key =
-          Option.map managed_application ~f:Nixploy.Managed_application.key
-        in
-        let expected_project =
-          Option.first_some expected_project
-            (Option.map managed_application
-               ~f:Nixploy.Managed_application.project)
-        in
-        Nixploy.Operation_receipt.direct_deploy ~application_key
-          ~expected_project ~intent:expected_intent
-          ~application:managed_application ~managed_applications
-          ~working_directory:repository ~source ~target
+      let request ?expected_project source =
+        Nixploy.Deployment_request.create ?expected_project
+          ~working_directory:repository ~source ~target ()
         |> assert_ok
       in
       let direct_store () =
         Nixploy.Store.open_ ~path:(Filename.concat root "direct.sqlite")
       in
-      let deploy ?record_stage ?expected_project ?expected_intent
-          ?managed_application ?managed_applications _operation_id =
+      let deploy ?record_stage ?expected_project _operation_id =
         ignore record_stage;
-        let authorization =
-          authorization ?expected_project ?expected_intent ?managed_application
-            ?managed_applications
-            (Nixploy.Source.immutable commit)
+        let request =
+          request ?expected_project (Nixploy.Source.immutable commit)
         in
         let open Deferred.Or_error.Let_syntax in
         let%bind store = direct_store () in
-        let source = Nixploy.Operation_receipt.deploy_source authorization in
+        let source = Nixploy.Deployment_request.source request in
         let working_directory =
-          Nixploy.Operation_receipt.deploy_working_directory authorization
+          Nixploy.Deployment_request.working_directory request
         in
-        let target = Nixploy.Operation_receipt.deploy_target authorization in
+        let target = Nixploy.Deployment_request.target request in
         let%bind operation =
-          Nixploy.Store.request store ~application_key:None ~working_directory
-            ~target
+          Nixploy.Store.request store ~working_directory ~target
             ~commit:(Nixploy.Source.selection_commit source)
         in
-        Nixploy.Deployment.deploy ~store ~authorization
+        Nixploy.Deployment.deploy ~store ~request
           ~operation_id:(Nixploy.Store.id operation)
           ()
       in
       let deploy_source _operation_id source =
-        let authorization = authorization source in
+        let request = request source in
         let open Deferred.Or_error.Let_syntax in
         let%bind store = direct_store () in
         let working_directory =
-          Nixploy.Operation_receipt.deploy_working_directory authorization
+          Nixploy.Deployment_request.working_directory request
         in
-        let target = Nixploy.Operation_receipt.deploy_target authorization in
+        let target = Nixploy.Deployment_request.target request in
         let%bind operation =
-          Nixploy.Store.request store ~application_key:None ~working_directory
-            ~target
+          Nixploy.Store.request store ~working_directory ~target
             ~commit:(Nixploy.Source.selection_commit source)
         in
-        Nixploy.Deployment.deploy ~store ~authorization
+        Nixploy.Deployment.deploy ~store ~request
           ~operation_id:(Nixploy.Store.id operation)
           ()
       in
@@ -440,8 +424,7 @@ exit 99
         Nixploy.Application.create ~store:application_store ()
       in
       let%bind application_commit =
-        Nixploy.Application.preview_main_commit application
-          ~working_directory:repository
+        Nixploy.Source.main_commit ~working_directory:repository
       in
       let application_commit = assert_ok application_commit in
       let expect_application_failure_leaves_unknown () =
@@ -462,66 +445,13 @@ exit 99
             (Nixploy.Application.deployment_state deployment)
             Failed);
         let%map resource_state =
-          Nixploy.Application.resource_state application
+          Nixploy.Store.resource_state application_store
             ~working_directory:repository ~target
         in
         assert (
-          [%equal: Nixploy.Application.resource_state]
-            (assert_ok resource_state) Unknown)
+          [%equal: Nixploy.Store.resource_state] (assert_ok resource_state)
+            Unknown)
       in
-
-      let expected_configuration_json =
-        {|{"__schema":"v0.4","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deploy","nonProduction":{"coordinationScope":"test-staging"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}|}
-      in
-      let expected_configuration =
-        Nixploy.Configuration.of_json expected_configuration_json |> assert_ok
-      in
-      let managed =
-        Nixploy.Managed_application.all_of_json
-          (sprintf
-             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git","nonProduction":{"host":"worker.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"test-staging"}}}|}
-             repository)
-        |> assert_ok |> List.hd_exn
-      in
-      let production_managed =
-        Nixploy.Managed_application.all_of_json
-          (sprintf
-             {|{"app":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"git@example.invalid:test.git","repositoryProvenance":"git@example.invalid:test.git","repositoryReference":"refs/heads/main","repositoryEvidenceFile":"/root/test-evidence.json","production":{"host":"worker.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"sample-worker"}}}|}
-             repository)
-        |> assert_ok |> List.hd_exn
-      in
-      let expected_intent =
-        Nixploy.Deployment_intent.create ~application:managed
-          ~source_authority:None
-          ~revision:(Nixploy.Source.commit_revision commit)
-          ~configuration:expected_configuration
-          ~configuration_json:expected_configuration_json
-        |> assert_ok
-      in
-      let other_managed =
-        Nixploy.Managed_application.all_of_json
-          (sprintf
-             {|{"other":{"project":"sample","target":"worker","repository":"%s","repositoryIdentity":"owner/other","repositoryProvenance":"git@example.invalid:other.git","nonProduction":{"host":"other.invalid","user":"deploy","port":22,"kind":"non-web","coordinationScope":"other-staging"}}}|}
-             repository)
-        |> assert_ok |> List.hd_exn
-      in
-      assert (
-        Result.is_error
-          (Nixploy.Deployment_intent.validate_application expected_intent
-             other_managed));
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
-      let%bind production_direct =
-        deploy ~managed_applications:[ production_managed ]
-          "operation-production-direct"
-      in
-      expect_error_containing production_direct
-        "direct mode coordination scope overlaps a managed destination";
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 1 (count lines "nix|eval|");
-      [%test_eq: int] 0 (count lines "nix|build|");
-      assert (
-        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
@@ -533,21 +463,6 @@ exit 99
       [%test_eq: int] 1 (count lines "nix|eval|");
       assert (List.exists lines ~f:(String.is_prefix ~prefix:"nix|build|"));
 
-      clear_scenario ();
-      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
-      let%bind intent_mismatch =
-        deploy ~expected_intent ~managed_application:managed
-          "operation-intent-mismatch"
-      in
-      expect_error_containing intent_mismatch
-        "deployment preview intent no longer matches";
-      let lines = In_channel.read_lines trace in
-      [%test_eq: int] 1 (count lines "nix|eval|");
-      [%test_eq: int] 0 (count lines "nix|build|");
-      assert (
-        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
-      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"ssh|")));
-
       let wrong_project =
         Nixploy.Project_name.of_string "another-project" |> assert_ok
       in
@@ -555,7 +470,7 @@ exit 99
       let%bind project_mismatch =
         deploy ~expected_project:wrong_project "operation-project-mismatch"
       in
-      expect_error_containing project_mismatch "managed project mismatch";
+      expect_error_containing project_mismatch "deployment project mismatch";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
       [%test_eq: int] 0 (count lines "nix|build|");
@@ -576,18 +491,18 @@ exit 99
           ~source:(Nixploy.Application.immutable_source application_commit)
           ~target ()
       in
-      expect_error_containing rejected_application "managed project mismatch";
+      expect_error_containing rejected_application "deployment project mismatch";
       let%bind rejected_history =
         Nixploy.Store.list_for_scope application_store
           ~working_directory:repository ~target ~limit:10
       in
       [%test_eq: int] 0 (List.length (assert_ok rejected_history));
       let%bind rejected_state =
-        Nixploy.Application.resource_state application
+        Nixploy.Store.resource_state application_store
           ~working_directory:repository ~target
       in
       assert (
-        [%equal: Nixploy.Application.resource_state] (assert_ok rejected_state)
+        [%equal: Nixploy.Store.resource_state] (assert_ok rejected_state)
           Present);
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 0 (count lines "nix|build|");

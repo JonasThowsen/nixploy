@@ -82,42 +82,37 @@ let finish_operation ~store operation result cancellation =
   | Some deployment -> Deferred.Or_error.return deployment
   | None -> Deferred.Or_error.error_string "tracked deployment disappeared"
 
-let run_requested ~store ~authorization ~prepared operation =
+let run_requested ~store ~request ~prepared operation =
   let cancellation = Cancellation.current () in
   let%bind.Deferred execution =
     Monitor.try_with_or_error (fun () ->
-        Deployment.execute ~store ~authorization
-          ~operation_id:(Store.id operation) prepared)
+        Deployment.execute ~store ~request ~operation_id:(Store.id operation)
+          prepared)
   in
   finish_operation ~store operation (Or_error.join execution) cancellation
 
-let start ~authorization ~prepared ~store () =
+let start ~request ~prepared ~store () =
   let open Deferred.Let_syntax in
-  let application_key =
-    Operation_receipt.deploy_application_key authorization
-  in
   let working_directory =
-    Operation_receipt.deploy_working_directory authorization
-    |> Filename_unix.realpath
+    Deployment_request.working_directory request |> Filename_unix.realpath
   in
-  let target = Operation_receipt.deploy_target authorization in
-  let source = Operation_receipt.deploy_source authorization in
+  let target = Deployment_request.target request in
+  let source = Deployment_request.source request in
   let started : Store.deployment Or_error.t Ivar.t = Ivar.create () in
   let completion : Store.deployment Or_error.t Ivar.t = Ivar.create () in
   let launch () =
     Monitor.protect
       ~finally:(fun () -> Deployment.cleanup_prepared prepared)
       (fun () ->
-        Store.with_reconciled_lease store ~application_key ~working_directory
-          ~target (fun () ->
+        Store.with_reconciled_lease store ~working_directory ~target (fun () ->
             let open Deferred.Or_error.Let_syntax in
             let%bind operation =
-              Store.request store ~application_key ~working_directory ~target
+              Store.request store ~working_directory ~target
                 ~commit:(Source.selection_commit source)
             in
             let%bind.Deferred binding =
               Deferred.return
-                (Operation_receipt.bind_deploy_operation authorization
+                (Deployment_request.bind_operation request
                    ~operation_id:(Store.id operation))
             in
             match binding with
@@ -134,7 +129,7 @@ let start ~authorization ~prepared ~store () =
                 match resource_state with
                 | Ok () ->
                     Ivar.fill_if_empty started (Ok operation);
-                    run_requested ~store ~authorization ~prepared operation
+                    run_requested ~store ~request ~prepared operation
                 | Error error ->
                     let%map.Deferred terminal =
                       Store.fail store ~id:(Store.id operation) ~error
@@ -154,10 +149,10 @@ let start ~authorization ~prepared ~store () =
   Result.map started_result ~f:(fun deployment ->
       { deployment; completion = Ivar.read completion })
 
-let deploy ~authorization ~store () =
+let deploy ~request ~store () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind prepared = Deployment.prepare ~authorization in
-  let%bind started = start ~authorization ~prepared ~store () in
+  let%bind prepared = Deployment.prepare ~request in
+  let%bind started = start ~request ~prepared ~store () in
   completion started
 
 module For_testing = struct

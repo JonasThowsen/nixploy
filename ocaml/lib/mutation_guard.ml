@@ -1,7 +1,8 @@
 open Async
 open Core
 
-let with_guard ~run ~interrupted ~project ~target action =
+let with_guard ?(certainty = fun _ -> None) ~run ~interrupted ~project ~target
+    action =
   let open Deferred.Or_error.Let_syntax in
   let%bind key =
     Deferred.return (Resource_key.derive_current ~project ~target)
@@ -37,6 +38,8 @@ let with_guard ~run ~interrupted ~project ~target action =
            ~tag:
              ("NIXPLOY_MUTATION_UNCERTAIN: evidence retained at " ^ directory
             ^ "; reconcile remote state before any further mutation"))
+  | Ok value when Option.is_some (certainty value) ->
+      Deferred.Or_error.return value
   | Ok _ when interrupted () ->
       Deferred.Or_error.errorf
         "NIXPLOY_MUTATION_INTERRUPTED: evidence retained at %s; remote effects \
@@ -55,7 +58,7 @@ let with_guard ~run ~interrupted ~project ~target action =
               ("NIXPLOY_MUTATION_RELEASE_UNKNOWN: remote effects completed; \
                 inspect guard " ^ directory ^ " before retrying"))
 
-let with_mutation ~project ~target action =
+let with_mutation ?certainty ~project ~target action =
   let run argv =
     let open Deferred.Or_error.Let_syntax in
     let%bind result =
@@ -68,7 +71,7 @@ let with_mutation ~project ~target action =
         Deferred.Or_error.error_string
           "NIXPLOY_MUTATION_GUARD_COMMAND_FAILED: remote guard command failed"
   in
-  with_guard ~run
+  with_guard ?certainty ~run
     ~interrupted:(fun () ->
       Option.is_some (Process_runner.termination_signal ())
       || Option.exists (Cancellation.current ()) ~f:Cancellation.was_requested)

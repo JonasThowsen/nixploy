@@ -9,13 +9,6 @@ type state = Requested | Running | Succeeded | Failed | Cancelled
 type resource_state = Unknown | Present | Absent
 [@@deriving compare, equal, sexp]
 
-type managed_operation_evidence = {
-  operation_id : string;
-  lease_receipt : string option;
-  release_evidence : string option;
-  terminal_evidence : string option;
-}
-
 type deployment = {
   id : string;
   application_key : string option;
@@ -37,7 +30,7 @@ type deployment = {
 }
 
 let id t = t.id
-let application_key t = t.application_key
+let legacy_application_key t = t.application_key
 let working_directory t = t.working_directory
 let target t = t.target
 let state t = t.state
@@ -126,25 +119,6 @@ let record_prune_event t ~operation_id ~working_directory ~target ~message =
                     ];
                   check db "record prune event" (Sqlite3.step statement)))))
 
-let managed_operation_evidence_schema =
-  {|
-    CREATE TABLE managed_operation_evidence (
-      operation_id TEXT PRIMARY KEY REFERENCES deployments(id) ON DELETE CASCADE,
-      managed_application_key TEXT NOT NULL,
-      target TEXT NOT NULL,
-      revision TEXT NOT NULL,
-      source_provenance TEXT NOT NULL,
-      source_reference TEXT NOT NULL,
-      source_evidence_digest TEXT NOT NULL,
-      endpoint TEXT NOT NULL,
-      coordination_scope TEXT NOT NULL,
-      plan_digest TEXT NOT NULL CHECK (length(plan_digest) > 0),
-      lease_receipt TEXT,
-      release_evidence TEXT,
-      terminal_evidence TEXT
-    );
-  |}
-
 let schema_v2 =
   {|
     CREATE TABLE deployments (
@@ -174,7 +148,7 @@ let schema_v2 =
       inserted_at_ms INTEGER NOT NULL
     );
     CREATE INDEX deployments_recent ON deployments(requested_at_ms DESC);
-    CREATE INDEX deployments_application_recent ON deployments(application_key, requested_at_ms DESC);
+    CREATE INDEX deployments_scope_recent ON deployments(working_directory, target, requested_at_ms DESC);
     CREATE INDEX deployment_events_operation ON deployment_events(deployment_id, id);
   |}
 
@@ -242,19 +216,14 @@ let migrate db =
       (match user_version db with
       | 0 ->
           exec db schema_v2;
-          exec db resource_state_schema;
-          exec db managed_operation_evidence_schema
+          exec db resource_state_schema
       | 1 ->
           migrate_v1_within_transaction db;
-          exec db resource_state_schema;
-          exec db managed_operation_evidence_schema
-      | 2 ->
-          exec db resource_state_schema;
-          exec db managed_operation_evidence_schema
-      | 3 -> exec db managed_operation_evidence_schema
-      | 4 -> ()
+          exec db resource_state_schema
+      | 2 -> exec db resource_state_schema
+      | 3 | 4 | 5 -> ()
       | version -> failwithf "unsupported SQLite schema version %d" version ());
-      exec db "PRAGMA user_version = 4";
+      exec db "PRAGMA user_version = 5";
       exec db "COMMIT";
       committed := true)
     ~finally:(fun () ->
@@ -270,11 +239,6 @@ let open_ ~path =
           let store = { path } in
           with_db store ~f:migrate;
           store))
-
-let managed_operation_id evidence = evidence.operation_id
-let managed_lease_receipt evidence = evidence.lease_receipt
-let managed_release_evidence evidence = evidence.release_evidence
-let managed_terminal_evidence evidence = evidence.terminal_evidence
 
 let data =
   Option.value_map ~default:Sqlite3.Data.NULL ~f:(fun value ->
@@ -299,15 +263,7 @@ let insert_event db ~id ~stage ~message ~now =
       bind db statement [ TEXT id; TEXT stage; TEXT message; INT now ];
       check db "insert deployment event" (Sqlite3.step statement))
 
-let managed_state_name = function
-  | Succeeded -> "succeeded"
-  | Failed -> "failed"
-  | Cancelled -> "cancelled"
-  | Requested | Running ->
-      invalid_arg "managed terminal evidence requires a terminal state"
-
-let insert_requested_deployment db ~id ~application_key ~working_directory
-    ~target ~commit ~now =
+let insert_requested_deployment db ~id ~working_directory ~target ~commit ~now =
   let target_text = Target_name.to_string target in
   let revision = Source.commit_revision commit in
   with_statement db
@@ -318,7 +274,7 @@ let insert_requested_deployment db ~id ~application_key ~working_directory
       bind db statement
         [
           TEXT id;
-          (match application_key with Some key -> TEXT key | None -> NULL);
+          NULL;
           TEXT working_directory;
           TEXT target_text;
           TEXT revision;
@@ -329,196 +285,6 @@ let insert_requested_deployment db ~id ~application_key ~working_directory
         ];
       check db "insert deployment" (Sqlite3.step statement));
   insert_event db ~id ~stage:"requested" ~message:"Deployment requested" ~now
-
-let request_managed_with_evidence_with_identity t ~managed_application_key
-    ~working_directory ~target ~evidence_target ~commit ~evidence_revision
-    ~source_provenance ~source_reference ~source_evidence_digest ~endpoint
-    ~coordination_scope ~plan_digest =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          let id = new_id () in
-          let now = now_ms () in
-          let revision = Source.commit_revision commit in
-          let () =
-            with_db t ~f:(fun db ->
-                transaction db (fun () ->
-                    insert_requested_deployment db ~id
-                      ~application_key:(Some managed_application_key)
-                      ~working_directory ~target ~commit ~now;
-                    with_statement db
-                      "SELECT application_key, target, revision FROM \
-                       deployments WHERE id = ?" ~f:(fun statement ->
-                        bind db statement [ TEXT id ];
-                        match Sqlite3.step statement with
-                        | ROW ->
-                            if
-                              (not
-                                 (String.equal
-                                    (Sqlite3.column_text statement 0)
-                                    managed_application_key))
-                              || (not
-                                    (String.equal
-                                       (Sqlite3.column_text statement 1)
-                                       (Target_name.to_string evidence_target)))
-                              || not
-                                   (String.equal
-                                      (Sqlite3.column_text statement 2)
-                                      evidence_revision)
-                            then
-                              failwith
-                                "managed operation identity does not match \
-                                 immutable evidence"
-                        | DONE ->
-                            failwith
-                              "managed operation disappeared before evidence \
-                               insertion"
-                        | code ->
-                            check db "verify managed operation identity" code);
-                    with_statement db
-                      "INSERT INTO managed_operation_evidence (operation_id, \
-                       managed_application_key, target, revision, \
-                       source_provenance, source_reference, \
-                       source_evidence_digest, endpoint, coordination_scope, \
-                       plan_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                      ~f:(fun statement ->
-                        bind db statement
-                          [
-                            TEXT id;
-                            TEXT managed_application_key;
-                            TEXT (Target_name.to_string evidence_target);
-                            TEXT evidence_revision;
-                            TEXT source_provenance;
-                            TEXT source_reference;
-                            TEXT source_evidence_digest;
-                            TEXT endpoint;
-                            TEXT coordination_scope;
-                            TEXT plan_digest;
-                          ];
-                        check db "insert managed operation evidence"
-                          (Sqlite3.step statement))))
-          in
-          {
-            id;
-            application_key = Some managed_application_key;
-            working_directory;
-            target;
-            state = Requested;
-            stage = "requested";
-            message = "Deployment requested";
-            revision = Some revision;
-            commit_subject = Some (Source.commit_subject commit);
-            commit_timestamp_ms = Some (Source.commit_timestamp_ms commit);
-            container_name = None;
-            error = None;
-            requested_at_ms = now;
-            started_at_ms = None;
-            finished_at_ms = None;
-            cancel_requested_at_ms = None;
-            updated_at_ms = now;
-          }))
-
-let request_managed_with_evidence t ~managed_application_key ~working_directory
-    ~target ~commit ~source_provenance ~source_reference ~source_evidence_digest
-    ~endpoint ~coordination_scope ~plan_digest =
-  request_managed_with_evidence_with_identity t ~managed_application_key
-    ~working_directory ~target ~evidence_target:target ~commit
-    ~evidence_revision:(Source.commit_revision commit)
-    ~source_provenance ~source_reference ~source_evidence_digest ~endpoint
-    ~coordination_scope ~plan_digest
-
-module For_testing = struct
-  let request_managed_with_evidence_with_identity =
-    request_managed_with_evidence_with_identity
-end
-
-let attach_managed_lease_receipt t ~operation_id ~receipt =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                "UPDATE managed_operation_evidence SET lease_receipt = ? WHERE \
-                 operation_id = ? AND lease_receipt IS NULL AND EXISTS (SELECT \
-                 1 FROM deployments WHERE id = ? AND state IN ('requested', \
-                 'running'))" ~f:(fun statement ->
-                  bind db statement
-                    [ TEXT receipt; TEXT operation_id; TEXT operation_id ];
-                  check db "attach managed lease receipt"
-                    (Sqlite3.step statement);
-                  if Sqlite3.changes db <> 1 then
-                    failwith
-                      "managed lease receipt is absent, already bound, or \
-                       operation is terminal"))))
-
-let attach_managed_release_evidence t ~operation_id ~receipt =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                "UPDATE managed_operation_evidence SET release_evidence = ? \
-                 WHERE operation_id = ? AND release_evidence IS NULL AND \
-                 lease_receipt = ?" ~f:(fun statement ->
-                  bind db statement
-                    [ TEXT receipt; TEXT operation_id; TEXT receipt ];
-                  check db "attach managed release evidence"
-                    (Sqlite3.step statement);
-                  if Sqlite3.changes db <> 1 then
-                    failwith
-                      "managed release evidence does not match the bound \
-                       receipt"))))
-
-let attach_managed_terminal_evidence t ~operation_id ~state =
-  let terminal_state = managed_state_name state in
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                "UPDATE managed_operation_evidence SET terminal_evidence = ? \
-                 WHERE operation_id = ? AND terminal_evidence IS NULL AND \
-                 lease_receipt IS NOT NULL AND release_evidence = \
-                 lease_receipt AND EXISTS (SELECT 1 FROM deployments WHERE id \
-                 = ? AND state = ?)" ~f:(fun statement ->
-                  bind db statement
-                    [
-                      TEXT terminal_state;
-                      TEXT operation_id;
-                      TEXT operation_id;
-                      TEXT terminal_state;
-                    ];
-                  check db "attach managed terminal evidence"
-                    (Sqlite3.step statement);
-                  if Sqlite3.changes db <> 1 then
-                    failwith
-                      "managed terminal evidence requires a released lease and \
-                       matching terminal deployment state"))))
-
-let find_managed_operation_evidence t ~operation_id =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                "SELECT operation_id, lease_receipt, release_evidence, \
-                 terminal_evidence FROM managed_operation_evidence WHERE \
-                 operation_id = ?" ~f:(fun statement ->
-                  bind db statement [ TEXT operation_id ];
-                  match Sqlite3.step statement with
-                  | ROW ->
-                      let optional_column index =
-                        match Sqlite3.column statement index with
-                        | Sqlite3.Data.TEXT value -> Some value
-                        | Sqlite3.Data.NULL -> None
-                        | _ -> failwith "managed operation evidence column type"
-                      in
-                      Some
-                        {
-                          operation_id = Sqlite3.column_text statement 0;
-                          lease_receipt = optional_column 1;
-                          release_evidence = optional_column 2;
-                          terminal_evidence = optional_column 3;
-                        }
-                  | DONE -> None
-                  | code ->
-                      check db "find managed operation evidence" code;
-                      assert false))))
 
 let lease_path t ~working_directory ~target =
   let identity =
@@ -547,24 +313,16 @@ let interrupted_message =
   "Previous local nixploy process exited while this operation was active; \
    remote outcome is unknown"
 
-let active_deployment_ids db ~application_key ~working_directory ~target =
-  let application_predicate, application_values =
-    match application_key with
-    | None -> ("application_key IS NULL", [])
-    | Some application_key ->
-        ( "(application_key = ? OR application_key IS NULL)",
-          [ Sqlite3.Data.TEXT application_key ] )
-  in
+let active_deployment_ids db ~working_directory ~target =
   with_statement db
-    ("SELECT id FROM deployments WHERE working_directory = ? AND target = ? \
-      AND state IN ('requested', 'running') AND " ^ application_predicate)
+    "SELECT id FROM deployments WHERE working_directory = ? AND target = ? AND \
+     state IN ('requested', 'running') AND application_key IS NULL"
     ~f:(fun statement ->
       bind db statement
-        ([
-           Sqlite3.Data.TEXT working_directory;
-           TEXT (Target_name.to_string target);
-         ]
-        @ application_values);
+        [
+          Sqlite3.Data.TEXT working_directory;
+          TEXT (Target_name.to_string target);
+        ];
       let rec collect ids =
         match Sqlite3.step statement with
         | ROW -> collect (Sqlite3.column_text statement 0 :: ids)
@@ -575,15 +333,13 @@ let active_deployment_ids db ~application_key ~working_directory ~target =
       in
       collect [])
 
-let reconcile_interrupted_in_scope t ~application_key ~working_directory ~target
-    =
+let reconcile_interrupted_in_scope t ~working_directory ~target =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
           let now = now_ms () in
           with_db t ~f:(fun db ->
               transaction db (fun () ->
-                  active_deployment_ids db ~application_key ~working_directory
-                    ~target
+                  active_deployment_ids db ~working_directory ~target
                   |> List.iter ~f:(fun id ->
                       with_statement db
                         "UPDATE deployments SET state = 'failed', message = ?, \
@@ -607,20 +363,18 @@ let reconcile_interrupted_in_scope t ~application_key ~working_directory ~target
                       insert_event db ~id ~stage:"interrupted"
                         ~message:interrupted_message ~now)))))
 
-let with_reconciled_lease t ~application_key ~working_directory ~target
-    operation =
+let with_reconciled_lease t ~working_directory ~target operation =
   let open Deferred.Or_error.Let_syntax in
   let%bind descriptor = acquire_lease t ~working_directory ~target in
   Monitor.protect
     (fun () ->
       let%bind () =
-        reconcile_interrupted_in_scope t ~application_key ~working_directory
-          ~target
+        reconcile_interrupted_in_scope t ~working_directory ~target
       in
       operation ())
     ~finally:(fun () -> release_lease descriptor)
 
-let request t ~application_key ~working_directory ~target ~commit =
+let request t ~working_directory ~target ~commit =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
           let id = new_id () in
@@ -628,11 +382,11 @@ let request t ~application_key ~working_directory ~target ~commit =
           let revision = Source.commit_revision commit in
           with_db t ~f:(fun db ->
               transaction db (fun () ->
-                  insert_requested_deployment db ~id ~application_key
-                    ~working_directory ~target ~commit ~now));
+                  insert_requested_deployment db ~id ~working_directory ~target
+                    ~commit ~now));
           {
             id;
-            application_key;
+            application_key = None;
             working_directory;
             target;
             state = Requested;
@@ -811,25 +565,6 @@ let list t ~limit =
                   bind db statement [ Sqlite3.Data.INT (Int64.of_int limit) ];
                   collect db statement "list deployments"))))
 
-let list_for_application t ~application_key ~working_directory ~target ~limit =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                ("SELECT " ^ select_columns
-               ^ " FROM deployments WHERE working_directory = ? AND target = ? \
-                  AND (application_key = ? OR application_key IS NULL) ORDER \
-                  BY requested_at_ms DESC LIMIT ?")
-                ~f:(fun statement ->
-                  bind db statement
-                    [
-                      TEXT working_directory;
-                      TEXT (Target_name.to_string target);
-                      Sqlite3.Data.TEXT application_key;
-                      INT (Int64.of_int limit);
-                    ];
-                  collect db statement "list application deployments"))))
-
 let list_for_scope t ~working_directory ~target ~limit =
   Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
@@ -837,7 +572,8 @@ let list_for_scope t ~working_directory ~target ~limit =
               with_statement db
                 ("SELECT " ^ select_columns
                ^ " FROM deployments WHERE working_directory = ? AND target = ? \
-                  ORDER BY requested_at_ms DESC, rowid DESC LIMIT ?")
+                  AND application_key IS NULL ORDER BY requested_at_ms DESC, \
+                  rowid DESC LIMIT ?")
                 ~f:(fun statement ->
                   bind db statement
                     [
@@ -846,31 +582,6 @@ let list_for_scope t ~working_directory ~target ~limit =
                       INT (Int64.of_int limit);
                     ];
                   collect db statement "list scoped deployments"))))
-
-let latest_successful_for_application t ~application_key ~working_directory
-    ~target =
-  Monitor.try_with_or_error (fun () ->
-      In_thread.run (fun () ->
-          with_db t ~f:(fun db ->
-              with_statement db
-                ("SELECT " ^ select_columns
-               ^ " FROM deployments WHERE application_key = ? AND \
-                  working_directory = ? AND target = ? AND state = 'succeeded' \
-                  ORDER BY requested_at_ms DESC, rowid DESC LIMIT 1")
-                ~f:(fun statement ->
-                  bind db statement
-                    [
-                      Sqlite3.Data.TEXT application_key;
-                      TEXT working_directory;
-                      TEXT (Target_name.to_string target);
-                    ];
-                  match Sqlite3.step statement with
-                  | ROW -> Some (deployment_of_statement statement)
-                  | DONE -> None
-                  | code ->
-                      check db "find latest successful application deployment"
-                        code;
-                      assert false))))
 
 let resource_state_of_string = function
   | "unknown" -> Unknown

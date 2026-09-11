@@ -50,16 +50,18 @@ let run_tests () =
     Nixploy.Source.repository_identity ~working_directory:directory
   in
   assert (String.equal (Or_error.ok_exn identity) "git@example.invalid:test.git");
-  let%bind preview = Nixploy.Source.preview_main ~working_directory:directory in
-  let preview = Or_error.ok_exn preview in
-  assert (String.equal (Nixploy.Source.commit_subject preview) "Release A");
-  let revision_a = Nixploy.Source.commit_revision preview in
+  let%bind main_commit =
+    Nixploy.Source.main_commit ~working_directory:directory
+  in
+  let main_commit = Or_error.ok_exn main_commit in
+  assert (String.equal (Nixploy.Source.commit_subject main_commit) "Release A");
+  let revision_a = Nixploy.Source.commit_revision main_commit in
   write (Filename.concat directory "release.txt") "release-b\n";
   let%bind _ = run_git ~working_directory:directory [ "add"; "release.txt" ] in
   let%bind _ =
     run_git ~working_directory:directory [ "commit"; "-m"; "Release B" ]
   in
-  let%bind latest = Nixploy.Source.preview_main ~working_directory:directory in
+  let%bind latest = Nixploy.Source.main_commit ~working_directory:directory in
   let latest = Or_error.ok_exn latest in
   assert (not (String.equal revision_a (Nixploy.Source.commit_revision latest)));
   write (Filename.concat directory "release.txt") "working-tree-change\n";
@@ -113,7 +115,8 @@ let run_tests () =
   let large_snapshot = Or_error.ok_exn large_snapshot in
   assert (
     Sys_unix.file_exists_exn
-      (Filename.concat (Nixploy.Source.path large_snapshot)
+      (Filename.concat
+         (Nixploy.Source.path large_snapshot)
          (sprintf "tracked-%04d-%s" 1_099 (String.make 235 'x'))));
   let%bind () = Nixploy.Source.cleanup large_snapshot in
   let untracked = Filename.concat directory "new_source.ex" in
@@ -148,7 +151,7 @@ let run_tests () =
   assert (Result.is_error mismatched);
   let%bind prepared =
     Nixploy.Source.prepare ~working_directory:directory
-      ~selection:(Nixploy.Source.immutable preview)
+      ~selection:(Nixploy.Source.immutable main_commit)
   in
   let prepared = Or_error.ok_exn prepared in
   assert (String.equal revision_a (Nixploy.Source.revision prepared));
@@ -177,7 +180,7 @@ let run_tests () =
       (Filename_unix.realpath application_directory));
   let%bind nested =
     Nixploy.Source.prepare ~working_directory:application_directory
-      ~selection:(Nixploy.Source.immutable preview)
+      ~selection:(Nixploy.Source.immutable main_commit)
   in
   let nested = Or_error.ok_exn nested in
   assert (

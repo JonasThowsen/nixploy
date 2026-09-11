@@ -83,26 +83,6 @@ let create_v2_database path =
   if not (phys_equal result Sqlite3.Rc.OK) then failwith (Sqlite3.errmsg db);
   assert (Sqlite3.db_close db)
 
-let force_succeeded path deployment ~requested_at_ms =
-  let db = Sqlite3.db_open path in
-  let statement =
-    Sqlite3.prepare db
-      "UPDATE deployments SET state = 'succeeded', stage = 'succeeded', \
-       requested_at_ms = ?, updated_at_ms = ? WHERE id = ?"
-  in
-  let result =
-    Sqlite3.bind_values statement
-      [
-        Sqlite3.Data.INT requested_at_ms;
-        Sqlite3.Data.INT requested_at_ms;
-        Sqlite3.Data.TEXT (Nixploy.Store.id deployment);
-      ]
-  in
-  assert (phys_equal result Sqlite3.Rc.OK);
-  assert (phys_equal (Sqlite3.step statement) Sqlite3.Rc.DONE);
-  ignore (Sqlite3.finalize statement : Sqlite3.Rc.t);
-  assert (Sqlite3.db_close db)
-
 let run_tests () =
   let open Deferred.Let_syntax in
   let directory = Filename_unix.temp_dir "nixploy-store-test-" "" in
@@ -136,112 +116,41 @@ let run_tests () =
   let lease_entered = Ivar.create () in
   let release_lease = Ivar.create () in
   let first_lease =
-    Nixploy.Store.with_reconciled_lease store ~application_key:None
-      ~working_directory:"/tmp/project" ~target (fun () ->
+    Nixploy.Store.with_reconciled_lease store ~working_directory:"/tmp/project"
+      ~target (fun () ->
         Ivar.fill_if_empty lease_entered ();
         let%map () = Ivar.read release_lease in
         Ok ())
   in
   let%bind () = Ivar.read lease_entered in
   let second_lease =
-    Nixploy.Store.with_reconciled_lease store ~application_key:None
-      ~working_directory:"/tmp/project" ~target (fun () ->
-        Deferred.Or_error.return ())
+    Nixploy.Store.with_reconciled_lease store ~working_directory:"/tmp/project"
+      ~target (fun () -> Deferred.Or_error.return ())
   in
   let%bind () = Clock_ns.after (Time_ns.Span.of_ms 50.) in
   assert (not (Deferred.is_determined second_lease));
   Ivar.fill_exn release_lease ();
   let%bind lease_results = Deferred.all [ first_lease; second_lease ] in
   List.iter lease_results ~f:Or_error.ok_exn;
-  let managed_request ~plan_digest =
-    Nixploy.Store.request_managed_with_evidence store
-      ~managed_application_key:"test" ~working_directory:"/tmp/project" ~target
-      ~commit ~source_provenance:"git@example.invalid:test"
-      ~source_reference:"refs/heads/main" ~source_evidence_digest:"evidence"
-      ~endpoint:"deploy@example.invalid:22" ~coordination_scope:"test-production"
-      ~plan_digest
+  let sql statement =
+    let db = Sqlite3.db_open path in
+    assert (Sqlite3.Rc.is_success (Sqlite3.exec db statement));
+    assert (Sqlite3.db_close db)
   in
-  (* The evidence insert fails after the request insert; the transaction leaves
-     no requested operation behind. *)
-  let%bind rejected_atomic_request = managed_request ~plan_digest:"" in
-  assert (Result.is_error rejected_atomic_request);
-  let%bind deployments_after_rollback = Nixploy.Store.list store ~limit:10 in
-  assert (List.is_empty (Or_error.ok_exn deployments_after_rollback));
-  let other_target = Nixploy.Target_name.of_string "other" |> Or_error.ok_exn in
-  let%bind mismatched_identity =
-    Nixploy.Store.For_testing.request_managed_with_evidence_with_identity store
-      ~managed_application_key:"test" ~working_directory:"/tmp/project" ~target
-      ~evidence_target:other_target ~commit
-      ~evidence_revision:"ffffffffffffffffffffffffffffffffffffffff"
-      ~source_provenance:"git@example.invalid:test"
-      ~source_reference:"refs/heads/main" ~source_evidence_digest:"evidence"
-      ~endpoint:"deploy@example.invalid:22" ~coordination_scope:"test-production"
-      ~plan_digest:"plan"
+  sql
+    "CREATE TRIGGER reject_requested_event BEFORE INSERT ON deployment_events \
+     BEGIN SELECT RAISE(ABORT, 'event rejected'); END";
+  let%bind rejected =
+    Nixploy.Store.request store ~working_directory:"/tmp/project" ~target
+      ~commit
   in
-  assert (Result.is_error mismatched_identity);
-  let%bind deployments_after_identity_rejection = Nixploy.Store.list store ~limit:10 in
-  assert (List.is_empty (Or_error.ok_exn deployments_after_identity_rejection));
-  let%bind requested = managed_request ~plan_digest:"plan" in
-  let requested = Or_error.ok_exn requested in
-  assert (
-    [%equal: Nixploy.Store.state] (Nixploy.Store.state requested) Requested);
-  let operation_id = Nixploy.Store.id requested in
-  let%bind evidence =
-    Nixploy.Store.find_managed_operation_evidence store ~operation_id
-  in
-  let evidence = Option.value_exn (Or_error.ok_exn evidence) in
-  assert (String.equal (Nixploy.Store.managed_operation_id evidence) operation_id);
-  assert (Option.is_none (Nixploy.Store.managed_lease_receipt evidence));
-  let%bind release_before_receipt =
-    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"receipt"
-  in
-  assert (Result.is_error release_before_receipt);
-  let%bind terminal_before_receipt =
-    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
-  in
-  assert (Result.is_error terminal_before_receipt);
-  let%bind receipt =
-    Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"receipt"
-  in
-  Or_error.ok_exn receipt;
-  let%bind duplicate_receipt =
-    Nixploy.Store.attach_managed_lease_receipt store ~operation_id ~receipt:"other"
-  in
-  assert (Result.is_error duplicate_receipt);
-  let%bind wrong_receipt =
-    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"other"
-  in
-  assert (Result.is_error wrong_receipt);
-  let%bind released =
-    Nixploy.Store.attach_managed_release_evidence store ~operation_id ~receipt:"receipt"
-  in
-  Or_error.ok_exn released;
-  let%bind terminal_before_deployment =
-    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
-  in
-  assert (Result.is_error terminal_before_deployment);
-  let%bind failed_before_terminal =
-    Nixploy.Store.fail store ~id:operation_id ~error:(Error.of_string "managed failed")
-  in
-  Or_error.ok_exn failed_before_terminal;
-  let%bind wrong_terminal_state =
-    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Succeeded
-  in
-  assert (Result.is_error wrong_terminal_state);
-  let%bind terminal =
-    Nixploy.Store.attach_managed_terminal_evidence store ~operation_id ~state:Failed
-  in
-  Or_error.ok_exn terminal;
-  let%bind evidence =
-    Nixploy.Store.find_managed_operation_evidence store ~operation_id
-  in
-  let evidence = Option.value_exn (Or_error.ok_exn evidence) in
-  assert (Option.equal String.equal (Nixploy.Store.managed_lease_receipt evidence) (Some "receipt"));
-  assert (Option.equal String.equal (Nixploy.Store.managed_release_evidence evidence) (Some "receipt"));
-  assert (Option.equal String.equal (Nixploy.Store.managed_terminal_evidence evidence) (Some "failed"));
+  assert (Result.is_error rejected);
+  let%bind after_rejection = Nixploy.Store.list store ~limit:10 in
+  assert (List.is_empty (Or_error.ok_exn after_rejection));
+  sql "DROP TRIGGER reject_requested_event";
   let%bind direct_requested =
-    Nixploy.Store.request store ~application_key:(Some "test")
-      ~working_directory:"/tmp/project" ~target ~commit
+    Nixploy.Store.request store ~working_directory:"/tmp/project" ~target
+      ~commit
   in
   let direct_requested = Or_error.ok_exn direct_requested in
   let%bind staged =
@@ -271,8 +180,8 @@ let run_tests () =
   assert (Option.is_some (Nixploy.Store.started_at_ms deployment));
   assert (Option.is_some (Nixploy.Store.finished_at_ms deployment));
   let%bind requested_cancel =
-    Nixploy.Store.request store ~application_key:(Some "test")
-      ~working_directory:"/tmp/project" ~target ~commit
+    Nixploy.Store.request store ~working_directory:"/tmp/project" ~target
+      ~commit
   in
   let requested_cancel = Or_error.ok_exn requested_cancel in
   let%bind staged_cancel =
@@ -318,38 +227,6 @@ let run_tests () =
       Cancelled);
   assert (
     String.equal (Nixploy.Store.stage terminal_after_heartbeat) "cancelled");
-  let%bind exact_success =
-    Nixploy.Store.request store ~application_key:(Some "managed")
-      ~working_directory:"/tmp/exact" ~target ~commit
-  in
-  let exact_success = Or_error.ok_exn exact_success in
-  force_succeeded path exact_success ~requested_at_ms:10L;
-  let%bind later_failures =
-    Deferred.List.map (List.init 30 ~f:Fn.id) ~how:`Sequential ~f:(fun index ->
-        let%bind requested =
-          Nixploy.Store.request store ~application_key:(Some "managed")
-            ~working_directory:"/tmp/exact" ~target ~commit
-        in
-        let requested = Or_error.ok_exn requested in
-        Nixploy.Store.fail store
-          ~id:(Nixploy.Store.id requested)
-          ~error:(Error.of_string (sprintf "failure %d" index)))
-  in
-  List.iter later_failures ~f:Or_error.ok_exn;
-  let%bind unkeyed_success =
-    Nixploy.Store.request store ~application_key:None
-      ~working_directory:"/tmp/exact" ~target ~commit
-  in
-  let unkeyed_success = Or_error.ok_exn unkeyed_success in
-  force_succeeded path unkeyed_success ~requested_at_ms:9_000_000_000_000L;
-  let%bind latest_exact =
-    Nixploy.Store.latest_successful_for_application store
-      ~application_key:"managed" ~working_directory:"/tmp/exact" ~target
-  in
-  let latest_exact = Or_error.ok_exn latest_exact |> Option.value_exn in
-  [%test_eq: string]
-    (Nixploy.Store.id exact_success)
-    (Nixploy.Store.id latest_exact);
   let migration_path = Filename.concat directory "legacy.db" in
   create_v1_database migration_path;
   let%bind migrated_store = Nixploy.Store.open_ ~path:migration_path in
@@ -394,6 +271,23 @@ let run_tests () =
     [%equal: Nixploy.Store.resource_state]
       (Or_error.ok_exn persisted_resource)
       Present);
+  (* Old installation metadata is left intact, not consumed or deleted. *)
+  sql
+    "CREATE TABLE managed_operation_evidence (operation_id TEXT PRIMARY KEY, \
+     retained TEXT); INSERT INTO managed_operation_evidence VALUES \
+     ('old-operation', 'old-evidence'); PRAGMA user_version = 4";
+  let%bind migrated_v4 = Nixploy.Store.open_ ~path in
+  ignore (Or_error.ok_exn migrated_v4 : Nixploy.Store.t);
+  let db = Sqlite3.db_open path in
+  let statement =
+    Sqlite3.prepare db
+      "SELECT retained FROM managed_operation_evidence WHERE operation_id = \
+       'old-operation'"
+  in
+  assert (phys_equal (Sqlite3.step statement) Sqlite3.Rc.ROW);
+  assert (String.equal (Sqlite3.column_text statement 0) "old-evidence");
+  ignore (Sqlite3.finalize statement : Sqlite3.Rc.t);
+  assert (Sqlite3.db_close db);
   let%map _ =
     Nixploy.Process_runner.run_stdout ~timeout:(Time_ns.Span.of_sec 5.)
       ~max_output_bytes:65_536 ~prog:"rm" ~args:[ "-rf"; "--"; directory ] ()

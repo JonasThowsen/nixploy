@@ -20,11 +20,9 @@ let child_mode () =
         (let open Deferred.Let_syntax in
          let%bind store = Nixploy.Store.open_ ~path:database in
          Nixploy.Store.with_reconciled_lease (assert_ok store)
-           ~application_key:(Some "managed-app") ~working_directory ~target
-           (fun () ->
+           ~working_directory ~target (fun () ->
              let%bind deployment =
-               Nixploy.Store.request (assert_ok store)
-                 ~application_key:(Some "managed-app") ~working_directory
+               Nixploy.Store.request (assert_ok store) ~working_directory
                  ~target ~commit
              in
              let deployment = assert_ok deployment in
@@ -106,18 +104,28 @@ let run_tests () =
       let%bind opened = Nixploy.Store.open_ ~path:database in
       let store = assert_ok opened in
       let%bind local_cli_deployment =
-        Nixploy.Store.request store ~application_key:None ~working_directory
-          ~target ~commit
+        Nixploy.Store.request store ~working_directory ~target ~commit
       in
       let local_cli_deployment = assert_ok local_cli_deployment in
       let%bind other_application =
-        Nixploy.Store.request store ~application_key:(Some "other-app")
-          ~working_directory ~target ~commit
+        Nixploy.Store.request store ~working_directory ~target ~commit
       in
       let other_application = assert_ok other_application in
+      let db = Sqlite3.db_open database in
+      let statement =
+        Sqlite3.prepare db
+          "UPDATE deployments SET application_key = 'historical-service' WHERE \
+           id = ?"
+      in
+      ignore
+        (Sqlite3.bind_text statement 1 (Nixploy.Store.id other_application)
+          : Sqlite3.Rc.t);
+      assert (phys_equal (Sqlite3.step statement) Sqlite3.Rc.DONE);
+      ignore (Sqlite3.finalize statement : Sqlite3.Rc.t);
+      assert (Sqlite3.db_close db);
       let%bind unrelated_scope =
-        Nixploy.Store.request store ~application_key:(Some "managed-app")
-          ~working_directory:unrelated_directory ~target ~commit
+        Nixploy.Store.request store ~working_directory:unrelated_directory
+          ~target ~commit
       in
       let unrelated_scope = assert_ok unrelated_scope in
       let%bind child =
@@ -137,15 +145,12 @@ let run_tests () =
               "reconciled lease callback was not retained")
       in
       let recovered =
-        Nixploy.Store.with_reconciled_lease store
-          ~application_key:(Some "managed-app") ~working_directory ~target
+        Nixploy.Store.with_reconciled_lease store ~working_directory ~target
           (fun () ->
             Ivar.fill_if_empty recovery_entered ();
             (retained_callback :=
                fun () ->
-                 Nixploy.Store.request store
-                   ~application_key:(Some "managed-app") ~working_directory
-                   ~target ~commit);
+                 Nixploy.Store.request store ~working_directory ~target ~commit);
             Deferred.Or_error.return ())
       in
       let%bind () = Clock_ns.after (Time_ns.Span.of_ms 75.) in
@@ -157,8 +162,7 @@ let run_tests () =
       assert_ok recovered;
       assert (not (Ivar.is_empty recovery_entered));
       let%bind released_lease =
-        Nixploy.Store.with_reconciled_lease store
-          ~application_key:(Some "managed-app") ~working_directory ~target
+        Nixploy.Store.with_reconciled_lease store ~working_directory ~target
           (fun () -> Deferred.Or_error.return ())
       in
       assert_ok released_lease;
@@ -215,8 +219,8 @@ let run_tests () =
           (Nixploy.Store.state (assert_ok unrelated_scope |> Option.value_exn))
           Requested);
       let%bind local_recovery =
-        Nixploy.Store.with_reconciled_lease store ~application_key:None
-          ~working_directory ~target (fun () -> Deferred.Or_error.return ())
+        Nixploy.Store.with_reconciled_lease store ~working_directory ~target
+          (fun () -> Deferred.Or_error.return ())
       in
       assert_ok local_recovery;
       let%map new_deployment =
@@ -225,7 +229,7 @@ let run_tests () =
       assert (
         Nixploy.Store.equal_state
           (Nixploy.Store.state (assert_ok new_deployment |> Option.value_exn))
-          Requested))
+          Failed))
 
 let run deferred =
   don't_wait_for

@@ -1,3 +1,38 @@
+(test
+ (name application_scope_test)
+ (modules application_scope_test)
+ (libraries nixploy core async)
+ (preprocess (pps ppx_jane)))
+
+(rule
+ (alias runtest)
+ (deps daemonless_core_contract_test.sh (glob_files ../lib/*.ml) (glob_files ../lib/*.mli))
+ (action (run bash %{dep:daemonless_core_contract_test.sh} ../lib)))
+
+(test
+ (name application_runbook_test)
+ (modules application_runbook_test)
+ (libraries nixploy core async)
+ (preprocess (pps ppx_jane)))
+
+(test
+ (name direct_mode_configuration_test)
+ (modules direct_mode_configuration_test)
+ (libraries nixploy core)
+ (preprocess (pps ppx_jane)))
+
+(test
+ (name mutation_guard_test)
+ (modules mutation_guard_test)
+ (libraries nixploy core async)
+ (preprocess (pps ppx_jane)))
+
+(test
+ (name inspection_output_test)
+ (modules inspection_output_test)
+ (libraries nixploy nixploy_cli_mapping core yojson)
+ (preprocess (pps ppx_jane)))
+
 (rule
  (alias runtest)
  (deps cli_contract_test.sh ../bin/main.exe)
@@ -29,20 +64,6 @@
   (pps ppx_jane)))
 
 (test
- (name application_test)
- (modules application_test)
- (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name application_observation_test)
- (modules application_observation_test)
- (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(test
  (name deployment_observer_test)
  (modules deployment_observer_test)
  (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
@@ -67,13 +88,6 @@
  (name cli_mapping_test)
  (modules cli_mapping_test)
  (libraries nixploy nixploy_cli_mapping core)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name prune_test)
- (modules prune_test)
- (libraries nixploy core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
 
@@ -108,13 +122,6 @@
 (test
  (name source_test)
  (modules source_test)
- (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name runtime_application_test)
- (modules runtime_application_test)
  (libraries nixploy core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))

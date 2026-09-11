@@ -11,10 +11,6 @@ type resource_state = Unknown | Present | Absent
 
 type deployment
 
-type managed_operation_evidence
-(** Immutable managed-operation admission evidence keyed by an existing
-    deployment ID. *)
-
 val open_ : path:string -> t Deferred.Or_error.t
 
 val record_prune_event :
@@ -29,7 +25,6 @@ val record_prune_event :
 
 val with_reconciled_lease :
   t ->
-  application_key:string option ->
   working_directory:string ->
   target:Target_name.t ->
   (unit -> 'a Deferred.Or_error.t) ->
@@ -37,72 +32,12 @@ val with_reconciled_lease :
 (** Acquires the exact-scope local flock, marks active history left by a dead
     local process as failed with an unknown remote outcome, and only then runs
     [operation]. The callback receives no lease authority, so it cannot
-    reconcile after this function releases the flock. A managed application
-    includes matching unkeyed CLI history but never history keyed to another
-    application. *)
-
-val request_managed_with_evidence :
-  t ->
-  managed_application_key:string ->
-  working_directory:string ->
-  target:Target_name.t ->
-  commit:Source.commit ->
-  source_provenance:string ->
-  source_reference:string ->
-  source_evidence_digest:string ->
-  endpoint:string ->
-  coordination_scope:string ->
-  plan_digest:string ->
-  deployment Deferred.Or_error.t
-(** Atomically creates a requested managed deployment and its immutable
-    admission evidence. The evidence key, target, and revision are verified
-    against the newly-created operation before commit. *)
-
-val attach_managed_lease_receipt :
-  t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
-
-val attach_managed_release_evidence :
-  t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
-
-val attach_managed_terminal_evidence :
-  t -> operation_id:string -> state:state -> unit Deferred.Or_error.t
-(** The exact lease receipt binds once. Release and terminal evidence must use
-    that receipt, and terminal evidence is written only after the deployment
-    reaches the corresponding terminal state. *)
-
-val find_managed_operation_evidence :
-  t ->
-  operation_id:string ->
-  managed_operation_evidence option Deferred.Or_error.t
-
-val managed_operation_id : managed_operation_evidence -> string
-val managed_lease_receipt : managed_operation_evidence -> string option
-val managed_release_evidence : managed_operation_evidence -> string option
-val managed_terminal_evidence : managed_operation_evidence -> string option
-
-module For_testing : sig
-  val request_managed_with_evidence_with_identity :
-    t ->
-    managed_application_key:string ->
-    working_directory:string ->
-    target:Target_name.t ->
-    evidence_target:Target_name.t ->
-    commit:Source.commit ->
-    evidence_revision:string ->
-    source_provenance:string ->
-    source_reference:string ->
-    source_evidence_digest:string ->
-    endpoint:string ->
-    coordination_scope:string ->
-    plan_digest:string ->
-    deployment Deferred.Or_error.t
-  (** Exercises identity mismatch rejection before immutable evidence commits.
-  *)
-end
+    reconcile after this function releases the flock. Historical keyed service
+    rows are preserved but never claimed as CLI operations. The remote guard,
+    not this local flock, coordinates independent clients. *)
 
 val request :
   t ->
-  application_key:string option ->
   working_directory:string ->
   target:Target_name.t ->
   commit:Source.commit ->
@@ -126,30 +61,12 @@ val fail : t -> id:string -> error:Error.t -> unit Deferred.Or_error.t
 val cancel : t -> id:string -> unit Deferred.Or_error.t
 val list : t -> limit:int -> deployment list Deferred.Or_error.t
 
-val list_for_application :
-  t ->
-  application_key:string ->
-  working_directory:string ->
-  target:Target_name.t ->
-  limit:int ->
-  deployment list Deferred.Or_error.t
-
 val list_for_scope :
   t ->
   working_directory:string ->
   target:Target_name.t ->
   limit:int ->
   deployment list Deferred.Or_error.t
-
-val latest_successful_for_application :
-  t ->
-  application_key:string ->
-  working_directory:string ->
-  target:Target_name.t ->
-  deployment option Deferred.Or_error.t
-(** Returns the newest successful deployment for the exact managed application
-    identity. Unkeyed local CLI history and later non-successful rows are not
-    considered. *)
 
 val resource_state :
   t ->
@@ -166,7 +83,10 @@ val set_resource_state :
 
 val find : t -> id:string -> deployment option Deferred.Or_error.t
 val id : deployment -> string
-val application_key : deployment -> string option
+
+val legacy_application_key : deployment -> string option
+(** Read-only migration discriminator; new CLI requests always store NULL. *)
+
 val working_directory : deployment -> string
 val target : deployment -> Target_name.t
 val state : deployment -> state

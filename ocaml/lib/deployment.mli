@@ -19,23 +19,22 @@ type stage =
 type t
 type prepared
 
-val prepare :
-  authorization:Operation_receipt.deploy -> prepared Deferred.Or_error.t
+val prepare : request:Deployment_request.t -> prepared Deferred.Or_error.t
 (** Materializes one selected source snapshot, evaluates its explicit target,
-    and validates any managed application destination before mutation. *)
+    and validates its project and repository-bound resource identity. *)
 
 val cleanup_prepared : prepared -> unit Deferred.t
 
 val execute :
   store:Store.t ->
-  authorization:Operation_receipt.deploy ->
+  request:Deployment_request.t ->
   operation_id:string ->
   prepared ->
   t Deferred.Or_error.t
 
 val deploy :
   store:Store.t ->
-  authorization:Operation_receipt.deploy ->
+  request:Deployment_request.t ->
   operation_id:string ->
   unit ->
   t Deferred.Or_error.t

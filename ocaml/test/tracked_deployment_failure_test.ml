@@ -109,11 +109,10 @@ let assert_only_one_terminal_event stages =
 let assert_lease_reusable store ~working_directory ~target ~commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind reusable =
-    Nixploy.Store.with_reconciled_lease store ~application_key:None
-      ~working_directory ~target (fun () ->
+    Nixploy.Store.with_reconciled_lease store ~working_directory ~target
+      (fun () ->
         let%bind operation =
-          Nixploy.Store.request store ~application_key:None ~working_directory
-            ~target ~commit
+          Nixploy.Store.request store ~working_directory ~target ~commit
         in
         let%map () =
           Nixploy.Store.fail store
@@ -223,27 +222,17 @@ exit 0
         run_git ~working_directory:repository [ "commit"; "-m"; "Test" ]
       in
       let%bind commit =
-        Nixploy.Source.preview_main ~working_directory:repository
+        Nixploy.Source.main_commit ~working_directory:repository
       in
       let commit = assert_ok commit in
       let target = Nixploy.Target_name.of_string "worker" |> assert_ok in
-      let authorization () =
-        let receipts =
-          Nixploy.Operation_receipt.create_deploy_store () |> assert_ok
-        in
-        let receipt =
-          Nixploy.Operation_receipt.issue_deploy receipts ~application_key:None
-            ~expected_project:None ~intent:None ~application:None
-            ~managed_applications:[] ~working_directory:repository
-            ~source:(Nixploy.Source.immutable commit)
-            ~target
-          |> assert_ok
-        in
-        Nixploy.Operation_receipt.consume_deploy receipts
-          ~application_key:"non-production" ~receipt
+      let request () =
+        Nixploy.Deployment_request.create ~working_directory:repository
+          ~source:(Nixploy.Source.immutable commit)
+          ~target ()
         |> assert_ok
       in
-      let prepare authorization = Nixploy.Deployment.prepare ~authorization in
+      let prepare request = Nixploy.Deployment.prepare ~request in
 
       (* A real SQLite trigger rejects only the delayed heartbeat event after
          the fake build process group (and its child) have recorded their PIDs. *)
@@ -257,14 +246,13 @@ exit 0
           WHEN NEW.stage = 'building'
            AND NEW.message LIKE 'Nix image build still running%'
           BEGIN SELECT RAISE(ABORT, 'heartbeat durable write rejected'); END;|};
-      let heartbeat_authorization = authorization () in
+      let heartbeat_authorization = request () in
       let%bind heartbeat_prepared = prepare heartbeat_authorization in
       let heartbeat_prepared = assert_ok heartbeat_prepared in
       let cancellation = Nixploy.Cancellation.create () in
       let%bind heartbeat_started =
         Nixploy.Cancellation.within cancellation (fun () ->
-            Nixploy.Tracked_deployment.start
-              ~authorization:heartbeat_authorization
+            Nixploy.Tracked_deployment.start ~request:heartbeat_authorization
               ~prepared:heartbeat_prepared ~store:heartbeat_store ())
       in
       let heartbeat_started = assert_ok heartbeat_started in
@@ -306,25 +294,25 @@ exit 0
       in
       assert_ok reused_heartbeat;
 
-      (* Binding an already bound, consumed receipt fails only inside the held
+      (* Binding an already bound, deployment request fails only inside the held
          lease, before resource-state or any remote process mutation. *)
       clear_process_observations ();
       let bind_path = Filename.concat root "bind.sqlite" in
       let%bind bind_store = Nixploy.Store.open_ ~path:bind_path in
       let bind_store = assert_ok bind_store in
-      let bind_authorization = authorization () in
+      let bind_authorization = request () in
       let%bind bind_prepared = prepare bind_authorization in
       let bind_prepared = assert_ok bind_prepared in
       assert_ok
-        (Nixploy.Operation_receipt.bind_deploy_operation bind_authorization
+        (Nixploy.Deployment_request.bind_operation bind_authorization
            ~operation_id:"another-operation");
       let%bind bind_started =
-        Nixploy.Tracked_deployment.start ~authorization:bind_authorization
+        Nixploy.Tracked_deployment.start ~request:bind_authorization
           ~prepared:bind_prepared ~store:bind_store ()
       in
       expect_error_containing bind_started "already bound";
       assert_ok
-        (Nixploy.Operation_receipt.validate_deploy_operation bind_authorization
+        (Nixploy.Deployment_request.validate_operation bind_authorization
            ~operation_id:"another-operation");
       let%bind bind_history =
         Nixploy.Store.list_for_scope bind_store ~working_directory:repository
@@ -357,11 +345,11 @@ exit 0
           BEFORE INSERT ON resource_states
           WHEN NEW.state = 'unknown'
           BEGIN SELECT RAISE(ABORT, 'unknown resource state rejected'); END;|};
-      let state_authorization = authorization () in
+      let state_authorization = request () in
       let%bind state_prepared = prepare state_authorization in
       let state_prepared = assert_ok state_prepared in
       let%bind state_started =
-        Nixploy.Tracked_deployment.start ~authorization:state_authorization
+        Nixploy.Tracked_deployment.start ~request:state_authorization
           ~prepared:state_prepared ~store:state_store ()
       in
       expect_error_containing state_started "unknown resource state rejected";
@@ -376,7 +364,7 @@ exit 0
         (durable_event_stages state_path
            ~deployment_id:(Nixploy.Store.id state_operation));
       assert_ok
-        (Nixploy.Operation_receipt.validate_deploy_operation state_authorization
+        (Nixploy.Deployment_request.validate_operation state_authorization
            ~operation_id:(Nixploy.Store.id state_operation));
       [%test_eq: int] 0 (resource_state_row_count state_path);
       assert (not (Sys_unix.file_exists_exn leader_pid));
@@ -388,26 +376,6 @@ exit 0
       in
       assert_ok reused_state;
 
-      (* V1 prune is fail-closed before it can touch state or a remote process. *)
-      clear_process_observations ();
-      let prune_path = Filename.concat root "prune-state-write.sqlite" in
-      let%bind prune_store = Nixploy.Store.open_ ~path:prune_path in
-      let prune_store = assert_ok prune_store in
-      let prune_application =
-        Nixploy.Application.create ~store:prune_store ()
-      in
-      let%bind pruned =
-        Nixploy.Application.prune_non_production prune_application
-          ~working_directory:repository ~target
-      in
-      expect_error_containing pruned "prune is disabled in Production V1";
-      [%test_eq: int] 0 (resource_state_row_count prune_path);
-      assert (List.is_empty (trace_lines trace));
-      let%bind reused_prune =
-        assert_lease_reusable prune_store ~working_directory:repository ~target
-          ~commit
-      in
-      assert_ok reused_prune;
       Deferred.unit)
 
 let () =

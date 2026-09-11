@@ -34,27 +34,20 @@ let run_case ~on_operation ~render_stage ~history ~termination ~release_child
   let child_gate = Ivar.create () in
   let application =
     Nixploy.Application.For_testing.create ~store ~deployment_history:history
-      ~preview_main:(fun ~working_directory:_ ->
-        Deferred.Or_error.return commit)
-      ~find_commit:(fun ~working_directory:_ ~revision:_ ->
-        Deferred.Or_error.return commit)
-      ~deploy:(fun ~authorization ~prepared:_ ->
-        let application_key =
-          Nixploy.Operation_receipt.deploy_application_key authorization
-        in
+      ~deploy:(fun ~request ~prepared:_ ->
         let working_directory =
-          Nixploy.Operation_receipt.deploy_working_directory authorization
+          Nixploy.Deployment_request.working_directory request
         in
-        let target = Nixploy.Operation_receipt.deploy_target authorization in
+        let target = Nixploy.Deployment_request.target request in
         let open Deferred.Or_error.Let_syntax in
         let%bind requested =
-          Nixploy.Store.request store ~application_key ~working_directory
-            ~target ~commit:store_commit
+          Nixploy.Store.request store ~working_directory ~target
+            ~commit:store_commit
         in
         let id = Nixploy.Store.id requested in
         let operation =
-          Nixploy.Application.For_testing.deployment ?application_key
-            ~working_directory ~target ~id ~state:Requested ~revision ()
+          Nixploy.Application.For_testing.deployment ~working_directory ~target
+            ~id ~state:Requested ~revision ()
         in
         on_operation id;
         let cancellation =
@@ -75,29 +68,26 @@ let run_case ~on_operation ~render_stage ~history ~termination ~release_child
           | `Cancelled ->
               assert (Nixploy.Cancellation.acknowledge_current ());
               let%map () = Nixploy.Store.cancel store ~id in
-              Nixploy.Application.For_testing.deployment ?application_key
-                ~working_directory ~target ~id ~state:Cancelled ~revision ()
+              Nixploy.Application.For_testing.deployment ~working_directory
+                ~target ~id ~state:Cancelled ~revision ()
           | `Remote Succeed ->
               remote_effect := true;
               let%map () =
                 Nixploy.Store.succeed store ~id ~container_name:"fake"
                   ~message:"completed"
               in
-              Nixploy.Application.For_testing.deployment ?application_key
-                ~working_directory ~target ~id ~state:Succeeded ~revision ()
+              Nixploy.Application.For_testing.deployment ~working_directory
+                ~target ~id ~state:Succeeded ~revision ()
           | `Remote Fail ->
               remote_effect := true;
               let%map () =
                 Nixploy.Store.fail store ~id
                   ~error:(Error.of_string "fake failure")
               in
-              Nixploy.Application.For_testing.deployment ?application_key
-                ~working_directory ~target ~id ~state:Failed ~revision
-                ~error:"fake failure" ()
+              Nixploy.Application.For_testing.deployment ~working_directory
+                ~target ~id ~state:Failed ~revision ~error:"fake failure" ()
         in
         Deferred.Or_error.return (operation, completion))
-      ~prune:(fun ~authorization:_ ~prepared:_ ->
-        Deferred.Or_error.error_string "unused prune")
       ()
   in
   let source =
@@ -135,7 +125,9 @@ let run_tests () =
   in
   let history_missing ~scope:_ ~limit:_ = Deferred.Or_error.return [] in
   let%bind () =
-    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+    run_case
+      ~on_operation:(fun _ -> ())
+      ~render_stage:(fun _ _ -> ())
       ~history:history_error ~termination:no_signal
       ~release_child:(fun _ -> Deferred.unit)
       ~expect:(fun observed remote_effect ->
@@ -143,7 +135,9 @@ let run_tests () =
         assert (not remote_effect))
   in
   let%bind () =
-    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+    run_case
+      ~on_operation:(fun _ -> ())
+      ~render_stage:(fun _ _ -> ())
       ~history:history_missing ~termination:no_signal
       ~release_child:(fun _ -> Deferred.unit)
       ~expect:(fun observed remote_effect ->
@@ -152,7 +146,9 @@ let run_tests () =
   in
   let signal = Ivar.create () in
   let%bind () =
-    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+    run_case
+      ~on_operation:(fun _ -> ())
+      ~render_stage:(fun _ _ -> ())
       ~history:history_error ~termination:(Ivar.read signal)
       ~release_child:(fun _ ->
         Ivar.fill_exn signal Signal.int;
@@ -165,7 +161,9 @@ let run_tests () =
         | Ok (Observer.Completed _) | Error _ -> assert false)
   in
   let%bind () =
-    run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+    run_case
+      ~on_operation:(fun _ -> ())
+      ~render_stage:(fun _ _ -> ())
       ~history:(fun ~scope:_ ~limit:_ -> Deferred.never ())
       ~termination:no_signal
       ~release_child:(fun gate ->
@@ -187,7 +185,8 @@ let run_tests () =
     if not (List.is_empty !rendered_stages) then (
       Ivar.fill_exn gate Succeed;
       Deferred.unit)
-    else if remaining = 0 then failwith "observer did not render a durable stage"
+    else if remaining = 0 then
+      failwith "observer did not render a durable stage"
     else
       let%bind () = Clock_ns.after (Time_ns.Span.of_ms 10.) in
       release_after_stage gate (remaining - 1)
@@ -204,8 +203,7 @@ let run_tests () =
             Deferred.Or_error.return
               [
                 Nixploy.Application.For_testing.deployment ~id ~state:Running
-                  ~stage:"building" ~message:"Building and loading the image"
-                  ();
+                  ~stage:"building" ~message:"Building and loading the image" ();
               ])
       ~termination:no_signal
       ~release_child:(fun gate -> release_after_stage gate 100)
@@ -223,7 +221,9 @@ let run_tests () =
                 Succeeded)
         | Ok (Observer.Interrupted _) | Error _ -> assert false)
   in
-  run_case ~on_operation:(fun _ -> ()) ~render_stage:(fun _ _ -> ())
+  run_case
+    ~on_operation:(fun _ -> ())
+    ~render_stage:(fun _ _ -> ())
     ~history:(fun ~scope:_ ~limit:_ -> Deferred.never ())
     ~termination:no_signal
     ~release_child:(fun gate ->

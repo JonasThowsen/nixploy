@@ -156,7 +156,7 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       Error error
 
 type prepared = {
-  authorization : Operation_receipt.deploy;
+  request : Deployment_request.t;
   source : Source.t;
   project : Project_name.t;
   target_name : Target_name.t;
@@ -168,125 +168,28 @@ type prepared = {
 
 let cleanup_prepared prepared = Source.cleanup prepared.source
 
-let validate_managed_capability authorization intent application =
-  let open Or_error.Let_syntax in
-  let%bind () = Deployment_intent.validate_application intent application in
-  let%bind application_directory =
-    Or_error.try_with (fun () ->
-        Managed_application.working_directory application
-        |> Filename_unix.realpath)
-  in
-  let application_key_matches =
-    Option.value_map
-      (Operation_receipt.deploy_application_key authorization)
-      ~default:false
-      ~f:(String.equal (Managed_application.key application))
-  in
-  let project_matches =
-    Option.value_map
-      (Operation_receipt.deploy_expected_project authorization)
-      ~default:false
-      ~f:(Project_name.equal (Managed_application.project application))
-  in
-  if
-    application_key_matches && project_matches
-    && String.equal application_directory
-         (Operation_receipt.deploy_working_directory authorization)
-    && Target_name.equal
-         (Operation_receipt.deploy_target authorization)
-         (Managed_application.target application)
-    && String.equal
-         (Source.selection_commit
-            (Operation_receipt.deploy_source authorization)
-         |> Source.commit_revision)
-         (Deployment_intent.revision intent)
-  then Ok ()
-  else
-    Or_error.error_string
-      "consumed deploy capability does not match its application, source, or \
-       target"
-
-let prepare ~authorization =
+let prepare ~request =
   let open Deferred.Or_error.Let_syntax in
-  let%bind () =
-    Deferred.return (Operation_receipt.claim_deploy authorization)
-  in
-  let expected_project =
-    Operation_receipt.deploy_expected_project authorization
-  in
-  let expected_intent = Operation_receipt.deploy_intent authorization in
-  let managed_application =
-    Operation_receipt.deploy_application authorization
-  in
-  let managed_applications =
-    Operation_receipt.deploy_managed_applications authorization
-  in
-  let working_directory =
-    Operation_receipt.deploy_working_directory authorization
-  in
-  let source_selection = Operation_receipt.deploy_source authorization in
-  let target_name = Operation_receipt.deploy_target authorization in
-  let%bind () =
-    match (expected_intent, managed_application) with
-    | Some intent, Some application ->
-        Deferred.return
-          (validate_managed_capability authorization intent application)
-    | None, None -> Deferred.Or_error.return ()
-    | None, Some application ->
-        if
-          Option.value_map expected_project ~default:false
-            ~f:(Project_name.equal (Managed_application.project application))
-          && Target_name.equal target_name
-               (Managed_application.target application)
-        then Deferred.Or_error.return ()
-        else
-          Deferred.Or_error.error_string
-            "managed direct deployment does not match its application or target"
-    | Some _, None ->
-        Deferred.Or_error.error_string
-          "deploy request has an intent without its managed application"
-  in
-  let%bind source_authority =
-    match (expected_intent, managed_application) with
-    | Some intent, Some application
-      when [%equal: Deployment_intent.identity_policy]
-             (Deployment_intent.identity_policy intent)
-             Deployment_intent.Canonical_only ->
-        let%map authority =
-          Source_authority.verify
-            ~expected_revision:(Deployment_intent.revision intent)
-            application
-        in
-        Some authority
-    | Some _, Some _ -> Deferred.Or_error.return None
-    | Some _, None ->
-        Deferred.Or_error.error_string
-          "managed deployment intent is missing its root-owned application \
-           contract"
-    | None, _ -> Deferred.Or_error.return None
-  in
+  let%bind () = Deferred.return (Deployment_request.claim request) in
+  let expected_project = Deployment_request.expected_project request in
+  let working_directory = Deployment_request.working_directory request in
+  let target_name = Deployment_request.target request in
   let%bind source =
-    match source_authority with
-    | None -> Source.prepare ~working_directory ~selection:source_selection
-    | Some authority ->
-        let%bind protected_git =
-          Deferred.return (Source_authority.protected_git authority)
-        in
-        Source.prepare_protected ~working_directory ~protected_git
-          ~repository_identity:
-            (Deployment_intent.repository_identity
-               (Option.value_exn expected_intent))
-          ~commit:(Source.selection_commit source_selection)
+    Source.prepare ~working_directory
+      ~selection:(Deployment_request.source request)
   in
   let validate () =
     let open Deferred.Or_error.Let_syntax in
     let%bind evaluated =
-      Nix_configuration.load_evaluated
-        ~offline:(Option.is_some source_authority)
+      Nix_configuration.load_evaluated ~offline:false
         ~working_directory:(Source.nix_root source)
         ~flake:(Source.nix_flake source)
     in
     let configuration = Nix_configuration.configuration evaluated in
+    let%bind () =
+      Deferred.return
+        (Direct_mode.validate_configuration configuration ~target:target_name)
+    in
     let project = Configuration.project configuration in
     let%bind () =
       match expected_project with
@@ -295,79 +198,25 @@ let prepare ~authorization =
           Deferred.Or_error.return ()
       | Some _ ->
           Deferred.Or_error.error_string
-            "managed project mismatch: evaluated configuration project differs \
-             from the root-managed project"
+            "deployment project mismatch: evaluated project differs from the \
+             requested project"
     in
     let%bind target =
       Deferred.return (Configuration.find_target configuration target_name)
     in
-    let configuration_json = Nix_configuration.json evaluated in
+    let repository_identity = Source.repository source in
+    let%bind candidates =
+      Deferred.return
+        (Resource_key.candidates ~project ~target:target_name
+           ~repository_identity)
+    in
     let configuration_digest =
-      configuration_json |> Digestif.SHA256.digest_string
-      |> Digestif.SHA256.to_hex
+      Nix_configuration.json evaluated
+      |> Digestif.SHA256.digest_string |> Digestif.SHA256.to_hex
     in
-    let%bind identity_policy, repository_identity, candidates =
-      match (expected_intent, managed_application) with
-      | Some expected, Some _ ->
-          let%map () =
-            Deferred.return
-              (Deployment_intent.validate_evaluated expected ~source_authority
-                 ~revision:(Source.revision source) ~configuration
-                 ~configuration_json)
-          in
-          ( Deployment_intent.identity_policy expected,
-            Deployment_intent.repository_identity expected,
-            [ Deployment_intent.resource_key expected ] )
-      | None, Some application ->
-          let%map intent =
-            Deferred.return
-              (Deployment_intent.create ~application ~source_authority:None
-                 ~revision:(Source.revision source) ~configuration
-                 ~configuration_json)
-          in
-          ( Deployment_intent.identity_policy intent,
-            Deployment_intent.repository_identity intent,
-            [ Deployment_intent.resource_key intent ] )
-      | None, None ->
-          let repository_identity = Source.repository source in
-          let%bind () =
-            Deferred.return
-              (Direct_mode.validate_configuration configuration
-                 ~target:target_name)
-          in
-          let%bind () =
-            if List.is_empty managed_applications then
-              Deferred.Or_error.return ()
-            else
-              let%map _ =
-                Deferred.return
-                  (Deployment_intent.authorize_local
-                     ~applications:managed_applications ~working_directory
-                     ~configuration ~target)
-              in
-              ()
-          in
-          let identity_policy = Deployment_intent.Migration_candidates in
-          let%map candidates =
-            Deferred.return
-              (match identity_policy with
-              | Canonical_only ->
-                  Resource_key.derive ~project ~target:target_name
-                    ~repository_identity
-                  |> Or_error.map ~f:List.return
-              | Migration_candidates ->
-                  Resource_key.candidates ~project ~target:target_name
-                    ~repository_identity)
-          in
-          (identity_policy, repository_identity, candidates)
-      | Some _, None ->
-          Deferred.Or_error.error_string
-            "deploy request has an intent without its managed application"
-    in
-    ignore identity_policy;
     Deferred.Or_error.return
       {
-        authorization;
+        request;
         source;
         project;
         target_name;
@@ -384,18 +233,18 @@ let prepare ~authorization =
       let%map.Deferred () = Source.cleanup source in
       Error error
 
-let execute_guarded ~store ~authorization ~operation_id prepared =
+let execute_guarded ~store ~request ~operation_id prepared =
   let record_stage stage message =
     Store.record_stage store ~id:operation_id ~stage:(stage_name stage) ~message
   in
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
-    if phys_equal authorization prepared.authorization then
+    if phys_equal request prepared.request then
       Deferred.return
-        (Operation_receipt.validate_deploy_operation authorization ~operation_id)
+        (Deployment_request.validate_operation request ~operation_id)
     else
       Deferred.Or_error.error_string
-        "prepared deployment belongs to a different consumed capability"
+        "prepared deployment belongs to a different request"
   in
   let source = prepared.source in
   let project = prepared.project in
@@ -681,12 +530,12 @@ let execute_guarded ~store ~authorization ~operation_id prepared =
           restore_and_cleanup ~caddy ~previous ~connection ~candidate error
       | Error error -> cleanup_candidate ~connection candidate error)
 
-let execute ~store ~authorization ~operation_id prepared =
+let execute ~store ~request ~operation_id prepared =
   Mutation_guard.with_mutation ~project:prepared.project ~target:prepared.target
     (fun () ->
       let open Deferred.Or_error.Let_syntax in
       let%bind deployment =
-        execute_guarded ~store ~authorization ~operation_id prepared
+        execute_guarded ~store ~request ~operation_id prepared
       in
       match deployment.warning with
       | None -> Deferred.Or_error.return deployment
@@ -696,13 +545,12 @@ let execute ~store ~authorization ~operation_id prepared =
              not confirmed: %s"
             warning)
 
-let deploy ~store ~authorization ~operation_id () =
+let deploy ~store ~request ~operation_id () =
   let open Deferred.Or_error.Let_syntax in
-  let%bind prepared = prepare ~authorization in
+  let%bind prepared = prepare ~request in
   let%bind () =
-    Deferred.return
-      (Operation_receipt.bind_deploy_operation authorization ~operation_id)
+    Deferred.return (Deployment_request.bind_operation request ~operation_id)
   in
   Monitor.protect
     ~finally:(fun () -> cleanup_prepared prepared)
-    (fun () -> execute ~store ~authorization ~operation_id prepared)
+    (fun () -> execute ~store ~request ~operation_id prepared)

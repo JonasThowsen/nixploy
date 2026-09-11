@@ -2,10 +2,9 @@ open Async
 open Core
 
 type t
-type commit
-type source
+type commit = Source.commit
+type source = Source.selection
 type deployment
-type deployment_preview
 type started_deployment
 type prune_result
 type status
@@ -38,100 +37,25 @@ type log_snapshot = {
 }
 [@@deriving compare, equal, sexp]
 
-type health = Healthy | Unhealthy | Unavailable of string
-[@@deriving compare, equal, sexp]
-
-type metrics_freshness = Fresh | Stale | Unavailable
-[@@deriving compare, equal, sexp]
-
-type application_metrics = {
-  application : string;
-  container_name : string option;
-  health : health;
-  error : string option;
-  cpu_percent : float option;
-  memory_used_bytes : int64 option;
-  memory_host_percent : float option;
-  uptime_seconds : int64 option;
-}
-
-type target_metrics = {
-  target : string;
-  host : string;
-  observed_at_ms : int64;
-  freshness : metrics_freshness;
-  error : string option;
-  cpu_percent : float option;
-  memory_used_bytes : int64 option;
-  memory_total_bytes : int64 option;
-  filesystem_used_bytes : int64 option;
-  filesystem_total_bytes : int64 option;
-  load_1 : float option;
-  load_5 : float option;
-  load_15 : float option;
-  uptime_seconds : int64 option;
-  applications : application_metrics list;
-}
-
 val create : store:Store.t -> unit -> t
-(** Opens a process-local CLI facade; no registry or host authority is loaded.
-*)
-
-val open_ :
-  ?managed_applications:Managed_application.t list ->
-  state_path:string ->
-  unit ->
-  t Deferred.Or_error.t
+val open_ : state_path:string -> unit -> t Deferred.Or_error.t
 
 val begin_shutdown : t -> shutdown_transition
-(** Atomically rejects new deploy and prune mutations. *)
+(** Cancels process-owned deployments and rejects new tracked mutations. *)
 
 val mutations_drained : t -> unit Deferred.t
-(** Becomes determined after shutdown begins and every admitted deploy or prune
-    mutation has unwound. *)
+(** Waits for current process-owned mutations to unwind, without requiring
+    shutdown. *)
 
 val local_scope :
   working_directory:string -> target:Target_name.t -> scope Or_error.t
-
-val managed_scope : Managed_application.t -> scope Or_error.t
-
-val preview_main_commit :
-  t -> working_directory:string -> commit Deferred.Or_error.t
-
-val preview_managed_deployment :
-  t -> Managed_application.t -> deployment_preview Deferred.Or_error.t
-(** Fails closed until immutable revision admission, root-owned source custody,
-    and authoritative target-lease broker integration are available. *)
-
-val deployment_preview_commit : deployment_preview -> commit
-val deployment_preview_receipt : deployment_preview -> string
-val deployment_preview_prune_receipt : deployment_preview -> string
-
-val admit_managed_deployment :
-  t ->
-  Managed_application.t ->
-  revision:string ->
-  started_deployment Deferred.Or_error.t
-(** Verifies the root-owned custody evidence for the exact requested revision at
-    the VPS application boundary. It fails closed before deployment effects
-    until authoritative broker admission is configured. *)
-
-val start_managed_deployment :
-  t -> Managed_application.t -> started_deployment Deferred.Or_error.t
-(** Resolves the allowlisted application's canonical checkout and target, then
-    starts the same shared deployment operation used by the CLI. *)
-
-val deploy_managed_deployment :
-  t -> Managed_application.t -> deployment Deferred.Or_error.t
 
 val start_local_deployment :
   t ->
   working_directory:string ->
   target:Target_name.t ->
   started_deployment Deferred.Or_error.t
-(** Snapshots local tracked source once and runs the shared deployment engine
-    for a declared target. Non-ignored untracked files are rejected; no
-    production profile or application registry is required. *)
+(** Prepares one tracked source snapshot for evaluation, build, and secrets. *)
 
 val deploy_local_deployment :
   t ->
@@ -139,45 +63,9 @@ val deploy_local_deployment :
   target:Target_name.t ->
   deployment Deferred.Or_error.t
 
-val start_managed_preview :
-  t ->
-  Managed_application.t ->
-  receipt:string ->
-  started_deployment Deferred.Or_error.t
-
-val deploy_managed_preview :
-  t -> Managed_application.t -> receipt:string -> deployment Deferred.Or_error.t
-(** Both functions fail closed before source, deployment, or remote effects
-    until immutable managed admission is implemented. *)
-
-val prune_managed_preview :
-  t ->
-  Managed_application.t ->
-  receipt:string ->
-  prune_result Deferred.Or_error.t
-(** Always fails closed in Production V1. Durable prune admission, binding, and
-    terminal review are deferred rather than allowing destructive cleanup under
-    deployment-only operation tracking. *)
-
-val resolve_commit :
-  t -> working_directory:string -> revision:string -> commit Deferred.Or_error.t
-
-val local_source : t -> working_directory:string -> source Deferred.Or_error.t
 val immutable_source : commit -> source
-val source_revision : source -> string
-val source_subject : source -> string
-val source_is_local : source -> bool
-val started_deployment : started_deployment -> deployment
-val started_deployment_id : started_deployment -> string
-
-val await_started_deployment :
-  started_deployment -> deployment Deferred.Or_error.t
-
-val cancel_started_deployment :
-  t -> started_deployment -> cancellation_result Deferred.Or_error.t
 
 val start_direct_deployment :
-  ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
   working_directory:string ->
@@ -187,7 +75,6 @@ val start_direct_deployment :
   started_deployment Deferred.Or_error.t
 
 val deploy_direct_deployment :
-  ?application_key:string ->
   ?expected_project:Project_name.t ->
   t ->
   working_directory:string ->
@@ -195,22 +82,24 @@ val deploy_direct_deployment :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
-(** Direct mutation with a selected source snapshot. Rejects obsolete
-    controlPlane configuration, and holds durable remote uncertainty evidence
-    through effects. Explicit legacy allowlists supplied by library callers
-    still fail closed. *)
 
-val prune_non_production :
-  ?application_key:string ->
-  ?expected_project:Project_name.t ->
-  ?repository_identity:string ->
+val started_deployment : started_deployment -> deployment
+val started_deployment_id : started_deployment -> string
+
+val await_started_deployment :
+  started_deployment -> deployment Deferred.Or_error.t
+
+val cancel_started_deployment :
+  t -> started_deployment -> cancellation_result Deferred.Or_error.t
+(** Cancels only the opaque handle registered in this CLI process. *)
+
+val cancel_deployment :
   t ->
-  working_directory:string ->
-  target:Target_name.t ->
-  prune_result Deferred.Or_error.t
-(** Always fails closed in Production V1, including library-only local calls. *)
+  scope:scope ->
+  operation_id:string ->
+  cancellation_result Deferred.Or_error.t
 
-val live_status : t -> scope:scope -> status Deferred.Or_error.t
+val deployment_can_cancel : t -> scope:scope -> deployment -> bool
 
 val prune_local :
   t ->
@@ -218,9 +107,10 @@ val prune_local :
   target:Target_name.t ->
   confirmed:bool ->
   prune_result Deferred.Or_error.t
-(** Explicitly confirmed scoped cleanup, sharing durable remote coordination
-    with deployment and runbook. Never removes volumes, images, or secrets. *)
+(** Explicit scoped cleanup using the same durable remote guard as deploy/run.
+*)
 
+val live_status : t -> scope:scope -> status Deferred.Or_error.t
 val status_project : status -> Project_name.t
 val status_target : status -> Configuration.Target.t
 val status_resource_key : status -> Resource_key.t
@@ -228,6 +118,7 @@ val status_workloads : status -> Workload.t list
 
 val deployment_history :
   t -> scope:scope -> limit:int -> deployment list Deferred.Or_error.t
+(** Process observer reads local history without re-evaluating the flake. *)
 
 val local_history :
   t ->
@@ -235,48 +126,31 @@ val local_history :
   target:Target_name.t ->
   limit:int ->
   deployment list Deferred.Or_error.t
-(** Lists local history only after validating the current declared target. This
-    is not a remote health assertion. *)
-
-val cancel_deployment :
-  t ->
-  scope:scope ->
-  operation_id:string ->
-  cancellation_result Deferred.Or_error.t
-(** Cancellation is process-local. Persisted requested/running operations that
-    are not registered in this process remain visible in history but cannot be
-    signalled. Ownership is checked against both the scope and operation id
-    before either the cancellation token or store is mutated. *)
-
-val deployment_can_cancel : t -> scope:scope -> deployment -> bool
-
-val application_logs :
-  t -> Managed_application.t -> log_snapshot Deferred.Or_error.t
 
 val local_logs :
   t ->
   working_directory:string ->
   target:Target_name.t ->
   log_snapshot Deferred.Or_error.t
-(** Bounded logs from the positively owned running container, selected by ID.
-    Web targets use the exact owned Caddy route; no build or secret loading. *)
-
-val application_metrics :
-  t -> Managed_application.t -> target_metrics Deferred.t
-
-val resource_state :
-  t ->
-  working_directory:string ->
-  target:Target_name.t ->
-  resource_state Deferred.Or_error.t
 
 val resource_state_for_scope :
   t -> scope:scope -> resource_state Deferred.Or_error.t
 
-val live_resource_state_for_scope :
-  t -> scope:scope -> resource_state Deferred.t
-(** Queries the remote Podman resource for this scope. Failed inspection is
-    reported as [Unknown] and never overwrites the durable deployment state. *)
+val runbook :
+  working_directory:string ->
+  target:Target_name.t ->
+  Configuration.Runbook_command.t list Deferred.Or_error.t
+(** Stateless local listing; never opens history or contacts the target. *)
+
+val run :
+  on_selection:(Runbook.selection -> unit Deferred.t) ->
+  working_directory:string ->
+  target:Target_name.t ->
+  name:string ->
+  Runbook.outcome Deferred.Or_error.t
+(** Holds the remote guard across selection and exec, without replay or output
+    retention. Uncertain outcomes retain the marker and preserve child exit
+    code. *)
 
 val prune_project : prune_result -> Project_name.t
 val prune_target : prune_result -> Target_name.t
@@ -288,7 +162,6 @@ val commit_revision : commit -> string
 val commit_subject : commit -> string
 val commit_timestamp_ms : commit -> int64
 val deployment_id : deployment -> string
-val deployment_application_key : deployment -> string option
 val deployment_state : deployment -> deployment_state
 val deployment_stage : deployment -> string
 val deployment_message : deployment -> string
@@ -306,42 +179,16 @@ val deployment_state_name : deployment_state -> string
 
 module For_testing : sig
   val create :
-    ?status:(scope:scope -> status Deferred.Or_error.t) ->
-    ?logs:(Managed_application.t -> log_snapshot Deferred.Or_error.t) ->
-    ?metrics:(Managed_application.t -> target_metrics Deferred.t) ->
-    ?verify_managed_source:
-      (Managed_application.t ->
-      revision:string ->
-      Source_authority.t Deferred.Or_error.t) ->
     ?deployment_history:
       (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) ->
     ?local_source:(working_directory:string -> source Deferred.Or_error.t) ->
-    ?managed_applications:Managed_application.t list ->
     store:Store.t ->
-    preview_main:(working_directory:string -> commit Deferred.Or_error.t) ->
-    find_commit:
-      (working_directory:string ->
-      revision:string ->
-      commit Deferred.Or_error.t) ->
     deploy:
-      (authorization:Operation_receipt.deploy ->
+      (request:Deployment_request.t ->
       prepared:Deployment.prepared option ->
       (deployment * deployment Deferred.Or_error.t) Deferred.Or_error.t) ->
-    prune:
-      (authorization:Operation_receipt.prune ->
-      prepared:Prune.prepared option ->
-      prune_result Deferred.Or_error.t) ->
     unit ->
     t
-
-  val prune_result :
-    project:Project_name.t ->
-    target:Target_name.t ->
-    resource_key:Resource_key.t ->
-    containers_removed:int ->
-    secrets_removed:int ->
-    route:prune_route_state ->
-    prune_result
 
   val commit :
     revision:string -> subject:string -> timestamp_ms:int64 -> commit Or_error.t
@@ -349,7 +196,7 @@ module For_testing : sig
   val local_source : working_directory:string -> commit -> source
 
   val deployment :
-    ?application_key:string ->
+    ?legacy_application_key:string ->
     ?working_directory:string ->
     ?target:Target_name.t ->
     ?stage:string ->
