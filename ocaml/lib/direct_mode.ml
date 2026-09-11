@@ -4,16 +4,9 @@ let validate_configuration configuration ~target =
   match Configuration.control_plane configuration with
   | Some _ ->
       Or_error.error_string
-        "NIXPLOY_DIRECT_MANAGED_DECLARATION: a flake declaring controlPlane \
-         identity cannot use local execution"
+        "NIXPLOY_CONTROL_PLANE_REMOVED: remove obsolete controlPlane \
+         configuration; nixploy now executes directly over SSH"
   | None ->
       let open Or_error.Let_syntax in
-      let%bind target = Configuration.find_target configuration target in
-      if
-        Option.is_some (Configuration.Target.production target)
-        || Option.is_some (Configuration.Target.non_production target)
-      then Ok ()
-      else
-        Or_error.error_string
-          "NIXPLOY_DIRECT_DEPLOYMENT_PROFILE_REQUIRED: local execution requires \
-           an explicitly declared production or nonProduction target"
+      let%map _ = Configuration.find_target configuration target in
+      ()

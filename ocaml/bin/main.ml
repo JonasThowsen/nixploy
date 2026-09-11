@@ -1,373 +1,203 @@
 open Async
 open Core
-module Control_plane_client = Nixploy_control_plane_client.Control_plane_client
-module Control_plane_output = Nixploy_cli_mapping.Control_plane_output
+module Application = Nixploy.Application
 module Deployment_observer = Nixploy_cli_mapping.Deployment_observer
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
-let print_status status = printf "%s%!" (Inspection_output.status status)
-let print_history deployments = printf "%s%!" (Inspection_output.history deployments)
+let fail error =
+  eprintf "%s\n%!" (Error.to_string_hum error);
+  Shutdown.exit 1
 
-type execution_mode =
-  | Managed of { authority_alias : string; managed_application_key : string }
-  | Direct
-
-let execution_mode ~direct ~authority_alias ~managed_application_key =
-  match (direct, authority_alias, managed_application_key) with
-  | true, None, None -> Ok Direct
-  | true, (Some _), _ | true, _, Some _ ->
-      Or_error.error_string
-        "NIXPLOY_EXECUTION_MODE_INVALID: --direct cannot be combined with \
-         managed authority selection"
-  | false, Some authority_alias, Some managed_application_key ->
-      Ok (Managed { authority_alias; managed_application_key })
-  | false, None, None -> Ok Direct
-  | false, _, _ ->
-      Or_error.error_string
-        "NIXPLOY_MANAGED_SELECTION_INVALID: supply both --authority-alias and \
-         --managed-application-key, or neither for a nonProduction target"
-
-let resolve_execution_mode ~working_directory ~direct ~authority_alias
-    ~managed_application_key =
-  match execution_mode ~direct ~authority_alias ~managed_application_key with
-  | Error error -> Deferred.return (Error error)
-  | Ok (Managed _ as mode) -> Deferred.return (Ok mode)
-  | Ok Direct when direct -> Deferred.return (Ok Direct)
-  | Ok Direct ->
-      let open Deferred.Or_error.Let_syntax in
-      let%map configuration = Nixploy.Nix_configuration.load ~working_directory in
-      match Nixploy.Configuration.control_plane configuration with
-      | None -> Direct
-      | Some control_plane ->
-          Managed
-            {
-              authority_alias =
-                Nixploy.Configuration.Control_plane.authority_alias control_plane;
-              managed_application_key =
-                Nixploy.Configuration.Control_plane.managed_application_key
-                  control_plane;
-            }
-
-let require_managed_transport ~action ~authority_alias ~managed_application_key =
-  Deferred.map
-    (Control_plane_client.require_managed_transport ~authority_alias
-       ~managed_application_key)
-    ~f:(Result.map_error ~f:(fun error -> Error.tag error ~tag:(action ^ " failed")))
-
-let require_direct_configuration ~working_directory ~target =
-  let open Deferred.Or_error.Let_syntax in
-  let%bind configuration = Nixploy.Nix_configuration.load ~working_directory in
-  Deferred.return (Nixploy.Direct_mode.validate_configuration configuration ~target)
-
-let open_direct_application ~state_db =
-  Nixploy.Application.open_ ~state_path:state_db ()
-
-let direct_status ~working_directory ~target ~state_db =
-  let open Deferred.Let_syntax in
-  let%bind permitted = require_direct_configuration ~working_directory ~target in
-  match permitted with
+let with_application ~target ~state_db action =
+  match Nixploy.Target_name.of_string target with
   | Error error ->
-      eprintf "Status failed: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok () ->
-      let%bind opened = open_direct_application ~state_db in
-  match opened with
-  | Error error ->
-      eprintf "Could not open control-plane state: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok application -> (
-      match Nixploy.Application.local_scope ~working_directory ~target with
-      | Error error ->
-          eprintf "Status failed: %s\n" (Error.to_string_hum error);
-          Shutdown.exit 1
-      | Ok scope ->
-          let%bind result = Nixploy.Application.live_status application ~scope in
-          match result with
-          | Ok status ->
-              print_status status;
-              Deferred.unit
-          | Error error ->
-              eprintf "Status failed: %s\n" (Error.to_string_hum error);
-              Shutdown.exit 1)
-
-let direct_history ~working_directory ~target ~state_db ~limit =
-  let open Deferred.Let_syntax in
-  let%bind permitted = require_direct_configuration ~working_directory ~target in
-  match permitted with
-  | Error error ->
-      eprintf "History failed: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok () ->
-      let%bind opened = open_direct_application ~state_db in
-  match opened with
-  | Error error ->
-      eprintf "Could not open control-plane state: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok application -> (
-      match Nixploy.Application.local_scope ~working_directory ~target with
-      | Error error ->
-          eprintf "History failed: %s\n" (Error.to_string_hum error);
-          Shutdown.exit 1
-      | Ok scope ->
-          let%bind result =
-            Nixploy.Application.deployment_history application ~scope ~limit
-          in
-          match result with
-          | Ok deployments ->
-              print_history deployments;
-              Deferred.unit
-          | Error error ->
-              eprintf "History failed: %s\n" (Error.to_string_hum error);
-              Shutdown.exit 1)
-
-let direct_deploy ~working_directory ~target ~state_db =
-  let open Deferred.Let_syntax in
-  eprintf "Preparing local source snapshot and evaluating target %s...\n%!"
-    (Nixploy.Target_name.to_string target);
-  Nixploy.Process_runner.handle_termination_signals ();
-  let%bind permitted = require_direct_configuration ~working_directory ~target in
-  match permitted with
-  | Error error ->
-      eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok () ->
-      let%bind opened = open_direct_application ~state_db in
-  match opened with
-  | Error error ->
-      eprintf "Could not open deployment state: %s\n" (Error.to_string_hum error);
-      Shutdown.exit 1
-  | Ok application ->
-      let%bind started =
-        Nixploy.Application.start_local_deployment application ~working_directory
-          ~target
+      eprintf "%s\n%!" (Error.to_string_hum error);
+      Shutdown.exit 2
+  | Ok target -> (
+      let open Deferred.Let_syntax in
+      let%bind result =
+        let open Deferred.Or_error.Let_syntax in
+        let%bind application = Application.open_ ~state_path:state_db () in
+        action application target
       in
-      match started with
-      | Error error ->
-          eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
-          Shutdown.exit 1
-      | Ok started -> (
-          match Nixploy.Application.local_scope ~working_directory ~target with
-          | Error error ->
-              eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
-              Shutdown.exit 1
-          | Ok scope ->
-              let%bind observed =
-                Deployment_observer.observe_and_drain application ~scope started
-                  ~render_stage:(fun stage message ->
-                    eprintf "%s: %s\n%!" stage message)
-              in
-              match observed with
-              | Error error ->
-                  eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
-                  Shutdown.exit 1
-              | Ok (Deployment_observer.Interrupted signal) ->
-                  eprintf "Deploy interrupted by %s\n" (Signal.to_string signal);
-                  Shutdown.exit 130
-              | Ok (Deployment_observer.Completed deployment) -> (
-                  match Nixploy.Application.deployment_state deployment with
-                  | Nixploy.Application.Succeeded ->
-                      printf "Deployment %s succeeded\n%!"
-                        (Nixploy.Application.deployment_id deployment);
-                      Deferred.unit
-                  | Nixploy.Application.Requested
-                  | Nixploy.Application.Running
-                  | Nixploy.Application.Failed
-                  | Nixploy.Application.Cancelled ->
-                      eprintf "Deploy failed at %s: %s\n"
-                        (Nixploy.Application.deployment_stage deployment)
-                        (Nixploy.Application.deployment_message deployment);
-                      Shutdown.exit 1))
+      match result with Ok () -> Deferred.unit | Error error -> fail error)
 
-let mode_flags =
-  let open Command.Param in
+let common_flags =
   let open Command.Let_syntax in
-  let%map direct =
-    flag "--direct" no_arg
-      ~doc:" require local execution for an unmanaged nonProduction target"
-  and authority_alias =
-    flag "--authority-alias" (optional string)
-      ~doc:"ALIAS protected control-plane authority alias for a managed command"
-  and managed_application_key =
-    flag "--managed-application-key" (optional string)
-      ~doc:"KEY managed application key for a managed command"
+  let%map_open target =
+    flag "--target" (required string) ~aliases:[ "-t" ]
+      ~doc:"TARGET target declared by .#nixploy"
+  and working_directory =
+    flag "--directory"
+      (optional_with_default "." string)
+      ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+  and state_db =
+    flag "--state-db"
+      (optional_with_default (Nixploy.State_path.default ()) string)
+      ~doc:"PATH local history and uncertainty database"
+  and json =
+    flag "--json" no_arg
+      ~doc:" emit structured output; diagnostics remain on stderr"
   in
-  (direct, authority_alias, managed_application_key)
+  (target, working_directory, state_db, json)
 
 let status_command =
   Async.Command.async ~summary:"Inspect one target"
-    (let%map_open.Command target =
-       flag "--target" (required string) ~aliases:[ "-t" ]
-         ~doc:"TARGET target declared by .#nixploy"
-     and working_directory =
-       flag "--directory" (optional_with_default "." string) ~aliases:[ "-C" ]
-         ~doc:"DIRECTORY project flake directory for --direct"
-     and state_db =
-       flag "--state-db" (optional_with_default (Nixploy.State_path.default ()) string)
-         ~doc:"PATH durable local state database for --direct"
-     and mode = mode_flags in
+    (let%map_open.Command flags = common_flags in
      fun () ->
-       let direct, authority_alias, managed_application_key = mode in
-       match Nixploy.Target_name.of_string target with
-       | Error error ->
-           eprintf "%s\n" (Error.to_string_hum error);
-           Shutdown.exit 2
-       | Ok target ->
-           let open Deferred.Let_syntax in
-           let%bind mode =
-             resolve_execution_mode ~working_directory ~direct ~authority_alias
-               ~managed_application_key
+       let target, working_directory, state_db, json = flags in
+       with_application ~target ~state_db (fun application target ->
+           let open Deferred.Or_error.Let_syntax in
+           let%bind scope =
+             Deferred.return
+               (Application.local_scope ~working_directory ~target)
            in
-           (match mode with
-           | Error error ->
-               eprintf "Status failed: %s\n" (Error.to_string_hum error);
-               Shutdown.exit 1
-           | Ok (Managed { authority_alias; managed_application_key }) ->
-               let%bind result =
-                 require_managed_transport ~action:"Status" ~authority_alias
-                   ~managed_application_key
-               in
-               (match result with
-               | Ok () ->
-                   eprintf "Status failed: managed status RPC is unavailable\n";
-                   Shutdown.exit 1
-               | Error error ->
-                   eprintf "%s\n" (Error.to_string_hum error);
-                   Shutdown.exit 1)
-           | Ok Direct -> direct_status ~working_directory ~target ~state_db))
-
-let prune_command =
-  Async.Command.async ~summary:"Remove resources owned for one target"
-    (let%map_open.Command target =
-       flag "--target" (required string) ~aliases:[ "-t" ]
-         ~doc:"TARGET target declared by .#nixploy"
-     and working_directory =
-       flag "--directory" (optional_with_default "." string) ~aliases:[ "-C" ]
-         ~doc:"DIRECTORY project flake directory"
-     and state_db =
-       flag "--state-db" (optional_with_default (Nixploy.State_path.default ()) string)
-         ~doc:"PATH durable control-plane state database"
-     in
-     fun () ->
-       ignore (target, working_directory, state_db);
-       eprintf
-         "Prune refused: the standalone CLI has no protected mutation authority; \
-          use the managed control-plane RPC.\n";
-       Shutdown.exit 1)
-
-let deploy_command =
-  Async.Command.async ~summary:"Deploy one target"
-    (let%map_open.Command target =
-       flag "--target" (required string) ~aliases:[ "-t" ]
-         ~doc:"TARGET target declared by .#nixploy"
-     and working_directory =
-       flag "--directory" (optional_with_default "." string) ~aliases:[ "-C" ]
-         ~doc:"DIRECTORY current local project flake for --direct"
-     and state_db =
-       flag "--state-db" (optional_with_default (Nixploy.State_path.default ()) string)
-         ~doc:"PATH durable local state database for --direct"
-     and mode = mode_flags in
-     fun () ->
-       let direct, authority_alias, managed_application_key = mode in
-       match Nixploy.Target_name.of_string target with
-       | Error error ->
-           eprintf "%s\n" (Error.to_string_hum error);
-           Shutdown.exit 2
-       | Ok target ->
-           let open Deferred.Let_syntax in
-           let%bind mode =
-             resolve_execution_mode ~working_directory ~direct ~authority_alias
-               ~managed_application_key
-           in
-           (match mode with
-           | Error error ->
-               eprintf "Deploy failed: %s\n" (Error.to_string_hum error);
-               Shutdown.exit 1
-           | Ok (Managed { authority_alias; managed_application_key }) ->
-               let%bind result =
-                 require_managed_transport ~action:"Deploy" ~authority_alias
-                   ~managed_application_key
-               in
-               (match result with
-               | Ok () ->
-                   eprintf "Deploy failed: managed deploy RPC is unavailable\n";
-                   Shutdown.exit 1
-               | Error error ->
-                   eprintf "%s\n" (Error.to_string_hum error);
-                   Shutdown.exit 1)
-           | Ok Direct -> direct_deploy ~working_directory ~target ~state_db))
+           let%map status = Application.live_status application ~scope in
+           printf "%s%!"
+             ((if json then Inspection_output.status_json
+               else Inspection_output.status)
+                status)))
 
 let history_command =
-  Async.Command.async ~summary:"List deployment history for one target"
-    (let%map_open.Command target =
-       flag "--target" (required string) ~aliases:[ "-t" ]
-         ~doc:"TARGET target declared by .#nixploy"
-     and working_directory =
-       flag "--directory" (optional_with_default "." string) ~aliases:[ "-C" ]
-         ~doc:"DIRECTORY project flake directory for --direct"
-     and state_db =
-       flag "--state-db" (optional_with_default (Nixploy.State_path.default ()) string)
-         ~doc:"PATH durable local state database for --direct"
+  Async.Command.async
+    ~summary:"List bounded local deployment history (not remote health)"
+    (let%map_open.Command flags = common_flags
      and limit =
-       flag "--limit" (optional_with_default 25 int)
-         ~doc:"COUNT number of recent deployments (1-100)"
-     and mode = mode_flags in
-     fun () ->
-       let direct, authority_alias, managed_application_key = mode in
-       match Nixploy.Target_name.of_string target with
-       | Error error ->
-           eprintf "%s\n" (Error.to_string_hum error);
-           Shutdown.exit 2
-       | Ok target ->
-           let open Deferred.Let_syntax in
-           let%bind mode =
-             resolve_execution_mode ~working_directory ~direct ~authority_alias
-               ~managed_application_key
-           in
-           (match mode with
-           | Error error ->
-               eprintf "History failed: %s\n" (Error.to_string_hum error);
-               Shutdown.exit 1
-           | Ok (Managed { authority_alias; managed_application_key }) ->
-               let%bind result =
-                 require_managed_transport ~action:"History" ~authority_alias
-                   ~managed_application_key
-               in
-               (match result with
-               | Ok () ->
-                   eprintf "History failed: managed history RPC is unavailable\n";
-                   Shutdown.exit 1
-               | Error error ->
-                   eprintf "%s\n" (Error.to_string_hum error);
-                   Shutdown.exit 1)
-           | Ok Direct -> direct_history ~working_directory ~target ~state_db ~limit))
-
-let control_plane_capabilities_command =
-  Async.Command.async_or_error ~summary:"Read one control-plane compatibility contract"
-    (let%map_open.Command uri =
-       flag "--uri" (required string) ~doc:"URI control-plane HTTP or HTTPS authority"
-     and required_capabilities =
-       flag "--require" (listed string) ~doc:"CAPABILITY require one named server capability"
+       flag "--limit"
+         (optional_with_default 25 int)
+         ~doc:"COUNT recent operations (1-100)"
      in
      fun () ->
-       let open Deferred.Or_error.Let_syntax in
-       let%map capabilities =
-         Control_plane_client.request_control_plane_capabilities ~uri
-           ~required_capabilities
-       in
-       printf "%s%!" (Control_plane_output.capabilities capabilities))
+       let target, working_directory, state_db, json = flags in
+       with_application ~target ~state_db (fun application target ->
+           let open Deferred.Or_error.Let_syntax in
+           let%map deployments =
+             Application.local_history application ~working_directory ~target
+               ~limit
+           in
+           printf "%s%!"
+             ((if json then Inspection_output.history_json
+               else Inspection_output.history)
+                deployments)))
 
-let control_plane_command =
-  Command.group ~summary:"Inspect a remote nixploy control plane"
-    [ ("capabilities", control_plane_capabilities_command) ]
+let logs_command =
+  Async.Command.async
+    ~summary:"Read a bounded snapshot of the owned running container's logs"
+    (let%map_open.Command flags = common_flags in
+     fun () ->
+       let target, working_directory, state_db, json = flags in
+       with_application ~target ~state_db (fun application target ->
+           let open Deferred.Or_error.Let_syntax in
+           let%map logs =
+             Application.local_logs application ~working_directory ~target
+           in
+           if json then printf "%s%!" (Inspection_output.logs_json logs)
+           else (
+             eprintf "Container: %s%s\n%!" logs.container_name
+               (if logs.truncated then " (truncated)" else "");
+             List.iter logs.lines ~f:(fun line ->
+                 printf "%s%s\n%!"
+                   (Option.value_map line.timestamp ~default:""
+                      ~f:(fun timestamp -> timestamp ^ " "))
+                   line.text))))
+
+let prune_command =
+  Async.Command.async
+    ~summary:
+      "Remove owned containers and configured route; retain secrets, images, \
+       volumes and data"
+    (let%map_open.Command flags = common_flags
+     and confirmed =
+       flag "--yes" no_arg ~doc:" confirm removal without prompting"
+     in
+     fun () ->
+       let target, working_directory, state_db, json = flags in
+       if not confirmed then (
+         eprintf
+           "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes; no resources were \
+            changed\n\
+            %!";
+         Shutdown.exit 2)
+       else (
+         Nixploy.Process_runner.handle_termination_signals ();
+         with_application ~target ~state_db (fun application target ->
+             let open Deferred.Or_error.Let_syntax in
+             let%map result =
+               Application.prune_local application ~working_directory ~target
+                 ~confirmed
+             in
+             if json then
+               printf "{\"containersRemoved\":%d,\"secretsRemoved\":0}\n%!"
+                 (Application.prune_containers_removed result)
+             else
+               printf
+                 "Removed %d owned containers and processed the configured \
+                  route. Secrets, images, volumes and data retained.\n\
+                  %!"
+                 (Application.prune_containers_removed result))))
+
+let deploy_command =
+  Async.Command.async
+    ~summary:"Deploy one target from a consistent local source snapshot"
+    (let%map_open.Command flags = common_flags in
+     fun () ->
+       let target, working_directory, state_db, json = flags in
+       Nixploy.Process_runner.handle_termination_signals ();
+       with_application ~target ~state_db (fun application target ->
+           let open Deferred.Or_error.Let_syntax in
+           eprintf "Preparing local source snapshot...\n%!";
+           let%bind scope =
+             Deferred.return
+               (Application.local_scope ~working_directory ~target)
+           in
+           let%bind started =
+             Application.start_local_deployment application ~working_directory
+               ~target
+           in
+           let%bind observed =
+             Deployment_observer.observe_and_drain application ~scope started
+               ~render_stage:(fun stage message ->
+                 eprintf "%s: %s\n%!" stage message)
+           in
+           match observed with
+           | Deployment_observer.Interrupted signal ->
+               eprintf
+                 "Deploy interrupted by %s; remote uncertainty evidence may \
+                  require reconciliation\n\
+                  %!"
+                 (Signal.to_string signal);
+               Shutdown.exit 130
+           | Completed deployment -> (
+               if json then
+                 printf "%s%!" (Inspection_output.deployment_json deployment);
+               match Application.deployment_state deployment with
+               | Succeeded ->
+                   if not json then
+                     printf "Deployment %s succeeded\n%!"
+                       (Application.deployment_id deployment);
+                   Deferred.Or_error.return ()
+               | Requested | Running | Failed | Cancelled ->
+                   Deferred.Or_error.errorf "Deploy failed at %s: %s"
+                     (Application.deployment_stage deployment)
+                     (Application.deployment_message deployment))))
 
 let command =
-  Command.group ~summary:"Deploy and manage Nix-built applications"
+  Command.group ~summary:"Daemonless deployment and operations over strict SSH"
+    ~readme:(fun () ->
+      "Exit codes: 0 success; 1 operation or command-parser error; 2 invalid \
+       target or missing prune confirmation; 130 deployment interrupted after \
+       admission. JSON results use stdout; progress and errors use stderr. \
+       Preparation failures produce no result object. History is local \
+       evidence, not remote health. Logs are bounded to 500 lines and 64 KiB \
+       by the Podman adapter. Failed mutations retain remote uncertainty \
+       evidence: never retry or remove it until remote effects have been \
+       reconciled.")
     [
-      ("control-plane", control_plane_command);
       ("deploy", deploy_command);
-      ("history", history_command);
-      ("prune", prune_command);
       ("status", status_command);
+      ("history", history_command);
+      ("logs", logs_command);
+      ("prune", prune_command);
     ]
 
 let () = Command_unix.run ~version:"0.1.0-ocaml" command

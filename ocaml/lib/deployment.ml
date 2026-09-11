@@ -236,7 +236,8 @@ let prepare ~authorization =
         if
           Option.value_map expected_project ~default:false
             ~f:(Project_name.equal (Managed_application.project application))
-          && Target_name.equal target_name (Managed_application.target application)
+          && Target_name.equal target_name
+               (Managed_application.target application)
         then Deferred.Or_error.return ()
         else
           Deferred.Or_error.error_string
@@ -329,12 +330,24 @@ let prepare ~authorization =
             [ Deployment_intent.resource_key intent ] )
       | None, None ->
           let repository_identity = Source.repository source in
-          let%bind identity_policy =
+          let%bind () =
             Deferred.return
-              (Deployment_intent.authorize_local
-                 ~applications:managed_applications ~working_directory
-                 ~configuration ~target)
+              (Direct_mode.validate_configuration configuration
+                 ~target:target_name)
           in
+          let%bind () =
+            if List.is_empty managed_applications then
+              Deferred.Or_error.return ()
+            else
+              let%map _ =
+                Deferred.return
+                  (Deployment_intent.authorize_local
+                     ~applications:managed_applications ~working_directory
+                     ~configuration ~target)
+              in
+              ()
+          in
+          let identity_policy = Deployment_intent.Migration_candidates in
           let%map candidates =
             Deferred.return
               (match identity_policy with
@@ -371,7 +384,7 @@ let prepare ~authorization =
       let%map.Deferred () = Source.cleanup source in
       Error error
 
-let execute ~store ~authorization ~operation_id prepared =
+let execute_guarded ~store ~authorization ~operation_id prepared =
   let record_stage stage message =
     Store.record_stage store ~id:operation_id ~stage:(stage_name stage) ~message
   in
@@ -666,6 +679,21 @@ let execute ~store ~authorization ~operation_id prepared =
       | Error error when !switched ->
           restore_and_cleanup ~caddy ~previous ~connection ~candidate error
       | Error error -> cleanup_candidate ~connection candidate error)
+
+let execute ~store ~authorization ~operation_id prepared =
+  Mutation_guard.with_mutation ~project:prepared.project ~target:prepared.target
+    (fun () ->
+      let open Deferred.Or_error.Let_syntax in
+      let%bind deployment =
+        execute_guarded ~store ~authorization ~operation_id prepared
+      in
+      match deployment.warning with
+      | None -> Deferred.Or_error.return deployment
+      | Some warning ->
+          Deferred.Or_error.errorf
+            "NIXPLOY_DEPLOYMENT_PARTIAL: application is active but cleanup is \
+             not confirmed: %s"
+            warning)
 
 let deploy ~store ~authorization ~operation_id () =
   let open Deferred.Or_error.Let_syntax in

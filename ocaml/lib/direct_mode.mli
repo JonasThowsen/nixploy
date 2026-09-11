@@ -2,6 +2,5 @@ open Core
 
 val validate_configuration :
   Configuration.t -> target:Target_name.t -> unit Or_error.t
-(** Rejects every direct operation from a flake that declares control-plane
-    identity and requires an explicitly declared production or non-production
-    target profile. *)
+(** Requires a declared target and rejects obsolete controlPlane configuration
+    with a migration error. No authority profile or registry is required. *)

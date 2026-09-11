@@ -7,6 +7,17 @@ type route = Not_configured | Missing | Removed
 type t
 type prepared
 
+val prune_local :
+  store:Store.t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  confirmed:bool ->
+  t Deferred.Or_error.t
+(** Removes only exactly owned containers and the configured owned Caddy route.
+    Secrets, images, volumes, and host data are retained. All ownership checks
+    precede removal; partial/unknown results retain the remote mutation guard
+    and append durable progress in the local prune_events table. *)
+
 val prepare :
   authorization:Operation_receipt.prune -> prepared Deferred.Or_error.t
 (** Always fails before source preparation, Nix evaluation, or process effects.

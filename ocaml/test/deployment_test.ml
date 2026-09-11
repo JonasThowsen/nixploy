@@ -74,7 +74,7 @@ JSON
 JSON
     else
       cat <<'JSON'
-{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","nonProduction":{"coordinationScope":"test-worker"},"run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
+{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","run":{"command":["/app/worker","--once"],"environment":{"PORT":"{port}","MODE":"worker","RELEASE_REVISION":"{revision}"},"preStart":[["/app/migrate"],["/app/seed"]],"network":"private","ports":["127.0.0.1:9000:9000"]}}}}
 JSON
     fi
     ;;
@@ -114,6 +114,7 @@ last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
   *"'podman' 'ps'"*) printf '[]\n' ;;
+  "'mkdir' "*|"'sync' "*|"'rmdir' "*) : ;;
   "'true'") : ;;
   "'test' '-e' '/srv/reference data'")
     if [ "${NIXPLOY_TEST_MISSING_BIND:-}" = "1" ]; then
@@ -202,6 +203,7 @@ if [ "${3:-}" = "container" ] && [ "${4:-}" = "exists" ]; then
     case "${5:-}" in *-blue|*-green) ;; *) exit 0 ;; esac
   fi
   if [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then exit 1; fi
+  case "${5:-}" in *-blue|*-green) exit 1 ;; esac
   exit 0
 fi
 if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
@@ -379,9 +381,10 @@ exit 99
             (Option.map managed_application
                ~f:Nixploy.Managed_application.project)
         in
-        Nixploy.Operation_receipt.direct_deploy ~application_key ~expected_project
-          ~intent:expected_intent ~application:managed_application
-          ~managed_applications ~working_directory:repository ~source ~target
+        Nixploy.Operation_receipt.direct_deploy ~application_key
+          ~expected_project ~intent:expected_intent
+          ~application:managed_application ~managed_applications
+          ~working_directory:repository ~source ~target
         |> assert_ok
       in
       let direct_store () =
@@ -517,7 +520,8 @@ exit 99
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 1 (count lines "nix|eval|");
       [%test_eq: int] 0 (count lines "nix|build|");
-      assert (List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
+      assert (
+        List.for_all lines ~f:(Fn.non (String.is_prefix ~prefix:"podman|")));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_PRODUCTION" "1";
@@ -877,8 +881,7 @@ exit 99
       assert (not (Sys_unix.file_exists_exn state));
       let lines = In_channel.read_lines trace in
       let route_switches =
-        List.filter lines
-          ~f:(String.is_substring ~substring:"'-X' 'PATCH'")
+        List.filter lines ~f:(String.is_substring ~substring:"'-X' 'PATCH'")
       in
       [%test_eq: int] 2 (List.length route_switches);
       let restoration = List.nth_exn route_switches 1 in
@@ -982,10 +985,8 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_RETIREMENT" "old-slot-id";
       write route_state "8080\nworker.example.invalid\n";
       let%bind warned = deploy "operation-retirement-warning" in
-      let warned = assert_ok warned in
-      let warning = Nixploy.Deployment.warning warned |> Option.value_exn in
-      assert (String.length warning <= 4096);
-      assert (String.is_substring warning ~substring:"retirement failed");
+      expect_error_containing warned "NIXPLOY_MUTATION_UNCERTAIN";
+      expect_error_containing warned "retirement failed";
       let lines = In_channel.read_lines trace in
       let failed_retirement =
         index_of lines (String.is_suffix ~suffix:"|rm|-f|old-slot-id")
@@ -1012,6 +1013,65 @@ exit 99
       [%test_eq: string list]
         [ "8081"; "worker.example.invalid" ]
         (In_channel.read_lines route_state);
+
+      clear_scenario ();
+      let%bind refused =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:false
+      in
+      expect_error_containing refused "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED";
+      [%test_eq: int] 0 (List.length (In_channel.read_lines trace));
+
+      Caml_unix.putenv "NIXPLOY_TEST_UNOWNED" "1";
+      let%bind foreign =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      expect_error_containing foreign "not owned by this repository";
+      [%test_eq: int] 0 (count (In_channel.read_lines trace) "|rm|-f|");
+
+      clear_scenario ();
+      let%bind pruned =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      let pruned = assert_ok pruned in
+      [%test_eq: int] 1 (Nixploy.Application.prune_containers_removed pruned);
+      [%test_eq: int] 0 (Nixploy.Application.prune_secrets_removed pruned);
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "|rm|-f|single-id");
+      List.iter [ "|volume|"; "|system|prune|"; "|secret|rm|"; "nix|build|" ]
+        ~f:(fun forbidden -> [%test_eq: int] 0 (count lines forbidden));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_RETIREMENT" "old-slot-id";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind partial =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      expect_error_containing partial "NIXPLOY_MUTATION_UNCERTAIN";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "|rm|-f|single-id");
+      [%test_eq: int] 1 (count lines "|rm|-f|old-slot-id");
+      [%test_eq: int] 0 (count lines "'rmdir'");
+      let db = Sqlite3.db_open application_store_path in
+      let messages = ref [] in
+      let code =
+        Sqlite3.exec db
+          ~cb:(fun row _ -> messages := Option.value_exn row.(0) :: !messages)
+          "SELECT message FROM prune_events ORDER BY sequence"
+      in
+      assert (Sqlite3.Rc.is_success code);
+      assert (Sqlite3.db_close db);
+      assert (
+        List.exists !messages
+          ~f:(String.is_prefix ~prefix:"removed container single-id"));
+      assert (
+        String.is_prefix (List.hd_exn !messages) ~prefix:"failed or unknown:");
 
       Deferred.unit)
 

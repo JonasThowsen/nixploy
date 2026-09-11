@@ -164,7 +164,9 @@ type t = {
   metrics_override :
     (Managed_application.t -> target_metrics Deferred.t) option;
   verify_managed_source :
-    Managed_application.t -> revision:string -> Source_authority.t Deferred.Or_error.t;
+    Managed_application.t ->
+    revision:string ->
+    Source_authority.t Deferred.Or_error.t;
   deployment_history_override :
     (scope:scope -> limit:int -> deployment list Deferred.Or_error.t) option;
   active : active_operation String.Table.t;
@@ -264,8 +266,9 @@ let create_with_managed_applications ~managed_applications ~store () =
           ~target:scope.target);
     logs_override = None;
     metrics_override = None;
-    verify_managed_source = (fun application ~revision ->
-      Source_authority.verify ~expected_revision:revision application);
+    verify_managed_source =
+      (fun application ~revision ->
+        Source_authority.verify ~expected_revision:revision application);
     deployment_history_override = None;
     active = String.Table.create ();
     cancellations = ref [];
@@ -500,8 +503,8 @@ let direct_mode_fence t ~application_key ~working_directory ~target =
        application scope"
   else Ok ()
 
-let start_direct_deployment ?application_key ?expected_project t ~working_directory
-    ~source ~target () =
+let start_direct_deployment ?application_key ?expected_project t
+    ~working_directory ~source ~target () =
   match canonical_working_directory working_directory with
   | Error error -> Deferred.return (Error error)
   | Ok working_directory -> (
@@ -538,7 +541,9 @@ let admit_managed_deployment t requested_application ~revision =
      broker admission is not configured"
 
 let start_managed_deployment t requested_application =
-  let working_directory = Managed_application.working_directory requested_application in
+  let working_directory =
+    Managed_application.working_directory requested_application
+  in
   let target = Managed_application.target requested_application in
   let open Deferred.Or_error.Let_syntax in
   let%bind source = local_source t ~working_directory in
@@ -549,9 +554,11 @@ let start_managed_deployment t requested_application =
   match
     Operation_receipt.direct_deploy
       ~application_key:(Some (Managed_application.key requested_application))
-      ~expected_project:(Some (Managed_application.project requested_application))
+      ~expected_project:
+        (Some (Managed_application.project requested_application))
       ~intent:None ~application:(Some requested_application)
-      ~managed_applications:t.managed_applications ~working_directory ~source ~target
+      ~managed_applications:t.managed_applications ~working_directory ~source
+      ~target
   with
   | Error error -> Deferred.return (Error error)
   | Ok authorization -> start_authorization t ~authorization
@@ -565,8 +572,8 @@ let deploy_direct_deployment ?application_key ?expected_project t
     ~working_directory ~source ~target () =
   let open Deferred.Or_error.Let_syntax in
   let%bind started =
-    start_direct_deployment ?application_key ?expected_project t ~working_directory
-      ~source ~target ()
+    start_direct_deployment ?application_key ?expected_project t
+      ~working_directory ~source ~target ()
   in
   await_started_deployment started
 
@@ -590,6 +597,20 @@ let prune_non_production ?application_key:_ ?expected_project:_
   prune_disabled t
 
 let live_status t ~scope = t.load_status ~scope
+
+let prune_local t ~working_directory ~target ~confirmed =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_working_directory working_directory)
+  in
+  let%bind () = Deferred.return (begin_mutation t) in
+  Monitor.protect
+    ~finally:(fun () ->
+      finish_mutation t;
+      Deferred.unit)
+    (fun () ->
+      Prune.prune_local ~store:t.store ~working_directory ~target ~confirmed)
+
 let status_project = Status.project
 let status_target = Status.target
 let status_resource_key = Status.resource_key
@@ -621,6 +642,15 @@ let deployment_history t ~scope ~limit =
           Or_error.map deployments ~f:(fun deployments ->
               List.map deployments ~f:deployment_of_store
               |> List.filter ~f:(same_scope scope)))
+
+let local_history t ~working_directory ~target ~limit =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind configuration = Nix_configuration.load ~working_directory in
+  let%bind () =
+    Deferred.return (Direct_mode.validate_configuration configuration ~target)
+  in
+  let%bind scope = Deferred.return (local_scope ~working_directory ~target) in
+  deployment_history t ~scope ~limit
 
 let equal_scope (left : scope) (right : scope) =
   String.equal left.working_directory right.working_directory
@@ -750,8 +780,8 @@ let runtime_cache_key application (scope : scope) =
 let discover_runtime ?before_connection t application ~bootstrap_commit =
   let open Deferred.Or_error.Let_syntax in
   let%bind identity =
-    Runtime_application.discover_identity ?before_connection ~commit:bootstrap_commit
-      application
+    Runtime_application.discover_identity ?before_connection
+      ~commit:bootstrap_commit application
   in
   let revision = Runtime_application.deployed_revision identity in
   let operation_id = Runtime_application.deployed_operation_id identity in
@@ -760,7 +790,8 @@ let discover_runtime ?before_connection t application ~bootstrap_commit =
       ~working_directory:(Managed_application.working_directory application)
       ~revision
   in
-  Runtime_application.resolve ?before_connection ~commit ~operation_id application
+  Runtime_application.resolve ?before_connection ~commit ~operation_id
+    application
 
 let cached_runtime t ~(scope : scope) ~key ~resolution_id ~mutation_id ~resolve
     =
@@ -881,6 +912,66 @@ let application_logs t application =
                     { timestamp = line.timestamp; text = line.text });
               truncated = snapshot.truncated;
             })
+
+let local_logs _t ~working_directory ~target:target_name =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind configuration = Nix_configuration.load ~working_directory in
+  let%bind () =
+    Deferred.return
+      (Direct_mode.validate_configuration configuration ~target:target_name)
+  in
+  let%bind target =
+    Deferred.return (Configuration.find_target configuration target_name)
+  in
+  let project = Configuration.project configuration in
+  let%bind repository_identity =
+    Source.repository_identity ~working_directory
+  in
+  let%bind candidates =
+    Deferred.return
+      (Resource_key.candidates ~project ~target:target_name ~repository_identity)
+  in
+  let%bind resource_key =
+    Podman.select_resource_key ~project ~target ~repository_identity ~candidates
+  in
+  let%bind connection = Podman.ensure_connection ~target ~resource_key in
+  let%bind placement =
+    match Configuration.Target.kind target with
+    | Non_web -> Deferred.Or_error.return Deployment_plan.Single_container
+    | Web web -> (
+        let%bind route =
+          Caddy.inspect (Caddy.create ~target ~resource_key ~web)
+        in
+        match route with
+        | Missing ->
+            Deferred.Or_error.error_string
+              "NIXPLOY_LOGS_NO_ACTIVE_ROUTE: no owned active Caddy route"
+        | Existing { active_port; _ } ->
+            if active_port = Configuration.Web.blue_port web then
+              Deferred.Or_error.return
+                (Deployment_plan.Web_slot { slot = Blue; port = active_port })
+            else if active_port = Configuration.Web.green_port web then
+              Deferred.Or_error.return
+                (Deployment_plan.Web_slot { slot = Green; port = active_port })
+            else
+              Deferred.Or_error.error_string
+                "NIXPLOY_LOGS_UNKNOWN_ACTIVE_PORT: route does not select a \
+                 configured slot")
+  in
+  let%bind container =
+    Podman.find_running_placement ~connection ~project ~target ~resource_key
+      ~repository_identity ~placement
+  in
+  let%map logs = Podman.read_logs ~connection ~container in
+  {
+    container_name = Podman.runtime_container_name container;
+    revision = Podman.runtime_container_revision container;
+    observed_at_ms = now_ms ();
+    lines =
+      List.map logs.lines ~f:(fun (line : Podman.log_line) ->
+          { timestamp = line.timestamp; text = line.text });
+    truncated = logs.truncated;
+  }
 
 let container_uptime container =
   Podman.runtime_container_started_at container
@@ -1104,7 +1195,8 @@ module For_testing = struct
       verify_managed_source =
         Option.value verify_managed_source
           ~default:(fun _application ~revision:_ ->
-            Deferred.Or_error.error_string "managed source verification must not run");
+            Deferred.Or_error.error_string
+              "managed source verification must not run");
       deployment_history_override = deployment_history;
       active = String.Table.create ();
       cancellations = ref [];

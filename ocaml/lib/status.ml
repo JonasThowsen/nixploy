@@ -19,6 +19,10 @@ let workloads t = t.workloads
 let load ~working_directory ~target:target_name =
   let open Deferred.Or_error.Let_syntax in
   let%bind configuration = Nix_configuration.load ~working_directory in
+  let%bind () =
+    Deferred.return
+      (Direct_mode.validate_configuration configuration ~target:target_name)
+  in
   let%bind target =
     Deferred.return (Configuration.find_target configuration target_name)
   in
@@ -43,18 +47,15 @@ let load ~working_directory ~target:target_name =
     Deferred.return (Podman_connection.all_of_json connection_output)
   in
   let resource_key_text = Resource_key.to_string resource_key in
-  let%bind connection =
+  let%bind connection_name =
     match Podman_connection.find_by_name connections resource_key_text with
     | Some connection when Podman_connection.matches_target connection target ->
-        Deferred.Or_error.return connection
+        Deferred.Or_error.return (Podman_connection.name connection)
     | Some _ ->
         Deferred.Or_error.error_string
           "the exact resource connection does not match the flake target"
-    | None ->
-        Deferred.Or_error.error_string
-          "the exact resource connection is not configured"
+    | None -> Podman.ensure_connection ~target ~resource_key
   in
-  let connection_name = Podman_connection.name connection in
   let names = Prune_plan.create ~resource_key |> Prune_plan.container_names in
   let query filters =
     Process_runner.run_stdout ~timeout:query_timeout

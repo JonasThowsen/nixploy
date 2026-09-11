@@ -12,9 +12,20 @@ type resource_state = Unknown | Present | Absent
 type deployment
 
 type managed_operation_evidence
-(** Immutable managed-operation admission evidence keyed by an existing deployment ID. *)
+(** Immutable managed-operation admission evidence keyed by an existing
+    deployment ID. *)
 
 val open_ : path:string -> t Deferred.Or_error.t
+
+val record_prune_event :
+  t ->
+  operation_id:string ->
+  working_directory:string ->
+  target:Target_name.t ->
+  message:string ->
+  unit Deferred.Or_error.t
+(** Appends durable, secret-free scoped prune progress before and after effects.
+    An unfinished event sequence is uncertainty, never permission to retry. *)
 
 val with_reconciled_lease :
   t ->
@@ -43,14 +54,16 @@ val request_managed_with_evidence :
   coordination_scope:string ->
   plan_digest:string ->
   deployment Deferred.Or_error.t
-(** Atomically creates a requested managed deployment and its immutable admission
-    evidence. The evidence key, target, and revision are verified against the
-    newly-created operation before commit. *)
+(** Atomically creates a requested managed deployment and its immutable
+    admission evidence. The evidence key, target, and revision are verified
+    against the newly-created operation before commit. *)
 
 val attach_managed_lease_receipt :
   t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
+
 val attach_managed_release_evidence :
   t -> operation_id:string -> receipt:string -> unit Deferred.Or_error.t
+
 val attach_managed_terminal_evidence :
   t -> operation_id:string -> state:state -> unit Deferred.Or_error.t
 (** The exact lease receipt binds once. Release and terminal evidence must use
@@ -58,7 +71,10 @@ val attach_managed_terminal_evidence :
     reaches the corresponding terminal state. *)
 
 val find_managed_operation_evidence :
-  t -> operation_id:string -> managed_operation_evidence option Deferred.Or_error.t
+  t ->
+  operation_id:string ->
+  managed_operation_evidence option Deferred.Or_error.t
+
 val managed_operation_id : managed_operation_evidence -> string
 val managed_lease_receipt : managed_operation_evidence -> string option
 val managed_release_evidence : managed_operation_evidence -> string option
@@ -80,7 +96,8 @@ module For_testing : sig
     coordination_scope:string ->
     plan_digest:string ->
     deployment Deferred.Or_error.t
-  (** Exercises identity mismatch rejection before immutable evidence commits. *)
+  (** Exercises identity mismatch rejection before immutable evidence commits.
+  *)
 end
 
 val request :

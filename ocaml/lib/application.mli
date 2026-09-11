@@ -74,8 +74,8 @@ type target_metrics = {
 }
 
 val create : store:Store.t -> unit -> t
-(** Loads the host authority file when present; a linked caller cannot replace
-    it with an empty allowlist. *)
+(** Opens a process-local CLI facade; no registry or host authority is loaded.
+*)
 
 val open_ :
   ?managed_applications:Managed_application.t list ->
@@ -129,9 +129,9 @@ val start_local_deployment :
   working_directory:string ->
   target:Target_name.t ->
   started_deployment Deferred.Or_error.t
-(** Snapshots the local tracked source once and runs the shared deployment
-    engine for an explicitly declared direct [production] or [nonProduction]
-    target. Non-ignored untracked files are rejected during preparation. *)
+(** Snapshots local tracked source once and runs the shared deployment engine
+    for a declared target. Non-ignored untracked files are rejected; no
+    production profile or application registry is required. *)
 
 val deploy_local_deployment :
   t ->
@@ -195,10 +195,10 @@ val deploy_direct_deployment :
   target:Target_name.t ->
   unit ->
   deployment Deferred.Or_error.t
-(** Explicit declared direct mutation. The lower boundary accepts exactly one
-    [production] or [nonProduction] profile, rejects [controlPlane] configurations,
-    and rejects scopes matching installed managed applications before it claims
-    an operation capability. *)
+(** Direct mutation with a selected source snapshot. Rejects obsolete
+    controlPlane configuration, and holds durable remote uncertainty evidence
+    through effects. Explicit legacy allowlists supplied by library callers
+    still fail closed. *)
 
 val prune_non_production :
   ?application_key:string ->
@@ -211,6 +211,16 @@ val prune_non_production :
 (** Always fails closed in Production V1, including library-only local calls. *)
 
 val live_status : t -> scope:scope -> status Deferred.Or_error.t
+
+val prune_local :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  confirmed:bool ->
+  prune_result Deferred.Or_error.t
+(** Explicitly confirmed scoped cleanup, sharing durable remote coordination
+    with deployment and runbook. Never removes volumes, images, or secrets. *)
+
 val status_project : status -> Project_name.t
 val status_target : status -> Configuration.Target.t
 val status_resource_key : status -> Resource_key.t
@@ -218,6 +228,15 @@ val status_workloads : status -> Workload.t list
 
 val deployment_history :
   t -> scope:scope -> limit:int -> deployment list Deferred.Or_error.t
+
+val local_history :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  limit:int ->
+  deployment list Deferred.Or_error.t
+(** Lists local history only after validating the current declared target. This
+    is not a remote health assertion. *)
 
 val cancel_deployment :
   t ->
@@ -233,6 +252,14 @@ val deployment_can_cancel : t -> scope:scope -> deployment -> bool
 
 val application_logs :
   t -> Managed_application.t -> log_snapshot Deferred.Or_error.t
+
+val local_logs :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  log_snapshot Deferred.Or_error.t
+(** Bounded logs from the positively owned running container, selected by ID.
+    Web targets use the exact owned Caddy route; no build or secret loading. *)
 
 val application_metrics :
   t -> Managed_application.t -> target_metrics Deferred.t
