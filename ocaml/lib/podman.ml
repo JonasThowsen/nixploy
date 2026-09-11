@@ -476,12 +476,20 @@ let find_owned_placement ~connection ~project ~target ~resource_key
         in
         match json with
         | `List [ `Assoc container ] -> (
-            match List.Assoc.find container ~equal:String.equal "Id" with
-            | Some (`String id) when not (String.is_empty id) ->
-                Deferred.Or_error.return (Some { name; id })
-            | _ ->
-                Deferred.Or_error.error_string
-                  "deployment placement inspect did not contain an ID")
+            let inspected_name =
+              label container "Name"
+              |> Option.map ~f:(String.chop_prefix_if_exists ~prefix:"/")
+            in
+            if not (Option.equal String.equal inspected_name (Some name)) then
+              Deferred.Or_error.error_string
+                "deployment placement inspect name does not match"
+            else
+              match List.Assoc.find container ~equal:String.equal "Id" with
+              | Some (`String id) when not (String.is_empty id) ->
+                  Deferred.Or_error.return (Some { name; id })
+              | _ ->
+                  Deferred.Or_error.error_string
+                    "deployment placement inspect did not contain an ID")
         | _ ->
             Deferred.Or_error.error_string
               "deployment placement inspect must contain exactly one container")
@@ -561,21 +569,252 @@ let secret_args secret_mounts =
         sprintf "source=%s,type=env,target=%s" secret.source secret.target;
       ])
 
-let install_secrets ~connection ~resource_key ~secrets =
+type secret_identity = { secret_name : string; secret_id : string }
+
+type prepared_secret_prune = {
+  connection : string;
+  ownership : (string * string) list;
+  eligible : secret_identity list;
+  retained : secret_identity list;
+}
+
+let secret_ownership ~project ~target ~resource_key ~repository_identity =
+  [
+    ("io.nixploy.managed", "true");
+    ("io.nixploy.project", Project_name.to_string project);
+    ( "io.nixploy.target",
+      Configuration.Target.name target |> Target_name.to_string );
+    ("io.nixploy.resource_key", Resource_key.to_string resource_key);
+    ("io.nixploy.repository", repository_identity);
+    ("io.nixploy.repository_identity", repository_identity);
+  ]
+
+let valid_secret_id id =
+  String.length id = 25
+  && String.for_all id ~f:(function
+    | 'a' .. 'z' | '0' .. '9' -> true
+    | _ -> false)
+
+let secret_listing output ~prefix =
+  let open Or_error.Let_syntax in
+  let lines = String.split_lines output in
+  if List.length lines > max_listed_secrets then
+    Or_error.error_string "Podman secret listing exceeds entry limit"
+  else
+    let%bind entries =
+      List.map lines ~f:(fun line ->
+          match String.split line ~on:'\t' with
+          | [ secret_id; secret_name ]
+            when valid_secret_id secret_id
+                 && String.is_prefix secret_name ~prefix
+                 && String.length secret_name > String.length prefix
+                 && String.length secret_name <= max_secret_name_bytes
+                 && String.for_all secret_name ~f:valid_secret_name_character ->
+              Ok { secret_id; secret_name }
+          | _ ->
+              Or_error.error_string
+                "malformed or out-of-scope Podman secret listing")
+      |> Or_error.all
+    in
+    let unique field =
+      List.map entries ~f:field
+      |> List.contains_dup ~compare:String.compare
+      |> not
+    in
+    if unique (fun s -> s.secret_id) && unique (fun s -> s.secret_name) then
+      Ok entries
+    else Or_error.error_string "competing Podman secret names or IDs"
+
+let list_resource_secrets ~connection ~resource_key =
   let open Deferred.Or_error.Let_syntax in
-  let redact = Secrets.redact secrets in
-  Deferred.Or_error.List.map secrets ~how:`Sequential ~f:(fun secret ->
-      let remote_name =
-        Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
-      in
-      let%bind _ =
-        run [ "--connection"; connection; "secret"; "rm"; remote_name ]
-      in
-      let%map _ =
-        run_ok ~stdin:(Secrets.value secret) ~redact
-          [ "--connection"; connection; "secret"; "create"; remote_name; "-" ]
-      in
-      { source = remote_name; target = Secrets.name secret })
+  let prefix = Resource_key.to_string resource_key ^ "-" in
+  let%bind result =
+    run_ok
+      [
+        "--connection";
+        connection;
+        "secret";
+        "ls";
+        "--filter";
+        "name=^" ^ prefix;
+        "--format";
+        "{{.ID}}\t{{.Name}}";
+      ]
+  in
+  Deferred.return (secret_listing result.stdout ~prefix)
+
+let inspect_secret_ownership ~connection ~ownership secret =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    run_ok
+      [
+        "--connection";
+        connection;
+        "secret";
+        "inspect";
+        "--format";
+        {|{"ID":{{json .ID}},"Name":{{json .Spec.Name}},"Labels":{{json .Spec.Labels}}}|};
+        secret.secret_id;
+      ]
+  in
+  Deferred.return
+    (let open Or_error.Let_syntax in
+     let%bind json =
+       match
+         Or_error.try_with (fun () -> Yojson.Safe.from_string result.stdout)
+       with
+       | Ok json -> Ok json
+       | Error _ -> Or_error.error_string "malformed Podman secret metadata"
+     in
+     let unique fields =
+       not (List.contains_dup (List.map fields ~f:fst) ~compare:String.compare)
+     in
+     match json with
+     | `Assoc fields
+       when unique fields
+            && Option.equal String.equal (label fields "ID")
+                 (Some secret.secret_id)
+            && Option.equal String.equal (label fields "Name")
+                 (Some secret.secret_name) ->
+         let%bind metadata =
+           match List.Assoc.find fields ~equal:String.equal "Labels" with
+           | Some (`Assoc metadata) when unique metadata -> Ok metadata
+           | Some `Null -> Ok []
+           | _ -> Or_error.error_string "malformed Podman secret labels"
+         in
+         if
+           List.for_all ownership ~f:(fun (key, value) ->
+               Option.equal String.equal (label metadata key) (Some value))
+         then Ok `Owned
+         else if
+           List.for_all metadata ~f:(fun (key, _) ->
+               not (String.is_prefix key ~prefix:"io.nixploy."))
+         then Ok `Legacy
+         else
+           Or_error.error_string
+             "secret has partial, contradictory or foreign ownership"
+     | _ ->
+         Or_error.error_string
+           "Podman secret inspected name or ID does not match")
+
+let preflight_prune_owned_secrets ~connection ~project ~target ~resource_key
+    ~repository_identity =
+  let open Deferred.Or_error.Let_syntax in
+  let ownership =
+    secret_ownership ~project ~target ~resource_key ~repository_identity
+  in
+  let%bind entries = list_resource_secrets ~connection ~resource_key in
+  let%map classified =
+    Deferred.Or_error.List.map entries ~how:`Sequential ~f:(fun secret ->
+        let%map kind = inspect_secret_ownership ~connection ~ownership secret in
+        (secret, kind))
+  in
+  let eligible, retained =
+    List.partition_map classified ~f:(function
+      | secret, `Owned -> First secret
+      | secret, `Legacy -> Second secret)
+  in
+  { connection; ownership; eligible; retained }
+
+let prepared_secret_prune_counts prepared =
+  (List.length prepared.eligible, List.length prepared.retained)
+
+let execute_prepared_secret_prune prepared =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () =
+    Deferred.Or_error.List.iter (prepared.eligible @ prepared.retained)
+      ~how:`Sequential ~f:(fun secret ->
+        let%bind kind =
+          inspect_secret_ownership ~connection:prepared.connection
+            ~ownership:prepared.ownership secret
+        in
+        let expected_owned =
+          List.exists prepared.eligible ~f:(fun s ->
+              String.equal s.secret_id secret.secret_id)
+        in
+        if
+          Bool.equal expected_owned
+            (match kind with `Owned -> true | `Legacy -> false)
+        then Deferred.Or_error.return ()
+        else
+          Deferred.Or_error.error_string
+            "secret ownership changed after preflight")
+  in
+  let%map () =
+    Deferred.Or_error.List.iter prepared.eligible ~how:`Sequential
+      ~f:(fun secret ->
+        let%map _ =
+          run_ok
+            [
+              "--connection";
+              prepared.connection;
+              "secret";
+              "rm";
+              secret.secret_id;
+            ]
+        in
+        ())
+  in
+  prepared_secret_prune_counts prepared
+
+let install_secrets ~connection ~project ~target ~repository_identity
+    ~resource_key ~secrets =
+  if List.is_empty secrets then Deferred.Or_error.return []
+  else
+    let open Deferred.Or_error.Let_syntax in
+    let redact = Secrets.redact secrets in
+    let ownership =
+      secret_ownership ~project ~target ~resource_key ~repository_identity
+    in
+    let%bind existing = list_resource_secrets ~connection ~resource_key in
+    let%bind replacements =
+      Deferred.Or_error.List.map secrets ~how:`Sequential ~f:(fun secret ->
+          let name =
+            Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
+          in
+          let existing =
+            List.find existing ~f:(fun s -> String.equal s.secret_name name)
+          in
+          match existing with
+          | None -> Deferred.Or_error.return None
+          | Some existing -> (
+              let%bind kind =
+                inspect_secret_ownership ~connection ~ownership existing
+              in
+              match kind with
+              | `Owned -> Deferred.Or_error.return (Some existing)
+              | `Legacy ->
+                  Deferred.Or_error.error_string
+                    "refusing to replace an unlabelled legacy secret; explicit \
+                     operator migration required"))
+    in
+    Deferred.Or_error.List.map (List.zip_exn secrets replacements)
+      ~how:`Sequential ~f:(fun (secret, replacement) ->
+        let%bind () =
+          match replacement with
+          | None -> Deferred.Or_error.return ()
+          | Some existing ->
+              let%map _ =
+                run_ok
+                  [
+                    "--connection";
+                    connection;
+                    "secret";
+                    "rm";
+                    existing.secret_id;
+                  ]
+              in
+              ()
+        in
+        let remote_name =
+          Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
+        in
+        let%map _ =
+          run_ok ~stdin:(Secrets.value secret) ~redact
+            ([ "--connection"; connection; "secret"; "create" ]
+            @ labels ownership @ [ remote_name; "-" ])
+        in
+        { source = remote_name; target = Secrets.name secret })
 
 let read_only_bind_args run =
   Configuration.Run.read_only_binds run

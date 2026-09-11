@@ -6,6 +6,29 @@ type candidate
 type secret_mount
 type runtime_container
 type prepared_prune
+type prepared_secret_prune
+
+val preflight_prune_owned_secrets :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  repository_identity:string ->
+  prepared_secret_prune Deferred.Or_error.t
+(** Read-only, bounded discovery of the exact resource prefix. Contradictory,
+    partial, foreign, duplicate or malformed metadata fails closed. Secrets with
+    no Nixploy labels are retained, never inferred to be owned by their names.
+*)
+
+val prepared_secret_prune_counts : prepared_secret_prune -> int * int
+(** Eligible and retained legacy secret counts, respectively. *)
+
+val execute_prepared_secret_prune :
+  prepared_secret_prune -> (int * int) Deferred.Or_error.t
+(** Revalidates the complete snapshot before deleting eligible immutable IDs.
+    Returns removed and retained counts. Never requests secret data. The caller
+    must hold the target mutation guard from preflight through execution. *)
+
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
 type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
@@ -68,9 +91,16 @@ val find_owned_slot :
 
 val install_secrets :
   connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  repository_identity:string ->
   resource_key:Resource_key.t ->
   secrets:Secrets.t list ->
   secret_mount list Deferred.Or_error.t
+(** Creates fully ownership-labelled secrets using stdin. All replacements are
+    preflighted before mutation; unlabelled legacy secrets require explicit
+    operator migration. Owned replacements are removed by immutable ID, and a
+    removal failure stops creation. The caller must hold the target guard. *)
 
 val run_pre_start :
   connection:string ->

@@ -425,7 +425,8 @@ let execute_guarded ~store ~authorization ~operation_id prepared =
     in
     let%bind secrets = Secrets.load ~source_root:(Source.path source) ~target in
     let%map secret_mounts =
-      Podman.install_secrets ~connection ~resource_key ~secrets
+      Podman.install_secrets ~connection ~project ~target ~repository_identity
+        ~resource_key ~secrets
     in
     (image, secrets, secret_mounts)
   in
