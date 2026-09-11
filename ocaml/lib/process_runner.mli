@@ -12,7 +12,8 @@ val termination_signal : unit -> Signal.t option
 
 val termination_requested : unit -> Signal.t Deferred.t
 (** Resolves on the first handled SIGINT or SIGTERM. A second handled signal
-    forces immediate process shutdown. *)
+    kills owned children and waits for registered terminal cleanup before
+    forcing process shutdown (including in-flight streaming spawns). *)
 
 val run :
   ?working_directory:string ->
@@ -49,9 +50,17 @@ val run_streaming :
   Core_unix.Exit_or_signal.t Deferred.Or_error.t
 (** Inherits stdout/stderr separately without retaining any output.
     Noninteractive stdin is /dev/null; interactive stdin is the attached
-    terminal. No timeout or retry. Interrupt errors mean the remote command may
-    still be running. *)
+    foreground terminal, temporarily handed to an owned child process group.
+    Both normal and forced shutdown restore terminal ownership/settings.
+    Cancellation interrupts output flushing before spawn, and takes precedence
+    over a simultaneous wait result. No timeout or retry. Interrupt errors mean
+    the remote command may still be running. *)
 
 module For_testing : sig
   val should_force_termination : already_delivered:bool -> bool
+
+  val streaming_completed :
+    interrupted:bool ->
+    Core_unix.Exit_or_signal.t ->
+    Core_unix.Exit_or_signal.t Or_error.t
 end

@@ -20,6 +20,12 @@ type termination_state = { delivered : Signal.t Ivar.t }
 
 let termination_state = ref None
 let active_process_groups = ref []
+let termination_seen = Atomic.make false
+
+(* Register before dispatching spawn to a worker thread. Forced shutdown waits
+   for in-flight spawns as well as already-running terminal clients. *)
+let streaming_cleanups : (unit -> unit Deferred.t) list ref = ref []
+let forcing_shutdown = ref false
 
 let unregister_process_group pid =
   active_process_groups :=
@@ -39,11 +45,26 @@ let handle_termination_signals () =
             not
               (should_force_termination
                  ~already_delivered:(not (Ivar.is_empty state.delivered)))
-          then Ivar.fill_exn state.delivered signal
-          else (
+          then (
+            Atomic.set termination_seen true;
+            Ivar.fill_exn state.delivered signal)
+          else if not !forcing_shutdown then (
+            forcing_shutdown := true;
             List.iter !active_process_groups ~f:(fun pid ->
                 Signal_unix.send_i Signal.kill (`Group pid));
-            Shutdown.shutdown_with_signal_exn signal))
+            don't_wait_for
+              (let%map () =
+                 Deferred.List.iter !streaming_cleanups ~how:`Parallel
+                   ~f:(fun cleanup ->
+                     Monitor.try_with cleanup >>| function
+                     | Ok () -> ()
+                     | Error _ ->
+                         eprintf
+                           "runbook terminal cleanup failed during forced \
+                            shutdown\n\
+                            %!")
+               in
+               Shutdown.shutdown_with_signal_exn signal)))
 
 let interruption_error prog signal =
   Or_error.errorf "%s interrupted by %s" prog (Signal.to_string signal)
@@ -59,13 +80,9 @@ let termination_requested () =
   | Some state -> Ivar.read state.delivered
   | None -> raise_s [%message "termination signal handler was not initialized"]
 
-type output_budget = {
-  maximum : int;
-  mutable captured_bytes : int;
-}
+type output_budget = { maximum : int; mutable captured_bytes : int }
 
-let can_capture budget length =
-  length <= budget.maximum - budget.captured_bytes
+let can_capture budget length = length <= budget.maximum - budget.captured_bytes
 
 let capture budget buffer string =
   budget.captured_bytes <- budget.captured_bytes + String.length string;
@@ -252,6 +269,31 @@ let terminal_attached () =
   In_thread.run (fun () ->
       Core_unix.isatty Core_unix.stdin && Core_unix.isatty Core_unix.stdout)
 
+external terminal_foreground_group : Core_unix.File_descr.t -> int
+  = "nixploy_terminal_foreground_group"
+
+external terminal_set_foreground_group : Core_unix.File_descr.t -> int -> unit
+  = "nixploy_terminal_set_foreground_group"
+
+let restore_streaming_terminal terminal =
+  Option.iter terminal ~f:(fun (state, group) ->
+      terminal_set_foreground_group Core_unix.stdin group;
+      Core_unix.Terminal_io.tcsetattr state Core_unix.stdin ~mode:TCSANOW)
+
+let streaming_interruption ~cancelled ~before_exec =
+  if cancelled () then ignore (Cancellation.acknowledge_current () : bool);
+  if before_exec then Or_error.error_string "runbook interrupted before exec"
+  else
+    Or_error.error_string
+      "runbook interrupted: remote command may still be running; do not retry \
+       automatically"
+
+let streaming_completion ~stopped ~cancelled completion =
+  match completion with
+  | `Completed status when not (stopped ()) -> Ok status
+  | `Completed _ | `Interrupted ->
+      streaming_interruption ~cancelled ~before_exec:false
+
 let run_streaming ~interactive ~prog ~args () =
   let open Deferred.Or_error.Let_syntax in
   handle_termination_signals ();
@@ -264,95 +306,163 @@ let run_streaming ~interactive ~prog ~args () =
             terminals"
        else Ok ())
   in
-  let interrupted () = Deferred.is_determined (termination_requested ()) in
   let cancellation = Cancellation.current () in
-  let cancelled () =
-    Option.exists cancellation ~f:(fun token ->
-        Deferred.is_determined (Cancellation.requested token))
+  let cancelled () = Option.exists cancellation ~f:Cancellation.was_requested in
+  let stopped () = Atomic.get termination_seen || cancelled () in
+  let interruption_choices =
+    Deferred.choice (termination_requested ()) (fun _ -> `Interrupted)
+    :: Option.value_map cancellation ~default:[] ~f:(fun token ->
+        [
+          Deferred.choice (Cancellation.requested token) (fun () ->
+              `Interrupted);
+        ])
   in
-  if interrupted () || cancelled () then
-    Deferred.Or_error.error_string "runbook interrupted before exec"
-  else
-    let%bind () = Writer.flushed (Lazy.force Writer.stdout) |> Deferred.ok in
-    let%bind () = Writer.flushed (Lazy.force Writer.stderr) |> Deferred.ok in
-    let%bind pid, terminal_state =
-      In_thread.run (fun () ->
-          Or_error.try_with (fun () ->
-              let terminal_state =
-                if interactive then
-                  Some (Core_unix.Terminal_io.tcgetattr Core_unix.stdin)
-                else None
-              in
-              let stdin =
-                if interactive then Core_unix.stdin
-                else Core_unix.openfile "/dev/null" ~mode:[ Core_unix.O_RDONLY ]
-              in
-              Exn.protect
-                ~finally:(fun () ->
-                  if not interactive then Core_unix.close stdin)
-                ~f:(fun () ->
-                  let process =
-                    Core_unix.create_process_with_fds ~prog ~args
-                      ?setpgid:
-                        (if interactive then None
-                         else Some Core_unix.Pgid.new_process_group)
-                      ~stdin:(Use_this stdin)
-                      ~stdout:(Use_this Core_unix.stdout)
-                      ~stderr:(Use_this Core_unix.stderr) ()
-                  in
-                  (process.pid, terminal_state))))
-      |> Deferred.map
-           ~f:
-             (Result.map_error ~f:(fun _ ->
-                  Error.of_string "runbook could not start local exec client"))
-    in
-    if not interactive then
-      active_process_groups := pid :: !active_process_groups;
+  let%bind () =
+    if stopped () then
+      Deferred.return (streaming_interruption ~cancelled ~before_exec:true)
+    else
+      let flushed =
+        Deferred.all_unit
+          [
+            Writer.flushed (Lazy.force Writer.stdout);
+            Writer.flushed (Lazy.force Writer.stderr);
+          ]
+      in
+      let%bind ready =
+        Deferred.choose
+          (Deferred.choice flushed (fun () -> `Flushed) :: interruption_choices)
+        |> Deferred.ok
+      in
+      if stopped () || Poly.equal ready `Interrupted then
+        Deferred.return (streaming_interruption ~cancelled ~before_exec:true)
+      else Deferred.Or_error.return ()
+  in
+  (* The registration covers the thread-dispatch window too: a second signal
+     cannot exit the parent while an unregistered child is being created. *)
+  let cleanup_ready = Ivar.create () in
+  let cleanup () = Deferred.bind (Ivar.read cleanup_ready) ~f:Lazy.force in
+  streaming_cleanups := cleanup :: !streaming_cleanups;
+  let%bind result =
     Monitor.protect
       ~finally:(fun () ->
-        unregister_process_group pid;
-        In_thread.run (fun () ->
-            Option.iter terminal_state ~f:(fun state ->
-                Core_unix.Terminal_io.tcsetattr state Core_unix.stdin
-                  ~mode:TCSANOW)))
+        Deferred.map (cleanup ()) ~f:(fun () ->
+            streaming_cleanups :=
+              List.filter !streaming_cleanups ~f:(fun entry ->
+                  not (phys_equal entry cleanup))))
       (fun () ->
-        let wait = Async.Unix.waitpid pid in
-        let%bind completion =
-          Deferred.choose
-            ([
-               Deferred.choice wait (fun status -> `Completed status);
-               Deferred.choice (termination_requested ()) (fun _ ->
-                   `Interrupted);
-             ]
-            @ Option.value_map cancellation ~default:[] ~f:(fun token ->
-                [
-                  Deferred.choice (Cancellation.requested token) (fun () ->
-                      `Interrupted);
-                ]))
+        let%bind created =
+          In_thread.run (fun () ->
+              Or_error.try_with (fun () ->
+                  let terminal =
+                    if interactive then (
+                      let group = terminal_foreground_group Core_unix.stdin in
+                      if
+                        not
+                          (Option.exists
+                             (Core_unix.getpgid (Core_unix.getpid ()))
+                             ~f:(fun own -> Pid.to_int own = group))
+                      then
+                        failwith
+                          "runbook requires foreground terminal ownership";
+                      Some
+                        (Core_unix.Terminal_io.tcgetattr Core_unix.stdin, group))
+                    else None
+                  in
+                  let stdin =
+                    if interactive then Core_unix.stdin
+                    else
+                      Core_unix.openfile "/dev/null"
+                        ~mode:[ Core_unix.O_RDONLY ]
+                  in
+                  Exn.protect
+                    ~finally:(fun () ->
+                      if not interactive then Core_unix.close stdin)
+                    ~f:(fun () ->
+                      (* No Async operations between this last check and spawn. *)
+                      if stopped () then None
+                      else
+                        let process =
+                          Core_unix.create_process_with_fds ~prog ~args
+                            ~setpgid:Core_unix.Pgid.new_process_group
+                            ~stdin:(Use_this stdin)
+                            ~stdout:(Use_this Core_unix.stdout)
+                            ~stderr:(Use_this Core_unix.stderr) ()
+                        in
+                        let handoff =
+                          Or_error.try_with (fun () ->
+                              if interactive then (
+                                terminal_set_foreground_group Core_unix.stdin
+                                  (Pid.to_int process.pid);
+                                (* A fast child may have stopped on SIGTTIN/SIGTTOU before
+                         foreground handoff. Resume only our owned group. *)
+                                Signal_unix.send_i Signal.cont
+                                  (`Group process.pid)))
+                        in
+                        Some (process.pid, terminal, handoff))))
           |> Deferred.ok
         in
-        match completion with
-        | `Completed status -> Deferred.Or_error.return status
-        | `Interrupted ->
-            if cancelled () then
-              ignore (Cancellation.acknowledge_current () : bool);
-            let destination = if interactive then `Pid pid else `Group pid in
-            Signal_unix.send_i Signal.term destination;
-            let%bind _ =
+        match created with
+        | Error _ | Ok None ->
+            Ivar.fill_exn cleanup_ready (lazy Deferred.unit);
+            if stopped () then
+              Deferred.return
+                (streaming_interruption ~cancelled ~before_exec:true)
+            else
+              Deferred.Or_error.error_string
+                "runbook could not start local exec client"
+        | Ok (Some (pid, terminal, handoff)) -> (
+            let wait = Async.Unix.waitpid pid in
+            let cleanup =
+              lazy
+                (Signal_unix.send_i Signal.kill (`Group pid);
+                 In_thread.run (fun () -> restore_streaming_terminal terminal))
+            in
+            Ivar.fill_exn cleanup_ready cleanup;
+            let%bind () =
+              match handoff with
+              | Ok () -> Deferred.Or_error.return ()
+              | Error _ ->
+                  let%bind () = Lazy.force cleanup |> Deferred.ok in
+                  let%bind _ = wait |> Deferred.ok in
+                  Deferred.Or_error.error_string
+                    "runbook could not hand off the terminal; remote outcome \
+                     may be unknown"
+            in
+            let%bind completion =
               Deferred.choose
-                [
-                  Deferred.choice wait (fun _ -> ());
-                  Deferred.choice (Clock_ns.after termination_grace) Fn.id;
-                ]
+                (Deferred.choice wait (fun status -> `Completed status)
+                :: interruption_choices)
               |> Deferred.ok
             in
-            if (not interactive) || not (Deferred.is_determined wait) then
-              Signal_unix.send_i Signal.kill destination;
-            let%bind _ = wait |> Deferred.ok in
-            Deferred.Or_error.error_string
-              "runbook interrupted: remote command may still be running; do \
-               not retry automatically")
+            let result = streaming_completion ~stopped ~cancelled completion in
+            match result with
+            | Ok _ -> Deferred.return result
+            | Error _ ->
+                Signal_unix.send_i Signal.term (`Group pid);
+                (* Leader exit is not group exit. Descendants get the same bounded
+                 grace and are killed even when the leader has already exited. *)
+                let%bind () = Clock_ns.after termination_grace |> Deferred.ok in
+                let%bind () = Lazy.force cleanup |> Deferred.ok in
+                let%bind _ = wait |> Deferred.ok in
+                Deferred.return result))
+    |> Deferred.ok
+  in
+  match result with
+  | Error _ -> Deferred.return result
+  | Ok status ->
+      (* Restoring the terminal yields too; a signal delivered during cleanup
+         must not turn a completed wait into a falsely certain success. *)
+      Deferred.return
+        (streaming_completion ~stopped ~cancelled (`Completed status))
 
 module For_testing = struct
   let should_force_termination = should_force_termination
+
+  let streaming_completed ~interrupted status =
+    let cancelled () =
+      Option.exists (Cancellation.current ()) ~f:Cancellation.was_requested
+    in
+    streaming_completion
+      ~stopped:(fun () -> interrupted || cancelled ())
+      ~cancelled (`Completed status)
 end

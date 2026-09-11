@@ -474,6 +474,206 @@ esac
   printf "runbook tests passed (fixture %s)\n%!" directory;
   Deferred.unit
 
+let streaming_terminal_probe () =
+  let directory = Sys.getenv_exn "RUNBOOK_TERMINAL_FIXTURE" in
+  let token = Cancellation.create () in
+  let double_signal = Bool.of_string (Sys.getenv_exn "RUNBOOK_DOUBLE_SIGNAL") in
+  let rec await_cancel () =
+    if Sys_unix.file_exists_exn (Filename.concat directory "cancel") then (
+      ignore (Cancellation.request token : Cancellation.request);
+      Deferred.unit)
+    else
+      let%bind () = Clock_ns.after (Time_ns.Span.of_ms 10.) in
+      await_cancel ()
+  in
+  if not double_signal then don't_wait_for (await_cancel ());
+  Out_channel.write_all
+    (Filename.concat directory "parent.pid")
+    ~data:(Pid.to_string (Core_unix.getpid ()));
+  let%map result =
+    Cancellation.within token (fun () ->
+        Process_runner.run_streaming ~interactive:true ~prog:"sh"
+          ~args:[ Filename.concat directory "client.sh" ]
+          ())
+  in
+  assert (Result.is_error result);
+  assert (Cancellation.was_acknowledged token);
+  assert (
+    String.is_substring
+      (Error.to_string_hum (Result.error result |> Option.value_exn))
+      ~substring:"remote command may still be running");
+  0
+
+let wait_for_fixture_file path =
+  let rec loop () =
+    if Sys_unix.file_exists_exn path then Deferred.unit
+    else
+      let%bind () = Clock_ns.after (Time_ns.Span.of_ms 10.) in
+      loop ()
+  in
+  Clock_ns.with_timeout (Time_ns.Span.of_sec 10.) (loop ()) >>| function
+  | `Result () -> ()
+  | `Timeout -> failwithf "fixture did not become ready: %s" path ()
+
+let streaming_terminal_test ~double_signal =
+  let directory = Filename_unix.temp_dir "runbook-terminal-" "" in
+  let file name = Filename.concat directory name in
+  Out_channel.write_all (file "client.sh")
+    ~data:
+      {|set -eu
+stty raw -echo
+echo $$ > "$RUNBOOK_TERMINAL_FIXTURE/client.pid"
+if [ "$RUNBOOK_DOUBLE_SIGNAL" = true ]; then trap '' TERM; else trap 'exit 130' TERM; fi
+sh -c 'trap "" TERM; echo ready > "$RUNBOOK_TERMINAL_FIXTURE/ready"; while :; do sleep 1; done' &
+echo $! > "$RUNBOOK_TERMINAL_FIXTURE/descendant.pid"
+wait
+|};
+  Out_channel.write_all (file "supervisor.sh")
+    ~data:
+      {|set -u
+before=$(stty -g)
+"$RUNBOOK_TEST_EXE" --terminal-probe
+status=$?
+after=$(stty -g)
+if [ "$before" != "$after" ]; then
+  stty "$before"
+  echo 'raw terminal leaked' >&2
+  exit 90
+fi
+if [ "$RUNBOOK_DOUBLE_SIGNAL" = true ]; then
+  [ "$status" = 143 ] || exit 91
+else
+  [ "$status" = 0 ] || exit 92
+fi
+echo terminal-restored
+|};
+  let%bind created =
+    Process.create ~prog:"script"
+      ~args:
+        [
+          "-q";
+          "-e";
+          "-c";
+          "sh " ^ Filename.quote (file "supervisor.sh");
+          "/dev/null";
+        ]
+      ~env:
+        (`Extend
+           [
+             ("RUNBOOK_TERMINAL_FIXTURE", directory);
+             ("RUNBOOK_TEST_EXE", Sys_unix.executable_name);
+             ("RUNBOOK_DOUBLE_SIGNAL", Bool.to_string double_signal);
+           ])
+      ()
+  in
+  let child = assert_ok created in
+  let%bind () = Writer.close (Process.stdin child) in
+  let output = Process.collect_output_and_wait child in
+  let%bind () = wait_for_fixture_file (file "ready") in
+  let%bind () = wait_for_fixture_file (file "descendant.pid") in
+  let pid name =
+    In_channel.read_all (file name) |> String.strip |> Pid.of_string
+  in
+  let parent = pid "parent.pid" in
+  let descendant = pid "descendant.pid" in
+  let client = pid "client.pid" in
+  let owned_group =
+    Option.equal Pid.equal (Core_unix.getpgid client) (Some client)
+    && not (Option.equal Pid.equal (Core_unix.getpgid parent) (Some client))
+  in
+  if double_signal then Signal_unix.send_i Signal.term (`Pid parent)
+  else Out_channel.write_all (file "cancel") ~data:"cancel";
+  let%bind () =
+    if double_signal then
+      let%map () = Clock_ns.after (Time_ns.Span.of_ms 100.) in
+      Signal_unix.send_i Signal.term (`Pid parent)
+    else Deferred.unit
+  in
+  let%bind completed = Clock_ns.with_timeout (Time_ns.Span.of_sec 8.) output in
+  let live pid =
+    match
+      Or_error.try_with (fun () ->
+          In_channel.read_all (sprintf "/proc/%d/stat" (Pid.to_int pid)))
+    with
+    | Error _ -> false
+    | Ok stat -> not (String.is_substring stat ~substring:") Z ")
+  in
+  (* Cleanup remains test-owned even when a regression leaves clients alive. *)
+  let leaked = live descendant || live client in
+  List.iter [ descendant; client; parent ] ~f:(fun pid ->
+      if live pid then Signal_unix.send_i Signal.kill (`Pid pid));
+  assert (not leaked);
+  assert owned_group;
+  let output =
+    match completed with
+    | `Result output -> output
+    | `Timeout -> failwith "terminal cleanup timed out"
+  in
+  assert (Result.is_ok output.exit_status);
+  assert (String.is_substring output.stdout ~substring:"terminal-restored");
+  Deferred.unit
+
+let streaming_completion_test () =
+  let status = Error (`Exit_non_zero 130) in
+  assert (
+    Result.is_error
+      (Process_runner.For_testing.streaming_completed ~interrupted:true status));
+  let token = Cancellation.create () in
+  Cancellation.within token (fun () ->
+      ignore (Cancellation.request token : Cancellation.request);
+      assert (
+        Result.is_error
+          (Process_runner.For_testing.streaming_completed ~interrupted:false
+             status));
+      assert (Cancellation.was_acknowledged token));
+  assert (
+    Poly.equal
+      (Process_runner.For_testing.streaming_completed ~interrupted:false status)
+      (Ok status))
+
+let streaming_flush_probe ~signal () =
+  let token = Cancellation.create () in
+  Writer.write (Lazy.force Writer.stdout) (String.make 4_194_304 'x');
+  don't_wait_for
+    ( Clock_ns.after (Time_ns.Span.of_sec 0.1) >>| fun () ->
+      if signal then Signal_unix.send_i Signal.term (`Pid (Core_unix.getpid ()))
+      else ignore (Cancellation.request token : Cancellation.request) );
+  let%map result =
+    Cancellation.within token (fun () ->
+        Process_runner.run_streaming ~interactive:false ~prog:"touch"
+          ~args:[ Sys.getenv_exn "RUNBOOK_EXEC_MARKER" ]
+          ())
+  in
+  assert (Result.is_error result);
+  if not signal then assert (Cancellation.was_acknowledged token);
+  eprintf "cancelled-before-exec\n%!";
+  0
+
+let streaming_flush_test ~signal () =
+  let marker = Filename_unix.temp_file "runbook-no-exec-" "" in
+  Core_unix.unlink marker;
+  let%bind created =
+    Process.create ~prog:Sys_unix.executable_name
+      ~args:[ (if signal then "--signal-flush" else "--cancel-flush") ]
+      ~env:(`Extend [ ("RUNBOOK_EXEC_MARKER", marker) ])
+      ()
+  in
+  let child = assert_ok created in
+  let%bind () = Writer.close (Process.stdin child) in
+  let%bind receipt =
+    Clock_ns.with_timeout (Time_ns.Span.of_sec 3.)
+      (Reader.read_line (Process.stderr child))
+  in
+  (* Drain only after cancellation must have returned: the child's stdout flush
+     cannot be used as the cancellation wakeup. *)
+  let drain = Reader.contents (Process.stdout child) in
+  let%bind status = Process.wait child in
+  let%bind _ = drain in
+  assert (not (Sys_unix.file_exists_exn marker));
+  assert (Poly.equal receipt (`Result (`Ok "cancelled-before-exec")));
+  assert (Result.is_ok status);
+  Reader.close (Process.stderr child)
+
 let () =
   if Array.mem (Sys.get_argv ()) "--cli" ~equal:String.equal then
     Command_unix.run
@@ -488,8 +688,22 @@ let () =
       ( Monitor.try_with (fun () ->
             if Array.mem (Sys.get_argv ()) "--probe" ~equal:String.equal then
               probe ()
+            else if
+              Array.mem (Sys.get_argv ()) "--cancel-flush" ~equal:String.equal
+            then streaming_flush_probe ~signal:false ()
+            else if
+              Array.mem (Sys.get_argv ()) "--signal-flush" ~equal:String.equal
+            then streaming_flush_probe ~signal:true ()
+            else if
+              Array.mem (Sys.get_argv ()) "--terminal-probe" ~equal:String.equal
+            then streaming_terminal_probe ()
             else (
               configuration_tests ();
+              streaming_completion_test ();
+              let%bind () = streaming_flush_test ~signal:false () in
+              let%bind () = streaming_flush_test ~signal:true () in
+              let%bind () = streaming_terminal_test ~double_signal:false in
+              let%bind () = streaming_terminal_test ~double_signal:true in
               integration_tests () >>| fun () -> 0))
       >>| function
         | Ok code -> Shutdown.shutdown code
