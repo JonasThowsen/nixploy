@@ -1,18 +1,10 @@
 (library
  (name nixploy_cli_mapping)
  (modules
-  control_plane_output
   deployment_output
   inspection_output
   deployment_observer)
- (libraries nixploy protocol core)
- (preprocess
-  (pps ppx_jane)))
-
-(library
- (name nixploy_control_plane_client)
- (modules control_plane_client)
- (libraries async async_rpc_websocket cohttp core nixploy protocol uri)
+ (libraries nixploy core)
  (preprocess
   (pps ppx_jane)))
 
@@ -23,25 +15,8 @@
  (libraries
   nixploy
   nixploy_cli_mapping
-  nixploy_control_plane_client
   core
   core_unix.command_unix
   async)
- (preprocess
-  (pps ppx_jane)))
-
-(executable
- (name target_lease_broker)
- (public_name nixploy-target-lease-broker)
- (modules target_lease_broker)
- (libraries nixploy core core_unix.command_unix)
- (preprocess
-  (pps ppx_jane)))
-
-(executable
- (name target_lease_client)
- (public_name nixploy-target-lease-client)
- (modules target_lease_client)
- (libraries nixploy core core_unix.command_unix)
  (preprocess
   (pps ppx_jane)))

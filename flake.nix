@@ -1,51 +1,28 @@
 {
-  description = "Flake for nixploy application";
+  description = "Daemonless CLI for deploying Nix-built applications";
 
-  inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-  };
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
     let
       lib = nixpkgs.lib;
-      systems = [ "x86_64-linux" ];
-      forAllSystems = lib.genAttrs systems;
-      nixployPackageRevision = self.rev or "unknown";
+      forAllSystems = lib.genAttrs [ "x86_64-linux" ];
       pkgsFor = system: import nixpkgs { inherit system; };
-      ocamlPackagesFor =
-        pkgs:
-        let
-          base = pkgs.ocaml-ng.ocamlPackages_5_2;
-          ppxCssSedlexPatch = pkgs.fetchurl {
-            url = "https://raw.githubusercontent.com/NixOS/nixpkgs/0ac41707663949ba068cd71462a0c31cfe6b6348/pkgs/development/ocaml-modules/janestreet/ppx_css_sedlex_3_5.patch";
-            hash = "sha256-B4X6YfmhsUIsYDRv4pYAieNlUZ1GWOZrTUHrheZ8R44=";
-          };
-        in
-        base.overrideScope (
-          final: previous: {
-            js_of_ocaml-compiler_5_9 = previous.js_of_ocaml-compiler.override {
-              version = "5.9.1";
-            };
-
-            ppx_css = previous.ppx_css.overrideAttrs (old: {
-              patches = (old.patches or [ ]) ++ [ ppxCssSedlexPatch ];
-              meta = old.meta // {
-                broken = false;
-              };
-            });
-
-            bonsai = previous.bonsai.overrideAttrs (old: {
-              propagatedBuildInputs =
-                builtins.filter (dependency: dependency != previous.cohttp-async) old.propagatedBuildInputs
-                ++ [ final.cohttp-async_5_3 ];
-            });
-          }
-        );
+      ocamlPackagesFor = pkgs: pkgs.ocaml-ng.ocamlPackages_5_2;
       targetModule = import ./nix/target.nix;
-      nixployConfigLib = import ./nix/config.nix {
-        inherit lib targetModule;
-      };
+      nixployConfigLib = import ./nix/config.nix { inherit lib targetModule; };
+      runtimeTools = pkgs: [
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.git
+        pkgs.nix
+        pkgs.openssh
+        pkgs.podman
+        pkgs.sops
+        pkgs.ssh-to-age
+        pkgs.util-linux
+      ];
     in
     {
       formatter = forAllSystems (system: (pkgsFor system).nixfmt-tree);
@@ -60,7 +37,6 @@
             inherit specialArgs;
             modules = [ targetModule ] ++ modules;
           };
-
         evalDeployment =
           {
             deployment,
@@ -74,84 +50,38 @@
 
       nixployModules.default = targetModule;
 
-      nixosModules.default =
-        { pkgs, ... }@args:
-        import ./nix/nixos-module.nix (
-          args
-          // {
-            defaultPackage = self.packages.${pkgs.system}.nixploy;
-          }
-        );
-
       packages = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
           ocamlPackages = ocamlPackagesFor pkgs;
-
           nixployPackage = ocamlPackages.buildDunePackage {
             pname = "nixploy";
             version = "0.1.0-ocaml";
             src = ./ocaml;
             duneVersion = "3";
-
-            nativeBuildInputs =
-              with ocamlPackages;
-              [
-                js_of_ocaml-compiler_5_9
-                ocaml-embed-file
-              ]
-              ++ [
-                pkgs.git
-                pkgs.makeWrapper
-              ];
-
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.makeWrapper
+            ];
             propagatedBuildInputs = with ocamlPackages; [
               async
-              async_kernel
-              async_rpc_kernel
-              async_rpc_websocket
-              bonsai
-              cohttp-async_5_3
               core
               core_unix
               digestif
               ocaml_sqlite3
               ppx_jane
-              ppx_pattern_bind
               uri
               yojson
             ];
-
             doCheck = true;
             preCheck = ''
               export TZDIR=${pkgs.tzdata}/share/zoneinfo
             '';
-
-            postInstall = ''
-              install -Dm644 web/assets/fonts/LICENSE-IBM-PLEX.txt \
-                $out/share/licenses/nixploy/LICENSE-IBM-PLEX.txt
-            '';
-
             postFixup = ''
-              for executable in $out/bin/nixploy $out/bin/nixploy-web; do
-                wrapProgram "$executable" \
-                  --set NIXPLOY_PACKAGE_REVISION ${lib.escapeShellArg nixployPackageRevision} \
-                  --set NIXPLOY_PROTECTED_GIT ${lib.escapeShellArg "${pkgs.git}/bin/git"} \
-                  --prefix PATH : ${
-                    lib.makeBinPath [
-                      pkgs.coreutils
-                      pkgs.curl
-                      pkgs.git
-                      pkgs.nix
-                      pkgs.openssh
-                      pkgs.podman
-                      pkgs.sops
-                      pkgs.ssh-to-age
-                      pkgs.util-linux
-                    ]
-                  }
-              done
+              wrapProgram "$out/bin/nixploy" \
+                --set NIXPLOY_PACKAGE_REVISION ${lib.escapeShellArg (self.rev or "unknown")} \
+                --prefix PATH : ${lib.makeBinPath (runtimeTools pkgs)}
             '';
           };
         in
@@ -165,355 +95,14 @@
         system:
         let
           pkgs = pkgsFor system;
-          ocamlPackages = ocamlPackagesFor pkgs;
-          rpcProbe = ocamlPackages.buildDunePackage {
-            pname = "nixploy-rpc-probe";
-            version = "0.1.0-ocaml";
-            src = ./ocaml;
-            duneVersion = "3";
-            nativeBuildInputs =
-              (with ocamlPackages; [
-                ocaml-embed-file
-                ppx_jane
-              ])
-              ++ [ pkgs.makeWrapper ];
-            propagatedBuildInputs = with ocamlPackages; [
-              async
-              async_rpc_kernel
-              async_rpc_websocket
-              core
-              core_unix
-              digestif
-              ocaml_sqlite3
-              ppx_jane
-              uri
-              yojson
-            ];
-            doCheck = false;
-            buildPhase = ''
-              runHook preBuild
-              dune build test/rpc_probe.exe test/source_authority_probe.exe
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 _build/default/test/rpc_probe.exe $out/bin/nixploy-rpc-probe
-              install -Dm755 _build/default/test/source_authority_probe.exe \
-                $out/bin/nixploy-source-authority-probe
-              wrapProgram $out/bin/nixploy-source-authority-probe \
-                --set NIXPLOY_PROTECTED_GIT ${lib.escapeShellArg "${pkgs.git}/bin/git"}
-              runHook postInstall
-            '';
-          };
-          leaseHolder = ocamlPackages.buildDunePackage {
-            pname = "nixploy-target-lease-test-holder";
-            version = "0.1.0-ocaml";
-            src = ./ocaml;
-            duneVersion = "3";
-            nativeBuildInputs = with ocamlPackages; [
-              js_of_ocaml-compiler_5_9
-              ocaml-embed-file
-            ];
-            propagatedBuildInputs = with ocamlPackages; [
-              async
-              async_kernel
-              async_rpc_kernel
-              async_rpc_websocket
-              bonsai
-              cohttp-async_5_3
-              core
-              core_unix
-              digestif
-              ocaml_sqlite3
-              ppx_jane
-              ppx_pattern_bind
-              uri
-              yojson
-            ];
-            doCheck = false;
-            buildPhase = ''
-              runHook preBuild
-              dune build test/target_lease_test_holder.exe
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 _build/default/test/target_lease_test_holder.exe \
-                $out/bin/nixploy-target-lease-test-holder
-              runHook postInstall
-            '';
-          };
-          evaluated = lib.nixosSystem {
-            inherit system;
-            modules = [
-              self.nixosModules.default
-              {
-                system.stateVersion = "26.05";
-                services.nixploy = {
-                  enable = true;
-                  authMode = "tailscale";
-                  operatorEmail = "operator@example.com";
-                  port = 9090;
-                  stateDatabasePath = "/var/lib/nixploy/custom-state.sqlite3";
-                  allowedOrigin = "https://nixploy.example.com";
-                  environmentFile = "/run/keys/nixploy.env";
-                  sshIdentityFile = "/run/keys/nixploy-ssh";
-                  sshKnownHostsFile = "/run/keys/nixploy-known-hosts";
-                  sopsAgeKeyFile = "/run/keys/nixploy.age";
-                  sopsAgeSshKeyFile = "/run/keys/nixploy-sops-ssh";
-                  applications.example = {
-                    project = "example";
-                    target = "production";
-                    repository = "/srv/nixploy/example";
-                    repositoryIdentity = "owner/example";
-                    repositoryProvenance = "git@example.invalid:example.git";
-                    subdirectory = "deploy";
-                  };
-                };
-              }
-            ];
-          };
-          service = evaluated.config.systemd.services.nixploy;
-          renamed = lib.nixosSystem {
-            inherit system;
-            modules = [
-              self.nixosModules.default
-              {
-                system.stateVersion = "26.05";
-                services.nixploy-control-plane = {
-                  enable = true;
-                  authMode = "unrestricted";
-                  allowUnrestrictedDevelopmentMode = true;
-                };
-              }
-            ];
-          };
-          unrestrictedAuthRejected = builtins.tryEval (
-            (lib.nixosSystem {
-              inherit system;
-              modules = [
-                self.nixosModules.default
-                {
-                  system.stateVersion = "26.05";
-                  services.nixploy = {
-                    enable = true;
-                    authMode = "unrestricted";
-                  };
-                }
-              ];
-            }).config.system.build.toplevel
-          );
-          configContract = import ./nix/config-test.nix {
-            nixployLib = self.lib;
-          };
-          mixExpoFixture = import ./nix/test-fixtures/mix-expo/package.nix {
-            inherit pkgs;
-          };
-          crossProfileAttemptFor =
-            {
-              productionHost ? "production-host.example.invalid",
-              nonProductionHost ? "staging-host.example.invalid",
-              productionDomain ? "production-app.example.invalid",
-              nonProductionDomain ? "staging-app.example.invalid",
-              productionScope ? "production-scope",
-              nonProductionScope ? "staging-scope",
-            }:
-            builtins.tryEval (
-              (lib.nixosSystem {
-                inherit system;
-                modules = [
-                  self.nixosModules.default
-                  {
-                    system.stateVersion = "26.05";
-                    services.nixploy = {
-                      enable = true;
-                      authMode = "unrestricted";
-                      allowUnrestrictedDevelopmentMode = true;
-                      applications = {
-                        production = {
-                          project = "production-app";
-                          target = "production";
-                          repository = "/srv/production";
-                          repositoryIdentity = "owner/production";
-                          repositoryProvenance = "provider:production";
-                          repositoryReference = "refs/heads/main";
-                          repositoryEvidenceFile = "/srv/production.evidence";
-                          production = {
-                            host = productionHost;
-                            user = "deploy";
-                            kind = "web";
-                            domain = productionDomain;
-                            coordinationScope = productionScope;
-                          };
-                        };
-                        staging = {
-                          project = "staging-app";
-                          target = "staging";
-                          repository = "/srv/staging";
-                          repositoryIdentity = "owner/staging";
-                          repositoryProvenance = "provider:staging";
-                          nonProduction = {
-                            host = nonProductionHost;
-                            user = "deploy";
-                            kind = "web";
-                            domain = nonProductionDomain;
-                            coordinationScope = nonProductionScope;
-                          };
-                        };
-                      };
-                    };
-                  }
-                ];
-              }).config.system.build.toplevel
-            );
-          dnsHostIntersection = crossProfileAttemptFor {
-            productionHost = "HOST.EXAMPLE.INVALID.";
-            nonProductionHost = "host.example.invalid";
-          };
-          ipv4HostIntersection = crossProfileAttemptFor {
-            productionHost = "192.168.1.10";
-            nonProductionHost = "192.168.1.10";
-          };
-          legacyHexHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "0x7f000001";
-          };
-          legacyUppercaseHexHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "0X7F000001";
-          };
-          legacyMixedHexHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "0x7f.1";
-          };
-          legacyOctalHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "0177.0.0.1";
-          };
-          legacyShortHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "127.1";
-          };
-          legacyThreePartHostIntersection = crossProfileAttemptFor {
-            productionHost = "127.0.0.1";
-            nonProductionHost = "127.0.1";
-          };
-          ipv6HostIntersection = crossProfileAttemptFor {
-            productionHost = "2001:db8::1";
-            nonProductionHost = "2001:0DB8:0:0:0:0:0:1";
-          };
-          domainIntersection = crossProfileAttemptFor {
-            productionDomain = "APP.EXAMPLE.INVALID.";
-            nonProductionDomain = "app.example.invalid";
-          };
-          coordinationScopeIntersection = crossProfileAttemptFor {
-            productionScope = "SHARED-SCOPE";
-            nonProductionScope = "shared-scope";
-          };
+          configContract = import ./nix/config-test.nix { nixployLib = self.lib; };
         in
         {
           nixploy = self.packages.${system}.nixploy;
-          dune-stanza-contract =
-            pkgs.runCommand "nixploy-dune-stanza-contract"
-              {
-                nativeBuildInputs = [
-                  pkgs.gawk
-                  pkgs.gnugrep
-                ];
-              }
-              ''
-                bash ${./nix/dune-stanza-contract-test.sh} ${./flake.nix} ${./ocaml/test/dune}
-                touch $out
-              '';
           config-contract =
             assert configContract;
             pkgs.runCommand "nixploy-config-contract" { } "touch $out";
-          mix-expo-source = mixExpoFixture;
-          cross-profile-intersection-rejected =
-            assert !dnsHostIntersection.success;
-            assert !ipv4HostIntersection.success;
-            assert !legacyHexHostIntersection.success;
-            assert !legacyUppercaseHexHostIntersection.success;
-            assert !legacyMixedHexHostIntersection.success;
-            assert !legacyOctalHostIntersection.success;
-            assert !legacyShortHostIntersection.success;
-            assert !legacyThreePartHostIntersection.success;
-            assert !ipv6HostIntersection.success;
-            assert !domainIntersection.success;
-            assert !coordinationScopeIntersection.success;
-            pkgs.runCommand "nixploy-cross-profile-intersection-rejected" { } "touch $out";
-          nixos-unrestricted-auth-rejected =
-            assert !unrestrictedAuthRejected.success;
-            pkgs.runCommand "nixploy-nixos-unrestricted-auth-rejected" { } "touch $out";
-          nixos-module =
-            assert lib.hasSuffix "-nixploy-start" service.serviceConfig.ExecStart;
-            assert service.serviceConfig.EnvironmentFile == [ "/run/keys/nixploy.env" ];
-            assert service.serviceConfig.User == "nixploy";
-            assert service.serviceConfig.Group == "nixploy";
-            assert service.serviceConfig.StateDirectory == "nixploy";
-            assert service.serviceConfig.WorkingDirectory == "/var/lib/nixploy";
-            assert
-              evaluated.config.services.nixploy.stateDatabasePath == "/var/lib/nixploy/custom-state.sqlite3";
-            assert service.serviceConfig.TimeoutStopSec == 30;
-            assert service.serviceConfig.ProtectSystem == "strict";
-            assert builtins.elem "/srv/nixploy/example" service.serviceConfig.ReadOnlyPaths;
-            assert service.environment.HOME == "/var/lib/nixploy";
-            assert service.environment.NIXPLOY_AUTH_MODE == "tailscale";
-            assert service.environment.NIXPLOY_OPERATOR_EMAIL == "operator@example.com";
-            assert service.environment.NIXPLOY_ALLOWED_ORIGIN == "https://nixploy.example.com";
-            assert !(builtins.hasAttr "NIXPLOY_MANAGED_APPLICATIONS_JSON" service.environment);
-            assert
-              service.environment.NIXPLOY_SSH_IDENTITY_FILE == "/run/credentials/nixploy.service/ssh-identity";
-            assert
-              service.environment.NIXPLOY_SSH_KNOWN_HOSTS_FILE
-              == "/run/credentials/nixploy.service/ssh-known-hosts";
-            assert service.environment.SOPS_AGE_KEY_FILE == "/run/credentials/nixploy.service/sops-age-key";
-            assert
-              service.environment.NIXPLOY_SOPS_AGE_SSH_PRIVATE_KEY_FILE
-              == "/run/credentials/nixploy.service/sops-age-ssh-key";
-            assert !(builtins.hasAttr "nixploy-control-plane-worker" evaluated.config.systemd.services);
-            assert !evaluated.config.services.postgresql.enable;
-            assert renamed.config.services.nixploy.enable;
-            assert renamed.config.services.nixploy.allowUnrestrictedDevelopmentMode;
-            pkgs.runCommand "nixploy-nixos-module-evaluation" { } "touch $out";
-          nixos-vm-smoke = import ./nix/nixos-test.nix {
-            inherit pkgs rpcProbe;
-            nixployModule = self.nixosModules.default;
-            nixployPackage = self.packages.${system}.nixploy;
-          };
-          nixos-target-lease-vm = import ./nix/target-lease-test.nix {
-            inherit pkgs leaseHolder;
-            nixployModule = self.nixosModules.default;
-            nixployPackage = self.packages.${system}.nixploy;
-          };
-          # Root must be rejected during Nix evaluation, not merely at runtime.
-          target-lease-root-peer-rejected =
-            let
-              attempted = builtins.tryEval (
-                (lib.nixosSystem {
-                  inherit system;
-                  modules = [
-                    self.nixosModules.default
-                    {
-                      system.stateVersion = "26.05";
-                      services.nixploy.targetLease = {
-                        enable = true;
-                        authority = "11111111-2222-3333-4444-555555555555";
-                        identity = "12345678-1234-4234-9234-123456789abc";
-                        scopes = [
-                          {
-                            scope = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-                            users = [ "root" ];
-                          }
-                        ];
-                      };
-                    }
-                  ];
-                }).config.system.build.toplevel
-              );
-            in
-            assert !attempted.success;
-            pkgs.runCommand "nixploy-target-lease-root-peer-rejected" { } "touch $out";
+          mix-expo-source = import ./nix/test-fixtures/mix-expo/package.nix { inherit pkgs; };
         }
       );
 
@@ -526,17 +115,8 @@
         {
           default = pkgs.mkShell {
             inputsFrom = [ self.packages.${system}.nixploy ];
-
-            packages = [
-              pkgs.curl
-              pkgs.git
+            packages = runtimeTools pkgs ++ [
               pkgs.jq
-              pkgs.nix
-              pkgs.openssh
-              pkgs.podman
-              pkgs.sops
-              pkgs.ssh-to-age
-              pkgs.util-linux
               ocamlPackages.dune_3
               ocamlPackages.ocaml
               ocamlPackages.ocaml-lsp

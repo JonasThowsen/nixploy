@@ -1,5 +1,0 @@
-(library
- (name protocol)
- (libraries core async_rpc_kernel)
- (preprocess
-  (pps ppx_jane)))

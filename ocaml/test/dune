@@ -20,133 +20,11 @@
    %{bin:ocamlfind}
    %{dep:../lib/nixploy.cma})))
 
-(rule
- (alias runtest)
- (deps
-  managed_browser_deploy_fence_test.sh
-  ../web/client/app.ml
-  ../web/client/application_page.ml
-  ../web/client/apps_page.ml)
- (action
-  (run
-   bash
-   %{dep:managed_browser_deploy_fence_test.sh}
-   %{dep:../web/client/app.ml}
-   %{dep:../web/client/application_page.ml}
-   %{dep:../web/client/apps_page.ml})))
-
-(rule
- (alias runtest)
- (deps browser_capability_grant_test.sh ../web/client/app.ml)
- (action
-  (run
-   bash
-   %{dep:browser_capability_grant_test.sh}
-   %{dep:../web/client/app.ml})))
-
 (library
  (name core_test)
  (modules core_test)
  (libraries nixploy core)
  (inline_tests)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name target_lease_test)
- (modules target_lease_test)
- (libraries nixploy core)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name control_plane_capabilities_test)
- (modules control_plane_capabilities_test)
- (libraries core nixploy_rpc_mapping protocol)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name capability_grant_test)
- (modules capability_grant_test)
- (libraries core nixploy_rpc_mapping)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name browser_capability_grant_state_test)
- (modules browser_capability_grant_state_test)
- (libraries core nixploy_web_client_state protocol)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name control_plane_authority_test)
- (modules control_plane_authority_test)
- (libraries core nixploy uri)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name control_plane_client_test)
- (modules control_plane_client_test)
- (libraries async core nixploy nixploy_control_plane_client uri)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name configuration_control_plane_test)
- (modules configuration_control_plane_test)
- (libraries core nixploy)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name direct_mode_fence_test)
- (modules direct_mode_fence_test)
- (libraries async core nixploy)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name managed_deploy_fence_test)
- (modules managed_deploy_fence_test)
- (libraries async core nixploy)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name managed_deployment_admission_rpc_test)
- (modules managed_deployment_admission_rpc_test)
- (libraries async core nixploy nixploy_rpc_mapping protocol)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name managed_deployment_rpc_test)
- (modules managed_deployment_rpc_test)
- (libraries async core nixploy nixploy_rpc_mapping protocol)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name direct_mode_configuration_test)
- (modules direct_mode_configuration_test)
- (libraries core nixploy)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name host_metrics_cache_test)
- (modules host_metrics_cache_test)
- (libraries async core nixploy)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name authorization_test)
- (modules authorization_test)
- (libraries core nixploy_rpc_mapping)
  (preprocess
   (pps ppx_jane)))
 
@@ -186,42 +64,9 @@
   (pps ppx_jane)))
 
 (test
- (name deploy_state_test)
- (modules deploy_state_test)
- (libraries core nixploy_web_client_state)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name last_good_test)
- (modules last_good_test)
- (libraries core nixploy_web_client_state)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name consumer_mapping_test)
- (modules consumer_mapping_test)
- (libraries
-  async
-  nixploy
-  nixploy_cli_mapping
-  nixploy_rpc_mapping
-  protocol
-  core)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name cancellation_request_test)
- (modules cancellation_request_test)
- (libraries
-  async
-  core
-  core_unix.command_unix
-  nixploy
-  nixploy_rpc_mapping
-  protocol)
+ (name cli_mapping_test)
+ (modules cli_mapping_test)
+ (libraries nixploy nixploy_cli_mapping core)
  (preprocess
   (pps ppx_jane)))
 
@@ -229,26 +74,6 @@
  (name prune_test)
  (modules prune_test)
  (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name prune_request_test)
- (modules prune_request_test)
- (libraries
-  async
-  core
-  core_unix.command_unix
-  nixploy
-  nixploy_rpc_mapping
-  protocol)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name prune_state_test)
- (modules prune_state_test)
- (libraries core nixploy_web_client_state)
  (preprocess
   (pps ppx_jane)))
 
@@ -288,20 +113,6 @@
   (pps ppx_jane)))
 
 (test
- (name route_test)
- (modules route_test)
- (libraries core nixploy_web_route)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name static_route_test)
- (modules static_route_test)
- (libraries core nixploy_rpc_mapping)
- (preprocess
-  (pps ppx_jane)))
-
-(test
  (name runtime_application_test)
  (modules runtime_application_test)
  (libraries nixploy core core_unix.command_unix async)
@@ -312,57 +123,5 @@
  (name source_build_probe)
  (modules source_build_probe)
  (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(executable
- (name source_authority_probe)
- (modules source_authority_probe)
- (libraries nixploy core core_unix.command_unix async)
- (preprocess
-  (pps ppx_jane)))
-
-(executable
- (name rpc_probe)
- (modules rpc_probe)
- (libraries async async_rpc_websocket core core_unix.command_unix protocol)
- (preprocess
-  (pps ppx_jane)))
-
-; This executable is built only by the NixOS lease VM check.  It has no public
-; name, so it is not installed by the nixploy package.
-
-(executable
- (name target_lease_test_holder)
- (modules target_lease_test_holder)
- (libraries nixploy core core_unix.command_unix)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name target_lease_state_test)
- (modules target_lease_state_test)
- (libraries nixploy core core_unix.command_unix)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name target_lease_socket_test)
- (modules target_lease_socket_test)
- (libraries nixploy core core_unix.command_unix)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name target_lease_broker_test)
- (modules target_lease_broker_test)
- (libraries nixploy core threads.posix core_unix.command_unix)
- (preprocess
-  (pps ppx_jane)))
-
-(test
- (name target_lease_client_test)
- (modules target_lease_client_test)
- (libraries async nixploy core threads.posix core_unix.command_unix)
  (preprocess
   (pps ppx_jane)))
