@@ -1,14 +1,13 @@
 open Async
 
-(** [Kept] means the mode never touches the route (stale cleanup). A dry run
-    reports [Removed] for a route it would delete. *)
-type route = Not_configured | Missing | Removed | Kept
-[@@deriving compare, equal, sexp]
+(** The configured route after prune, which never removes one: [Missing] for a
+    web target that was stopped first, [Kept] in stale mode. *)
+type route = Not_configured | Missing | Kept [@@deriving compare, equal, sexp]
 
 type mode =
   | Everything
-      (** Owned containers, owned secrets, owned image references and the
-          configured route. *)
+      (** Owned containers, owned secrets and owned image references of a target
+          that [nixploy stop] has taken offline. *)
   | Stale of { keep : int }
       (** Only resources the live deployment does not use; see {!Stale_plan}. *)
 [@@deriving compare, equal, sexp]
@@ -23,12 +22,15 @@ val prune_local :
   mode:mode ->
   dry_run:bool ->
   t Deferred.Or_error.t
-(** Removes exactly owned resources chosen by [mode]. Unlabelled secrets, images
-    outside the owned repository, volumes, and host data are retained. All
-    ownership checks precede removal; partial/unknown results retain the remote
-    mutation guard and append durable progress in the local prune_events table.
-    A dry run performs the same read-only observation and planning without
-    taking the guard, recording events, or requiring confirmation. *)
+(** Removes exactly owned resources chosen by [mode]. Never removes a Caddy
+    route or anything live: [Everything] refuses (NIXPLOY_PRUNE_ACTIVE) while
+    the route exists or an owned container runs, and [Stale] removes only
+    containers the route does not serve. Unlabelled secrets, images outside the
+    owned repository, volumes, and host data are retained. All ownership checks
+    precede removal; partial/unknown results retain the remote mutation guard
+    and append durable progress in the local prune_events table. A dry run
+    performs the same read-only observation and planning without taking the
+    guard, recording events, or requiring confirmation. *)
 
 val project : t -> Project_name.t
 val target : t -> Target_name.t

@@ -96,12 +96,15 @@ nixploy run --target production console
 nixploy prune --target production --stale --dry-run
 nixploy prune --target production --stale --yes
 
-# Destructive: remove every owned container, secret, image, and the configured route.
+# Take a target offline (route removed, containers stopped, restart disabled),
+# then remove its containers, secrets, and images. Prune refuses a live target.
+nixploy stop --target production
 nixploy prune --target production --yes
 
 # Everything nixploy owns on the target's host, including renamed or deleted
 # targets and other projects; then remove one leftover by its resource key.
 nixploy resources --target production
+nixploy stop --target production --orphan RESOURCE_KEY
 nixploy prune --target production --orphan RESOURCE_KEY --dry-run
 ```
 
@@ -158,17 +161,21 @@ only the reported marker. See [DEVELOPMENT.md](DEVELOPMENT.md#mutation-coordinat
 and [MIGRATION.md](MIGRATION.md). Never blindly retry a migration.
 
 Prune requires `--yes` (or `--dry-run` to preview) and checks exact ownership
-before removal. Without `--stale` it removes owned containers, fully owned secrets,
-owned images, and the configured owned route. With `--stale` it keeps the live
+before removal. It never removes a Caddy route or a running application: take a
+target offline with `stop` first, which removes its route and stops its containers
+with restart disabled; `deploy` brings a stopped target back. Without `--stale`,
+prune removes a stopped target's owned containers, fully owned secrets, and owned
+images. With `--stale` it keeps the live
 deployment and removes only what it no longer uses; `--keep` sets how many recent
 owned images survive. Deploy tags images into `localhost/nixploy/<resource key>`,
 so images loaded before that change are not owned and are never pruned. Volumes
 and data are always retained.
 
 `resources` lists every nixploy resource on the target's host and marks those whose
-target this flake no longer declares. `prune --orphan RESOURCE_KEY` removes one such
-leftover after re-verifying its ownership labels under that target's own mutation
-guard. It refuses anything the flake still declares; use plain `prune` for those. Old unlabelled secrets are retained and are **not automatically
+target this flake no longer declares. `stop --orphan RESOURCE_KEY` and then
+`prune --orphan RESOURCE_KEY` take one such leftover offline and remove it, each
+re-verifying its ownership labels under that target's own mutation guard. They
+refuse anything the flake still declares; use plain `stop` and `prune` for those. Old unlabelled secrets are retained and are **not automatically
 overwritten or adopted**. A same-name legacy secret requires explicit operator
 migration, not prefix-based deletion; see [legacy secret migration](MIGRATION.md#legacy-podman-secrets).
 

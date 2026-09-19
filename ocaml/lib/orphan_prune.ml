@@ -10,7 +10,6 @@ type t = {
   secrets : string list;
   image_references : string list;
   image_bytes : int64;
-  route : bool;
 }
 
 let resource_key t = t.resource_key
@@ -21,7 +20,6 @@ let containers t = t.containers
 let secrets t = t.secrets
 let image_references t = t.image_references
 let image_bytes t = t.image_bytes
-let route t = t.route
 
 let removable_group inventory ~key =
   match Inventory.find_group inventory key with
@@ -65,6 +63,21 @@ let own_references (group : Inventory.group) (image : Podman.owned_image) =
       List.filter image.references ~f:(fun reference ->
           Option.is_some (Owned_image.tag ~repository reference))
 
+let running (group : Inventory.group) =
+  List.exists group.containers ~f:(fun container ->
+      Option.equal String.equal container.state (Some "running"))
+
+let inactive (group : Inventory.group) ~host_name =
+  if group.route || running group then
+    Or_error.errorf
+      "NIXPLOY_PRUNE_ACTIVE: %s still has %s; run `nixploy stop -t %s --orphan \
+       %s` first. Prune never removes a route or a running application."
+      group.resource_key
+      (if group.route then "a Caddy route" else "a running container")
+      (Target_name.to_string host_name)
+      group.resource_key
+  else Ok ()
+
 let summary ~dry_run ~project ~target (group : Inventory.group) =
   {
     resource_key = group.resource_key;
@@ -84,8 +97,16 @@ let summary ~dry_run ~project ~target (group : Inventory.group) =
             = List.length image.references
           then Option.value image.size_bytes ~default:0L
           else 0L);
-    route = group.route;
   }
+
+let ownership_labels ~project ~target ~key ~repository =
+  [
+    ("io.nixploy.managed", "true");
+    ("io.nixploy.project", project);
+    ("io.nixploy.target", target);
+    ("io.nixploy.resource_key", key);
+    ("io.nixploy.repository_identity", repository);
+  ]
 
 let prune ~store ~working_directory ~target:host_name ~resource_key:key
     ~confirmed ~dry_run =
@@ -102,6 +123,7 @@ let prune ~store ~working_directory ~target:host_name ~resource_key:key
   let%bind group, project, target, repository =
     Deferred.return (removable_group inventory ~key)
   in
+  let%bind () = Deferred.return (inactive group ~host_name) in
   if dry_run then
     Deferred.Or_error.return (summary ~dry_run ~project ~target group)
   else
@@ -116,15 +138,7 @@ let prune ~store ~working_directory ~target:host_name ~resource_key:key
         ~target:target_name ~message
     in
     let%bind () = record ("requested: orphaned resources of " ^ key) in
-    let ownership =
-      [
-        ("io.nixploy.managed", "true");
-        ("io.nixploy.project", project);
-        ("io.nixploy.target", target);
-        ("io.nixploy.resource_key", key);
-        ("io.nixploy.repository_identity", repository);
-      ]
-    in
+    let ownership = ownership_labels ~project ~target ~key ~repository in
     let%bind.Deferred result =
       Mutation_guard.with_mutation_for ~host ~project:project_name ~target_name
         (fun () ->
@@ -147,15 +161,9 @@ let prune ~store ~working_directory ~target:host_name ~resource_key:key
               Deferred.Or_error.error_string
                 "orphan ownership changed between observation and removal"
           in
+          let%bind () = Deferred.return (inactive group ~host_name) in
           let connection = Inventory.connection inventory in
           let%bind () = record "ownership preflight complete" in
-          let%bind () =
-            if group.route then
-              let%bind () = record "removing Caddy route" in
-              let%map _removed = Caddy.delete_key ~target:host ~resource_key in
-              ()
-            else Deferred.Or_error.return ()
-          in
           let%bind () =
             Deferred.Or_error.List.iter group.containers ~how:`Sequential
               ~f:(fun container ->
@@ -202,3 +210,98 @@ let prune ~store ~working_directory ~target:host_name ~resource_key:key
                ("Prune operation " ^ operation_id
               ^ ": terminal reporting failed; inspect remote state and \
                  prune_events"))
+
+type stopped = {
+  stopped_key : string;
+  stopped_project : string;
+  stopped_target : string;
+  route_removed : bool;
+  stopped_containers : string list;
+}
+
+let stopped_key stopped = stopped.stopped_key
+let stopped_project stopped = stopped.stopped_project
+let stopped_target stopped = stopped.stopped_target
+let stopped_route_removed stopped = stopped.route_removed
+let stopped_containers stopped = stopped.stopped_containers
+
+let stop ~store ~working_directory ~target:host_name ~resource_key:key =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind resource_key = Deferred.return (Resource_key.of_observed key) in
+  let%bind inventory = Inventory.load ~working_directory ~target:host_name in
+  let%bind _, project, target, repository =
+    Deferred.return (removable_group inventory ~key)
+  in
+  let%bind project_name = Deferred.return (Project_name.of_string project) in
+  let%bind target_name = Deferred.return (Target_name.of_string target) in
+  let host = Inventory.host inventory in
+  let operation_id =
+    Uuid.create_random (Random.State.make_self_init ()) |> Uuid.to_string
+  in
+  let record message =
+    Store.record_prune_event store ~operation_id ~working_directory
+      ~target:target_name ~message:("stop: " ^ message)
+  in
+  let%bind () = record ("requested: stop orphaned resources of " ^ key) in
+  let ownership = ownership_labels ~project ~target ~key ~repository in
+  let%bind.Deferred result =
+    Mutation_guard.with_mutation_for ~host ~project:project_name ~target_name
+      (fun () ->
+        let open Deferred.Or_error.Let_syntax in
+        let%bind inventory =
+          Inventory.load ~working_directory ~target:host_name
+        in
+        let%bind group, project', target', repository' =
+          Deferred.return (removable_group inventory ~key)
+        in
+        let%bind () =
+          if
+            String.equal project project'
+            && String.equal target target'
+            && String.equal repository repository'
+          then Deferred.Or_error.return ()
+          else
+            Deferred.Or_error.error_string
+              "orphan ownership changed between observation and stop"
+        in
+        let connection = Inventory.connection inventory in
+        let%bind route_removed =
+          if group.route then
+            let%bind () = record "removing Caddy route" in
+            Caddy.delete_key ~target:host ~resource_key
+          else Deferred.Or_error.return false
+        in
+        let%map () =
+          Deferred.Or_error.List.iter group.containers ~how:`Sequential
+            ~f:(fun container ->
+              let%bind () = record ("stopping container " ^ container.id) in
+              Podman.stop_labelled_container ~connection ~id:container.id
+                ~expected:ownership)
+        in
+        {
+          stopped_key = key;
+          stopped_project = project;
+          stopped_target = target;
+          route_removed;
+          stopped_containers =
+            List.map group.containers ~f:(fun container -> container.name);
+        })
+  in
+  let message =
+    match result with
+    | Ok _ -> "succeeded"
+    | Error error -> "failed or unknown: " ^ Error.to_string_hum error
+  in
+  let%bind.Deferred recorded = record message in
+  match (result, recorded) with
+  | Ok result, Ok () -> Deferred.Or_error.return result
+  | Error error, Ok () ->
+      Deferred.Or_error.fail
+        (Error.tag error ~tag:("Stop operation " ^ operation_id))
+  | _, Error error ->
+      Deferred.Or_error.fail
+        (Error.tag error
+           ~tag:
+             ("Stop operation " ^ operation_id
+            ^ ": terminal reporting failed; inspect remote state and \
+               prune_events"))

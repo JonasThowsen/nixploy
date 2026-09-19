@@ -30,4 +30,21 @@ val containers : t -> string list
 val secrets : t -> string list
 val image_references : t -> string list
 val image_bytes : t -> int64
-val route : t -> bool
+
+type stopped
+
+val stop :
+  store:Store.t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  resource_key:string ->
+  stopped Deferred.Or_error.t
+(** Takes an orphaned key offline under its own guard: removes its Caddy route,
+    then disables the restart policy of and stops each container whose ownership
+    labels still match. Same refusals as {!prune}. *)
+
+val stopped_key : stopped -> string
+val stopped_project : stopped -> string
+val stopped_target : stopped -> string
+val stopped_route_removed : stopped -> bool
+val stopped_containers : stopped -> string list

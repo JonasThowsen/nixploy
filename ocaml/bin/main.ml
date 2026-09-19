@@ -104,17 +104,20 @@ let logs_command =
 let prune_command =
   Async.Command.async
     ~summary:
-      "Remove owned containers, secrets, images and route, or only stale ones"
+      "Remove a stopped target's containers, secrets and images, or only stale \
+       ones"
     ~readme:(fun () ->
-      "Without --stale, removes everything this target owns: containers, fully \
-       owned secrets, owned image references and the configured Caddy route. \
-       With --stale, removes only what the live deployment does not use: \
-       unserved containers, owned secrets no retained container mounts, and \
-       owned images beyond the newest --keep. With --orphan KEY, removes one \
-       resource key listed by `nixploy resources` whose target this flake no \
-       longer declares. Unlabelled secrets, other images, volumes and data are \
-       always retained. Pass --dry-run to preview without changing anything, \
-       or --yes to remove.")
+      "Prune never removes a Caddy route or a running application: run \
+       `nixploy stop` first. Without --stale, removes everything a stopped \
+       target owns: containers, fully owned secrets and owned image \
+       references; it refuses while the route exists or a container runs. With \
+       --stale, removes only what the live deployment does not use: containers \
+       the route does not serve, owned secrets no retained container mounts, \
+       and owned images beyond the newest --keep. With --orphan KEY, removes \
+       one stopped resource key listed by `nixploy resources` whose target \
+       this flake no longer declares. Unlabelled secrets, other images, \
+       volumes and data are always retained. Pass --dry-run to preview without \
+       changing anything, or --yes to remove.")
     (let%map_open.Command flags = common_flags
      and confirmed =
        flag "--yes" no_arg ~doc:" confirm removal without prompting"
@@ -193,6 +196,45 @@ let prune_command =
                     ownership migration required.\n\
                     %!"
                    (Application.prune_secrets_retained result)))
+
+let stop_command =
+  Async.Command.async
+    ~summary:"Take a target offline: remove its route and stop its containers"
+    ~readme:(fun () ->
+      "Removes the target's owned Caddy route first, then sets each owned \
+       container's restart policy to no and stops it, so it stays down after a \
+       reboot. Nothing is deleted: `nixploy deploy` starts the target again, \
+       and `nixploy prune --yes` removes a stopped target. With --orphan KEY, \
+       stops a resource key listed by `nixploy resources` whose target this \
+       flake no longer declares.")
+    (let%map_open.Command flags = common_flags
+     and orphan =
+       flag "--orphan" (optional string)
+         ~doc:"RESOURCE_KEY stop another, undeclared target on this host"
+     in
+     fun () ->
+       let target, working_directory, state_db, json = flags in
+       Nixploy.Process_runner.handle_termination_signals ();
+       with_application ~target ~state_db (fun application target ->
+           let open Deferred.Or_error.Let_syntax in
+           match orphan with
+           | None ->
+               let%map result =
+                 Application.stop_local application ~working_directory ~target
+               in
+               printf "%s%!"
+                 ((if json then Inspection_output.stop_json
+                   else Inspection_output.stop)
+                    result)
+           | Some resource_key ->
+               let%map result =
+                 Application.stop_orphan application ~working_directory ~target
+                   ~resource_key
+               in
+               printf "%s%!"
+                 ((if json then Inspection_output.orphan_stop_json
+                   else Inspection_output.orphan_stop)
+                    result)))
 
 let resources_command =
   Async.Command.async
@@ -306,6 +348,7 @@ let command =
        ("status", status_command);
        ("history", history_command);
        ("logs", logs_command);
+       ("stop", stop_command);
        ("prune", prune_command);
        ("resources", resources_command);
      ]

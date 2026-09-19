@@ -60,6 +60,9 @@ cleaned up by hand over SSH.
 - `resources` lists every nixploy resource on a target's host by resource key and
   classifies it against the flake; `prune --orphan KEY` removes an undeclared key
   under its own guard after re-verifying ownership.
+- `stop` (and `stop --orphan KEY`) removes the route and stops containers with
+  restart disabled. Prune never removes a route or a running application and
+  refuses a live target; the sequence is stop, then prune.
 
 ## Acceptance results
 
@@ -75,13 +78,15 @@ cleaned up by hand over SSH.
   cleanup, legacy-secret retention, source consistency and bounded compensation.
 - Interactive regressions cover blocked-flush cancellation, descendant cleanup,
   double-signal shutdown and terminal restoration.
-- Inspection and cleanup: the extended VM workflow passed in 1238 seconds
-  (`globalTimeout` raised to 1800 for the added steps), covering owned image tags
+- Inspection and cleanup: the extended VM workflow passed in 1497 seconds
+  (`globalTimeout` raised to 2400 for the added steps), covering owned image tags
   with the archive tag removed, the `always` restart policy, status stats, roles,
   route, disk and guard, a no-op `prune --stale` beside a live blue/green target,
   `resources` classification of a target deployed from another checkout and
-  renamed away, refusal of `--orphan` for a declared key, guarded orphan removal
-  with the live targets still serving, and full prune removing owned images.
+  renamed away, refusal of `--orphan` for a declared key, prune refusing live
+  targets without retaining a guard marker, `stop` removing the route and
+  leaving containers stopped with restart disabled, guarded orphan stop and
+  removal with the live targets still serving, and prune removing owned images.
 
 The VM driver was built through `checks.x86_64-linux.cli-vm-smoke.driver` and run
 directly without KVM. Production migration remains an explicit operator action;
@@ -94,7 +99,7 @@ Do not use production applications implicitly for acceptance. See
 
 One-off runbook containers, parameterized commands, and command chaining need a
 concrete use case before implementation. Re-applying a lost Caddy route without a
-redeploy, systemd/Quadlet units per container, and explicit stop/start commands
-wait for evidence that restart policies plus the readiness checks are not enough. Web UI, RPC, Nixploy daemons, application
+redeploy, systemd/Quadlet units per container, and a `start` command (deploy
+restarts a stopped target) wait for a concrete need. Web UI, RPC, Nixploy daemons, application
 registries, schedulers, queues, generic workflow engines, and server provisioning
 are outside the product boundary, not backlog items.

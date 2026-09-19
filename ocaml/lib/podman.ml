@@ -1830,7 +1830,20 @@ let list_nixploy_images ~connection =
         (String.strip result.stderr)
   | Ok () -> Deferred.return (nixploy_images_of_listing result.stdout)
 
-let remove_labelled_container ~connection ~id ~expected =
+let stop_container_by_id ~connection ~id =
+  let open Deferred.Or_error.Let_syntax in
+  (* Disable the restart policy first, so neither podman-restart.service at
+     boot nor a racing restart brings a deliberately stopped target back. *)
+  let%bind _ =
+    run_ok [ "--connection"; connection; "update"; "--restart"; "no"; id ]
+  in
+  let%map _ = run_ok [ "--connection"; connection; "stop"; id ] in
+  ()
+
+let stop_candidate ~connection ~(candidate : candidate) =
+  stop_container_by_id ~connection ~id:candidate.id
+
+let verify_container_labels ~connection ~id ~expected =
   let open Deferred.Or_error.Let_syntax in
   let%bind inspected = inspect_container ~connection id in
   let%bind labels =
@@ -1856,9 +1869,21 @@ let remove_labelled_container ~connection ~id ~expected =
         Option.equal String.equal
           (List.Assoc.find labels ~equal:String.equal key)
           (Some value))
-  then remove_candidate ~connection ~candidate:{ name = id; id }
+  then Deferred.Or_error.return ()
   else
     Deferred.Or_error.errorf "container %s ownership changed after listing" id
+
+let stop_labelled_container ~connection ~id ~expected =
+  let%bind.Deferred.Or_error () =
+    verify_container_labels ~connection ~id ~expected
+  in
+  stop_container_by_id ~connection ~id
+
+let remove_labelled_container ~connection ~id ~expected =
+  let%bind.Deferred.Or_error () =
+    verify_container_labels ~connection ~id ~expected
+  in
+  remove_candidate ~connection ~candidate:{ name = id; id }
 
 let remove_labelled_secret ~connection ~id ~name ~ownership =
   let open Deferred.Or_error.Let_syntax in

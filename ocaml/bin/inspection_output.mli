@@ -10,3 +10,7 @@ val resources : Nixploy.Inventory.t -> string
 val resources_json : Nixploy.Inventory.t -> string
 val orphan_prune : Nixploy.Orphan_prune.t -> string
 val orphan_prune_json : Nixploy.Orphan_prune.t -> string
+val stop : Nixploy.Stop.t -> string
+val stop_json : Nixploy.Stop.t -> string
+val orphan_stop : Nixploy.Orphan_prune.stopped -> string
+val orphan_stop_json : Nixploy.Orphan_prune.stopped -> string

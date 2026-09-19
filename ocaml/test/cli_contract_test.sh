@@ -2,7 +2,7 @@
 set -euo pipefail
 executable=$(realpath "$1")
 root_help=$($executable --help 2>&1)
-for command in deploy status history logs prune; do
+for command in deploy status history logs stop prune; do
   grep -F -- "$command" <<<"$root_help" >/dev/null
   help=$($executable "$command" --help 2>&1)
   for flag in '--target TARGET' '--directory DIRECTORY' '--state-db PATH' '--json'; do
@@ -18,6 +18,7 @@ for flag in '--dry-run' '--stale' '--keep COUNT' '--orphan RESOURCE_KEY'; do
   $executable prune --help | grep -F -- "$flag" >/dev/null
 done
 grep -F -- 'resources' <<<"$root_help" >/dev/null
+$executable stop --help | grep -F -- '--orphan RESOURCE_KEY' >/dev/null
 resources_help=$($executable resources --help 2>&1)
 for flag in '--target TARGET' '--directory DIRECTORY' '--json'; do
   grep -F -- "$flag" <<<"$resources_help" >/dev/null

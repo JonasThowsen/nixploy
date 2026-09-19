@@ -44,6 +44,7 @@ nixploy deploy --target production
 nixploy status --target production
 nixploy logs --target production
 nixploy history --target production
+nixploy stop --target production
 nixploy prune --target production --yes
 nixploy prune --target production --stale --dry-run
 nixploy resources --target production
@@ -82,10 +83,20 @@ supplementary query is shown as unavailable in its own section.
 
 Logs return a snapshot bounded to 500 lines and 64 KiB, not a follow stream.
 History defaults to 25 operations (`--limit` accepts 1–100); it is local evidence,
-not remote health. Prune requires `--yes` or `--dry-run` without prompting, checks
-exact ownership, and preflights ownership before removing anything. By default it
-removes the target's owned containers, fully owned secrets, owned image references,
-and the configured owned route. `--stale` removes only what the live deployment
+not remote health.
+
+`stop` takes a target offline under its mutation guard: it removes the owned Caddy
+route first, then sets each owned container's restart policy to `no` and stops it,
+so the target stays down after a reboot. It deletes nothing; `deploy` starts the
+target again. Status reports a stopped target as such.
+
+Prune requires `--yes` or `--dry-run` without prompting, checks exact ownership, and
+preflights ownership before removing anything. Prune never removes a Caddy route or
+a running application. By default it removes a stopped target's owned containers,
+fully owned secrets, and owned image references, and refuses (`NIXPLOY_PRUNE_ACTIVE`)
+while the owned route exists or an owned container runs. Prune observes and plans
+read-only before taking the mutation guard, so such a refusal leaves no marker;
+the guarded run observes again before removing anything. `--stale` removes only what the live deployment
 does not use: containers in a placement the owned route does not serve, owned
 secrets that no retained container mounts, and owned images beyond those in use and
 the newest `--keep` (default 2). When the live slot cannot be identified (missing
@@ -99,12 +110,14 @@ Partial cleanup is an error, not a successful wipe.
 mutation marker on the target's host (the same SSH account), grouped by resource key
 and classified against the local flake: current, declared (another target of this
 project), orphaned (this project, target no longer declared), other project, or
-unattributed. It is read-only and opens no local history. `prune --orphan KEY`
-removes one orphaned or other-project key's containers, fully owned secrets, owned
-image references, and Caddy route. It refuses keys the flake declares, keys without
-project/target labels, and keys whose labels conflict. A real run takes the orphan's
-own mutation guard, observes the host again, and removes by immutable ID only
-resources whose complete ownership labels still match.
+unattributed. It is read-only and opens no local history. `stop --orphan KEY` and
+`prune --orphan KEY` do the same for one orphaned or other-project key: stop removes
+its Caddy route and stops its containers; prune then removes its containers, fully
+owned secrets, and owned image references, refusing while a route or running
+container remains. Both refuse keys the flake declares, keys without project/target
+labels, and keys whose labels conflict, take the orphan's own mutation guard,
+observe the host again, and act by immutable ID only on resources whose complete
+ownership labels still match.
 
 Deploy tags each loaded image as `localhost/nixploy/<resource key>:<load time>-<revision>`
 and removes the archive's own tag, so the target's images are exactly those in
@@ -232,7 +245,7 @@ identities. It does not coordinate separate remote accounts or non-cooperating
 tools. Resource mutation still requires complete repository/project/target
 ownership checks; the guard's broader scope is not ownership authorization.
 
-Deploy, prune, and run all use this guard. Any callback error conservatively
+Deploy, stop, prune, and run all use this guard. Any callback error conservatively
 retains the marker, even if the error may have preceded remote application changes.
 Cancellation, lost clients, and transport uncertainty also retain evidence. There
 is no age-based expiry, forced acquisition, or automatic replay. A known completed

@@ -130,6 +130,21 @@ let human_bytes bytes =
   in
   if Float.(value < 1024.) then sprintf "%Ld B" bytes else scale value units
 
+let stopped t =
+  let routed =
+    match t.route with
+    | Ok (Routed _) | Error _ -> true
+    | Ok (Not_web | Missing) -> false
+  in
+  (not routed)
+  && (not (List.is_empty t.containers))
+  && List.for_all t.containers ~f:(fun container ->
+      Option.equal String.equal container.restart_policy (Some "no")
+      && not
+           (Option.equal String.equal
+              (Workload.state container.workload)
+              (Some "running")))
+
 let issues t =
   let kind = Configuration.Target.kind t.target in
   let serving =
@@ -271,8 +286,15 @@ let issues t =
         else []
     | Error _ -> []
   in
-  not_running @ deployment @ restart @ unrouted @ guard @ disk @ readiness
-  @ legacy_secrets
+  let application =
+    if stopped t then
+      [
+        "target is stopped (`nixploy stop`): deploy to start it again, or \
+         `nixploy prune --yes` to remove it";
+      ]
+    else not_running @ deployment @ restart @ unrouted
+  in
+  application @ guard @ disk @ readiness @ legacy_secrets
 
 let load ~working_directory ~target:target_name =
   let open Deferred.Or_error.Let_syntax in

@@ -299,6 +299,20 @@ val list_nixploy_images :
 (** Images with at least one [localhost/nixploy/] reference; [references] holds
     only those. *)
 
+val stop_candidate :
+  connection:string -> candidate:candidate -> unit Deferred.Or_error.t
+(** Sets the restart policy to [no], then stops the container by immutable ID.
+    Idempotent for an already stopped container. The caller must hold the target
+    guard. *)
+
+val stop_labelled_container :
+  connection:string ->
+  id:string ->
+  expected:(string * string) list ->
+  unit Deferred.Or_error.t
+(** {!stop_candidate} for a listed ID, after re-verifying every expected label.
+*)
+
 val remove_labelled_container :
   connection:string ->
   id:string ->

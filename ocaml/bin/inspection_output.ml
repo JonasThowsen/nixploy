@@ -61,6 +61,8 @@ let status status =
     | Error _ -> "");
   bprintf buffer "Resource: %s\n"
     (Nixploy.Resource_key.to_string (Application.status_resource_key status));
+  if Status.stopped status then
+    bprintf buffer "State:    stopped (nixploy stop)\n";
   (match Status.containers status with
   | [] -> bprintf buffer "\nNo deployed containers found.\n"
   | containers ->
@@ -331,6 +333,7 @@ let status_json status =
          ( "resourceKey",
            json_string
              (A.status_resource_key status |> Nixploy.Resource_key.to_string) );
+         ("stopped", `Bool (S.stopped status));
          ("containers", `List (List.map (S.containers status) ~f:container));
          ("route", route);
          ("secrets", secrets);
@@ -387,7 +390,6 @@ let history deployments =
 let prune_route_name = function
   | Nixploy.Application.Not_configured -> "not-configured"
   | Missing -> "missing"
-  | Removed -> "removed"
   | Kept -> "kept"
 
 let prune result =
@@ -406,20 +408,14 @@ let prune result =
   let nothing =
     List.is_empty containers && List.is_empty secrets && List.is_empty images
   in
-  let route_line =
-    match (A.prune_mode result, A.prune_route_state result) with
-    | Everything, Removed -> Some "the configured Caddy route"
-    | _ -> None
-  in
   if dry_run then
     bprintf buffer "Dry run; nothing was changed. %s would remove:\n" scope
   else bprintf buffer "%s removed:\n" scope;
-  if nothing && Option.is_none route_line then bprintf buffer "  nothing\n"
+  if nothing then bprintf buffer "  nothing\n"
   else (
     List.iter containers ~f:(bprintf buffer "  container  %s\n");
     List.iter secrets ~f:(bprintf buffer "  secret     %s\n");
-    List.iter images ~f:(bprintf buffer "  image      %s\n");
-    Option.iter route_line ~f:(bprintf buffer "  route      %s\n"));
+    List.iter images ~f:(bprintf buffer "  image      %s\n"));
   if not (List.is_empty images) then
     bprintf buffer "Image space freed: up to %s\n"
       (Nixploy.Status.human_bytes (A.prune_image_bytes result));
@@ -607,7 +603,6 @@ let orphan_prune result =
   List.iter (O.containers result) ~f:(bprintf buffer "  container  %s\n");
   List.iter (O.secrets result) ~f:(bprintf buffer "  secret     %s\n");
   List.iter (O.image_references result) ~f:(bprintf buffer "  image      %s\n");
-  if O.route result then bprintf buffer "  route      the key's Caddy route\n";
   if not (List.is_empty (O.image_references result)) then
     bprintf buffer "Image space freed: up to %s\n"
       (Nixploy.Status.human_bytes (O.image_bytes result));
@@ -630,5 +625,59 @@ let orphan_prune_json result =
          ("secrets", strings (O.secrets result));
          ("imageReferences", strings (O.image_references result));
          ("imageBytes", json_int64 (O.image_bytes result));
-         ("route", `Bool (O.route result));
+       ])
+
+let stopped_text ~label ~route_removed ~containers =
+  let buffer = Buffer.create 256 in
+  bprintf buffer "Stopped %s:\n" label;
+  if route_removed then bprintf buffer "  route      removed\n";
+  (match containers with
+  | [] -> bprintf buffer "  no owned containers\n"
+  | containers ->
+      List.iter containers
+        ~f:(bprintf buffer "  container  %s (restart disabled)\n"));
+  bprintf buffer "Deploy to start it again, or prune with --yes to remove it.\n";
+  Buffer.contents buffer
+
+let stop result =
+  let module S = Nixploy.Stop in
+  stopped_text
+    ~label:(Nixploy.Target_name.to_string (S.target result))
+    ~route_removed:(S.route_removed result) ~containers:(S.containers result)
+
+let stop_json result =
+  let module S = Nixploy.Stop in
+  encode_json
+    (`Assoc
+       [
+         ("project", `String (Nixploy.Project_name.to_string (S.project result)));
+         ("target", `String (Nixploy.Target_name.to_string (S.target result)));
+         ( "resourceKey",
+           `String (Nixploy.Resource_key.to_string (S.resource_key result)) );
+         ("routeRemoved", `Bool (S.route_removed result));
+         ("containers", `List (List.map (S.containers result) ~f:json_string));
+       ])
+
+let orphan_stop result =
+  let module O = Nixploy.Orphan_prune in
+  stopped_text
+    ~label:
+      (sprintf "%s (%s/%s)" (O.stopped_key result) (O.stopped_project result)
+         (O.stopped_target result))
+    ~route_removed:(O.stopped_route_removed result)
+    ~containers:(O.stopped_containers result)
+  |> String.substr_replace_first ~pattern:"Deploy to start it again, or prune"
+       ~with_:"Prune it with --orphan and"
+
+let orphan_stop_json result =
+  let module O = Nixploy.Orphan_prune in
+  encode_json
+    (`Assoc
+       [
+         ("resourceKey", `String (O.stopped_key result));
+         ("project", `String (O.stopped_project result));
+         ("target", `String (O.stopped_target result));
+         ("routeRemoved", `Bool (O.stopped_route_removed result));
+         ( "containers",
+           `List (List.map (O.stopped_containers result) ~f:json_string) );
        ])

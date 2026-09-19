@@ -1263,6 +1263,22 @@ let%test_module "status parsing and issues" =
       assert (has issues "has no restart policy; redeploy");
       assert (has issues "is free on /")
 
+    let%test_unit "a stopped target is reported once, as stopped" =
+      let stopped =
+        status ~route:(Ok Status.Missing)
+          [ container ~role:Unrouted ~state:"exited" ~policy:(Some "no") Blue ]
+      in
+      assert (Status.stopped stopped);
+      (match Status.issues stopped with
+      | [ issue ] -> assert (String.is_substring issue ~substring:"is stopped")
+      | issues ->
+          failwiths ~here:[%here] "issues" issues [%sexp_of: string list]);
+      let crashed =
+        status ~route:(Ok Status.Missing)
+          [ container ~role:Unrouted ~state:"exited" Blue ]
+      in
+      assert (not (Status.stopped crashed))
+
     let%test_unit "a route to a slot without a container is reported" =
       let issues =
         status

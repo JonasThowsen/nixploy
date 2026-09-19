@@ -10,7 +10,7 @@ type prune_result
 type status = Status.t
 type scope
 
-type prune_route_state = Not_configured | Missing | Removed | Kept
+type prune_route_state = Not_configured | Missing | Kept
 [@@deriving compare, equal, sexp]
 
 type prune_mode =
@@ -169,6 +169,22 @@ val run :
 (** Holds the remote guard across selection and exec, without replay or output
     retention. Uncertain outcomes retain the marker and preserve child exit
     code. *)
+
+val stop_local :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  Stop.t Deferred.Or_error.t
+(** Takes the target offline under its guard: removes its owned route, then
+    stops its owned containers with restart disabled. Prune requires this. *)
+
+val stop_orphan :
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  resource_key:string ->
+  Orphan_prune.stopped Deferred.Or_error.t
+(** {!stop_local} for an undeclared resource key on [target]'s host. *)
 
 val resources :
   working_directory:string ->

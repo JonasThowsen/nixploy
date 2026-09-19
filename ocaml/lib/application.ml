@@ -6,7 +6,7 @@ type source = Source.selection
 type prune_result = Prune.t
 type status = Status.t
 
-type prune_route_state = Not_configured | Missing | Removed | Kept
+type prune_route_state = Not_configured | Missing | Kept
 [@@deriving compare, equal, sexp]
 
 type prune_mode = Prune.mode = Everything | Stale of { keep : int }
@@ -500,6 +500,31 @@ let run ~on_selection ~working_directory ~target ~name =
         ~project:(Runbook.project prepared) ~target:(Runbook.target prepared)
         action)
 
+let tracked_mutation t action =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind () = Deferred.return (begin_mutation t) in
+  Monitor.protect
+    ~finally:(fun () ->
+      finish_mutation t;
+      Deferred.unit)
+    action
+
+let stop_local t ~working_directory ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_working_directory working_directory)
+  in
+  tracked_mutation t (fun () ->
+      Stop.stop_local ~store:t.store ~working_directory ~target)
+
+let stop_orphan t ~working_directory ~target ~resource_key =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_working_directory working_directory)
+  in
+  tracked_mutation t (fun () ->
+      Orphan_prune.stop ~store:t.store ~working_directory ~target ~resource_key)
+
 let resources ~working_directory ~target =
   Inventory.load ~working_directory ~target
 
@@ -540,7 +565,6 @@ let prune_route_state result =
   match Prune.route result with
   | Not_configured -> Not_configured
   | Missing -> Missing
-  | Removed -> Removed
   | Kept -> Kept
 
 let commit_revision = Source.commit_revision

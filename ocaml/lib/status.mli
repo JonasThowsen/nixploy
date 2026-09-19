@@ -59,6 +59,10 @@ val runtime_error : t -> Error.t option
 val human_bytes : int64 -> string
 (** Binary units, e.g. ["1.5 GiB"]. *)
 
+val stopped : t -> bool
+(** Every owned container is stopped with restart policy [no] and no owned route
+    exists: the state [nixploy stop] leaves. *)
+
 val issues : t -> string list
 (** Operator-facing problems derived from the observed state, most severe first.
     Empty means nothing needs attention. *)

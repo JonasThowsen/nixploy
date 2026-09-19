@@ -209,6 +209,8 @@ case "$*" in
   *" tag sha256:image-id localhost/nixploy/"*) exit 0 ;;
   *" untag sha256:image-id loaded@sha256:immutable") exit 0 ;;
   *" images --format json") printf '[]\n'; exit 0 ;;
+  *" update --restart no "*) exit 0 ;;
+  *" stop "*) exit 0 ;;
 esac
 if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
   if [ "${NIXPLOY_TEST_FAIL_PRESTART:-}" = "1" ] && printf '%s\n' "$*" | grep -q '/app/migrate'; then
@@ -271,7 +273,9 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
         ;;
       *) echo "unexpected label mode" >&2; exit 95 ;;
     esac
-    printf '[{"Id":"%s","Name":"%s","Config":{"Labels":{%s}}}]\n' "$old_id" "$name" "$labels"
+    running=false
+    if [ "${NIXPLOY_TEST_RUNNING:-}" = "1" ]; then running=true; fi
+    printf '[{"Id":"%s","Name":"%s","State":{"Running":%s},"Config":{"Labels":{%s}}}]\n' "$old_id" "$name" "$running" "$labels"
   fi
   exit 0
 fi
@@ -319,6 +323,7 @@ exit 99
       "NIXPLOY_TEST_PRODUCTION";
       "NIXPLOY_TEST_EXISTING_WEB";
       "NIXPLOY_TEST_STALE_GREEN";
+      "NIXPLOY_TEST_RUNNING";
       "NIXPLOY_TEST_EXISTING_SINGLE";
       "NIXPLOY_TEST_FOREIGN_SINGLE";
       "NIXPLOY_TEST_LABEL_MODE";
@@ -352,6 +357,7 @@ exit 99
         "NIXPLOY_TEST_PRODUCTION";
         "NIXPLOY_TEST_EXISTING_WEB";
         "NIXPLOY_TEST_STALE_GREEN";
+        "NIXPLOY_TEST_RUNNING";
         "NIXPLOY_TEST_EXISTING_SINGLE";
         "NIXPLOY_TEST_FOREIGN_SINGLE";
         "NIXPLOY_TEST_LABEL_MODE";
@@ -1060,12 +1066,77 @@ exit 99
       List.iter [ "|volume|"; "|system|prune|"; "|secret|rm|"; "nix|build|" ]
         ~f:(fun forbidden -> [%test_eq: int] 0 (count lines forbidden));
 
+      (* Prune never removes a route or a running application. *)
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_RUNNING" "1";
+      let%bind running =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      expect_error_containing running "NIXPLOY_PRUNE_ACTIVE";
+      [%test_eq: int] 0 (count (In_channel.read_lines trace) "|rm|-f|");
+      (* A refusal changes nothing, so it must not retain a guard marker that
+         would block the stop it asks for. *)
+      [%test_eq: int] 0 (count (In_channel.read_lines trace) "'mkdir' '-m'");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_RUNNING" "1";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind routed =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true ~dry_run:true
+      in
+      expect_error_containing routed "nixploy stop -t worker";
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 0 (count lines "|rm|-f|");
+      [%test_eq: int] 0 (count lines "'-X' 'DELETE'");
+
+      (* Stop removes the route before stopping, and disables restart first. *)
+      write trace "";
+      let%bind stopped =
+        Nixploy.Application.stop_local application ~working_directory:repository
+          ~target
+      in
+      let stopped = assert_ok stopped in
+      assert (Nixploy.Stop.route_removed stopped);
+      [%test_eq: int] 1 (List.length (Nixploy.Stop.containers stopped));
+      let lines = In_channel.read_lines trace in
+      let delete =
+        index_of lines (String.is_substring ~substring:"'-X' 'DELETE'")
+      in
+      let update =
+        index_of lines
+          (String.is_suffix ~suffix:"|update|--restart|no|old-slot-id")
+      in
+      let stop =
+        index_of lines (String.is_suffix ~suffix:"|stop|old-slot-id")
+      in
+      assert (delete < update && update < stop);
+      [%test_eq: int] 0 (count lines "|rm|");
+      [%test_eq: int] 1 (count lines "'rmdir'");
+      assert (not (Sys_unix.file_exists_exn route_state));
+
+      Core_unix.unsetenv "NIXPLOY_TEST_RUNNING";
+      write trace "";
+      let%bind pruned_after_stop =
+        Nixploy.Application.prune_local application
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      let pruned_after_stop = assert_ok pruned_after_stop in
+      assert (
+        Nixploy.Application.equal_prune_route_state Missing
+          (Nixploy.Application.prune_route_state pruned_after_stop));
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "|rm|-f|old-slot-id");
+      [%test_eq: int] 0 (count lines "'-X' 'DELETE'");
+
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
       Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
       Caml_unix.putenv "NIXPLOY_TEST_EXISTING_SINGLE" "1";
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_RETIREMENT" "old-slot-id";
-      write route_state "8080\nworker.example.invalid\n";
       let%bind partial =
         Nixploy.Application.prune_local application
           ~working_directory:repository ~target ~confirmed:true

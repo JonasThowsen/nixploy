@@ -91,7 +91,7 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "nixploy-daemonless-cli";
-  globalTimeout = 1800;
+  globalTimeout = 2400;
 
   nodes.machine = {
     nix.settings.experimental-features = [
@@ -240,7 +240,7 @@ pkgs.testers.runNixOSTest {
         competing = "NIXPLOY_STATE_DB=/tmp/other-state.db nixploy run -C /srv/other-app -t worker probe"
         try:
             machine.wait_until_succeeds(execute + "test -f /tmp/runbook-ready")
-            for attempt in [competing, command("prune", "worker", "--yes")]:
+            for attempt in [competing, command("prune", "worker", "--stale --yes")]:
                 code, output = machine.execute(attempt + " 2>&1")
                 assert code != 0 and "NIXPLOY_MUTATION_BLOCKED" in output, output
             machine.succeed("podman container exists " + shlex.quote(container))
@@ -283,6 +283,12 @@ pkgs.testers.runNixOSTest {
         assert retired["classification"] == "orphaned" and len(retired["containers"]) == 1, inventory
         assert retired["secrets"] and retired["images"], inventory
         assert "--orphan " + retired["resourceKey"] in machine.succeed(command("resources", "worker"))
+        code, output = machine.execute(command("prune", "worker", "--orphan " + retired["resourceKey"] + " --dry-run") + " 2>&1")
+        assert code != 0 and "NIXPLOY_PRUNE_ACTIVE" in output, output
+        stopped = json.loads(machine.succeed(command("stop", "worker", "--orphan " + retired["resourceKey"] + " --json")))
+        assert len(stopped["containers"]) == 1, stopped
+        state = machine.succeed("podman inspect --format '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' " + shlex.quote(retired["containers"][0]["id"])).strip()
+        assert state == "false no", state
         preview = json.loads(machine.succeed(command("prune", "worker", "--orphan " + retired["resourceKey"] + " --dry-run --json")))
         assert preview["dryRun"] and len(preview["containers"]) == 1, preview
         machine.succeed("podman container exists " + shlex.quote(retired["containers"][0]["id"]))
@@ -297,9 +303,21 @@ pkgs.testers.runNixOSTest {
 
     with subtest("explicit scoped cleanup"):
         machine.fail(command("prune", "worker"))
+        code, output = machine.execute(command("prune", "worker", "--yes") + " 2>&1")
+        assert code != 0 and "NIXPLOY_PRUNE_ACTIVE" in output, output
+        machine.succeed(command("stop", "worker"))
+        worker_status = json.loads(machine.succeed(command("status", "worker", "--json")))
+        assert worker_status["stopped"], worker_status
         machine.succeed(command("prune", "worker", "--yes"))
         machine.fail(command("run", "worker", "probe"))
         machine.succeed(command("run", "web", "probe"))
+        code, output = machine.execute(command("prune", "web", "--yes") + " 2>&1")
+        assert code != 0 and "NIXPLOY_PRUNE_ACTIVE" in output, output
+        machine.succeed("curl --fail -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
+        stopped = json.loads(machine.succeed(command("stop", "web", "--json")))
+        assert stopped["routeRemoved"] and len(stopped["containers"]) == 1, stopped
+        # Caddy answers unmatched hosts with an empty 200, so check the body.
+        machine.fail("curl --silent -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
         machine.succeed(command("prune", "web", "--yes"))
         machine.succeed("curl --fail http://127.0.0.1:8088 | grep 'unrelated application'")
         assert machine.succeed("podman ps --filter label=io.nixploy.managed=true --format '{{.ID}}'").strip() == ""

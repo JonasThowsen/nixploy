@@ -106,8 +106,11 @@ case "$*" in
     ;;
   *" info") ;;
   *" ps --all --filter label=io.nixploy.managed=true --format json")
-    printf '[{"Id":"prod-container-id","Names":["%s"],"State":"running","Labels":%s},{"Id":"old-container-id","Names":["%s"],"State":"exited","Status":"Exited (0) 3 weeks ago","Labels":%s}]\n'
+    state=exited
+    if [ -n "${NIXPLOY_TEST_ORPHAN_RUNNING:-}" ]; then state=running; fi
+    printf '[{"Id":"prod-container-id","Names":["%s"],"State":"running","Labels":%s},{"Id":"old-container-id","Names":["%s"],"State":"'"$state"'","Status":"Exited (0) 3 weeks ago","Labels":%s}]\n'
     ;;
+  *" update --restart no old-container-id"|*" stop old-container-id") ;;
   *" secret ls --filter name=^nixploy- "*) printf '%s\t%s-DATABASE_URL\n' ;;
   *" secret inspect --format "*)
     printf '{"ID":"%s","Name":"%s-DATABASE_URL","Labels":%s}\n'
@@ -136,7 +139,14 @@ esac
        orphan_reference current_reference
        (labels ~target:"staging-old" ~key:orphan)
        secret_id orphan_reference);
-  let environment_names = [ "PATH"; "SSH_AUTH_SOCK"; "NIXPLOY_TEST_TRACE" ] in
+  let environment_names =
+    [
+      "PATH";
+      "SSH_AUTH_SOCK";
+      "NIXPLOY_TEST_TRACE";
+      "NIXPLOY_TEST_ORPHAN_RUNNING";
+    ]
+  in
   let old_environment =
     List.map environment_names ~f:(fun name -> (name, Sys.getenv name))
   in
@@ -196,6 +206,41 @@ esac
       let%bind malformed = prune "../etc" in
       expect_error_containing malformed "is not a nixploy resource key";
       [%test_eq: string list] [] (mutations ());
+      (* A running orphan must be stopped first; stop then verifies its labels
+         and disables restart before stopping, under the orphan's guard. *)
+      Caml_unix.putenv "NIXPLOY_TEST_ORPHAN_RUNNING" "1";
+      let%bind active = prune ~dry_run:true ~confirmed:false orphan in
+      expect_error_containing active "NIXPLOY_PRUNE_ACTIVE";
+      expect_error_containing active "nixploy stop -t production --orphan";
+      [%test_eq: string list] [] (mutations ());
+      let%bind stopped =
+        Nixploy.Application.stop_orphan application
+          ~working_directory:repository ~target ~resource_key:orphan
+      in
+      let stopped = assert_ok stopped in
+      [%test_eq: string list] [ orphan ]
+        (Nixploy.Orphan_prune.stopped_containers stopped);
+      let lines = In_channel.read_lines trace in
+      let position suffix =
+        List.find_mapi_exn lines ~f:(fun index line ->
+            Option.some_if (String.is_substring line ~substring:suffix) index)
+      in
+      assert (
+        position ("'mkdir' '-m' '700' '--' '.nixploy-mutations/" ^ orphan_marker)
+        < position "|inspect|--type|container|old-container-id"
+        && position "|inspect|--type|container|old-container-id"
+           < position "|update|--restart|no|old-container-id"
+        && position "|update|--restart|no|old-container-id"
+           < position "|stop|old-container-id");
+      [%test_eq: int] 0
+        (List.count lines ~f:(String.is_substring ~substring:"|rm|"));
+      let%bind declared_stop =
+        Nixploy.Application.stop_orphan application
+          ~working_directory:repository ~target ~resource_key:current
+      in
+      expect_error_containing declared_stop "which this flake declares";
+      Core_unix.unsetenv "NIXPLOY_TEST_ORPHAN_RUNNING";
+      write trace "";
       let%bind preview = prune ~dry_run:true ~confirmed:false orphan in
       let preview = assert_ok preview in
       [%test_eq: string list] [ orphan_reference ]
