@@ -30,7 +30,31 @@ val execute_prepared_secret_prune :
 
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
-type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
+
+type runtime_stats = {
+  cpu_percent : float option;
+  memory_used_bytes : int64;
+  memory_limit_bytes : int64 option;
+  pids : int option;
+}
+
+type storage_usage = {
+  images_bytes : int64;
+  images_reclaimable_bytes : int64;
+  containers_bytes : int64;
+  volumes_bytes : int64;
+}
+
+type host_info = {
+  cpus : int option;
+  memory_total_bytes : int64 option;
+  memory_free_bytes : int64 option;
+  graph_root : string option;
+}
+
+module Secret_status : sig
+  type t = { name : string; owned : bool }
+end
 
 val select_resource_key :
   project:Project_name.t ->
@@ -192,6 +216,35 @@ val read_stats :
   container:runtime_container ->
   runtime_stats Deferred.Or_error.t
 
+(** {2 Read-only status queries}
+
+    These never mutate resources and never request secret values. *)
+
+val read_named_stats :
+  connection:string ->
+  names:string list ->
+  (string * runtime_stats) list Deferred.Or_error.t
+
+val read_restart_policies :
+  connection:string ->
+  names:string list ->
+  (string * string option) list Deferred.Or_error.t
+
+val read_storage_usage : connection:string -> storage_usage Deferred.Or_error.t
+(** Host-wide Podman storage totals, not only this target's resources. *)
+
+val read_host_info : connection:string -> host_info Deferred.Or_error.t
+
+val read_secret_statuses :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  repository_identity:string ->
+  Secret_status.t list Deferred.Or_error.t
+(** Classifies the resource's secrets in one batched inspect. Partial or
+    contradictory ownership fails like prune preflight. *)
+
 module For_testing : sig
   val runbook_argv :
     connection:string ->
@@ -228,6 +281,13 @@ module For_testing : sig
     string list Or_error.t
 
   val parse_stats : string -> runtime_stats Or_error.t
+  val parse_named_stats : string -> (string * runtime_stats) list Or_error.t
+
+  val parse_restart_policies :
+    string -> (string * string option) list Or_error.t
+
+  val parse_storage_usage : string -> storage_usage Or_error.t
+  val parse_host_info : string -> host_info Or_error.t
   val bound_logs : string -> log_snapshot
   val secret_names_of_output : string -> string list Or_error.t
 

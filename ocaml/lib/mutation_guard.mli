@@ -21,6 +21,16 @@ val with_mutation :
     preserved. A known command failure returns [None]; a transport-uncertain
     exit returns [Some _]. *)
 
+type marker = Absent | Present of string [@@deriving compare, equal, sexp]
+
+val inspect :
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  marker Deferred.Or_error.t
+(** Read-only: reports whether this project/target's marker directory exists
+    (relative to the SSH login directory). Presence means an operation is
+    running or left uncertainty evidence; it is never removed here. *)
+
 module For_testing : sig
   val with_mutation :
     ?certainty:('a -> string option) ->

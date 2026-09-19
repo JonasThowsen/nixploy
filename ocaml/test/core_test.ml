@@ -1102,3 +1102,167 @@ let%test_module "host reboot readiness" =
           assert (String.is_substring reason ~substring:"connection refused")
       | _ -> failwith "expected one unknown check"
   end)
+
+let%test_module "status parsing and issues" =
+  (module struct
+    module Podman = Nixploy.Podman.For_testing
+    module Status = Nixploy.Status
+
+    let%test_unit "named stats keep memory limits and pids" =
+      let stats =
+        Podman.parse_named_stats
+          {|[{"id":"a1022dc58e97","name":"owned-blue","cpu_percent":"0.08%","mem_usage":"1.688MB / 33.65GB","pids":"3"},
+             {"id":"b1022dc58e97","name":"owned-green","cpu_percent":"--","mem_usage":"12KiB / 512MiB","pids":"1"}]|}
+        |> assert_ok
+      in
+      let blue = List.Assoc.find_exn stats ~equal:String.equal "owned-blue" in
+      [%test_eq: float option] (Some 0.08) blue.cpu_percent;
+      [%test_eq: int64] 1_688_000L blue.memory_used_bytes;
+      [%test_eq: int64 option] (Some 33_650_000_000L) blue.memory_limit_bytes;
+      [%test_eq: int option] (Some 3) blue.pids;
+      let green = List.Assoc.find_exn stats ~equal:String.equal "owned-green" in
+      [%test_eq: float option] None green.cpu_percent;
+      [%test_eq: int64 option] (Some 536_870_912L) green.memory_limit_bytes
+
+    let%test_unit "inspect restart policies are keyed by container name" =
+      [%test_eq: (string * string option) list]
+        [ ("owned-blue", Some "always"); ("owned-green", None) ]
+        (Podman.parse_restart_policies
+           {|[{"Name":"owned-blue","HostConfig":{"RestartPolicy":{"Name":"always","MaximumRetryCount":0}}},
+              {"Name":"/owned-green","HostConfig":{"RestartPolicy":{"Name":""}}}]|}
+        |> assert_ok)
+
+    let%test_unit "system df and info expose host-wide storage and capacity" =
+      let storage =
+        Podman.parse_storage_usage
+          {|[{"Type":"Images","Total":1,"RawSize":8709729,"RawReclaimable":1024},
+             {"Type":"Containers","Total":1,"RawSize":11292,"RawReclaimable":0},
+             {"Type":"Local Volumes","Total":0,"RawSize":0,"RawReclaimable":0}]|}
+        |> assert_ok
+      in
+      [%test_eq: int64] 8_709_729L storage.images_bytes;
+      [%test_eq: int64] 1024L storage.images_reclaimable_bytes;
+      [%test_eq: int64] 11_292L storage.containers_bytes;
+      let host =
+        Podman.parse_host_info
+          {|{"host":{"cpus":4,"memTotal":8000000000,"memFree":1000000000},
+             "store":{"graphRoot":"/home/nixploy/.local/share/containers/storage"}}|}
+        |> assert_ok
+      in
+      [%test_eq: int option] (Some 4) host.cpus;
+      [%test_eq: string option]
+        (Some "/home/nixploy/.local/share/containers/storage") host.graph_root;
+      let disk =
+        Status.For_testing.parse_disk ~path:"/storage"
+          "Filesystem     1024-blocks     Used Available Capacity Mounted on\n\
+           /dev/sda1         40000000 36000000   4000000      90% /\n"
+        |> assert_ok
+      in
+      [%test_eq: int64] 4_096_000_000L disk.available_bytes;
+      assert (
+        Result.is_error (Status.For_testing.parse_disk ~path:"/" "Filesystem\n"))
+
+    let web_target =
+      let configuration =
+        Nixploy.Configuration.of_json
+          {|{"__schema":"v0.3","project":"sample","targets":{"production":{
+              "image":"docker","ip":"host",
+              "web":{"domain":"app.example.com","slots":{"blue":8080,"green":8081}}}}}|}
+        |> assert_ok
+      in
+      Nixploy.Configuration.find_target configuration
+        (Nixploy.Target_name.of_string "production" |> assert_ok)
+      |> assert_ok
+
+    let resource_key =
+      Nixploy.Resource_key.derive_current
+        ~project:(Nixploy.Project_name.of_string "sample" |> assert_ok)
+        ~target:(Nixploy.Target_name.of_string "production" |> assert_ok)
+      |> assert_ok
+
+    let container ?(state = "running") ?(restarts = 0) ?(policy = Some "always")
+        ~role slot =
+      let name =
+        Nixploy.Deployment_plan.web_container_name ~resource_key slot
+      in
+      let workload =
+        Nixploy.Workload.all_of_json
+          (sprintf {|[{"Names":["%s"],"State":"%s","Restarts":%d}]|} name state
+             restarts)
+        |> assert_ok |> List.hd_exn
+      in
+      { Status.workload; role; restart_policy = policy; stats = None }
+
+    let status ?(guard = Ok Nixploy.Mutation_guard.Absent) ?disk ~route
+        containers =
+      Status.For_testing.create
+        ~project:(Nixploy.Project_name.of_string "sample" |> assert_ok)
+        ~target:web_target ~resource_key ~containers ~route ~secrets:(Ok [])
+        ~disk:(Option.value disk ~default:(Or_error.error_string "unobserved"))
+        ~guard
+        ~readiness:
+          (Nixploy.Host_readiness.For_testing.assess ~user:"root" ~web:false
+             ~uid:(Ok { stdout = "0"; stderr = ""; exit_status = Ok () })
+             ~linger:(Or_error.error_string "skipped")
+             ~restart_unit:
+               (Ok { stdout = "enabled"; stderr = ""; exit_status = Ok () })
+             ~caddy_exec_start:(Or_error.error_string "skipped"))
+
+    let has issues substring =
+      List.exists issues ~f:(String.is_substring ~substring)
+
+    let%test_unit "a healthy routed slot has no issues" =
+      let routed =
+        Ok
+          (Status.Routed
+             { domain = "app.example.com"; port = 8080; slot = Some Blue })
+      in
+      [%test_eq: string list] []
+        (Status.issues (status ~route:routed [ container ~role:Active Blue ]))
+
+    let%test_unit "a lost route, stale slot, crash loop and marker are issues" =
+      let issues =
+        status ~route:(Ok Status.Missing)
+          ~guard:(Ok (Nixploy.Mutation_guard.Present ".nixploy-mutations/x"))
+          [ container ~role:Unrouted ~state:"exited" Blue ]
+        |> Status.issues
+      in
+      assert (has issues "the Caddy route is missing");
+      assert (has issues "is not served by the route");
+      assert (has issues "mutation marker .nixploy-mutations/x is present");
+      let issues =
+        status
+          ~route:
+            (Ok
+               (Status.Routed
+                  { domain = "app.example.com"; port = 8081; slot = Some Green }))
+          ~disk:
+            (Ok
+               {
+                 Status.total_bytes = 100_000L;
+                 available_bytes = 5_000L;
+                 path = "/";
+               })
+          [
+            container ~role:Active ~state:"exited" ~restarts:4 ~policy:None
+              Green;
+          ]
+        |> Status.issues
+      in
+      assert (has issues "is exited");
+      assert (has issues "has restarted 4 times");
+      assert (has issues "has no restart policy; redeploy");
+      assert (has issues "is free on /")
+
+    let%test_unit "a route to a slot without a container is reported" =
+      let issues =
+        status
+          ~route:
+            (Ok
+               (Status.Routed
+                  { domain = "app.example.com"; port = 8081; slot = Some Green }))
+          []
+        |> Status.issues
+      in
+      assert (has issues "serves the green slot, but no owned container")
+  end)

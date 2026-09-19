@@ -21,3 +21,10 @@ val image : t -> string option
 val state : t -> string option
 val status : t -> string option
 val revision : t -> string option
+val id : t -> string option
+val restarts : t -> int option
+
+val started_at_unix : t -> int64 option
+(** Seconds since the epoch; absent when the container never started. *)
+
+val exit_code : t -> int option

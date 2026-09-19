@@ -127,7 +127,13 @@
 (test
  (name status_test)
  (modules status_test)
- (libraries nixploy nixploy_cli_mapping core core_unix.command_unix async)
+ (libraries
+  nixploy
+  nixploy_cli_mapping
+  core
+  core_unix.command_unix
+  async
+  yojson)
  (preprocess
   (pps ppx_jane)))
 

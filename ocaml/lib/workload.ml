@@ -2,13 +2,21 @@ open Core
 
 type t = {
   name : string;
+  id : string option;
   image : string option;
   state : string option;
   status : string option;
   revision : string option;
+  restarts : int option;
+  started_at_unix : int64 option;
+  exit_code : int option;
 }
 
 let name t = t.name
+let id t = t.id
+let restarts t = t.restarts
+let started_at_unix t = t.started_at_unix
+let exit_code t = t.exit_code
 let image t = t.image
 let state t = t.state
 let status t = t.status
@@ -17,6 +25,11 @@ let revision t = t.revision
 let optional_string fields name =
   match List.Assoc.find fields ~equal:String.equal name with
   | Some (`String value) when not (String.is_empty value) -> Some value
+  | _ -> None
+
+let optional_int fields name =
+  match List.Assoc.find fields ~equal:String.equal name with
+  | Some (`Int value) -> Some value
   | _ -> None
 
 let container_name fields =
@@ -42,10 +55,17 @@ let of_json = function
           Ok
             {
               name;
+              id = optional_string fields "Id";
               image = optional_string fields "Image";
               state = optional_string fields "State";
               status = optional_string fields "Status";
               revision = revision_label fields;
+              restarts = optional_int fields "Restarts";
+              started_at_unix =
+                optional_int fields "StartedAt"
+                |> Option.filter ~f:Int.is_positive
+                |> Option.map ~f:Int64.of_int;
+              exit_code = optional_int fields "ExitCode";
             })
   | _ -> Or_error.error_string "Podman workload must be an object"
 

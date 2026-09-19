@@ -79,6 +79,13 @@ printf '\n' >> "$NIXPLOY_TEST_TRACE"
 last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
+  "'id' '-u'") printf '1001\n' ;;
+  "'loginctl' 'show-user' 'deployer' '--property=Linger' '--value'") printf 'yes\n' ;;
+  "'systemctl' '--user' 'is-enabled' 'podman-restart.service'") printf 'disabled\n'; exit 1 ;;
+  "'test' '-d' '.nixploy-mutations/"*) exit 1 ;;
+  "'df' '-P' '-k' '--' '/home/deployer/storage'")
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 40000000 20000000 20000000 50%% /\n'
+    ;;
   *"'podman' 'ps'"*)
     printf '[{"Labels":{"io.nixploy.managed":"true","io.nixploy.project":"sample","io.nixploy.target":"worker","io.nixploy.resource_key":"%s","io.nixploy.repository_identity":"git@example.invalid:sample.git"}}]\n' "$NIXPLOY_TEST_KEY"
     ;;
@@ -121,7 +128,23 @@ case "$*" in
         ;;
       *) echo "unexpected label mode" >&2; exit 96 ;;
     esac
-    printf '[{"Names":["%s"],"Image":"sample","State":"running","Labels":{%s}}]\n' "$NIXPLOY_TEST_KEY" "$labels"
+    printf '[{"Names":["%s"],"Id":"container-id","Image":"sample","State":"running","Status":"Up 3 hours","Restarts":2,"StartedAt":1789811772,"Labels":{%s}}]\n' "$NIXPLOY_TEST_KEY" "$labels"
+    ;;
+  *" inspect --type container "*)
+    printf '[{"Name":"%s","HostConfig":{"RestartPolicy":{"Name":"always"}}}]\n' "$NIXPLOY_TEST_KEY"
+    ;;
+  *" stats --no-stream --format json "*)
+    printf '[{"name":"%s","cpu_percent":"1.50%%","mem_usage":"256MiB / 1GiB","pids":"7"}]\n' "$NIXPLOY_TEST_KEY"
+    ;;
+  *" secret ls "*) printf 'abcdefghijklmnopqrstuvwxy\t%s-DATABASE_URL\n' "$NIXPLOY_TEST_KEY" ;;
+  *" secret inspect abcdefghijklmnopqrstuvwxy")
+    printf '[{"ID":"abcdefghijklmnopqrstuvwxy","Spec":{"Name":"%s-DATABASE_URL","Labels":{}}}]\n' "$NIXPLOY_TEST_KEY"
+    ;;
+  *" system df --format json")
+    printf '[{"Type":"Images","RawSize":3221225472,"RawReclaimable":1073741824},{"Type":"Containers","RawSize":4096,"RawReclaimable":0},{"Type":"Local Volumes","RawSize":0,"RawReclaimable":0}]\n'
+    ;;
+  *" info --format json")
+    printf '{"host":{"cpus":4,"memTotal":8589934592,"memFree":2147483648},"store":{"graphRoot":"/home/deployer/storage"}}\n'
     ;;
   *) echo "unexpected podman command: $*" >&2; exit 99 ;;
 esac
@@ -159,10 +182,43 @@ esac
       [%test_eq: int] 1
         (modern |> Nixploy.Application.status_workloads |> List.length);
       let rendered = Inspection_output.status modern in
-      assert (String.is_substring rendered ~substring:"Project:  sample");
-      assert (String.is_substring rendered ~substring:resource_key);
-      assert (String.is_substring rendered ~substring:"sample");
+      List.iter
+        [
+          "Project:  sample";
+          resource_key;
+          "(4 CPUs, 8.0 GiB memory, 2.0 GiB free)";
+          "Up 3 hours";
+          "1.5%";
+          "256.0 MiB / 1.0 GiB";
+          "Secrets:  0 owned, 1 unlabelled legacy";
+          "images 3.0 GiB (1.0 GiB reclaimable)";
+          "19.1 GiB free of 38.1 GiB on /home/deployer/storage";
+          "Guard:    idle";
+          "Reboot:   not ready";
+          "has restarted 2 times";
+          "podman-restart.service starts owned containers at boot";
+        ] ~f:(fun expected ->
+          if not (String.is_substring rendered ~substring:expected) then
+            failwithf "status output lacks %S:\n%s" expected rendered ());
+      assert (not (String.is_substring rendered ~substring:"unavailable"));
+      let json =
+        Inspection_output.status_json modern |> Yojson.Safe.from_string
+      in
+      let open Yojson.Safe.Util in
+      let container = json |> member "containers" |> index 0 in
+      [%test_eq: string] "app" (container |> member "role" |> to_string);
+      [%test_eq: string] "always"
+        (container |> member "restartPolicy" |> to_string);
+      [%test_eq: int] 7 (container |> member "pids" |> to_int);
+      [%test_eq: string] "idle"
+        (json |> member "guard" |> member "state" |> to_string);
+      assert (not (List.is_empty (json |> member "issues" |> to_list)));
       let lines = In_channel.read_lines trace in
+      List.iter
+        [ "|rm|"; "|secret|rm|"; "|secret|create|"; "'mkdir'"; "'rmdir'" ]
+        ~f:(fun mutation ->
+          assert (
+            not (List.exists lines ~f:(String.is_substring ~substring:mutation))));
       assert (
         List.exists lines
           ~f:

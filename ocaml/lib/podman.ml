@@ -15,7 +15,13 @@ type runtime_container = {
 
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
-type runtime_stats = { cpu_percent : float option; memory_used_bytes : int64 }
+
+type runtime_stats = {
+  cpu_percent : float option;
+  memory_used_bytes : int64;
+  memory_limit_bytes : int64 option;
+  pids : int option;
+}
 
 let podman_timeout = Time_ns.Span.of_min 5.
 let build_timeout = Time_ns.Span.of_hr 1.
@@ -629,6 +635,19 @@ let list_resource_secrets ~connection ~resource_key =
   in
   Deferred.return (secret_listing result.stdout ~prefix)
 
+let secret_kind ~ownership metadata =
+  if
+    List.for_all ownership ~f:(fun (key, value) ->
+        Option.equal String.equal (label metadata key) (Some value))
+  then Ok `Owned
+  else if
+    List.for_all metadata ~f:(fun (key, _) ->
+        not (String.is_prefix key ~prefix:"io.nixploy."))
+  then Ok `Legacy
+  else
+    Or_error.error_string
+      "secret has partial, contradictory or foreign ownership"
+
 let inspect_secret_ownership ~connection ~ownership secret =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
@@ -668,17 +687,7 @@ let inspect_secret_ownership ~connection ~ownership secret =
            | Some `Null -> Ok []
            | _ -> Or_error.error_string "malformed Podman secret labels"
          in
-         if
-           List.for_all ownership ~f:(fun (key, value) ->
-               Option.equal String.equal (label metadata key) (Some value))
-         then Ok `Owned
-         else if
-           List.for_all metadata ~f:(fun (key, _) ->
-               not (String.is_prefix key ~prefix:"io.nixploy."))
-         then Ok `Legacy
-         else
-           Or_error.error_string
-             "secret has partial, contradictory or foreign ownership"
+         secret_kind ~ownership metadata
      | _ ->
          Or_error.error_string
            "Podman secret inspected name or ID does not match")
@@ -1353,38 +1362,69 @@ let bytes_of_human value =
     | "mib" -> 1_048_576.
     | "gb" -> 1_000_000_000.
     | "gib" -> 1_073_741_824.
+    | "tb" -> 1_000_000_000_000.
+    | "tib" -> 1_099_511_627_776.
     | unit -> failwithf "unsupported memory unit %s" unit ()
   in
   Float.iround_nearest_exn (number *. multiplier) |> Int64.of_int
 
-let parse_stats output =
+let stats_of_fields fields =
   let open Or_error.Let_syntax in
-  let%bind json =
-    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
-  in
-  let%bind fields =
-    match json with
-    | `Assoc fields -> Ok fields
-    | `List [ `Assoc fields ] -> Ok fields
-    | _ -> Or_error.error_string "Podman stats must contain one object"
-  in
   let%bind cpu =
     numeric_string fields [ "cpu_percent"; "CPU"; "CPUPerc"; "cpu" ]
     |> Option.value_map
          ~default:(Or_error.error_string "Podman stats CPU is missing")
          ~f:(fun value -> Or_error.try_with (fun () -> parse_percent value))
   in
-  let%bind memory =
+  let%bind memory, memory_limit =
     numeric_string fields [ "mem_usage"; "MemUsage"; "memUsage" ]
     |> Option.value_map
          ~default:(Or_error.error_string "Podman stats memory is missing")
          ~f:(fun value ->
            Or_error.try_with (fun () ->
-               String.lsplit2 value ~on:'/'
-               |> Option.value_map ~default:value ~f:fst
-               |> bytes_of_human))
+               match String.lsplit2 value ~on:'/' with
+               | None -> (bytes_of_human value, None)
+               | Some (used, limit) ->
+                   (bytes_of_human used, Some (bytes_of_human limit))))
   in
-  Ok { cpu_percent = cpu; memory_used_bytes = memory }
+  let pids =
+    numeric_string fields [ "pids"; "PIDs"; "PIDS" ]
+    |> Option.bind ~f:(fun value -> Int.of_string_opt (String.strip value))
+  in
+  Ok
+    {
+      cpu_percent = cpu;
+      memory_used_bytes = memory;
+      memory_limit_bytes = memory_limit;
+      pids;
+    }
+
+let parse_stats output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `Assoc fields | `List [ `Assoc fields ] -> stats_of_fields fields
+  | _ -> Or_error.error_string "Podman stats must contain one object"
+
+let parse_named_stats output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List entries ->
+      List.map entries ~f:(function
+        | `Assoc fields -> (
+            match label fields "name" with
+            | None -> Or_error.error_string "Podman stats entry has no name"
+            | Some name ->
+                let%map stats = stats_of_fields fields in
+                (name, stats))
+        | _ -> Or_error.error_string "Podman stats entry must be an object")
+      |> Or_error.all
+  | _ -> Or_error.error_string "Podman stats must be a JSON array"
 
 let read_stats ~connection ~container =
   let open Deferred.Or_error.Let_syntax in
@@ -1402,6 +1442,215 @@ let read_stats ~connection ~container =
   in
   Deferred.return (parse_stats result.stdout)
 
+let status_timeout = Time_ns.Span.of_sec 30.
+
+let read_query ~connection args =
+  run_ok ~timeout:status_timeout ([ "--connection"; connection ] @ args)
+
+let read_named_stats ~connection ~names =
+  if List.is_empty names then Deferred.Or_error.return []
+  else
+    let open Deferred.Or_error.Let_syntax in
+    let%bind result =
+      read_query ~connection
+        ([ "stats"; "--no-stream"; "--format"; "json" ] @ names)
+    in
+    Deferred.return (parse_named_stats result.stdout)
+
+let parse_restart_policies output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List containers ->
+      List.map containers ~f:(function
+        | `Assoc container -> (
+            match
+              label container "Name"
+              |> Option.map ~f:(String.chop_prefix_if_exists ~prefix:"/")
+            with
+            | None -> Or_error.error_string "container inspect has no name"
+            | Some name ->
+                let policy =
+                  match
+                    List.Assoc.find container ~equal:String.equal "HostConfig"
+                  with
+                  | Some (`Assoc host_config) -> (
+                      match
+                        List.Assoc.find host_config ~equal:String.equal
+                          "RestartPolicy"
+                      with
+                      | Some (`Assoc policy) -> label policy "Name"
+                      | _ -> None)
+                  | _ -> None
+                in
+                Ok (name, policy))
+        | _ -> Or_error.error_string "container inspect entry must be an object")
+      |> Or_error.all
+  | _ -> Or_error.error_string "container inspect must be a JSON array"
+
+let read_restart_policies ~connection ~names =
+  if List.is_empty names then Deferred.Or_error.return []
+  else
+    let open Deferred.Or_error.Let_syntax in
+    let%bind result =
+      read_query ~connection ([ "inspect"; "--type"; "container" ] @ names)
+    in
+    Deferred.return (parse_restart_policies result.stdout)
+
+type storage_usage = {
+  images_bytes : int64;
+  images_reclaimable_bytes : int64;
+  containers_bytes : int64;
+  volumes_bytes : int64;
+}
+
+let parse_storage_usage output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  let%bind rows =
+    match json with
+    | `List rows ->
+        List.map rows ~f:(function
+          | `Assoc fields -> (
+              let raw name =
+                match List.Assoc.find fields ~equal:String.equal name with
+                | Some (`Int value) -> Ok (Int64.of_int value)
+                | Some (`Intlit value) ->
+                    Or_error.try_with (fun () -> Int64.of_string value)
+                | _ -> Or_error.errorf "Podman system df is missing %s" name
+              in
+              match label fields "Type" with
+              | None -> Or_error.error_string "Podman system df row has no type"
+              | Some kind ->
+                  let%bind size = raw "RawSize" in
+                  let%map reclaimable = raw "RawReclaimable" in
+                  (kind, (size, reclaimable)))
+          | _ -> Or_error.error_string "Podman system df row must be an object")
+        |> Or_error.all
+    | _ -> Or_error.error_string "Podman system df must be a JSON array"
+  in
+  let find kind =
+    List.Assoc.find rows ~equal:String.equal kind
+    |> Option.value ~default:(0L, 0L)
+  in
+  let images_bytes, images_reclaimable_bytes = find "Images" in
+  let containers_bytes, _ = find "Containers" in
+  let volumes_bytes, _ = find "Local Volumes" in
+  Ok { images_bytes; images_reclaimable_bytes; containers_bytes; volumes_bytes }
+
+let read_storage_usage ~connection =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    read_query ~connection [ "system"; "df"; "--format"; "json" ]
+  in
+  Deferred.return (parse_storage_usage result.stdout)
+
+type host_info = {
+  cpus : int option;
+  memory_total_bytes : int64 option;
+  memory_free_bytes : int64 option;
+  graph_root : string option;
+}
+
+let parse_host_info output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `Assoc info ->
+      let section name =
+        match List.Assoc.find info ~equal:String.equal name with
+        | Some (`Assoc fields) -> fields
+        | _ -> []
+      in
+      let host = section "host" in
+      let int64 fields name =
+        match List.Assoc.find fields ~equal:String.equal name with
+        | Some (`Int value) -> Some (Int64.of_int value)
+        | Some (`Intlit value) -> Int64.of_string_opt value
+        | _ -> None
+      in
+      Ok
+        {
+          cpus = int64 host "cpus" |> Option.map ~f:Int64.to_int_exn;
+          memory_total_bytes = int64 host "memTotal";
+          memory_free_bytes = int64 host "memFree";
+          graph_root = label (section "store") "graphRoot";
+        }
+  | _ -> Or_error.error_string "Podman info must be a JSON object"
+
+let read_host_info ~connection =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result = read_query ~connection [ "info"; "--format"; "json" ] in
+  Deferred.return (parse_host_info result.stdout)
+
+module Secret_status = struct
+  type t = { name : string; owned : bool }
+end
+
+let secret_statuses_of_inspect output ~ownership ~entries =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List inspected when List.length inspected = List.length entries ->
+      List.map2_exn entries inspected ~f:(fun entry inspected ->
+          match inspected with
+          | `Assoc fields ->
+              let spec =
+                match List.Assoc.find fields ~equal:String.equal "Spec" with
+                | Some (`Assoc spec) -> spec
+                | _ -> []
+              in
+              let%bind () =
+                if
+                  Option.equal String.equal (label fields "ID")
+                    (Some entry.secret_id)
+                  && Option.equal String.equal (label spec "Name")
+                       (Some entry.secret_name)
+                then Ok ()
+                else
+                  Or_error.error_string
+                    "Podman secret inspected name or ID does not match"
+              in
+              let%bind metadata =
+                match List.Assoc.find spec ~equal:String.equal "Labels" with
+                | Some (`Assoc metadata) -> Ok metadata
+                | Some `Null | None -> Ok []
+                | _ -> Or_error.error_string "malformed Podman secret labels"
+              in
+              let%map kind = secret_kind ~ownership metadata in
+              {
+                Secret_status.name = entry.secret_name;
+                owned = (match kind with `Owned -> true | `Legacy -> false);
+              }
+          | _ -> Or_error.error_string "Podman secret inspect must be objects")
+      |> Or_error.all
+  | _ -> Or_error.error_string "Podman secret inspect did not match the listing"
+
+let read_secret_statuses ~connection ~project ~target ~resource_key
+    ~repository_identity =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind entries = list_resource_secrets ~connection ~resource_key in
+  if List.is_empty entries then Deferred.Or_error.return []
+  else
+    let%bind result =
+      read_query ~connection
+        ([ "secret"; "inspect" ]
+        @ List.map entries ~f:(fun entry -> entry.secret_id))
+    in
+    Deferred.return
+      (secret_statuses_of_inspect result.stdout
+         ~ownership:
+           (secret_ownership ~project ~target ~resource_key ~repository_identity)
+         ~entries)
+
 module For_testing = struct
   let runbook_argv = runbook_argv
   let pre_start_argvs = pre_start_argvs
@@ -1409,6 +1658,10 @@ module For_testing = struct
   let loaded_reference = loaded_reference
   let resource_keys_of_containers = resource_keys_of_containers
   let parse_stats = parse_stats
+  let parse_named_stats = parse_named_stats
+  let parse_restart_policies = parse_restart_policies
+  let parse_storage_usage = parse_storage_usage
+  let parse_host_info = parse_host_info
   let bound_logs = bound_logs
   let secret_names_of_output = secret_names_of_output
   let owned_candidate_collision = owned_candidate_collision

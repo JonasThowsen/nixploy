@@ -25,8 +25,8 @@ systemd.user.services.podman-restart.wantedBy = [ "default.target" ];
 services.caddy.resume = true; # web targets only
 ```
 
-`deploy` checks these settings read-only and warns when a target would
-not come back after a reboot. Containers deployed before the restart policy was
+`deploy` and `status` check these settings read-only and warn when a target
+would not come back after a reboot. Containers deployed before the restart policy was
 introduced gain it on their next deployment.
 
 The CLI-only implementation and isolated VM acceptance are complete; results are
@@ -100,6 +100,11 @@ different application checkout. Deploy, status, logs, history, prune, and runboo
 listing support `--json`; `run` streams the command's output instead. Diagnostics
 and deployment progress go to stderr. Logs are a bounded snapshot, not a follow
 stream. History is local deployment evidence, not remote health.
+
+`status` replaces logging in to run `podman ps` on the server. It shows each owned
+container's role, state, uptime, restarts, CPU and memory, plus the Caddy route,
+owned secrets, host-wide Podman storage and free disk, whether a mutation marker
+is held, and reboot readiness, followed by a list of issues that need attention.
 
 Deploy evaluates configuration, builds, and resolves secrets from one Git-aware
 snapshot: committed files, tracked modifications, and intent-to-add files are

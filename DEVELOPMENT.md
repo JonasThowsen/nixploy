@@ -69,6 +69,14 @@ failed to execute. Runbook child codes 125 and 255 are conservatively treated as
 uncertain client/transport failures, even if the application could have returned
 that number; the code is preserved and the mutation marker remains.
 
+Status is read-only and never takes the mutation guard. It lists the owned
+containers with their role (non-web application, active slot, or unrouted),
+state, restart count, CPU, memory, and restart policy; the Caddy route; owned and
+legacy secret counts; host-wide Podman storage and free disk space; whether a
+mutation marker is held; and reboot readiness. It ends with a list of derived
+issues. Failure to verify container ownership fails the command, while a failed
+supplementary query is shown as unavailable in its own section.
+
 Logs return a snapshot bounded to 500 lines and 64 KiB, not a follow stream.
 History defaults to 25 operations (`--limit` accepts 1–100); it is local evidence,
 not remote health. Prune requires `--yes` without prompting, checks exact ownership,
@@ -79,8 +87,8 @@ and data. Partial cleanup is an error, not a successful wipe.
 Application containers run with Podman's `always` restart policy so they return
 after a host reboot. Boot-time restart depends on server provisioning that nixploy
 does not perform (`podman-restart.service`, lingering for rootless accounts, and
-Caddy resuming its API configuration for web targets). `deploy` checks
-these read-only and warns; an unknown check is never reported as ready.
+Caddy resuming its API configuration for web targets). `deploy` and `status`
+check these read-only and warn; an unknown check is never reported as ready.
 A web deployment without an owned route retires the other owned slot after a
 verified switch, because no route can be serving it.
 

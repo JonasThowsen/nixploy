@@ -1,14 +1,16 @@
 open Async
 open Core
 
+let parent = ".nixploy-mutations"
+
+let marker_directory ~project ~target =
+  let%map.Or_error key = Resource_key.derive_current ~project ~target in
+  parent ^ "/" ^ Resource_key.to_string key
+
 let with_guard ?(certainty = fun _ -> None) ~run ~interrupted ~project ~target
     action =
   let open Deferred.Or_error.Let_syntax in
-  let%bind key =
-    Deferred.return (Resource_key.derive_current ~project ~target)
-  in
-  let parent = ".nixploy-mutations" in
-  let directory = parent ^ "/" ^ Resource_key.to_string key in
+  let%bind directory = Deferred.return (marker_directory ~project ~target) in
   let%bind () = run [ "mkdir"; "-p"; "-m"; "700"; "--"; parent ] in
   let%bind () = run [ "sync"; "-f"; "." ] in
   let%bind () =
@@ -78,6 +80,26 @@ let with_mutation ?certainty ~project ~target action =
     ~project
     ~target:(Configuration.Target.name target)
     action
+
+type marker = Absent | Present of string [@@deriving compare, equal, sexp]
+
+let inspect ~project ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind directory =
+    Deferred.return
+      (marker_directory ~project ~target:(Configuration.Target.name target))
+  in
+  let%bind result =
+    Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 15.)
+      ~max_output_bytes:4096
+      [ "test"; "-d"; directory ]
+  in
+  match result.exit_status with
+  | Ok () -> Deferred.Or_error.return (Present directory)
+  | Error (`Exit_non_zero 1) -> Deferred.Or_error.return Absent
+  | Error failure ->
+      Deferred.Or_error.errorf "mutation marker check failed (%s)"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
 
 module For_testing = struct
   let with_mutation = with_guard
