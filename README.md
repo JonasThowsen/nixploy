@@ -91,13 +91,23 @@ nixploy runbook --target production
 nixploy run --target production migrate
 nixploy run --target production console
 
-# Destructive: remove owned containers, owned secrets, and the configured route.
+# Preview, then remove what the live deployment no longer uses: unserved
+# containers, unmounted owned secrets, and owned images beyond the newest two.
+nixploy prune --target production --stale --dry-run
+nixploy prune --target production --stale --yes
+
+# Destructive: remove every owned container, secret, image, and the configured route.
 nixploy prune --target production --yes
+
+# Everything nixploy owns on the target's host, including renamed or deleted
+# targets and other projects; then remove one leftover by its resource key.
+nixploy resources --target production
+nixploy prune --target production --orphan RESOURCE_KEY --dry-run
 ```
 
 Every command requires `--target` (`-t`). Use `--directory` (`-C`) to select a
-different application checkout. Deploy, status, logs, history, prune, and runbook
-listing support `--json`; `run` streams the command's output instead. Diagnostics
+different application checkout. Deploy, status, logs, history, prune, resources,
+and runbook listing support `--json`; `run` streams the command's output instead. Diagnostics
 and deployment progress go to stderr. Logs are a bounded snapshot, not a follow
 stream. History is local deployment evidence, not remote health.
 
@@ -147,9 +157,18 @@ their effects, and ensure no operator is still acting before manually removing
 only the reported marker. See [DEVELOPMENT.md](DEVELOPMENT.md#mutation-coordination)
 and [MIGRATION.md](MIGRATION.md). Never blindly retry a migration.
 
-Prune requires `--yes`, checks exact ownership before removal, and removes owned
-containers, fully owned secrets, and the configured owned route. Images, volumes,
-and data are retained. Old unlabelled secrets are retained and are **not automatically
+Prune requires `--yes` (or `--dry-run` to preview) and checks exact ownership
+before removal. Without `--stale` it removes owned containers, fully owned secrets,
+owned images, and the configured owned route. With `--stale` it keeps the live
+deployment and removes only what it no longer uses; `--keep` sets how many recent
+owned images survive. Deploy tags images into `localhost/nixploy/<resource key>`,
+so images loaded before that change are not owned and are never pruned. Volumes
+and data are always retained.
+
+`resources` lists every nixploy resource on the target's host and marks those whose
+target this flake no longer declares. `prune --orphan RESOURCE_KEY` removes one such
+leftover after re-verifying its ownership labels under that target's own mutation
+guard. It refuses anything the flake still declares; use plain `prune` for those. Old unlabelled secrets are retained and are **not automatically
 overwritten or adopted**. A same-name legacy secret requires explicit operator
 migration, not prefix-based deletion; see [legacy secret migration](MIGRATION.md#legacy-podman-secrets).
 

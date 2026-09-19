@@ -104,48 +104,134 @@ let logs_command =
 let prune_command =
   Async.Command.async
     ~summary:
-      "Remove owned containers, secrets and configured route; retain images, \
-       volumes and data"
+      "Remove owned containers, secrets, images and route, or only stale ones"
+    ~readme:(fun () ->
+      "Without --stale, removes everything this target owns: containers, fully \
+       owned secrets, owned image references and the configured Caddy route. \
+       With --stale, removes only what the live deployment does not use: \
+       unserved containers, owned secrets no retained container mounts, and \
+       owned images beyond the newest --keep. With --orphan KEY, removes one \
+       resource key listed by `nixploy resources` whose target this flake no \
+       longer declares. Unlabelled secrets, other images, volumes and data are \
+       always retained. Pass --dry-run to preview without changing anything, \
+       or --yes to remove.")
     (let%map_open.Command flags = common_flags
      and confirmed =
        flag "--yes" no_arg ~doc:" confirm removal without prompting"
+     and dry_run =
+       flag "--dry-run" no_arg
+         ~doc:" show what would be removed; change nothing"
+     and stale =
+       flag "--stale" no_arg
+         ~doc:" remove only resources the live deployment does not use"
+     and keep =
+       flag "--keep" (optional int)
+         ~doc:"COUNT newest owned images to keep with --stale (default 2)"
+     and orphan =
+       flag "--orphan" (optional string)
+         ~doc:
+           "RESOURCE_KEY remove another, undeclared target's resources on this \
+            host (see `nixploy resources`)"
      in
      fun () ->
        let target, working_directory, state_db, json = flags in
-       if not confirmed then (
-         eprintf
-           "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes; no resources were \
-            changed\n\
-            %!";
-         Shutdown.exit 2)
-       else (
-         Nixploy.Process_runner.handle_termination_signals ();
-         with_application ~target ~state_db (fun application target ->
-             let open Deferred.Or_error.Let_syntax in
-             let%map result =
-               Application.prune_local application ~working_directory ~target
-                 ~confirmed
-             in
-             if json then
-               printf
-                 "{\"containersRemoved\":%d,\"secretsRemoved\":%d,\"secretsRetained\":%d}\n\
-                  %!"
-                 (Application.prune_containers_removed result)
-                 (Application.prune_secrets_removed result)
-                 (Application.prune_secrets_retained result)
-             else
-               printf
-                 "Removed %d owned containers and %d owned secrets; processed \
-                  the configured route. Images, volumes and data retained.\n\
-                  %!"
-                 (Application.prune_containers_removed result)
-                 (Application.prune_secrets_removed result);
-             if Application.prune_secrets_retained result > 0 then
-               eprintf
-                 "Warning: retained %d unlabelled legacy secrets; explicit \
-                  ownership migration required.\n\
-                  %!"
-                 (Application.prune_secrets_retained result))))
+       let mode :
+           ( [ `Orphan of string | `Target of Application.prune_mode ],
+             string )
+           Result.t =
+         match (stale, keep, orphan) with
+         | true, _, Some _ | false, Some _, Some _ ->
+             Error "--orphan cannot be combined with --stale or --keep"
+         | false, None, Some key -> Ok (`Orphan key)
+         | false, None, None -> Ok (`Target Application.Everything)
+         | false, Some _, None -> Error "--keep requires --stale"
+         | true, keep, None ->
+             let keep = Option.value keep ~default:2 in
+             if keep < 1 then Error "--keep must be at least 1"
+             else Ok (`Target (Application.Stale { keep }))
+       in
+       match mode with
+       | Error message ->
+           eprintf "%s; no resources were changed\n%!" message;
+           Shutdown.exit 2
+       | Ok _ when confirmed && dry_run ->
+           eprintf "pass either --yes or --dry-run, not both\n%!";
+           Shutdown.exit 2
+       | Ok _ when not (confirmed || dry_run) ->
+           eprintf
+             "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes, or --dry-run to \
+              preview; no resources were changed\n\
+              %!";
+           Shutdown.exit 2
+       | Ok (`Orphan resource_key) ->
+           if not dry_run then
+             Nixploy.Process_runner.handle_termination_signals ();
+           with_application ~target ~state_db (fun application target ->
+               let open Deferred.Or_error.Let_syntax in
+               let%map result =
+                 Application.prune_orphan application ~dry_run
+                   ~working_directory ~target ~resource_key ~confirmed
+               in
+               printf "%s%!"
+                 ((if json then Inspection_output.orphan_prune_json
+                   else Inspection_output.orphan_prune)
+                    result))
+       | Ok (`Target mode) ->
+           if not dry_run then
+             Nixploy.Process_runner.handle_termination_signals ();
+           with_application ~target ~state_db (fun application target ->
+               let open Deferred.Or_error.Let_syntax in
+               let%map result =
+                 Application.prune_local application ~mode ~dry_run
+                   ~working_directory ~target ~confirmed
+               in
+               if json then printf "%s%!" (Inspection_output.prune_json result)
+               else printf "%s%!" (Inspection_output.prune result);
+               if Application.prune_secrets_retained result > 0 then
+                 eprintf
+                   "Warning: retained %d unlabelled legacy secrets; explicit \
+                    ownership migration required.\n\
+                    %!"
+                   (Application.prune_secrets_retained result)))
+
+let resources_command =
+  Async.Command.async
+    ~summary:"List every nixploy resource on the target's host"
+    ~readme:(fun () ->
+      "Groups containers, secrets, images, Caddy routes and mutation markers \
+       on the target's host by resource key, and classifies each against this \
+       flake: current, declared (another target of this project), orphaned \
+       (this project, target no longer declared), other project, or \
+       unattributed. Remove orphaned resources with `nixploy prune --orphan \
+       KEY`. Read-only; opens no local history.")
+    (let%map_open.Command target =
+       flag "--target" (required string) ~aliases:[ "-t" ]
+         ~doc:"TARGET target declared by .#nixploy whose host is listed"
+     and working_directory =
+       flag "--directory"
+         (optional_with_default "." string)
+         ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     and json =
+       flag "--json" no_arg
+         ~doc:" emit structured output; diagnostics remain on stderr"
+     in
+     fun () ->
+       match Nixploy.Target_name.of_string target with
+       | Error error ->
+           eprintf "%s\n%!" (Error.to_string_hum error);
+           Shutdown.exit 2
+       | Ok target -> (
+           let%bind.Deferred inventory =
+             Application.resources ~working_directory ~target
+           in
+           match inventory with
+           | Error error -> fail error
+           | Ok inventory ->
+               printf "%s%!"
+                 ((if json then Inspection_output.resources_json
+                   else Inspection_output.resources)
+                    inventory);
+               Deferred.unit))
 
 let deploy_command =
   Async.Command.async
@@ -221,6 +307,7 @@ let command =
        ("history", history_command);
        ("logs", logs_command);
        ("prune", prune_command);
+       ("resources", resources_command);
      ]
     @ Nixploy_runbook_cli.Runbook_commands.commands ~list:Application.runbook
         ~run:Application.run)

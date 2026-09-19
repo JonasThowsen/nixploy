@@ -29,6 +29,7 @@ type t = {
   runtime_error : Error.t option;
   route : route Or_error.t;
   secrets : Podman.Secret_status.t list Or_error.t;
+  images : Podman.owned_image list Or_error.t;
   storage : Podman.storage_usage Or_error.t;
   host : Podman.host_info Or_error.t;
   disk : disk Or_error.t;
@@ -46,6 +47,7 @@ let containers t = t.containers
 let workloads t = List.map t.containers ~f:(fun container -> container.workload)
 let route t = t.route
 let secrets t = t.secrets
+let images t = t.images
 let storage t = t.storage
 let host t = t.host
 let disk t = t.disk
@@ -191,7 +193,9 @@ let issues t =
         match container.role with
         | Unrouted ->
             Some
-              (sprintf "container %s is not served by the route (stale)"
+              (sprintf
+                 "container %s is not served by the route; `nixploy prune \
+                  --stale` removes it"
                  (Workload.name container.workload))
         | Single | Active -> None)
   in
@@ -320,15 +324,20 @@ let load ~working_directory ~target:target_name =
         @ [ "--format"; "json" ])
       ()
   in
-  let%bind workloads =
-    Deferred.Or_error.List.map names ~how:`Sequential ~f:(fun name ->
-        let open Deferred.Or_error.Let_syntax in
-        let%bind output = query [ "name=^" ^ name ^ "$" ] in
-        Deferred.return
-          (Workload.all_owned_of_json ~project ~target:target_name ~resource_key
-             ~repository_identity ~expected_names:[ name ] output))
+  (* Repeated name filters are OR'ed, so one query covers every placement;
+     each returned container must still carry an exact derived name. *)
+  let%bind output =
+    query (List.map names ~f:(fun name -> "name=^" ^ name ^ "$"))
   in
-  let workloads = List.concat workloads in
+  let%bind workloads =
+    Deferred.return
+      (Workload.all_owned_of_json ~project ~target:target_name ~resource_key
+         ~repository_identity ~expected_names:names output)
+  in
+  let workloads =
+    List.sort workloads ~compare:(fun left right ->
+        String.compare (Workload.name left) (Workload.name right))
+  in
   let names = List.map workloads ~f:Workload.name in
   let running =
     List.filter workloads ~f:(fun workload ->
@@ -346,7 +355,8 @@ let load ~working_directory ~target:target_name =
     Podman.read_secret_statuses ~connection ~project ~target ~resource_key
       ~repository_identity
   in
-  let%bind storage = Podman.read_storage_usage ~connection
+  let%map images = Podman.list_owned_images ~connection ~resource_key
+  and storage = Podman.read_storage_usage ~connection
   and host, disk =
     let%bind host = Podman.read_host_info ~connection in
     let%map disk =
@@ -357,8 +367,8 @@ let load ~working_directory ~target:target_name =
       | Error error -> Deferred.Or_error.fail error
     in
     (host, disk)
-  and guard = Mutation_guard.inspect ~project ~target in
-  let%map readiness = Host_readiness.inspect ~target in
+  and guard = Mutation_guard.inspect ~project ~target
+  and readiness = Host_readiness.inspect ~target in
   let runtime_error =
     match (policies, stats) with
     | Ok _, Ok _ -> None
@@ -387,6 +397,7 @@ let load ~working_directory ~target:target_name =
       runtime_error;
       route;
       secrets;
+      images;
       storage;
       host;
       disk;
@@ -406,6 +417,7 @@ module For_testing = struct
       runtime_error = None;
       route;
       secrets;
+      images = not_observed;
       storage = not_observed;
       host = not_observed;
       disk;

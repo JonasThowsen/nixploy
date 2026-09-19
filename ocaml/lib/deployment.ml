@@ -265,7 +265,7 @@ let execute_guarded ~store ~request ~operation_id prepared =
     let open Deferred.Or_error.Let_syntax in
     let%bind () = record_stage Building "Building and loading the image" in
     let build =
-      Podman.build_and_load ~connection ~source
+      Podman.build_and_load ~connection ~resource_key ~source
         ~image_output:(Configuration.Target.image target)
         ()
     in

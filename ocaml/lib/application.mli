@@ -10,7 +10,15 @@ type prune_result
 type status = Status.t
 type scope
 
-type prune_route_state = Not_configured | Missing | Removed
+type prune_route_state = Not_configured | Missing | Removed | Kept
+[@@deriving compare, equal, sexp]
+
+type prune_mode =
+  | Everything
+      (** owned containers, secrets, image references and configured route *)
+  | Stale of { keep : int }
+      (** only what the live deployment does not use, keeping the newest [keep]
+          owned images *)
 [@@deriving compare, equal, sexp]
 
 type deployment_state = Requested | Running | Succeeded | Failed | Cancelled
@@ -102,13 +110,16 @@ val cancel_deployment :
 val deployment_can_cancel : t -> scope:scope -> deployment -> bool
 
 val prune_local :
+  ?mode:prune_mode ->
+  ?dry_run:bool ->
   t ->
   working_directory:string ->
   target:Target_name.t ->
   confirmed:bool ->
   prune_result Deferred.Or_error.t
 (** Explicit scoped cleanup using the same durable remote guard as deploy/run.
-*)
+    [mode] defaults to [Everything]. A dry run needs no confirmation, takes no
+    guard, and changes nothing. *)
 
 val live_status : t -> scope:scope -> status Deferred.Or_error.t
 
@@ -159,6 +170,24 @@ val run :
     retention. Uncertain outcomes retain the marker and preserve child exit
     code. *)
 
+val resources :
+  working_directory:string ->
+  target:Target_name.t ->
+  Inventory.t Deferred.Or_error.t
+(** Read-only inventory of every nixploy resource on the target's host,
+    classified against the local flake. *)
+
+val prune_orphan :
+  ?dry_run:bool ->
+  t ->
+  working_directory:string ->
+  target:Target_name.t ->
+  resource_key:string ->
+  confirmed:bool ->
+  Orphan_prune.t Deferred.Or_error.t
+(** Removes one resource key whose target this flake no longer declares, on
+    [target]'s host. See {!Orphan_prune.prune}. *)
+
 val prune_project : prune_result -> Project_name.t
 val prune_target : prune_result -> Target_name.t
 val prune_resource_key : prune_result -> Resource_key.t
@@ -166,6 +195,13 @@ val prune_containers_removed : prune_result -> int
 val prune_secrets_removed : prune_result -> int
 val prune_secrets_retained : prune_result -> int
 val prune_route_state : prune_result -> prune_route_state
+val prune_mode : prune_result -> prune_mode
+val prune_dry_run : prune_result -> bool
+val prune_containers : prune_result -> string list
+val prune_secrets : prune_result -> string list
+val prune_image_references : prune_result -> string list
+val prune_image_bytes : prune_result -> int64
+val prune_notes : prune_result -> string list
 val commit_revision : commit -> string
 val commit_subject : commit -> string
 val commit_timestamp_ms : commit -> int64

@@ -25,6 +25,29 @@ let index_of lines predicate =
 
 let count lines substring = List.count lines ~f:(String.is_substring ~substring)
 
+(* Deploy tags the loaded image into the owned repository with a load-time
+   tag, so tests read the exact reference back from the trace. *)
+let owned_reference lines =
+  let reference =
+    List.find_map_exn lines ~f:(fun line ->
+        match String.substr_index line ~pattern:"|tag|sha256:image-id|" with
+        | None -> None
+        | Some index ->
+            Some
+              (String.drop_prefix line
+                 (index + String.length "|tag|sha256:image-id|")))
+  in
+  assert (String.is_prefix reference ~prefix:"localhost/nixploy/");
+  let tag =
+    index_of lines (String.is_substring ~substring:"|tag|sha256:image-id|")
+  in
+  let untag =
+    index_of lines
+      (String.is_suffix ~suffix:"|untag|sha256:image-id|loaded@sha256:immutable")
+  in
+  assert (tag < untag);
+  reference
+
 let set_or_unset name = function
   | Some value -> Caml_unix.putenv name value
   | None -> Core_unix.unsetenv name
@@ -183,6 +206,9 @@ case "$*" in
   *" info") exit 0 ;;
   *" load -i /nix/store/nixploy-fake-image") printf 'Loaded image: loaded@sha256:immutable\n'; exit 0 ;;
   *" inspect --type image loaded@sha256:immutable") printf '[{"Id":"sha256:image-id"}]\n'; exit 0 ;;
+  *" tag sha256:image-id localhost/nixploy/"*) exit 0 ;;
+  *" untag sha256:image-id loaded@sha256:immutable") exit 0 ;;
+  *" images --format json") printf '[]\n'; exit 0 ;;
 esac
 if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
   if [ "${NIXPLOY_TEST_FAIL_PRESTART:-}" = "1" ] && printf '%s\n' "$*" | grep -q '/app/migrate'; then
@@ -223,7 +249,8 @@ if [ "${3:-}" = "inspect" ] && [ "${5:-}" = "container" ]; then
     resource=${name%-blue}
     resource=${resource%-green}
     case "$name" in
-      *-blue|*-green) old_id=old-slot-id ;;
+      *-blue) old_id=old-slot-id ;;
+      *-green) old_id=green-slot-id ;;
       *) old_id=single-id ;;
     esac
     case "${NIXPLOY_TEST_LABEL_MODE:-valid}" in
@@ -564,17 +591,18 @@ exit 99
         (Nixploy.Deployment.placement deployed);
       let expected_name = Nixploy.Deployment.container_name deployed in
       let lines = In_channel.read_lines trace in
+      let image_reference = owned_reference lines in
       let pre_starts =
         List.filter lines ~f:(String.is_substring ~substring:"|run|--rm|")
       in
       [%test_eq: string list]
         [
           sprintf
-            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|loaded@sha256:immutable|/app/migrate"
-            expected_name expected_revision;
+            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|%s|/app/migrate"
+            expected_name expected_revision image_reference;
           sprintf
-            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|loaded@sha256:immutable|/app/seed"
-            expected_name expected_revision;
+            "podman|--connection|%s|run|--rm|--network|private|-e|PORT={port}|-e|MODE=worker|-e|RELEASE_REVISION=%s|%s|/app/seed"
+            expected_name expected_revision image_reference;
         ]
         pre_starts;
       let first_pre_start =
@@ -621,7 +649,8 @@ exit 99
           "|--label|io.nixploy.operation_id="
           ^ Nixploy.Deployment.operation_id deployed
           ^ "|";
-          "|loaded@sha256:immutable|/app/worker|--once";
+          "|" ^ image_reference ^ "|/app/worker|--once";
+          "|--label|io.nixploy.secrets=|";
         ]
         ~f:(fun substring ->
           assert (String.is_substring runtime_line ~substring));
@@ -667,7 +696,20 @@ exit 99
           ~f:(String.is_substring ~substring:"|run|-d|--name|")
       in
       assert (
-        String.is_suffix runtime ~suffix:"|loaded@sha256:immutable|/app/worker|");
+        String.is_suffix runtime
+          ~suffix:("|" ^ owned_reference lines ^ "|/app/worker|"));
+      (* The runtime container records the secrets it mounts for stale
+         cleanup. *)
+      let runtime_name =
+        List.find_map_exn lines ~f:(fun line ->
+            String.substr_index line ~pattern:"|run|-d|--name|"
+            |> Option.map ~f:(fun index ->
+                String.drop_prefix line (index + String.length "|run|-d|--name|")
+                |> String.lsplit2_exn ~on:'|' |> fst))
+      in
+      assert (
+        String.is_substring runtime
+          ~substring:("|--label|io.nixploy.secrets=" ^ runtime_name ^ "-EMPTY|"));
 
       let age_identity = Filename.concat root "age-identity" in
       let ssh_identity = Filename.concat root "sops-ssh-identity" in
@@ -897,7 +939,7 @@ exit 99
         index_of lines (String.is_substring ~substring:"'-X' 'POST'")
       in
       let stale_retirement =
-        index_of lines (String.is_suffix ~suffix:"|rm|-f|old-slot-id")
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|green-slot-id")
       in
       assert (switch < stale_retirement);
 
@@ -913,6 +955,45 @@ exit 99
       assert (
         List.for_all lines
           ~f:(Fn.non (String.is_substring ~substring:"unrelated-resource")));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_STALE_GREEN" "1";
+      write route_state "8081\nworker.example.invalid\n";
+      let stale = Nixploy.Application.Stale { keep = 2 } in
+      let%bind preview =
+        Nixploy.Application.prune_local application ~mode:stale ~dry_run:true
+          ~working_directory:repository ~target ~confirmed:false
+      in
+      let preview = assert_ok preview in
+      assert (Nixploy.Application.prune_dry_run preview);
+      [%test_eq: int] 1
+        (List.length (Nixploy.Application.prune_containers preview));
+      assert (
+        String.is_suffix
+          (List.hd_exn (Nixploy.Application.prune_containers preview))
+          ~suffix:"-blue");
+      let lines = In_channel.read_lines trace in
+      List.iter [ "|rm|"; "|rmi|"; "|secret|rm|"; "'mkdir'"; "'-X' 'DELETE'" ]
+        ~f:(fun mutation -> [%test_eq: int] 0 (count lines mutation));
+      write trace "";
+      let%bind stale_pruned =
+        Nixploy.Application.prune_local application ~mode:stale
+          ~working_directory:repository ~target ~confirmed:true
+      in
+      let stale_pruned = assert_ok stale_pruned in
+      assert (
+        Nixploy.Application.equal_prune_route_state Kept
+          (Nixploy.Application.prune_route_state stale_pruned));
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "|rm|-f|old-slot-id");
+      [%test_eq: int] 0 (count lines "|rm|-f|green-slot-id");
+      [%test_eq: int] 0 (count lines "'-X' 'DELETE'");
+      [%test_eq: int] 1 (count lines "'rmdir'");
+      [%test_eq: string list]
+        [ "8081"; "worker.example.invalid" ]
+        (In_channel.read_lines route_state);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

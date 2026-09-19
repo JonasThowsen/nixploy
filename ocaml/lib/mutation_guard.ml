@@ -60,7 +60,8 @@ let with_guard ?(certainty = fun _ -> None) ~run ~interrupted ~project ~target
               ("NIXPLOY_MUTATION_RELEASE_UNKNOWN: remote effects completed; \
                 inspect guard " ^ directory ^ " before retrying"))
 
-let with_mutation ?certainty ~project ~target action =
+let with_mutation_for ?certainty ~host ~project ~target_name action =
+  let target = host in
   let run argv =
     let open Deferred.Or_error.Let_syntax in
     let%bind result =
@@ -77,9 +78,32 @@ let with_mutation ?certainty ~project ~target action =
     ~interrupted:(fun () ->
       Option.is_some (Process_runner.termination_signal ())
       || Option.exists (Cancellation.current ()) ~f:Cancellation.was_requested)
-    ~project
-    ~target:(Configuration.Target.name target)
+    ~project ~target:target_name action
+
+let with_mutation ?certainty ~project ~target action =
+  with_mutation_for ?certainty ~host:target ~project
+    ~target_name:(Configuration.Target.name target)
     action
+
+let list_markers ~host =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Remote_command.run ~target:host ~timeout:(Time_ns.Span.of_sec 15.)
+      ~max_output_bytes:65_536
+      [ "find"; parent; "-mindepth"; "1"; "-maxdepth"; "1"; "-type"; "d" ]
+  in
+  match result.exit_status with
+  | Ok () ->
+      Deferred.Or_error.return
+        (String.split_lines result.stdout
+        |> List.filter_map ~f:(fun line ->
+            String.chop_prefix (String.strip line) ~prefix:(parent ^ "/"))
+        |> List.sort ~compare:String.compare)
+  | Error _ when String.is_substring result.stderr ~substring:"No such file" ->
+      Deferred.Or_error.return []
+  | Error failure ->
+      Deferred.Or_error.errorf "mutation marker listing failed (%s)"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
 
 type marker = Absent | Present of string [@@deriving compare, equal, sexp]
 

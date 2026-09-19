@@ -140,6 +140,9 @@ case "$*" in
   *" secret inspect abcdefghijklmnopqrstuvwxy")
     printf '[{"ID":"abcdefghijklmnopqrstuvwxy","Spec":{"Name":"%s-DATABASE_URL","Labels":{}}}]\n' "$NIXPLOY_TEST_KEY"
     ;;
+  *" images --format json")
+    printf '[{"Id":"image-a","Names":["localhost/nixploy/%s:20260919T101500Z-abc"],"Size":1073741824,"Containers":1},{"Id":"image-b","Names":["localhost/nixploy/%s-2:20260919T101500Z-abc","docker.io/library/unrelated:latest"],"Size":5,"Containers":0}]\n' "$NIXPLOY_TEST_KEY" "$NIXPLOY_TEST_KEY"
+    ;;
   *" system df --format json")
     printf '[{"Type":"Images","RawSize":3221225472,"RawReclaimable":1073741824},{"Type":"Containers","RawSize":4096,"RawReclaimable":0},{"Type":"Local Volumes","RawSize":0,"RawReclaimable":0}]\n'
     ;;
@@ -191,6 +194,7 @@ esac
           "1.5%";
           "256.0 MiB / 1.0 GiB";
           "Secrets:  0 owned, 1 unlabelled legacy";
+          "Images:   1 owned (1.0 GiB), 1 in use";
           "images 3.0 GiB (1.0 GiB reclaimable)";
           "19.1 GiB free of 38.1 GiB on /home/deployer/storage";
           "Guard:    idle";

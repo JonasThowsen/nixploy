@@ -325,7 +325,48 @@ let image_id_of_inspect output =
       Or_error.error_string
         "loaded image inspect must contain exactly one image"
 
-let build_and_load ~connection ~source ~image_output () =
+let load_owned_image ~connection ~resource_key ~revision output_path =
+  let open Deferred.Or_error.Let_syntax in
+  (* A concurrent deployment of the same archive may remove the archive tag
+     between this load and its inspection; loading again restores it. *)
+  let rec load remaining =
+    let%bind loaded =
+      run_ok [ "--connection"; connection; "load"; "-i"; output_path ]
+    in
+    let%bind reference = Deferred.return (loaded_reference loaded.stdout) in
+    let%bind.Deferred inspected =
+      run_ok
+        [ "--connection"; connection; "inspect"; "--type"; "image"; reference ]
+    in
+    match inspected with
+    | Error _ when remaining > 1 -> load (remaining - 1)
+    | Error error -> Deferred.Or_error.fail error
+    | Ok inspected ->
+        let%map id = Deferred.return (image_id_of_inspect inspected.stdout) in
+        (reference, id)
+  in
+  let%bind archive_reference, id = load 3 in
+  let owned =
+    Owned_image.reference resource_key ~loaded_at:(Time_float.now ()) ~revision
+  in
+  let%bind _ = run_ok [ "--connection"; connection; "tag"; id; owned ] in
+  let%map () =
+    if
+      String.equal archive_reference owned
+      || String.is_prefix archive_reference ~prefix:"sha256:"
+    then Deferred.Or_error.return ()
+    else
+      (* The archive tag was just written by this load and is never used
+         again; removing it lets prune free the image through the owned
+         reference alone. A failure only leaves an extra tag behind. *)
+      let%map.Deferred _ =
+        run [ "--connection"; connection; "untag"; id; archive_reference ]
+      in
+      Ok ()
+  in
+  { reference = owned; id }
+
+let build_and_load ~connection ~resource_key ~source ~image_output () =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
     Process_runner.run ~working_directory:(Source.nix_root source)
@@ -352,16 +393,8 @@ let build_and_load ~connection ~source ~image_output () =
             Deferred.Or_error.error_string
               "Nix build did not return one store path")
   in
-  let%bind loaded =
-    run_ok [ "--connection"; connection; "load"; "-i"; output_path ]
-  in
-  let%bind reference = Deferred.return (loaded_reference loaded.stdout) in
-  let%bind inspected =
-    run_ok
-      [ "--connection"; connection; "inspect"; "--type"; "image"; reference ]
-  in
-  let%map id = Deferred.return (image_id_of_inspect inspected.stdout) in
-  { reference; id }
+  load_owned_image ~connection ~resource_key ~revision:(Source.revision source)
+    output_path
 
 let labels fields =
   List.concat_map fields ~f:(fun (name, value) ->
@@ -443,7 +476,46 @@ let repository_owned ?(require_repository_label = false) output
       Or_error.error_string
         "container inspect must contain exactly one container"
 
-let find_owned_placement ~connection ~project ~target ~resource_key
+type placement_state = {
+  container : candidate;
+  running : bool;
+  secret_names : string list option;
+  image_id : string option;
+}
+
+let secrets_label = "io.nixploy.secrets"
+
+let secret_names_of_labels labels =
+  match List.Assoc.find labels ~equal:String.equal secrets_label with
+  | Some (`String "") -> Some []
+  | Some (`String names) -> Some (String.split names ~on:',')
+  | _ -> None
+
+let placement_state_of_container container ~candidate =
+  let running =
+    match List.Assoc.find container ~equal:String.equal "State" with
+    | Some (`Assoc state) -> (
+        match List.Assoc.find state ~equal:String.equal "Running" with
+        | Some (`Bool running) -> running
+        | _ -> false)
+    | _ -> false
+  in
+  let secret_names =
+    match List.Assoc.find container ~equal:String.equal "Config" with
+    | Some (`Assoc config) -> (
+        match List.Assoc.find config ~equal:String.equal "Labels" with
+        | Some (`Assoc labels) -> secret_names_of_labels labels
+        | _ -> None)
+    | _ -> None
+  in
+  {
+    container = candidate;
+    running;
+    secret_names;
+    image_id = label container "Image";
+  }
+
+let observe_owned_placement ~connection ~project ~target ~resource_key
     ~repository_identity ~placement =
   let open Deferred.Or_error.Let_syntax in
   let name = Deployment_plan.container_name ~resource_key placement in
@@ -492,13 +564,22 @@ let find_owned_placement ~connection ~project ~target ~resource_key
             else
               match List.Assoc.find container ~equal:String.equal "Id" with
               | Some (`String id) when not (String.is_empty id) ->
-                  Deferred.Or_error.return (Some { name; id })
+                  Deferred.Or_error.return
+                    (Some
+                       (placement_state_of_container container
+                          ~candidate:{ name; id }))
               | _ ->
                   Deferred.Or_error.error_string
                     "deployment placement inspect did not contain an ID")
         | _ ->
             Deferred.Or_error.error_string
               "deployment placement inspect must contain exactly one container")
+
+let find_owned_placement ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement =
+  observe_owned_placement ~connection ~project ~target ~resource_key
+    ~repository_identity ~placement
+  |> Deferred.Or_error.map ~f:(Option.map ~f:(fun state -> state.container))
 
 let remove_owned_placement ~connection ~project ~target ~resource_key
     ~repository_identity ~placement =
@@ -949,6 +1030,10 @@ let start_candidate ~connection ~project ~target ~resource_key
       ("io.nixploy.configuration_digest", configuration_digest);
       ("io.nixploy.operation_id", operation_id);
       ("io.nixploy.resource_key", Resource_key.to_string resource_key);
+      ( secrets_label,
+        List.map secret_mounts ~f:(fun mount -> mount.source)
+        |> List.sort ~compare:String.compare
+        |> String.concat ~sep:"," );
       ("org.opencontainers.image.source", repository_identity);
       ("org.opencontainers.image.revision", Source.revision source);
     ]
@@ -1442,6 +1527,352 @@ let read_stats ~connection ~container =
   in
   Deferred.return (parse_stats result.stdout)
 
+let restrict_prepared_secret_prune prepared ~remove =
+  {
+    prepared with
+    eligible =
+      List.filter prepared.eligible ~f:(fun secret -> remove secret.secret_name);
+  }
+
+let prepared_secret_prune_names prepared =
+  List.map prepared.eligible ~f:(fun secret -> secret.secret_name)
+
+type owned_image = {
+  image_id : string;
+  references : string list;
+  size_bytes : int64 option;
+  containers : int;
+}
+
+let owned_images_of_listing output ~repository =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `Null -> Ok []
+  | `List images ->
+      let%map parsed =
+        List.map images ~f:(function
+          | `Assoc fields -> (
+              let names =
+                match List.Assoc.find fields ~equal:String.equal "Names" with
+                | Some (`List names) ->
+                    List.filter_map names ~f:(function
+                      | `String name -> Some name
+                      | _ -> None)
+                | _ -> []
+              in
+              let references =
+                List.filter names ~f:(fun name ->
+                    Option.is_some (Owned_image.tag ~repository name))
+                |> List.dedup_and_sort ~compare:String.compare
+              in
+              if List.is_empty references then Ok None
+              else
+                match label fields "Id" with
+                | None -> Or_error.error_string "Podman image listing has no Id"
+                | Some image_id ->
+                    let number name =
+                      match List.Assoc.find fields ~equal:String.equal name with
+                      | Some (`Int value) -> Some value
+                      | _ -> None
+                    in
+                    Ok
+                      (Some
+                         {
+                           image_id;
+                           references;
+                           size_bytes =
+                             number "Size" |> Option.map ~f:Int64.of_int;
+                           containers =
+                             number "Containers" |> Option.value ~default:0;
+                         }))
+          | _ ->
+              Or_error.error_string "Podman image listing must contain objects")
+        |> Or_error.all
+      in
+      List.filter_opt parsed
+      |> List.dedup_and_sort ~compare:(fun left right ->
+          String.compare left.image_id right.image_id)
+  | _ -> Or_error.error_string "Podman image listing must be a JSON array"
+
+let list_owned_images ~connection ~resource_key =
+  let open Deferred.Or_error.Let_syntax in
+  (* Reference filters match repository prefixes and repeat entries, so the
+     exact repository is selected here instead. *)
+  let%bind result =
+    Process_runner.run ~timeout:(Time_ns.Span.of_sec 60.)
+      ~max_output_bytes:(4 * max_output) ~prog:"podman"
+      ~args:[ "--connection"; connection; "images"; "--format"; "json" ]
+      ()
+  in
+  match result.exit_status with
+  | Error failure ->
+      Deferred.Or_error.errorf "podman images failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr)
+  | Ok () ->
+      Deferred.return
+        (owned_images_of_listing result.stdout
+           ~repository:(Owned_image.repository resource_key))
+
+let remove_owned_image_reference ~connection ~resource_key reference =
+  match
+    Owned_image.tag ~repository:(Owned_image.repository resource_key) reference
+  with
+  | None ->
+      Deferred.Or_error.errorf "refusing to remove non-owned image reference %s"
+        reference
+  | Some _ ->
+      let%map.Deferred.Or_error _ =
+        run_ok [ "--connection"; connection; "rmi"; reference ]
+      in
+      ()
+
+module Labelled = struct
+  type t = {
+    id : string;
+    name : string;
+    state : string option;
+    status : string option;
+    labels : (string * string) list;
+  }
+end
+
+let string_labels = function
+  | Some (`Assoc labels) ->
+      List.filter_map labels ~f:(function
+        | key, `String value -> Some (key, value)
+        | _ -> None)
+  | _ -> []
+
+let managed_containers_of_json output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `Null -> Ok []
+  | `List containers ->
+      List.map containers ~f:(function
+        | `Assoc fields -> (
+            let name =
+              match List.Assoc.find fields ~equal:String.equal "Names" with
+              | Some (`List (`String name :: _)) -> Some name
+              | _ -> label fields "Name"
+            in
+            match (label fields "Id", name) with
+            | Some id, Some name ->
+                Ok
+                  {
+                    Labelled.id;
+                    name;
+                    state = label fields "State";
+                    status = label fields "Status";
+                    labels =
+                      string_labels
+                        (List.Assoc.find fields ~equal:String.equal "Labels");
+                  }
+            | _ ->
+                Or_error.error_string
+                  "Podman container listing lacks Id or name")
+        | _ ->
+            Or_error.error_string
+              "Podman container listing must contain objects")
+      |> Or_error.all
+  | _ -> Or_error.error_string "Podman container listing must be a JSON array"
+
+let list_managed_containers ~connection =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    run_ok ~timeout:(Time_ns.Span.of_sec 60.)
+      [
+        "--connection";
+        connection;
+        "ps";
+        "--all";
+        "--filter";
+        "label=io.nixploy.managed=true";
+        "--format";
+        "json";
+      ]
+  in
+  Deferred.return (managed_containers_of_json result.stdout)
+
+let labelled_secrets_of_inspect output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `List secrets ->
+      List.map secrets ~f:(function
+        | `Assoc fields -> (
+            let spec =
+              match List.Assoc.find fields ~equal:String.equal "Spec" with
+              | Some (`Assoc spec) -> spec
+              | _ -> []
+            in
+            match (label fields "ID", label spec "Name") with
+            | Some id, Some name ->
+                Ok
+                  {
+                    Labelled.id;
+                    name;
+                    state = None;
+                    status = None;
+                    labels =
+                      string_labels
+                        (List.Assoc.find spec ~equal:String.equal "Labels");
+                  }
+            | _ ->
+                Or_error.error_string "Podman secret inspect lacks ID or name")
+        | _ ->
+            Or_error.error_string "Podman secret inspect must contain objects")
+      |> Or_error.all
+  | _ -> Or_error.error_string "Podman secret inspect must be a JSON array"
+
+let list_nixploy_secrets ~connection =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind listed =
+    run_ok
+      [
+        "--connection";
+        connection;
+        "secret";
+        "ls";
+        "--filter";
+        "name=^nixploy-";
+        "--format";
+        "{{.ID}}\t{{.Name}}";
+      ]
+  in
+  let%bind entries =
+    Deferred.return (secret_listing listed.stdout ~prefix:"nixploy-")
+  in
+  let%map inspected =
+    Deferred.Or_error.List.concat_map (List.chunks_of entries ~length:100)
+      ~how:`Sequential ~f:(fun chunk ->
+        let%bind result =
+          run_ok ~timeout:(Time_ns.Span.of_sec 30.)
+            ([ "--connection"; connection; "secret"; "inspect" ]
+            @ List.map chunk ~f:(fun entry -> entry.secret_id))
+        in
+        Deferred.return (labelled_secrets_of_inspect result.stdout))
+  in
+  inspected
+
+let nixploy_images_of_listing output =
+  let open Or_error.Let_syntax in
+  let%bind json =
+    Or_error.try_with (fun () -> Yojson.Safe.from_string output)
+  in
+  match json with
+  | `Null -> Ok []
+  | `List images ->
+      let%map parsed =
+        List.map images ~f:(function
+          | `Assoc fields -> (
+              let references =
+                match List.Assoc.find fields ~equal:String.equal "Names" with
+                | Some (`List names) ->
+                    List.filter_map names ~f:(function
+                      | `String name
+                        when String.is_prefix name ~prefix:"localhost/nixploy/"
+                        ->
+                          Some name
+                      | _ -> None)
+                    |> List.dedup_and_sort ~compare:String.compare
+                | _ -> []
+              in
+              let number name =
+                match List.Assoc.find fields ~equal:String.equal name with
+                | Some (`Int value) -> Some value
+                | _ -> None
+              in
+              if List.is_empty references then Ok None
+              else
+                match label fields "Id" with
+                | None -> Or_error.error_string "Podman image listing has no Id"
+                | Some image_id ->
+                    Ok
+                      (Some
+                         {
+                           image_id;
+                           references;
+                           size_bytes =
+                             number "Size" |> Option.map ~f:Int64.of_int;
+                           containers =
+                             number "Containers" |> Option.value ~default:0;
+                         }))
+          | _ ->
+              Or_error.error_string "Podman image listing must contain objects")
+        |> Or_error.all
+      in
+      List.filter_opt parsed
+      |> List.dedup_and_sort ~compare:(fun left right ->
+          String.compare left.image_id right.image_id)
+  | _ -> Or_error.error_string "Podman image listing must be a JSON array"
+
+let list_nixploy_images ~connection =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Process_runner.run ~timeout:(Time_ns.Span.of_sec 60.)
+      ~max_output_bytes:(4 * max_output) ~prog:"podman"
+      ~args:[ "--connection"; connection; "images"; "--format"; "json" ]
+      ()
+  in
+  match result.exit_status with
+  | Error failure ->
+      Deferred.Or_error.errorf "podman images failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr)
+  | Ok () -> Deferred.return (nixploy_images_of_listing result.stdout)
+
+let remove_labelled_container ~connection ~id ~expected =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind inspected = inspect_container ~connection id in
+  let%bind labels =
+    Deferred.return
+      (let open Or_error.Let_syntax in
+       let%bind json =
+         Or_error.try_with (fun () -> Yojson.Safe.from_string inspected.stdout)
+       in
+       match json with
+       | `List [ `Assoc container ]
+         when Option.equal String.equal (label container "Id") (Some id) -> (
+           match List.Assoc.find container ~equal:String.equal "Config" with
+           | Some (`Assoc config) ->
+               Ok
+                 (string_labels
+                    (List.Assoc.find config ~equal:String.equal "Labels"))
+           | _ -> Or_error.error_string "container inspect has no config")
+       | _ ->
+           Or_error.error_string "container inspect did not match the listed ID")
+  in
+  if
+    List.for_all expected ~f:(fun (key, value) ->
+        Option.equal String.equal
+          (List.Assoc.find labels ~equal:String.equal key)
+          (Some value))
+  then remove_candidate ~connection ~candidate:{ name = id; id }
+  else
+    Deferred.Or_error.errorf "container %s ownership changed after listing" id
+
+let remove_labelled_secret ~connection ~id ~name ~ownership =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind kind =
+    inspect_secret_ownership ~connection ~ownership
+      { secret_id = id; secret_name = name }
+  in
+  match kind with
+  | `Legacy ->
+      Deferred.Or_error.errorf "secret %s is not fully owned; retained" name
+  | `Owned ->
+      let%map _ = run_ok [ "--connection"; connection; "secret"; "rm"; id ] in
+      ()
+
 let status_timeout = Time_ns.Span.of_sec 30.
 
 let read_query ~connection args =
@@ -1662,6 +2093,10 @@ module For_testing = struct
   let parse_restart_policies = parse_restart_policies
   let parse_storage_usage = parse_storage_usage
   let parse_host_info = parse_host_info
+  let owned_images_of_listing = owned_images_of_listing
+  let managed_containers_of_json = managed_containers_of_json
+  let labelled_secrets_of_inspect = labelled_secrets_of_inspect
+  let nixploy_images_of_listing = nixploy_images_of_listing
   let bound_logs = bound_logs
   let secret_names_of_output = secret_names_of_output
   let owned_candidate_collision = owned_candidate_collision

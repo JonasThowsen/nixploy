@@ -6,7 +6,10 @@ type source = Source.selection
 type prune_result = Prune.t
 type status = Status.t
 
-type prune_route_state = Not_configured | Missing | Removed
+type prune_route_state = Not_configured | Missing | Removed | Kept
+[@@deriving compare, equal, sexp]
+
+type prune_mode = Prune.mode = Everything | Stale of { keep : int }
 [@@deriving compare, equal, sexp]
 
 type deployment_state = Store.state =
@@ -346,7 +349,8 @@ let host_readiness ~working_directory ~target =
   let%bind.Deferred.Or_error target = load_target ~working_directory ~target in
   Host_readiness.inspect ~target |> Deferred.ok
 
-let prune_local t ~working_directory ~target ~confirmed =
+let prune_local ?(mode = Everything) ?(dry_run = false) t ~working_directory
+    ~target ~confirmed =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =
     Deferred.return (canonical_working_directory working_directory)
@@ -357,7 +361,8 @@ let prune_local t ~working_directory ~target ~confirmed =
       finish_mutation t;
       Deferred.unit)
     (fun () ->
-      Prune.prune_local ~store:t.store ~working_directory ~target ~confirmed)
+      Prune.prune_local ~store:t.store ~working_directory ~target ~confirmed
+        ~mode ~dry_run)
 
 let status_project = Status.project
 let status_target = Status.target
@@ -495,18 +500,48 @@ let run ~on_selection ~working_directory ~target ~name =
         ~project:(Runbook.project prepared) ~target:(Runbook.target prepared)
         action)
 
+let resources ~working_directory ~target =
+  Inventory.load ~working_directory ~target
+
+let prune_orphan ?(dry_run = false) t ~working_directory ~target ~resource_key
+    ~confirmed =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_working_directory working_directory)
+  in
+  if dry_run then
+    Orphan_prune.prune ~store:t.store ~working_directory ~target ~resource_key
+      ~confirmed ~dry_run
+  else
+    let%bind () = Deferred.return (begin_mutation t) in
+    Monitor.protect
+      ~finally:(fun () ->
+        finish_mutation t;
+        Deferred.unit)
+      (fun () ->
+        Orphan_prune.prune ~store:t.store ~working_directory ~target
+          ~resource_key ~confirmed ~dry_run)
+
 let prune_project = Prune.project
 let prune_target = Prune.target
 let prune_resource_key = Prune.resource_key
 let prune_containers_removed = Prune.containers_removed
 let prune_secrets_removed = Prune.secrets_removed
 let prune_secrets_retained = Prune.secrets_retained
+let prune_mode = Prune.mode
+let prune_dry_run = Prune.dry_run
+let prune_containers = Prune.containers
+let prune_secrets = Prune.secrets
+let prune_image_references = Prune.image_references
+let prune_image_bytes = Prune.image_bytes
+let prune_notes = Prune.notes
 
 let prune_route_state result =
   match Prune.route result with
   | Not_configured -> Not_configured
   | Missing -> Missing
   | Removed -> Removed
+  | Kept -> Kept
 
 let commit_revision = Source.commit_revision
 let commit_subject = Source.commit_subject

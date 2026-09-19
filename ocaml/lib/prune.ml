@@ -1,35 +1,250 @@
 open Async
 open Core
 
-type route = Not_configured | Missing | Removed
+type route = Not_configured | Missing | Removed | Kept
+[@@deriving compare, equal, sexp]
+
+type mode = Everything | Stale of { keep : int }
 [@@deriving compare, equal, sexp]
 
 type t = {
   project : Project_name.t;
   target : Target_name.t;
   resource_key : Resource_key.t;
-  containers_removed : int;
-  secrets_removed : int;
+  mode : mode;
+  dry_run : bool;
+  containers : string list;
+  secrets : string list;
   secrets_retained : int;
+  image_references : string list;
+  image_bytes : int64;
   route : route;
+  notes : string list;
 }
 
 let project (t : t) = t.project
 let target (t : t) = t.target
 let resource_key (t : t) = t.resource_key
-let containers_removed (t : t) = t.containers_removed
-let secrets_removed (t : t) = t.secrets_removed
+let mode (t : t) = t.mode
+let dry_run (t : t) = t.dry_run
+let containers (t : t) = t.containers
+let secrets (t : t) = t.secrets
+let image_references (t : t) = t.image_references
+let image_bytes (t : t) = t.image_bytes
+let containers_removed (t : t) = List.length t.containers
+let secrets_removed (t : t) = List.length t.secrets
 let secrets_retained (t : t) = t.secrets_retained
 let route (t : t) = t.route
+let notes (t : t) = t.notes
 
-let prune_local ~store ~working_directory ~target:target_name ~confirmed =
+type observation = {
+  placements : Podman.placement_state list;
+  deletion : Caddy.deletion option;
+  secrets : Podman.prepared_secret_prune;
+  images : Podman.owned_image list;
+}
+
+type plan = {
+  remove_placements : Podman.placement_state list;
+  delete_route : Caddy.deletion option;
+  remove_secrets : Podman.prepared_secret_prune;
+  remove_images : Podman.owned_image list;
+  plan_notes : string list;
+}
+
+let placements =
+  Deployment_plan.
+    [
+      Single_container;
+      Web_slot { slot = Blue; port = 0 };
+      Web_slot { slot = Green; port = 0 };
+    ]
+
+let observe ~connection ~project ~target ~resource_key ~repository_identity =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind observed =
+    Deferred.Or_error.List.filter_map placements ~how:`Sequential
+      ~f:(fun placement ->
+        Podman.observe_owned_placement ~connection ~project ~target
+          ~resource_key ~repository_identity ~placement
+        |> Deferred.Or_error.map
+             ~f:(Option.map ~f:(fun state -> (placement, state))))
+  in
+  let%bind () =
+    let ids =
+      List.map observed ~f:(fun (_, state) ->
+          Podman.candidate_id state.Podman.container)
+    in
+    if List.contains_dup ids ~compare:String.compare then
+      Deferred.Or_error.error_string
+        "NIXPLOY_PRUNE_AMBIGUOUS_CONTAINER: multiple derived names resolve to \
+         the same ID"
+    else Deferred.Or_error.return ()
+  in
+  let%bind deletion =
+    match Configuration.Target.kind target with
+    | Non_web -> Deferred.Or_error.return None
+    | Web web ->
+        let%map deletion =
+          Caddy.preflight_delete (Caddy.create ~target ~resource_key ~web)
+        in
+        Some deletion
+  in
+  let%bind secrets =
+    Podman.preflight_prune_owned_secrets ~connection ~project ~target
+      ~resource_key ~repository_identity
+  in
+  let%map images = Podman.list_owned_images ~connection ~resource_key in
+  ( observed,
+    { placements = List.map observed ~f:snd; deletion; secrets; images } )
+
+let stale_route ~target deletion =
+  match (Configuration.Target.kind target, deletion) with
+  | Non_web, _ | Web _, None -> Stale_plan.Non_web
+  | Web web, Some deletion -> (
+      match Caddy.deletion_route deletion with
+      | Caddy.Missing -> Missing
+      | Existing { active_port; _ } ->
+          Routed
+            (if Int.equal active_port (Configuration.Web.blue_port web) then
+               Some Deployment_plan.Blue
+             else if Int.equal active_port (Configuration.Web.green_port web)
+             then Some Green
+             else None))
+
+let plan ~mode ~target ~observed observation =
+  match mode with
+  | Everything ->
+      Ok
+        {
+          remove_placements = observation.placements;
+          delete_route = observation.deletion;
+          remove_secrets = observation.secrets;
+          remove_images = observation.images;
+          plan_notes = [];
+        }
+  | Stale { keep } ->
+      let open Or_error.Let_syntax in
+      let stale_container (placement, (state : Podman.placement_state)) =
+        {
+          Stale_plan.name = Podman.candidate_name state.container;
+          placement;
+          running = state.running;
+          secret_names = state.secret_names;
+          image_id = state.image_id;
+        }
+      in
+      let stale_image (image : Podman.owned_image) =
+        {
+          Stale_plan.image_id = image.image_id;
+          references = image.references;
+          size_bytes = image.size_bytes;
+          containers = image.containers;
+        }
+      in
+      let%map stale =
+        Stale_plan.create
+          ~route:(stale_route ~target observation.deletion)
+          ~containers:(List.map observed ~f:stale_container)
+          ~owned_secrets:
+            (Podman.prepared_secret_prune_names observation.secrets)
+          ~images:(List.map observation.images ~f:stale_image)
+          ~keep
+      in
+      let removed_names =
+        List.map stale.remove_containers ~f:(fun container -> container.name)
+      in
+      let removed_image_ids =
+        List.map stale.remove_images ~f:(fun image -> image.image_id)
+      in
+      {
+        remove_placements =
+          List.filter observation.placements ~f:(fun state ->
+              List.mem removed_names
+                (Podman.candidate_name state.container)
+                ~equal:String.equal);
+        delete_route = None;
+        remove_secrets =
+          Podman.restrict_prepared_secret_prune observation.secrets
+            ~remove:(List.mem stale.remove_secrets ~equal:String.equal);
+        remove_images =
+          List.filter observation.images ~f:(fun image ->
+              List.mem removed_image_ids image.image_id ~equal:String.equal);
+        plan_notes = stale.notes;
+      }
+
+let total_image_bytes images =
+  List.sum
+    (module Int64)
+    images
+    ~f:(fun (image : Podman.owned_image) ->
+      Option.value image.size_bytes ~default:0L)
+
+let planned_route plan ~mode =
+  match (mode, plan.delete_route) with
+  | Stale _, _ -> Kept
+  | Everything, None -> Not_configured
+  | Everything, Some deletion -> (
+      match Caddy.deletion_route deletion with
+      | Caddy.Missing -> Missing
+      | Existing _ -> Removed)
+
+let execute ~record ~connection ~resource_key plan ~mode =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind route =
+    match plan.delete_route with
+    | None -> Deferred.Or_error.return (planned_route plan ~mode)
+    | Some deletion ->
+        let%bind () = record "removing configured route" in
+        let%bind removed = Caddy.execute_delete deletion in
+        let%map () = record "route step complete" in
+        if removed then Removed else Missing
+  in
+  let%bind () =
+    Deferred.Or_error.List.iter plan.remove_placements ~how:`Sequential
+      ~f:(fun state ->
+        let candidate = state.Podman.container in
+        let%bind () =
+          record ("removing container " ^ Podman.candidate_id candidate)
+        in
+        let%bind () = Podman.remove_candidate ~connection ~candidate in
+        record ("removed container " ^ Podman.candidate_id candidate))
+  in
+  let%bind () = record "removing preflighted owned secrets" in
+  let%bind secrets_removed, secrets_retained =
+    Podman.execute_prepared_secret_prune plan.remove_secrets
+  in
+  let%bind () =
+    Deferred.Or_error.List.iter plan.remove_images ~how:`Sequential
+      ~f:(fun image ->
+        Deferred.Or_error.List.iter image.references ~how:`Sequential
+          ~f:(fun reference ->
+            let%bind () = record ("removing image reference " ^ reference) in
+            Podman.remove_owned_image_reference ~connection ~resource_key
+              reference))
+  in
+  let%map () =
+    record
+      (sprintf
+         "remote removals complete: %d secrets removed, %d unlabelled secrets \
+          retained, %d image references removed"
+         secrets_removed secrets_retained
+         (List.sum
+            (module Int)
+            plan.remove_images
+            ~f:(fun image -> List.length image.references)))
+  in
+  (route, secrets_retained)
+
+let prune_local ~store ~working_directory ~target:target_name ~confirmed ~mode
+    ~dry_run =
   let open Deferred.Or_error.Let_syntax in
   let%bind () =
-    if confirmed then Deferred.Or_error.return ()
+    if confirmed || dry_run then Deferred.Or_error.return ()
     else
       Deferred.Or_error.error_string
         "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes to remove this \
-         target's containers and configured route"
+         target's resources, or --dry-run to preview"
   in
   let%bind configuration = Nix_configuration.load ~working_directory in
   let%bind () =
@@ -47,103 +262,71 @@ let prune_local ~store ~working_directory ~target:target_name ~confirmed =
     Uuid.create_random (Random.State.make_self_init ()) |> Uuid.to_string
   in
   let record message =
-    Store.record_prune_event store ~operation_id ~working_directory
-      ~target:target_name ~message
+    if dry_run then Deferred.Or_error.return ()
+    else
+      Store.record_prune_event store ~operation_id ~working_directory
+        ~target:target_name ~message
   in
   let%bind () =
     record
-      "requested: scoped containers, owned secrets and configured route; \
-       unlabelled secrets, images, volumes and data retained"
+      (match mode with
+      | Everything ->
+          "requested: scoped containers, owned secrets, owned images and \
+           configured route; unlabelled secrets, unowned images, volumes and \
+           data retained"
+      | Stale { keep } ->
+          sprintf
+            "requested: stale containers, unmounted owned secrets and owned \
+             images beyond the newest %d; live resources retained"
+            keep)
+  in
+  let prune () =
+    let open Deferred.Or_error.Let_syntax in
+    let%bind candidates =
+      Deferred.return
+        (Resource_key.candidates ~project ~target:target_name
+           ~repository_identity)
+    in
+    let%bind resource_key =
+      Podman.select_resource_key ~project ~target ~repository_identity
+        ~candidates
+    in
+    let%bind connection = Podman.ensure_connection ~target ~resource_key in
+    let%bind observed, observation =
+      observe ~connection ~project ~target ~resource_key ~repository_identity
+    in
+    let%bind plan =
+      Deferred.return (plan ~mode ~target ~observed observation)
+    in
+    let%bind () = record "ownership preflight complete" in
+    let%map route, secrets_retained =
+      if dry_run then
+        Deferred.Or_error.return
+          ( planned_route plan ~mode,
+            snd (Podman.prepared_secret_prune_counts plan.remove_secrets) )
+      else execute ~record ~connection ~resource_key plan ~mode
+    in
+    {
+      project;
+      target = target_name;
+      resource_key;
+      mode;
+      dry_run;
+      containers =
+        List.map plan.remove_placements ~f:(fun state ->
+            Podman.candidate_name state.container);
+      secrets = Podman.prepared_secret_prune_names plan.remove_secrets;
+      secrets_retained;
+      image_references =
+        List.concat_map plan.remove_images ~f:(fun image -> image.references);
+      image_bytes = total_image_bytes plan.remove_images;
+      route;
+      notes = plan.plan_notes;
+    }
   in
   let%bind.Deferred result =
-    Mutation_guard.with_mutation ~project ~target (fun () ->
-        let open Deferred.Or_error.Let_syntax in
-        let%bind candidates =
-          Deferred.return
-            (Resource_key.candidates ~project ~target:target_name
-               ~repository_identity)
-        in
-        let%bind resource_key =
-          Podman.select_resource_key ~project ~target ~repository_identity
-            ~candidates
-        in
-        let%bind connection = Podman.ensure_connection ~target ~resource_key in
-        let placements =
-          Deployment_plan.
-            [
-              Single_container;
-              Web_slot { slot = Blue; port = 0 };
-              Web_slot { slot = Green; port = 0 };
-            ]
-        in
-        let%bind containers =
-          Deferred.Or_error.List.map placements ~how:`Sequential
-            ~f:(fun placement ->
-              Podman.find_owned_placement ~connection ~project ~target
-                ~resource_key ~repository_identity ~placement)
-        in
-        let containers = List.filter_opt containers in
-        let%bind () =
-          let ids = List.map containers ~f:Podman.candidate_id in
-          if List.contains_dup ids ~compare:String.compare then
-            Deferred.Or_error.error_string
-              "NIXPLOY_PRUNE_AMBIGUOUS_CONTAINER: multiple derived names \
-               resolve to the same ID"
-          else Deferred.Or_error.return ()
-        in
-        let%bind deletion =
-          match Configuration.Target.kind target with
-          | Non_web -> Deferred.Or_error.return None
-          | Web web ->
-              let%map deletion =
-                Caddy.preflight_delete (Caddy.create ~target ~resource_key ~web)
-              in
-              Some deletion
-        in
-        let%bind secrets =
-          Podman.preflight_prune_owned_secrets ~connection ~project ~target
-            ~resource_key ~repository_identity
-        in
-        let%bind () =
-          record "ownership preflight complete; removing configured route"
-        in
-        let%bind route =
-          match deletion with
-          | None -> Deferred.Or_error.return Not_configured
-          | Some deletion ->
-              let%map removed = Caddy.execute_delete deletion in
-              if removed then Removed else Missing
-        in
-        let%bind () = record "route step complete" in
-        let%bind () =
-          Deferred.Or_error.List.iter containers ~how:`Sequential
-            ~f:(fun candidate ->
-              let%bind () =
-                record ("removing container " ^ Podman.candidate_id candidate)
-              in
-              let%bind () = Podman.remove_candidate ~connection ~candidate in
-              record ("removed container " ^ Podman.candidate_id candidate))
-        in
-        let%bind () = record "removing preflighted owned secrets" in
-        let%bind secrets_removed, secrets_retained =
-          Podman.execute_prepared_secret_prune secrets
-        in
-        let%map () =
-          record
-            (sprintf
-               "remote removals complete: %d secrets removed, %d unlabelled \
-                secrets retained"
-               secrets_removed secrets_retained)
-        in
-        {
-          project;
-          target = target_name;
-          resource_key;
-          containers_removed = List.length containers;
-          secrets_removed;
-          secrets_retained;
-          route;
-        })
+    if dry_run then prune ()
+    else Mutation_guard.with_mutation ~project ~target prune
   in
   let message =
     match result with

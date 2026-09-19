@@ -28,4 +28,9 @@ val candidates :
 (** Canonical identity followed by the existing OCaml and legacy C# migration
     identities, with duplicates removed. *)
 
+val of_observed : string -> t Or_error.t
+(** A key read from labels on the host: it must look like a derived key
+    ([nixploy-] followed by lowercase letters, digits, [_] and [-]). This proves
+    nothing about ownership; callers still verify labels. *)
+
 val to_string : t -> string

@@ -73,6 +73,10 @@ commands run in the application repository, in the same shell. Building alone
 does not replace an older `nixploy` on PATH. Runbook listing only discovers
 configured commands; it does not execute them.
 
+Images loaded by earlier releases keep their archive tags and are not owned, so
+prune never removes them. After the first deployment with owned image tags,
+reclaim them manually with Podman once no container uses them.
+
 Investigate any ownership, identity, host-key, or uncertain-state failure before
 deploying. Do not use prune to force an existing deployment to fit a changed
 identity. Never delete server data, Podman volumes, credentials, or the old state

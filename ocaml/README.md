@@ -18,7 +18,8 @@ There are no service APIs, managed admission path, web server, RPC transport, or
 background dashboard observers. Cancellation handles and lifecycle operations
 belong to the current CLI process, not a persistent service.
 
-- `bin/main.ml` parses deploy, status, logs, history, and confirmed prune commands.
+- `bin/main.ml` parses deploy, status, logs, history, resources, and confirmed
+  prune commands.
   `bin/runbook_commands.ml` implements runbook listing and named execution.
 - `lib/application.mli` is the orchestration facade. Parsing and rendering do not
   own deployment effects. Inspection JSON lives in `bin/inspection_output.ml`.
@@ -58,9 +59,14 @@ while retaining the marker. Non-interactive stdout/stderr stream separately and
 are not retained in history. Interactive commands require a terminal, enable
 stdin/TTY explicitly, and may merge output streams.
 
-Prune requires explicit confirmation and exact resource ownership. It preflights
-ownership before removing owned containers, fully owned secrets, and the configured
-owned route. Unlabelled secrets, images, volumes, and data are retained. Local
+Prune requires explicit confirmation (or a read-only `--dry-run`) and exact
+resource ownership. It preflights ownership before removing owned containers,
+fully owned secrets, owned image references, and the configured owned route, or,
+with `--stale`, only what `lib/stale_plan.mli` decides the live deployment no
+longer uses. Unlabelled secrets, unowned images, volumes, and data are retained.
+`lib/inventory.mli` classifies every nixploy resource on a host against the local
+flake; `lib/orphan_prune.mli` removes one undeclared resource key under its own
+guard after re-observing the host. Local
 history is evidence, not remote authority or health.
 
 ## Validation

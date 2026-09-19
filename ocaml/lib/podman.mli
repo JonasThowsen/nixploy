@@ -22,6 +22,14 @@ val preflight_prune_owned_secrets :
 val prepared_secret_prune_counts : prepared_secret_prune -> int * int
 (** Eligible and retained legacy secret counts, respectively. *)
 
+val restrict_prepared_secret_prune :
+  prepared_secret_prune -> remove:(string -> bool) -> prepared_secret_prune
+(** Keeps only eligible owned secrets whose name satisfies [remove]. Retained
+    and legacy secrets are still revalidated on execution. *)
+
+val prepared_secret_prune_names : prepared_secret_prune -> string list
+(** Names of the eligible owned secrets. *)
+
 val execute_prepared_secret_prune :
   prepared_secret_prune -> (int * int) Deferred.Or_error.t
 (** Revalidates the complete snapshot before deleting eligible immutable IDs.
@@ -78,10 +86,13 @@ val preflight_read_only_bind_sources :
 
 val build_and_load :
   connection:string ->
+  resource_key:Resource_key.t ->
   source:Source.t ->
   image_output:string ->
   unit ->
   image Deferred.Or_error.t
+(** Loads the image and tags it with an {!Owned_image.reference}, which the
+    returned image uses. The archive's own tag is removed afterwards. *)
 
 val prepare_candidate :
   connection:string ->
@@ -91,6 +102,25 @@ val prepare_candidate :
   repository_identity:string ->
   placement:Deployment_plan.placement ->
   unit Deferred.Or_error.t
+
+type placement_state = {
+  container : candidate;
+  running : bool;
+  secret_names : string list option;
+      (** Remote secret names from the container's [io.nixploy.secrets] label;
+          [None] for containers deployed before the label existed. *)
+  image_id : string option;
+}
+
+val observe_owned_placement :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  resource_key:Resource_key.t ->
+  repository_identity:string ->
+  placement:Deployment_plan.placement ->
+  placement_state option Deferred.Or_error.t
+(** Like {!find_owned_placement}, with the state needed to plan cleanup. *)
 
 val find_owned_placement :
   connection:string ->
@@ -216,6 +246,76 @@ val read_stats :
   container:runtime_container ->
   runtime_stats Deferred.Or_error.t
 
+type owned_image = {
+  image_id : string;
+  references : string list;  (** only references in the owned repository *)
+  size_bytes : int64 option;
+  containers : int;  (** containers of any owner using the image *)
+}
+
+val list_owned_images :
+  connection:string ->
+  resource_key:Resource_key.t ->
+  owned_image list Deferred.Or_error.t
+(** Images with at least one reference in exactly this resource's
+    {!Owned_image.repository}. *)
+
+val remove_owned_image_reference :
+  connection:string ->
+  resource_key:Resource_key.t ->
+  string ->
+  unit Deferred.Or_error.t
+(** Removes one owned reference. Podman deletes the image only when no other
+    reference remains, so an image shared with another target survives. Refuses
+    references outside the owned repository. *)
+
+(** {2 Host-wide inventory}
+
+    Every nixploy resource reachable through one connection, regardless of
+    project or target. Used to find resources whose target is no longer
+    declared. *)
+
+module Labelled : sig
+  type t = {
+    id : string;
+    name : string;
+    state : string option;
+    status : string option;
+    labels : (string * string) list;
+  }
+end
+
+val list_managed_containers :
+  connection:string -> Labelled.t list Deferred.Or_error.t
+(** Containers labelled [io.nixploy.managed=true], in any state. *)
+
+val list_nixploy_secrets :
+  connection:string -> Labelled.t list Deferred.Or_error.t
+(** Secrets named [nixploy-*] with their labels (possibly none). Never requests
+    secret data. *)
+
+val list_nixploy_images :
+  connection:string -> owned_image list Deferred.Or_error.t
+(** Images with at least one [localhost/nixploy/] reference; [references] holds
+    only those. *)
+
+val remove_labelled_container :
+  connection:string ->
+  id:string ->
+  expected:(string * string) list ->
+  unit Deferred.Or_error.t
+(** Re-inspects the immutable ID and removes it only if every expected label
+    still matches. *)
+
+val remove_labelled_secret :
+  connection:string ->
+  id:string ->
+  name:string ->
+  ownership:(string * string) list ->
+  unit Deferred.Or_error.t
+(** Removes the secret only when it carries the complete [ownership] labels;
+    partial or unlabelled secrets are refused. *)
+
 (** {2 Read-only status queries}
 
     These never mutate resources and never request secret values. *)
@@ -288,6 +388,13 @@ module For_testing : sig
 
   val parse_storage_usage : string -> storage_usage Or_error.t
   val parse_host_info : string -> host_info Or_error.t
+
+  val owned_images_of_listing :
+    string -> repository:string -> owned_image list Or_error.t
+
+  val managed_containers_of_json : string -> Labelled.t list Or_error.t
+  val labelled_secrets_of_inspect : string -> Labelled.t list Or_error.t
+  val nixploy_images_of_listing : string -> owned_image list Or_error.t
   val bound_logs : string -> log_snapshot
   val secret_names_of_output : string -> string list Or_error.t
 

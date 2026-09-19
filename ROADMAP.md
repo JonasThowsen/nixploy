@@ -39,6 +39,28 @@ NixOS VM, not a production application or existing deployment server.
 - Prune checks exact ownership and removes owned containers, fully owned secrets,
   and configured owned routes, retaining unlabelled secrets, images, volumes, and data.
 
+## Operator inspection, cleanup, and reboot survival — complete
+
+Motivated by a host rescale that stopped every container and left resources to be
+cleaned up by hand over SSH.
+
+- Application containers run with the `always` restart policy. `deploy` and
+  `status` check read-only that the host brings them back (`podman-restart.service`,
+  lingering for rootless accounts, Caddy resuming API routes) and name the NixOS
+  setting that fixes each gap. A web deploy with no owned route retires the other
+  owned slot after a verified switch.
+- `status` reports per-container role, state, restarts, CPU, memory, and restart
+  policy; the route; secrets; owned images; host-wide Podman storage, free disk and
+  capacity; the mutation marker; and derived issues. Supplementary queries degrade
+  per section instead of failing the command.
+- Deploy tags images into `localhost/nixploy/<resource key>` and drops the archive
+  tag, so images are owned. `prune` removes owned images too; `prune --stale` keeps
+  the live deployment and removes unserved containers, unmounted owned secrets,
+  and owned images beyond `--keep`; `--dry-run` previews either mode.
+- `resources` lists every nixploy resource on a target's host by resource key and
+  classifies it against the flake; `prune --orphan KEY` removes an undeclared key
+  under its own guard after re-verifying ownership.
+
 ## Acceptance results
 
 - Full OCaml suite, packaged CLI build, configuration and command-contract checks
@@ -53,6 +75,13 @@ NixOS VM, not a production application or existing deployment server.
   cleanup, legacy-secret retention, source consistency and bounded compensation.
 - Interactive regressions cover blocked-flush cancellation, descendant cleanup,
   double-signal shutdown and terminal restoration.
+- Inspection and cleanup: the extended VM workflow passed in 1238 seconds
+  (`globalTimeout` raised to 1800 for the added steps), covering owned image tags
+  with the archive tag removed, the `always` restart policy, status stats, roles,
+  route, disk and guard, a no-op `prune --stale` beside a live blue/green target,
+  `resources` classification of a target deployed from another checkout and
+  renamed away, refusal of `--orphan` for a declared key, guarded orphan removal
+  with the live targets still serving, and full prune removing owned images.
 
 The VM driver was built through `checks.x86_64-linux.cli-vm-smoke.driver` and run
 directly without KVM. Production migration remains an explicit operator action;
@@ -64,6 +93,8 @@ Do not use production applications implicitly for acceptance. See
 ## Deliberately deferred
 
 One-off runbook containers, parameterized commands, and command chaining need a
-concrete use case before implementation. Web UI, RPC, Nixploy daemons, application
+concrete use case before implementation. Re-applying a lost Caddy route without a
+redeploy, systemd/Quadlet units per container, and explicit stop/start commands
+wait for evidence that restart policies plus the readiness checks are not enough. Web UI, RPC, Nixploy daemons, application
 registries, schedulers, queues, generic workflow engines, and server provisioning
 are outside the product boundary, not backlog items.

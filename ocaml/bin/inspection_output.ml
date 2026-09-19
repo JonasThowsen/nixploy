@@ -98,6 +98,21 @@ let status status =
         (if List.is_empty legacy then ""
          else sprintf ", %d unlabelled legacy" (List.length legacy))
   | Error error -> bprintf buffer "Secrets:  %s\n" (section_error error));
+  (match Status.images status with
+  | Ok [] -> bprintf buffer "Images:   none owned\n"
+  | Ok images ->
+      let in_use =
+        List.count images ~f:(fun (image : Nixploy.Podman.owned_image) ->
+            image.containers > 0)
+      in
+      bprintf buffer "Images:   %d owned (%s), %d in use\n" (List.length images)
+        (human
+           (List.sum
+              (module Int64)
+              images
+              ~f:(fun image -> Option.value image.size_bytes ~default:0L)))
+        in_use
+  | Error error -> bprintf buffer "Images:   %s\n" (section_error error));
   (match Status.storage status with
   | Ok storage ->
       bprintf buffer
@@ -232,6 +247,21 @@ let status_json status =
         in
         `Assoc [ ("owned", names true); ("legacy", names false) ])
   in
+  let images =
+    json_section (S.images status) ~f:(fun images ->
+        `List
+          (List.map images ~f:(fun (image : Nixploy.Podman.owned_image) ->
+               `Assoc
+                 [
+                   ("id", `String image.image_id);
+                   ( "references",
+                     `List (List.map image.references ~f:json_string) );
+                   ( "sizeBytes",
+                     Option.value_map image.size_bytes ~default:`Null
+                       ~f:json_int64 );
+                   ("containers", `Int image.containers);
+                 ])))
+  in
   let storage =
     json_section (S.storage status) ~f:(fun storage ->
         `Assoc
@@ -304,6 +334,7 @@ let status_json status =
          ("containers", `List (List.map (S.containers status) ~f:container));
          ("route", route);
          ("secrets", secrets);
+         ("images", images);
          ("storage", storage);
          ("hostResources", host);
          ("disk", disk);
@@ -352,3 +383,252 @@ let history deployments =
             revision
             (Application.deployment_message deployment)));
   Buffer.contents buffer
+
+let prune_route_name = function
+  | Nixploy.Application.Not_configured -> "not-configured"
+  | Missing -> "missing"
+  | Removed -> "removed"
+  | Kept -> "kept"
+
+let prune result =
+  let module A = Nixploy.Application in
+  let buffer = Buffer.create 1024 in
+  let dry_run = A.prune_dry_run result in
+  let containers = A.prune_containers result in
+  let secrets = A.prune_secrets result in
+  let images = A.prune_image_references result in
+  let scope =
+    match A.prune_mode result with
+    | Everything -> "Full cleanup"
+    | Stale { keep } ->
+        sprintf "Stale cleanup (keeping the newest %d images)" keep
+  in
+  let nothing =
+    List.is_empty containers && List.is_empty secrets && List.is_empty images
+  in
+  let route_line =
+    match (A.prune_mode result, A.prune_route_state result) with
+    | Everything, Removed -> Some "the configured Caddy route"
+    | _ -> None
+  in
+  if dry_run then
+    bprintf buffer "Dry run; nothing was changed. %s would remove:\n" scope
+  else bprintf buffer "%s removed:\n" scope;
+  if nothing && Option.is_none route_line then bprintf buffer "  nothing\n"
+  else (
+    List.iter containers ~f:(bprintf buffer "  container  %s\n");
+    List.iter secrets ~f:(bprintf buffer "  secret     %s\n");
+    List.iter images ~f:(bprintf buffer "  image      %s\n");
+    Option.iter route_line ~f:(bprintf buffer "  route      %s\n"));
+  if not (List.is_empty images) then
+    bprintf buffer "Image space freed: up to %s\n"
+      (Nixploy.Status.human_bytes (A.prune_image_bytes result));
+  List.iter (A.prune_notes result) ~f:(bprintf buffer "Note: %s\n");
+  if dry_run && not nothing then
+    bprintf buffer "Run again with --yes instead of --dry-run to remove them.\n";
+  Buffer.contents buffer
+
+let prune_json result =
+  let module A = Nixploy.Application in
+  let strings values = `List (List.map values ~f:json_string) in
+  encode_json
+    (`Assoc
+       [
+         ( "mode",
+           json_string
+             (match A.prune_mode result with
+             | Everything -> "everything"
+             | Stale _ -> "stale") );
+         ( "keep",
+           match A.prune_mode result with
+           | Everything -> `Null
+           | Stale { keep } -> `Int keep );
+         ("dryRun", `Bool (A.prune_dry_run result));
+         ("containers", strings (A.prune_containers result));
+         ("secrets", strings (A.prune_secrets result));
+         ("imageReferences", strings (A.prune_image_references result));
+         ("imageBytes", json_time (A.prune_image_bytes result));
+         ("route", json_string (prune_route_name (A.prune_route_state result)));
+         ("notes", strings (A.prune_notes result));
+         ("containersRemoved", `Int (A.prune_containers_removed result));
+         ("secretsRemoved", `Int (A.prune_secrets_removed result));
+         ("secretsRetained", `Int (A.prune_secrets_retained result));
+       ])
+
+let classification_name = function
+  | Nixploy.Inventory.Current -> "current"
+  | Declared -> "declared"
+  | Orphaned -> "orphaned"
+  | Other_project -> "other-project"
+  | Unattributed -> "unattributed"
+
+let image_total (images : Nixploy.Podman.owned_image list) =
+  List.sum
+    (module Int64)
+    images
+    ~f:(fun image -> Option.value image.size_bytes ~default:0L)
+
+let resources inventory =
+  let module I = Nixploy.Inventory in
+  let module Target = Nixploy.Configuration.Target in
+  let human = Nixploy.Status.human_bytes in
+  let host = I.host inventory in
+  let buffer = Buffer.create 2048 in
+  bprintf buffer "Host: %s@%s:%d (via target %s)\n" (Target.user host)
+    (Target.host host) (Target.port host)
+    (Nixploy.Target_name.to_string (Target.name host));
+  (match I.groups inventory with
+  | [] -> bprintf buffer "\nNo nixploy resources found.\n"
+  | groups ->
+      List.iter groups ~f:(fun (group : I.group) ->
+          bprintf buffer "\n%s  %s%s\n"
+            (classification_name group.classification)
+            group.resource_key
+            (match (group.project, group.target) with
+            | Some project, Some target -> sprintf "  (%s/%s)" project target
+            | _ -> "");
+          List.iter group.containers ~f:(fun container ->
+              bprintf buffer "  container  %s  %s\n" container.name
+                (Option.first_some container.status container.state
+                |> value_or_dash));
+          if not (List.is_empty group.secrets) then
+            bprintf buffer "  secrets    %d\n" (List.length group.secrets);
+          if not (List.is_empty group.images) then
+            bprintf buffer "  images     %d (%s)\n" (List.length group.images)
+              (human (image_total group.images));
+          if group.route then bprintf buffer "  route      present\n";
+          Option.iter group.marker ~f:(fun marker ->
+              bprintf buffer "  marker     .nixploy-mutations/%s\n" marker);
+          List.iter group.problems ~f:(bprintf buffer "  problem    %s\n")));
+  let orphans =
+    List.filter (I.groups inventory) ~f:(fun group ->
+        match group.classification with
+        | Orphaned | Other_project -> List.is_empty group.problems
+        | Current | Declared | Unattributed -> false)
+  in
+  (match I.legacy_secrets inventory with
+  | [] -> ()
+  | names ->
+      bprintf buffer "\nUnlabelled legacy secrets (never pruned): %s\n"
+        (String.concat ~sep:", " names));
+  (match I.unattributed_images inventory with
+  | [] -> ()
+  | images ->
+      bprintf buffer "\nImages in no known resource's repository: %d (%s)\n"
+        (List.length images)
+        (human (image_total images)));
+  (match I.unattributed_markers inventory with
+  | [] -> ()
+  | markers ->
+      bprintf buffer "\nMutation markers with no matching resources: %s\n"
+        (String.concat ~sep:", " markers));
+  List.iter (I.errors inventory) ~f:(fun (section, error) ->
+      bprintf buffer "\n%s %s\n" section (section_error error));
+  if not (List.is_empty orphans) then (
+    bprintf buffer
+      "\nPreview removal of a resource whose target is gone with:\n";
+    List.iter orphans ~f:(fun group ->
+        bprintf buffer "  nixploy prune -t %s --orphan %s --dry-run\n"
+          (Nixploy.Target_name.to_string (Target.name host))
+          group.resource_key));
+  Buffer.contents buffer
+
+let resources_json inventory =
+  let module I = Nixploy.Inventory in
+  let strings values = `List (List.map values ~f:json_string) in
+  let image (image : Nixploy.Podman.owned_image) =
+    `Assoc
+      [
+        ("id", `String image.image_id);
+        ("references", strings image.references);
+        ( "sizeBytes",
+          Option.value_map image.size_bytes ~default:`Null ~f:json_int64 );
+        ("containers", `Int image.containers);
+      ]
+  in
+  encode_json
+    (`Assoc
+       [
+         ( "host",
+           json_string (Nixploy.Configuration.Target.host (I.host inventory)) );
+         ( "resources",
+           `List
+             (List.map (I.groups inventory) ~f:(fun (group : I.group) ->
+                  `Assoc
+                    [
+                      ("resourceKey", `String group.resource_key);
+                      ( "classification",
+                        `String (classification_name group.classification) );
+                      ("project", json_option group.project);
+                      ("target", json_option group.target);
+                      ("repository", json_option group.repository);
+                      ( "containers",
+                        `List
+                          (List.map group.containers ~f:(fun container ->
+                               `Assoc
+                                 [
+                                   ("id", `String container.id);
+                                   ("name", `String container.name);
+                                   ("state", json_option container.state);
+                                   ("status", json_option container.status);
+                                 ])) );
+                      ( "secrets",
+                        strings
+                          (List.map group.secrets ~f:(fun secret -> secret.name))
+                      );
+                      ("images", `List (List.map group.images ~f:image));
+                      ("route", `Bool group.route);
+                      ("marker", json_option group.marker);
+                      ("problems", strings group.problems);
+                    ])) );
+         ("legacySecrets", strings (I.legacy_secrets inventory));
+         ( "unattributedImages",
+           `List (List.map (I.unattributed_images inventory) ~f:image) );
+         ("unattributedMarkers", strings (I.unattributed_markers inventory));
+         ( "errors",
+           `List
+             (List.map (I.errors inventory) ~f:(fun (section, error) ->
+                  `Assoc
+                    [
+                      ("section", `String section);
+                      ("error", `String (Error.to_string_hum error));
+                    ])) );
+       ])
+
+let orphan_prune result =
+  let module O = Nixploy.Orphan_prune in
+  let buffer = Buffer.create 512 in
+  if O.dry_run result then
+    bprintf buffer "Dry run; nothing was changed. Would remove %s (%s/%s):\n"
+      (O.resource_key result) (O.project result) (O.target result)
+  else
+    bprintf buffer "Removed %s (%s/%s):\n" (O.resource_key result)
+      (O.project result) (O.target result);
+  List.iter (O.containers result) ~f:(bprintf buffer "  container  %s\n");
+  List.iter (O.secrets result) ~f:(bprintf buffer "  secret     %s\n");
+  List.iter (O.image_references result) ~f:(bprintf buffer "  image      %s\n");
+  if O.route result then bprintf buffer "  route      the key's Caddy route\n";
+  if not (List.is_empty (O.image_references result)) then
+    bprintf buffer "Image space freed: up to %s\n"
+      (Nixploy.Status.human_bytes (O.image_bytes result));
+  if O.dry_run result then
+    bprintf buffer "Run again with --yes instead of --dry-run to remove them.\n";
+  Buffer.contents buffer
+
+let orphan_prune_json result =
+  let module O = Nixploy.Orphan_prune in
+  let strings values = `List (List.map values ~f:json_string) in
+  encode_json
+    (`Assoc
+       [
+         ("mode", `String "orphan");
+         ("resourceKey", `String (O.resource_key result));
+         ("project", `String (O.project result));
+         ("target", `String (O.target result));
+         ("dryRun", `Bool (O.dry_run result));
+         ("containers", strings (O.containers result));
+         ("secrets", strings (O.secrets result));
+         ("imageReferences", strings (O.image_references result));
+         ("imageBytes", json_int64 (O.image_bytes result));
+         ("route", `Bool (O.route result));
+       ])

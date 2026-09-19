@@ -150,3 +150,16 @@
  (libraries nixploy core core_unix.command_unix async)
  (preprocess
   (pps ppx_jane)))
+
+(test
+ (name orphan_prune_test)
+ (modules orphan_prune_test)
+ (libraries
+  nixploy
+  nixploy_cli_mapping
+  core
+  core_unix.command_unix
+  core_unix.filename_unix
+  async)
+ (preprocess
+  (pps ppx_jane)))

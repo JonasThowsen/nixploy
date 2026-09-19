@@ -1071,7 +1071,16 @@ let%test_module "host reboot readiness" =
       assert (
         List.exists
           (Readiness.warnings readiness)
-          ~f:(String.is_substring ~substring:"multi-user.target"))
+          ~f:(String.is_substring ~substring:"multi-user.target"));
+      (* NixOS reports package units that no wantedBy enables as linked. *)
+      let nixos_linked =
+        Readiness.For_testing.assess ~user:"root" ~web:false ~uid:(probe "0")
+          ~linger:skipped
+          ~restart_unit:
+            (probe ~exit_status:(Error (`Exit_non_zero 1)) "linked\n")
+          ~caddy_exec_start:skipped
+      in
+      [%test_eq: Readiness.state list] [ Not_ready ] (states nixos_linked)
 
     let%test_unit "web targets require Caddy to resume API routes" =
       let assess exec_start =
@@ -1265,4 +1274,273 @@ let%test_module "status parsing and issues" =
         |> Status.issues
       in
       assert (has issues "serves the green slot, but no owned container")
+  end)
+
+let%test_module "owned images and stale cleanup planning" =
+  (module struct
+    module Plan = Nixploy.Stale_plan
+
+    let resource_key =
+      Nixploy.Resource_key.derive_current
+        ~project:(Nixploy.Project_name.of_string "My_App" |> assert_ok)
+        ~target:(Nixploy.Target_name.of_string "prod_" |> assert_ok)
+      |> assert_ok
+
+    let%test_unit "owned references use a valid, exact repository" =
+      let repository = Nixploy.Owned_image.repository resource_key in
+      assert (String.is_prefix repository ~prefix:"localhost/nixploy/");
+      assert (
+        String.for_all (String.drop_prefix repository 18) ~f:(fun c ->
+            Char.is_lowercase c || Char.is_digit c || Char.equal c '-'));
+      assert (not (String.is_suffix repository ~suffix:"-"));
+      let reference =
+        Nixploy.Owned_image.reference resource_key
+          ~loaded_at:
+            (Time_float.of_date_ofday ~zone:Time_float.Zone.utc
+               (Date.of_string "2026-09-19")
+               (Time_float.Ofday.create ~hr:10 ~min:15 ~sec:0 ()))
+          ~revision:"ABCDEF0123456789abcdef"
+      in
+      [%test_eq: string]
+        (repository ^ ":20260919T101500Z-abcdef012345")
+        reference;
+      [%test_eq: string option] (Some "20260919T101500Z-abcdef012345")
+        (Nixploy.Owned_image.tag ~repository reference);
+      [%test_eq: string option] None
+        (Nixploy.Owned_image.tag ~repository (repository ^ "-2:tag"));
+      let listed =
+        Nixploy.Podman.For_testing.owned_images_of_listing ~repository
+          (sprintf
+             {|[{"Id":"a","Names":["%s:t2","other:latest"],"Size":10,"Containers":1},
+                {"Id":"a","Names":["%s:t2","other:latest"],"Size":10,"Containers":1},
+                {"Id":"b","Names":["%s-2:t1"],"Size":20,"Containers":0}]|}
+             repository repository repository)
+        |> assert_ok
+      in
+      [%test_eq: string list] [ "a" ]
+        (List.map listed ~f:(fun (image : Nixploy.Podman.owned_image) ->
+             image.image_id));
+      [%test_eq: string list]
+        [ repository ^ ":t2" ]
+        (List.hd_exn listed).references
+
+    let slot slot = Nixploy.Deployment_plan.Web_slot { slot; port = 0 }
+
+    let container ?(secrets = Some []) ?image name placement =
+      {
+        Plan.name;
+        placement;
+        running = true;
+        secret_names = secrets;
+        image_id = image;
+      }
+
+    let image ?(containers = 0) id tag =
+      {
+        Plan.image_id = id;
+        references = [ "localhost/nixploy/key:" ^ tag ];
+        size_bytes = Some 100L;
+        containers;
+      }
+
+    let names containers =
+      List.map containers ~f:(fun (container : Plan.container) ->
+          container.name)
+
+    let image_ids images =
+      List.map images ~f:(fun (image : Plan.image) -> image.image_id)
+
+    let%test_unit "the routed slot, its secrets and newest images stay" =
+      let plan =
+        Plan.create ~route:(Routed (Some Green))
+          ~containers:
+            [
+              container "blue" (slot Blue) ~secrets:(Some [ "key-OLD" ])
+                ~image:"old";
+              container "green" (slot Green) ~secrets:(Some [ "key-DB" ])
+                ~image:"current";
+              container "single" Single_container;
+            ]
+          ~owned_secrets:[ "key-DB"; "key-OLD"; "key-UNUSED" ]
+          ~images:
+            [
+              image "oldest" "20260101T000000Z-a";
+              image "old" "20260201T000000Z-b" ~containers:1;
+              image "previous" "20260301T000000Z-c";
+              image "current" "20260401T000000Z-d" ~containers:1;
+            ]
+          ~keep:2
+        |> assert_ok
+      in
+      [%test_eq: string list] [ "blue"; "single" ]
+        (names plan.remove_containers);
+      [%test_eq: string list] [ "key-OLD"; "key-UNUSED" ] plan.remove_secrets;
+      [%test_eq: string list] [ "oldest"; "old" ] (image_ids plan.remove_images);
+      [%test_eq: string list] [] plan.notes
+
+    let%test_unit "images used by other containers are kept" =
+      let plan =
+        Plan.create ~route:Non_web
+          ~containers:[ container "app" Single_container ~image:"current" ]
+          ~owned_secrets:[]
+          ~images:
+            [
+              image "shared" "20260101T000000Z-a" ~containers:1;
+              image "current" "20260401T000000Z-d" ~containers:1;
+            ]
+          ~keep:1
+        |> assert_ok
+      in
+      [%test_eq: string list] [] (image_ids plan.remove_images)
+
+    let%test_unit "an unknown live slot keeps every container" =
+      List.iter [ Plan.Missing; Routed None; Routed (Some Blue) ]
+        ~f:(fun route ->
+          let plan =
+            Plan.create ~route
+              ~containers:[ container "green" (slot Green) ]
+              ~owned_secrets:[] ~images:[] ~keep:1
+            |> assert_ok
+          in
+          [%test_eq: string list] [] (names plan.remove_containers);
+          [%test_eq: int] 1 (List.length plan.notes))
+
+    let%test_unit "untracked secrets and invalid keep are conservative" =
+      let plan =
+        Plan.create ~route:Non_web
+          ~containers:[ container "app" Single_container ~secrets:None ]
+          ~owned_secrets:[ "key-DB" ] ~images:[] ~keep:1
+        |> assert_ok
+      in
+      [%test_eq: string list] [] plan.remove_secrets;
+      assert (
+        List.exists plan.notes ~f:(String.is_substring ~substring:"predates"));
+      assert (
+        Result.is_error
+          (Plan.create ~route:Non_web ~containers:[] ~owned_secrets:[]
+             ~images:[] ~keep:0))
+  end)
+
+let%test_module "host inventory grouping" =
+  (module struct
+    module Inventory = Nixploy.Inventory
+
+    let project = Nixploy.Project_name.of_string "shop" |> assert_ok
+    let name value = Nixploy.Target_name.of_string value |> assert_ok
+
+    let key target =
+      Nixploy.Resource_key.derive ~project ~target:(name target)
+        ~repository_identity:"git@example.invalid:shop.git"
+      |> assert_ok
+
+    let labels ?(project = "shop")
+        ?(repository = "git@example.invalid:shop.git") target =
+      [
+        ("io.nixploy.managed", "true");
+        ("io.nixploy.project", project);
+        ("io.nixploy.target", target);
+        ( "io.nixploy.resource_key",
+          if String.equal project "shop" then
+            Nixploy.Resource_key.to_string (key target)
+          else "nixploy-" ^ project ^ "-0123456789-" ^ target );
+        ("io.nixploy.repository_identity", repository);
+      ]
+
+    let resource ?(labels = []) ?(state = Some "running") id resource_name =
+      {
+        Nixploy.Podman.Labelled.id;
+        name = resource_name;
+        state;
+        status = None;
+        labels;
+      }
+
+    let%test_unit "resources are grouped and classified against the flake" =
+      let old_key = Nixploy.Resource_key.to_string (key "staging-old") in
+      let old_repository = Nixploy.Owned_image.repository (key "staging-old") in
+      let marker =
+        Nixploy.Resource_key.derive_current ~project
+          ~target:(name "staging-old")
+        |> assert_ok |> Nixploy.Resource_key.to_string
+      in
+      let groups, unattributed_images, legacy, unattributed_markers =
+        Inventory.For_testing.build ~project
+          ~declared:[ name "production"; name "staging" ]
+          ~current_key:(key "production")
+          ~containers:
+            [
+              resource "c1" "prod" ~labels:(labels "production");
+              resource "c2" "staging" ~labels:(labels "staging");
+              resource "c3" "old" ~labels:(labels "staging-old")
+                ~state:(Some "exited");
+              resource "c4" "blog" ~labels:(labels ~project:"blog" "web");
+              resource "c5" "mixed"
+                ~labels:
+                  (List.Assoc.add (labels "gone") ~equal:String.equal
+                     "io.nixploy.resource_key" "nixploy-shop-conflict-gone");
+            ]
+          ~secrets:
+            [
+              resource "s1" (old_key ^ "-DB") ~labels:(labels "staging-old");
+              resource "s2" "nixploy-legacy-DB";
+              resource "s3" "nixploy-shop-conflict-gone-DB"
+                ~labels:
+                  (List.Assoc.add
+                     (labels ~repository:"git@example.invalid:fork.git" "gone")
+                     ~equal:String.equal "io.nixploy.resource_key"
+                     "nixploy-shop-conflict-gone");
+            ]
+          ~images:
+            [
+              {
+                image_id = "i1";
+                references = [ old_repository ^ ":20260101T000000Z-a" ];
+                size_bytes = Some 10L;
+                containers = 0;
+              };
+              {
+                image_id = "i2";
+                references = [ "localhost/nixploy/unknown:t" ];
+                size_bytes = Some 5L;
+                containers = 0;
+              };
+            ]
+          ~route_keys:[ old_key; "not a key" ]
+          ~markers:[ marker; "nixploy-stray-0000000000-x" ]
+      in
+      let classification target =
+        (List.find_exn groups ~f:(fun (group : Inventory.group) ->
+             Option.equal String.equal group.target (Some target)))
+          .classification
+      in
+      [%test_eq: Inventory.classification] Current (classification "production");
+      [%test_eq: Inventory.classification] Declared (classification "staging");
+      [%test_eq: Inventory.classification] Orphaned
+        (classification "staging-old");
+      [%test_eq: Inventory.classification] Other_project (classification "web");
+      let old =
+        List.find_exn groups ~f:(fun (group : Inventory.group) ->
+            String.equal group.resource_key old_key)
+      in
+      [%test_eq: int] 1 (List.length old.containers);
+      [%test_eq: int] 1 (List.length old.secrets);
+      [%test_eq: string list] [ "i1" ]
+        (List.map old.images ~f:(fun image -> image.image_id));
+      assert old.route;
+      [%test_eq: string option] (Some marker) old.marker;
+      let conflict =
+        List.find_exn groups ~f:(fun (group : Inventory.group) ->
+            String.equal group.resource_key "nixploy-shop-conflict-gone")
+      in
+      assert (
+        List.exists conflict.problems
+          ~f:(String.is_substring ~substring:"conflicting repository"));
+      [%test_eq: string list] [ "i2" ]
+        (List.map unattributed_images ~f:(fun image -> image.image_id));
+      [%test_eq: string list] [ "nixploy-legacy-DB" ] legacy;
+      [%test_eq: string list]
+        [ "nixploy-stray-0000000000-x" ]
+        unattributed_markers;
+      [%test_eq: Inventory.classification] Current
+        (List.hd_exn groups).classification
   end)

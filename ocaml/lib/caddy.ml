@@ -3,7 +3,9 @@ open Core
 
 type t = {
   target : Configuration.Target.t;
-  web : Configuration.Web.t;
+  web : Configuration.Web.t option;
+      (** [None] only for key-addressed inspection and deletion of routes whose
+          target is no longer declared. *)
   route_id : string;
   proxy_id : string;
 }
@@ -15,15 +17,23 @@ type response = { status : int; body : string }
 let request_timeout = Time_ns.Span.of_sec 30.
 let max_response_bytes = 262_144
 let admin_url = "http://127.0.0.1:2019"
+let route_prefix = "nixploy-route-"
 
-let create ~target ~resource_key ~web =
-  let key = Resource_key.to_string resource_key in
+let for_key ~target ~web key =
   {
     target;
     web;
-    route_id = "nixploy-route-" ^ key;
+    route_id = route_prefix ^ key;
     proxy_id = "nixploy-proxy-" ^ key;
   }
+
+let create ~target ~resource_key ~web =
+  for_key ~target ~web:(Some web) (Resource_key.to_string resource_key)
+
+let web t =
+  match t.web with
+  | Some web -> web
+  | None -> raise_s [%message "Caddy route handle has no web configuration"]
 
 let parse_response output =
   match String.rsplit2 output ~on:'\n' with
@@ -264,7 +274,7 @@ let switch t ~previous ~candidate_port =
         request
           ~body:
             (route_body t
-               ~domain:(Configuration.Web.domain t.web)
+               ~domain:(Configuration.Web.domain (web t))
                candidate_port)
           t ~meth:"PATCH" ~path:("/id/" ^ t.route_id)
     | Missing ->
@@ -272,7 +282,7 @@ let switch t ~previous ~candidate_port =
         request
           ~body:
             (route_body t
-               ~domain:(Configuration.Web.domain t.web)
+               ~domain:(Configuration.Web.domain (web t))
                candidate_port)
           t ~meth:"POST" ~path:"/config/apps/http/servers/nixploy/routes"
   in
@@ -294,6 +304,8 @@ let delete_route ?ignore_termination t =
 let preflight_delete t =
   let%map.Deferred.Or_error observed = inspect_internal t in
   { caddy = t; observed }
+
+let deletion_route deletion = deletion.observed
 
 let execute_delete deletion =
   match deletion.observed with
@@ -331,7 +343,7 @@ let restore t ~previous =
 
 let health_check t ~port =
   let url =
-    sprintf "http://127.0.0.1:%d%s" port (Configuration.Web.health_path t.web)
+    sprintf "http://127.0.0.1:%d%s" port (Configuration.Web.health_path (web t))
   in
   let rec attempt remaining =
     let open Deferred.Let_syntax in
@@ -356,7 +368,7 @@ let health_check t ~port =
 
 let observe_health t ~port =
   let url =
-    sprintf "http://127.0.0.1:%d%s" port (Configuration.Web.health_path t.web)
+    sprintf "http://127.0.0.1:%d%s" port (Configuration.Web.health_path (web t))
   in
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
@@ -386,3 +398,44 @@ let observe_health t ~port =
                String.strip result.stdout |> Int.of_string))
       in
       status >= 200 && status < 300
+
+let inspect_key ~target ~resource_key =
+  inspect_internal
+    (for_key ~target ~web:None (Resource_key.to_string resource_key))
+
+let delete_key ~target ~resource_key =
+  let open Deferred.Or_error.Let_syntax in
+  let t = for_key ~target ~web:None (Resource_key.to_string resource_key) in
+  let%bind observed = inspect_internal t in
+  match observed with
+  | Missing -> Deferred.Or_error.return false
+  | Existing _ -> delete_route t
+
+let route_keys_of_json body =
+  let open Or_error.Let_syntax in
+  let%bind json = Or_error.try_with (fun () -> Yojson.Safe.from_string body) in
+  match json with
+  | `Null -> Ok []
+  | `List routes ->
+      Ok
+        (List.filter_map routes ~f:(function
+          | `Assoc fields -> (
+              match assoc_member fields "@id" with
+              | Some (`String id) -> String.chop_prefix id ~prefix:route_prefix
+              | _ -> None)
+          | _ -> None))
+  | _ -> Or_error.error_string "Caddy routes must be a JSON array"
+
+let list_route_keys ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let t = for_key ~target ~web:None "" in
+  let%bind response =
+    request t ~meth:"GET" ~path:"/config/apps/http/servers/nixploy/routes"
+  in
+  match response.status with
+  | 200 -> Deferred.return (route_keys_of_json response.body)
+  (* Caddy answers 400 ("invalid traversal path") or 404 when the nixploy
+     server has never been created. *)
+  | 400 | 404 -> Deferred.Or_error.return []
+  | status ->
+      Deferred.Or_error.errorf "Caddy route listing returned HTTP %d" status

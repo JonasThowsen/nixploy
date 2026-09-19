@@ -32,8 +32,12 @@ let restart_unit_state (probe : probe) =
   | Error error -> Unknown (bounded (Error.to_string_hum error))
   | Ok result -> (
       match (result.exit_status, String.strip result.stdout) with
-      | Ok (), ("enabled" | "enabled-runtime" | "alias" | "linked") -> Ready
-      | Ok (), _ | Error _, ("disabled" | "masked" | "static" | "indirect") ->
+      | Ok (), ("enabled" | "enabled-runtime" | "alias") -> Ready
+      (* NixOS installs package units as "linked"; only wantedBy enables. *)
+      | Ok (), _
+      | ( Error _,
+          ( "disabled" | "masked" | "masked-runtime" | "static" | "indirect"
+          | "linked" | "linked-runtime" ) ) ->
           Not_ready
       | Error _, _ ->
           if String.is_substring result.stderr ~substring:"No such file" then

@@ -42,6 +42,10 @@ val workloads : t -> Workload.t list
 val containers : t -> container list
 val route : t -> route Or_error.t
 val secrets : t -> Podman.Secret_status.t list Or_error.t
+
+val images : t -> Podman.owned_image list Or_error.t
+(** Images in this target's owned repository. *)
+
 val storage : t -> Podman.storage_usage Or_error.t
 val host : t -> Podman.host_info Or_error.t
 val disk : t -> disk Or_error.t

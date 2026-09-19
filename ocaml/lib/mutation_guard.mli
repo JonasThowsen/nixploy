@@ -21,6 +21,22 @@ val with_mutation :
     preserved. A known command failure returns [None]; a transport-uncertain
     exit returns [Some _]. *)
 
+val with_mutation_for :
+  ?certainty:('a -> string option) ->
+  host:Configuration.Target.t ->
+  project:Project_name.t ->
+  target_name:Target_name.t ->
+  (unit -> 'a Deferred.Or_error.t) ->
+  'a Deferred.Or_error.t
+(** {!with_mutation} for a project/target that the local flake may no longer
+    declare; [host] supplies only the SSH account whose login directory holds
+    the marker. *)
+
+val list_markers :
+  host:Configuration.Target.t -> string list Deferred.Or_error.t
+(** Names of every retained or held marker in the SSH account's login directory.
+    Each is [Resource_key.derive_current] of a project/target. *)
+
 type marker = Absent | Present of string [@@deriving compare, equal, sexp]
 
 val inspect :

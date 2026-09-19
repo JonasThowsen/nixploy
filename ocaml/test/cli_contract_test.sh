@@ -14,6 +14,15 @@ for command in deploy status history logs prune; do
 done
 ! grep -F 'control-plane' <<<"$root_help" >/dev/null
 $executable prune --help | grep -F -- '--yes' >/dev/null
+for flag in '--dry-run' '--stale' '--keep COUNT' '--orphan RESOURCE_KEY'; do
+  $executable prune --help | grep -F -- "$flag" >/dev/null
+done
+grep -F -- 'resources' <<<"$root_help" >/dev/null
+resources_help=$($executable resources --help 2>&1)
+for flag in '--target TARGET' '--directory DIRECTORY' '--json'; do
+  grep -F -- "$flag" <<<"$resources_help" >/dev/null
+done
+! grep -F -- '--state-db' <<<"$resources_help" >/dev/null
 
 root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
@@ -71,6 +80,17 @@ test "$code" = 2
 test ! -e "$root/not-created.sqlite"
 test ! -s "$root/out"
 grep -F 'NIXPLOY_PRUNE_CONFIRMATION_REQUIRED' "$root/err" >/dev/null
+
+for arguments in '--keep 2 --yes' '--stale --keep 0 --dry-run' '--yes --dry-run' '--stale --orphan nixploy-x --yes'; do
+  set +e
+  # shellcheck disable=SC2086
+  $executable prune -t test -C "$repo" --state-db "$root/not-created.sqlite" $arguments >"$root/out" 2>"$root/err"
+  code=$?
+  set -e
+  test "$code" = 2
+  test ! -e "$root/not-created.sqlite"
+  test ! -s "$root/out"
+done
 
 $executable history -t test -C "$repo" --state-db "$root/state.sqlite" --json >"$root/out" 2>"$root/err"
 test "$(cat "$root/out")" = '[]'

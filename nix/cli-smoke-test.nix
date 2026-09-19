@@ -91,7 +91,7 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "nixploy-daemonless-cli";
-  globalTimeout = 900;
+  globalTimeout = 1800;
 
   nodes.machine = {
     nix.settings.experimental-features = [
@@ -198,6 +198,16 @@ pkgs.testers.runNixOSTest {
         assert status["project"] == "cli-smoke" and status["target"] == "worker", status
         assert status["resourceKey"] and len(status["containers"]) == 1, status
         assert status["containers"][0]["revision"], status
+        assert status["containers"][0]["role"] == "app", status
+        assert status["containers"][0]["restartPolicy"] == "always", status
+        assert status["containers"][0]["memoryBytes"] > 0, status
+        assert status["guard"]["state"] == "idle", status
+        assert status["disk"]["availableBytes"] > 0, status
+        owned = [r for i in status["images"] for r in i["references"]]
+        assert owned and all(r.startswith("localhost/nixploy/") for r in owned), status
+        assert "nixploy-cli-smoke:test" not in machine.succeed("podman images --format '{{.Repository}}:{{.Tag}}'")
+        rendered = machine.succeed(command("status", "worker"))
+        assert "Reboot:" in rendered and "running" in rendered, rendered
         history = json.loads(machine.succeed(command("history", "worker", "--json")))
         assert len(history) == 1 and history[0]["state"].lower() == "succeeded", history
         assert history[0]["revision"] == status["containers"][0]["revision"], history
@@ -252,6 +262,38 @@ pkgs.testers.runNixOSTest {
         machine.succeed("curl --fail -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
         machine.succeed(command("run", "web", "probe"))
         machine.succeed("curl --fail http://127.0.0.1:8088 | grep 'unrelated application'")
+        web_status = json.loads(machine.succeed(command("status", "web", "--json")))
+        assert [c["role"] for c in web_status["containers"]] == ["active"], web_status
+        assert web_status["route"]["state"] == "routed", web_status
+        preview = json.loads(machine.succeed(command("prune", "web", "--stale --dry-run --json")))
+        assert preview["dryRun"] and preview["containers"] == [], preview
+        stale = json.loads(machine.succeed(command("prune", "web", "--stale --keep 1 --yes --json")))
+        assert stale["route"] == "kept" and stale["containers"] == [], stale
+        assert second == active_web_container()
+        machine.succeed("curl --fail -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
+
+    with subtest("host inventory and orphaned target cleanup"):
+        setup("sed -i 's/missing = common/retired = common/' /srv/other-app/flake.nix")
+        machine.succeed("SOPS_AGE_KEY_FILE=/root/.config/sops/age/keys.txt nixploy deploy -C /srv/other-app -t retired", timeout=300)
+        inventory = json.loads(machine.succeed(command("resources", "worker", "--json")))
+        by_target = {r["target"]: r for r in inventory["resources"]}
+        assert by_target["worker"]["classification"] == "current", inventory
+        assert by_target["web"]["classification"] == "declared", inventory
+        retired = by_target["retired"]
+        assert retired["classification"] == "orphaned" and len(retired["containers"]) == 1, inventory
+        assert retired["secrets"] and retired["images"], inventory
+        assert "--orphan " + retired["resourceKey"] in machine.succeed(command("resources", "worker"))
+        preview = json.loads(machine.succeed(command("prune", "worker", "--orphan " + retired["resourceKey"] + " --dry-run --json")))
+        assert preview["dryRun"] and len(preview["containers"]) == 1, preview
+        machine.succeed("podman container exists " + shlex.quote(retired["containers"][0]["id"]))
+        code, output = machine.execute(command("prune", "worker", "--orphan " + by_target["web"]["resourceKey"] + " --yes") + " 2>&1")
+        assert code != 0 and "declares" in output, output
+        removed = json.loads(machine.succeed(command("prune", "worker", "--orphan " + retired["resourceKey"] + " --yes --json")))
+        assert not removed["dryRun"] and removed["containers"] == preview["containers"], removed
+        assert machine.succeed("podman ps -a --filter label=io.nixploy.target=retired --format '{{.ID}}'").strip() == ""
+        assert retired["secrets"][0] not in machine.succeed("podman secret ls --format '{{.Name}}'")
+        machine.succeed("curl --fail http://127.0.0.1:18083/health | grep healthy")
+        machine.succeed("curl --fail -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
 
     with subtest("explicit scoped cleanup"):
         machine.fail(command("prune", "worker"))
@@ -261,5 +303,6 @@ pkgs.testers.runNixOSTest {
         machine.succeed(command("prune", "web", "--yes"))
         machine.succeed("curl --fail http://127.0.0.1:8088 | grep 'unrelated application'")
         assert machine.succeed("podman ps --filter label=io.nixploy.managed=true --format '{{.ID}}'").strip() == ""
+        assert "localhost/nixploy/" not in machine.succeed("podman images --format '{{.Repository}}'")
   '';
 }

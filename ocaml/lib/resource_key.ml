@@ -84,4 +84,16 @@ let candidates ~project ~target ~repository_identity =
       if List.mem keys key ~equal then keys else key :: keys)
   |> List.rev |> Or_error.return
 
+let of_observed value =
+  if
+    String.is_prefix value ~prefix:"nixploy-"
+    && String.length value > String.length "nixploy-"
+    && String.length value <= 200
+    && String.for_all value ~f:(fun character ->
+        Char.is_lowercase character
+        || Char.is_digit character || Char.equal character '_'
+        || Char.equal character '-')
+  then Ok value
+  else Or_error.errorf "%S is not a nixploy resource key" value
+
 let to_string t = t

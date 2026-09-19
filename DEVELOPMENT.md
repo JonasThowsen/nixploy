@@ -45,6 +45,9 @@ nixploy status --target production
 nixploy logs --target production
 nixploy history --target production
 nixploy prune --target production --yes
+nixploy prune --target production --stale --dry-run
+nixploy resources --target production
+nixploy prune --target production --orphan RESOURCE_KEY --dry-run
 nixploy runbook --target production
 nixploy run --target production migrate
 ```
@@ -54,7 +57,7 @@ is the only deployment mode, not an override or a less-trusted fallback. A norma
 deployment requires no root-owned application registry or Nixploy service.
 
 Use `--directory` (`-C`) to select the checkout and `--target` (`-t`) to select the
-target. Deploy, status, logs, history, prune, and runbook listing support `--json`;
+target. Deploy, status, logs, history, prune, resources, and runbook listing support `--json`;
 `run` streams command output and has no JSON wrapper. Diagnostics and deployment
 progress go to stderr. Preparation failures produce no deployment result object.
 Deploy/status/logs/history/prune accept `--state-db` for local SQLite history and
@@ -79,10 +82,36 @@ supplementary query is shown as unavailable in its own section.
 
 Logs return a snapshot bounded to 500 lines and 64 KiB, not a follow stream.
 History defaults to 25 operations (`--limit` accepts 1–100); it is local evidence,
-not remote health. Prune requires `--yes` without prompting, checks exact ownership,
-and preflights ownership before removing owned containers, fully owned secrets,
-and the configured owned route. It retains unlabelled secrets, images, volumes,
-and data. Partial cleanup is an error, not a successful wipe.
+not remote health. Prune requires `--yes` or `--dry-run` without prompting, checks
+exact ownership, and preflights ownership before removing anything. By default it
+removes the target's owned containers, fully owned secrets, owned image references,
+and the configured owned route. `--stale` removes only what the live deployment
+does not use: containers in a placement the owned route does not serve, owned
+secrets that no retained container mounts, and owned images beyond those in use and
+the newest `--keep` (default 2). When the live slot cannot be identified (missing
+route, undeclared port, or no container in the routed slot), stale cleanup keeps
+every container and says why. `--dry-run` performs the same read-only observation
+and planning without the mutation guard or history events. Prune always retains
+unlabelled secrets, images outside the owned repository, volumes, and data.
+Partial cleanup is an error, not a successful wipe.
+
+`resources` lists every nixploy container, secret, owned image, Caddy route, and
+mutation marker on the target's host (the same SSH account), grouped by resource key
+and classified against the local flake: current, declared (another target of this
+project), orphaned (this project, target no longer declared), other project, or
+unattributed. It is read-only and opens no local history. `prune --orphan KEY`
+removes one orphaned or other-project key's containers, fully owned secrets, owned
+image references, and Caddy route. It refuses keys the flake declares, keys without
+project/target labels, and keys whose labels conflict. A real run takes the orphan's
+own mutation guard, observes the host again, and removes by immutable ID only
+resources whose complete ownership labels still match.
+
+Deploy tags each loaded image as `localhost/nixploy/<resource key>:<load time>-<revision>`
+and removes the archive's own tag, so the target's images are exactly those in
+that repository. Removing an owned reference deletes the image only when no other
+reference remains, so an image shared with another target survives. The runtime
+container records the secrets it mounts in an `io.nixploy.secrets` label; stale
+cleanup keeps all secrets while a retained container predates that label.
 
 Application containers run with Podman's `always` restart policy so they return
 after a host reboot. Boot-time restart depends on server provisioning that nixploy
