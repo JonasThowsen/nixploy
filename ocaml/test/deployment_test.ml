@@ -203,6 +203,9 @@ if [ "${3:-}" = "container" ] && [ "${4:-}" = "exists" ]; then
   if [ "${NIXPLOY_TEST_FOREIGN_SINGLE:-}" = "1" ]; then
     case "${5:-}" in *-blue|*-green) ;; *) exit 0 ;; esac
   fi
+  if [ "${NIXPLOY_TEST_STALE_GREEN:-}" = "1" ]; then
+    case "${5:-}" in *-green) exit 0 ;; esac
+  fi
   if [ "${NIXPLOY_TEST_WEB:-}" = "1" ]; then exit 1; fi
   case "${5:-}" in *-blue|*-green) exit 1 ;; esac
   exit 0
@@ -288,6 +291,7 @@ exit 99
       "NIXPLOY_TEST_WEB";
       "NIXPLOY_TEST_PRODUCTION";
       "NIXPLOY_TEST_EXISTING_WEB";
+      "NIXPLOY_TEST_STALE_GREEN";
       "NIXPLOY_TEST_EXISTING_SINGLE";
       "NIXPLOY_TEST_FOREIGN_SINGLE";
       "NIXPLOY_TEST_LABEL_MODE";
@@ -320,6 +324,7 @@ exit 99
         "NIXPLOY_TEST_WEB";
         "NIXPLOY_TEST_PRODUCTION";
         "NIXPLOY_TEST_EXISTING_WEB";
+        "NIXPLOY_TEST_STALE_GREEN";
         "NIXPLOY_TEST_EXISTING_SINGLE";
         "NIXPLOY_TEST_FOREIGN_SINGLE";
         "NIXPLOY_TEST_LABEL_MODE";
@@ -880,6 +885,21 @@ exit 99
       assert (
         List.for_all lines
           ~f:(Fn.non (String.is_suffix ~suffix:("|rm|-f|" ^ expected_name))));
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_STALE_GREEN" "1";
+      let%bind unrouted = deploy "operation-unrouted-stale-slot" in
+      let unrouted = assert_ok unrouted in
+      assert (Option.is_none (Nixploy.Deployment.warning unrouted));
+      let lines = In_channel.read_lines trace in
+      let switch =
+        index_of lines (String.is_substring ~substring:"'-X' 'POST'")
+      in
+      let stale_retirement =
+        index_of lines (String.is_suffix ~suffix:"|rm|-f|old-slot-id")
+      in
+      assert (switch < stale_retirement);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";

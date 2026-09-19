@@ -47,6 +47,7 @@ let web_placement t =
 
 let active_slot t = t.active_slot
 let slot_name = function Blue -> "blue" | Green -> "green"
+let other_slot = function Blue -> Green | Green -> Blue
 
 let web_container_name ~resource_key slot =
   Resource_key.to_string resource_key ^ "-" ^ slot_name slot

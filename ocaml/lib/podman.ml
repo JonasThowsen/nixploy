@@ -844,7 +844,7 @@ let runtime_argv ~connection ~name ~run:run_config ~port ~revision ~secret_args
     Configuration.Run.command run_config |> Option.value ~default:[]
   in
   [ "--connection"; connection; "run"; "-d"; "--name"; name ]
-  @ secret_args
+  @ [ "--restart"; "always" ] @ secret_args
   @ read_only_bind_args run_config
   @ runtime_args run_config ~port ~revision
   @ labels metadata @ [ image_reference ] @ command

@@ -8,6 +8,27 @@ Nixploy service, web UI, RPC endpoint, or application registry to install. The
 remote server must already provide Podman and, for web applications, Caddy.
 Server provisioning is outside the CLI's scope.
 
+### Server requirements for surviving a reboot
+
+nixploy starts application containers with `--restart=always`, but Podman only
+restarts them at boot when `podman-restart.service` is enabled for the SSH account,
+and a rootless account also needs lingering. Web routes are written through the
+Caddy admin API, which Caddy forgets on restart unless it resumes its autosaved
+configuration. A `caddy reload` from a Caddyfile replaces them even then, so
+redeploy web targets after changing the server's Caddy configuration. On NixOS,
+for a rootless `nixploy` account:
+
+```nix
+users.users.nixploy.linger = true;
+systemd.user.services.podman-restart.wantedBy = [ "default.target" ];
+# Rootful Podman instead: systemd.services.podman-restart.wantedBy = [ "multi-user.target" ];
+services.caddy.resume = true; # web targets only
+```
+
+`deploy` checks these settings read-only and warns when a target would
+not come back after a reboot. Containers deployed before the restart policy was
+introduced gain it on their next deployment.
+
 The CLI-only implementation and isolated VM acceptance are complete; results are
 recorded in [ROADMAP.md](ROADMAP.md). Existing service installations should follow
 [MIGRATION.md](MIGRATION.md) before using the new CLI.

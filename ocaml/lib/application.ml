@@ -333,6 +333,19 @@ let deploy_direct_deployment ?expected_project t ~working_directory ~source
 let live_status _t ~(scope : scope) =
   Status.load ~working_directory:scope.working_directory ~target:scope.target
 
+let load_target ~working_directory ~target:target_name =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind configuration = Nix_configuration.load ~working_directory in
+  let%bind () =
+    Deferred.return
+      (Direct_mode.validate_configuration configuration ~target:target_name)
+  in
+  Deferred.return (Configuration.find_target configuration target_name)
+
+let host_readiness ~working_directory ~target =
+  let%bind.Deferred.Or_error target = load_target ~working_directory ~target in
+  Host_readiness.inspect ~target |> Deferred.ok
+
 let prune_local t ~working_directory ~target ~confirmed =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =

@@ -76,6 +76,14 @@ and preflights ownership before removing owned containers, fully owned secrets,
 and the configured owned route. It retains unlabelled secrets, images, volumes,
 and data. Partial cleanup is an error, not a successful wipe.
 
+Application containers run with Podman's `always` restart policy so they return
+after a host reboot. Boot-time restart depends on server provisioning that nixploy
+does not perform (`podman-restart.service`, lingering for rootless accounts, and
+Caddy resuming its API configuration for web targets). `deploy` checks
+these read-only and warns; an unknown check is never reported as ready.
+A web deployment without an owned route retires the other owned slot after a
+verified switch, because no route can be serving it.
+
 Preserve the existing Git-aware local deployment snapshot policy during the
 cutover: evaluate, build, and resolve secret references from one prepared source.
 Do not silently change dirty-checkout behavior while removing transport code.

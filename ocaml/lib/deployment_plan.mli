@@ -18,4 +18,5 @@ val active_slot : t -> slot option
 val container_name : resource_key:Resource_key.t -> placement -> string
 val web_container_name : resource_key:Resource_key.t -> slot -> string
 val slot_name : slot -> string
+val other_slot : slot -> slot
 val runtime_port : placement -> int option

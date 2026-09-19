@@ -186,6 +186,18 @@ let deploy_command =
                    if not json then
                      printf "Deployment %s succeeded\n%!"
                        (Application.deployment_id deployment);
+                   let%bind.Deferred readiness =
+                     Application.host_readiness ~working_directory ~target
+                   in
+                   (match readiness with
+                   | Ok readiness ->
+                       List.iter (Nixploy.Host_readiness.warnings readiness)
+                         ~f:(fun warning ->
+                           eprintf "Warning: reboot readiness %s\n%!" warning)
+                   | Error error ->
+                       eprintf
+                         "Warning: could not check reboot readiness: %s\n%!"
+                         (Error.to_string_hum error));
                    Deferred.Or_error.return ()
                | Requested | Running | Failed | Cancelled ->
                    Deferred.Or_error.errorf "Deploy failed at %s: %s"

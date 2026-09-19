@@ -377,7 +377,16 @@ let execute_guarded ~store ~request ~operation_id prepared =
       let active_slot = Deployment_plan.active_slot plan in
       let%bind previous_candidate =
         match active_slot with
-        | None -> Deferred.Or_error.return None
+        | None ->
+            (* Without a route (for example after Caddy lost its API
+               configuration), an owned container in the other slot is no
+               longer served and is retired after a verified switch. *)
+            let%bind candidate_slot, _ =
+              Deferred.return (Deployment_plan.web_placement plan)
+            in
+            Podman.find_owned_slot ~connection ~project ~target ~resource_key
+              ~repository_identity
+              ~slot:(Deployment_plan.other_slot candidate_slot)
         | Some slot -> (
             let%bind candidate =
               Podman.find_owned_slot ~connection ~project ~target ~resource_key

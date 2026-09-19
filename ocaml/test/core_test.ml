@@ -429,6 +429,8 @@ let%test_unit "configuration preserves empty environment and argv values" =
       "-d";
       "--name";
       "owned";
+      "--restart";
+      "always";
       "-e";
       "EMPTY=";
       "image";
@@ -931,6 +933,8 @@ let%test_unit "non-web command construction preserves ordering and options" =
       "-d";
       "--name";
       "nixploy-sample-owned-worker";
+      "--restart";
+      "always";
       "--secret";
       "source=owned-db,type=env,target=DB";
       "--network";
@@ -1016,3 +1020,85 @@ let%test_unit "runtime logs preserve timestamps and bound retained lines" =
   in
   [%test_eq: string] {|{"token":"[REDACTED]","authorization":"[REDACTED]"}|}
     (List.hd_exn structured.lines).text
+
+let%test_module "host reboot readiness" =
+  (module struct
+    module Readiness = Nixploy.Host_readiness
+
+    let probe ?(exit_status = Ok ()) ?(stderr = "") stdout =
+      Ok { Nixploy.Process_runner.stdout; stderr; exit_status }
+
+    let states readiness =
+      Readiness.checks readiness
+      |> List.map ~f:(fun (check : Readiness.check) -> check.state)
+
+    let skipped = Or_error.error_string "not probed"
+
+    let%test_unit "rootless host needs linger and the user restart unit" =
+      let ready =
+        Readiness.For_testing.assess ~user:"nixploy" ~web:false
+          ~uid:(probe "1001\n") ~linger:(probe "yes\n")
+          ~restart_unit:(probe "enabled\n") ~caddy_exec_start:skipped
+      in
+      [%test_eq: Readiness.state list] [ Ready; Ready ] (states ready);
+      [%test_eq: string list] [] (Readiness.warnings ready);
+      let not_ready =
+        Readiness.For_testing.assess ~user:"nixploy" ~web:false
+          ~uid:(probe "1001\n") ~linger:(probe "no\n")
+          ~restart_unit:
+            (probe ~exit_status:(Error (`Exit_non_zero 1)) "disabled\n")
+          ~caddy_exec_start:skipped
+      in
+      [%test_eq: Readiness.state list] [ Not_ready; Not_ready ]
+        (states not_ready);
+      let warnings = Readiness.warnings not_ready in
+      [%test_eq: int] 2 (List.length warnings);
+      assert (
+        List.exists warnings
+          ~f:(String.is_substring ~substring:"users.users.nixploy.linger"))
+
+    let%test_unit "root host checks only the system restart unit" =
+      let readiness =
+        Readiness.For_testing.assess ~user:"root" ~web:false ~uid:(probe "0")
+          ~linger:skipped
+          ~restart_unit:
+            (probe
+               ~exit_status:(Error (`Exit_non_zero 1))
+               ~stderr:"Failed to get unit file state: No such file" "")
+          ~caddy_exec_start:skipped
+      in
+      [%test_eq: Readiness.state list] [ Not_ready ] (states readiness);
+      assert (
+        List.exists
+          (Readiness.warnings readiness)
+          ~f:(String.is_substring ~substring:"multi-user.target"))
+
+    let%test_unit "web targets require Caddy to resume API routes" =
+      let assess exec_start =
+        Readiness.For_testing.assess ~user:"root" ~web:true ~uid:(probe "0")
+          ~linger:skipped ~restart_unit:(probe "enabled")
+          ~caddy_exec_start:exec_start
+        |> states
+      in
+      [%test_eq: Readiness.state list] [ Ready; Ready ]
+        (assess
+           (probe
+              "{ path=/nix/store/x-caddy/bin/caddy ; argv[]=caddy run --resume \
+               ; }"));
+      [%test_eq: Readiness.state list] [ Ready; Not_ready ]
+        (assess (probe "{ argv[]=caddy run --config /etc/caddy ; }"));
+      [%test_eq: Readiness.state list]
+        [ Ready; Unknown "caddy.service was not found" ]
+        (assess (probe ""))
+
+    let%test_unit "unreachable probes are unknown, never ready" =
+      let readiness =
+        Readiness.For_testing.assess ~user:"nixploy" ~web:false
+          ~uid:(Or_error.error_string "ssh: connection refused")
+          ~linger:skipped ~restart_unit:skipped ~caddy_exec_start:skipped
+      in
+      match states readiness with
+      | [ Unknown reason ] ->
+          assert (String.is_substring reason ~substring:"connection refused")
+      | _ -> failwith "expected one unknown check"
+  end)

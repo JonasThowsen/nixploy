@@ -111,6 +111,12 @@ val prune_local :
 *)
 
 val live_status : t -> scope:scope -> status Deferred.Or_error.t
+
+val host_readiness :
+  working_directory:string ->
+  target:Target_name.t ->
+  Host_readiness.t Deferred.Or_error.t
+(** Read-only checks that owned workloads and routes survive a host reboot. *)
 val status_project : status -> Project_name.t
 val status_target : status -> Configuration.Target.t
 val status_resource_key : status -> Resource_key.t
