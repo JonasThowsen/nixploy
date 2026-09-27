@@ -681,3 +681,92 @@ let orphan_stop_json result =
          ( "containers",
            `List (List.map (O.stopped_containers result) ~f:json_string) );
        ])
+
+let secret_action = function `Create -> "create" | `Replace -> "replace"
+
+let deploy_dry_run (preview : Nixploy.Deployment.dry_run) =
+  let buffer = Buffer.create 1024 in
+  bprintf buffer "Dry run: nothing on the remote host was changed.\n";
+  bprintf buffer "Project:  %s\n"
+    (Nixploy.Project_name.to_string preview.project);
+  bprintf buffer "Target:   %s\n" (Nixploy.Target_name.to_string preview.target);
+  bprintf buffer "Resource: %s\n"
+    (Nixploy.Resource_key.to_string preview.resource_key);
+  bprintf buffer "Revision: %s\n" preview.revision;
+  bprintf buffer "Image:    %s (built locally)\n" preview.image;
+  Option.iter preview.route ~f:(fun route ->
+      bprintf buffer "Route:    %s: %s -> %s slot on port %d\n" route.domain
+        (Option.value_map route.active_port ~default:"no route"
+           ~f:(sprintf "port %d"))
+        route.candidate_slot route.candidate_port);
+  bprintf buffer "Replaces: %s\n"
+    (if List.is_empty preview.replaced then "nothing"
+     else String.concat ~sep:", " preview.replaced);
+  bprintf buffer "Secrets:  %s\n"
+    (if List.is_empty preview.secrets then "none"
+     else
+       String.concat ~sep:", "
+         (List.map preview.secrets ~f:(fun (name, action) ->
+              sprintf "%s (%s)" name (secret_action action))));
+  List.iter preview.pre_start ~f:(fun argv ->
+      bprintf buffer "PreStart: %s\n" (String.concat ~sep:" " argv));
+  bprintf buffer "Guard:    %s\n"
+    (match preview.guard with
+    | Nixploy.Mutation_guard.Absent -> "idle"
+    | Present directory -> "held (" ^ directory ^ ")");
+  List.iter preview.notes ~f:(bprintf buffer "Note:     %s\n");
+  if List.is_empty preview.blockers then
+    bprintf buffer "\nReady: `nixploy deploy -t %s` should proceed.\n"
+      (Nixploy.Target_name.to_string preview.target)
+  else (
+    bprintf buffer "\nBlockers:\n";
+    List.iter preview.blockers ~f:(bprintf buffer "  - %s\n"));
+  Buffer.contents buffer
+
+let deploy_dry_run_json (preview : Nixploy.Deployment.dry_run) =
+  encode_json
+    (`Assoc
+       [
+         ("dryRun", `Bool true);
+         ("ready", `Bool (List.is_empty preview.blockers));
+         ( "project",
+           json_string (Nixploy.Project_name.to_string preview.project) );
+         ("target", json_string (Nixploy.Target_name.to_string preview.target));
+         ( "resourceKey",
+           json_string (Nixploy.Resource_key.to_string preview.resource_key) );
+         ("revision", json_string preview.revision);
+         ("image", json_string preview.image);
+         ( "route",
+           Option.value_map preview.route ~default:`Null ~f:(fun route ->
+               `Assoc
+                 [
+                   ("domain", json_string route.domain);
+                   ( "activePort",
+                     Option.value_map route.active_port ~default:`Null
+                       ~f:(fun port -> `Int port) );
+                   ("candidateSlot", json_string route.candidate_slot);
+                   ("candidatePort", `Int route.candidate_port);
+                   ( "candidatePortInUse",
+                     Option.value_map route.candidate_port_listener
+                       ~default:`Null ~f:(fun used -> `Bool used) );
+                 ]) );
+         ("replaces", `List (List.map preview.replaced ~f:json_string));
+         ( "secrets",
+           `List
+             (List.map preview.secrets ~f:(fun (name, action) ->
+                  `Assoc
+                    [
+                      ("name", json_string name);
+                      ("action", json_string (secret_action action));
+                    ])) );
+         ( "preStart",
+           `List
+             (List.map preview.pre_start ~f:(fun argv ->
+                  `List (List.map argv ~f:json_string))) );
+         ( "guard",
+           match preview.guard with
+           | Nixploy.Mutation_guard.Absent -> `Null
+           | Present directory -> json_string directory );
+         ("blockers", `List (List.map preview.blockers ~f:json_string));
+         ("notes", `List (List.map preview.notes ~f:json_string));
+       ])

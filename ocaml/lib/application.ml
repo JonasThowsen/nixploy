@@ -172,7 +172,8 @@ let open_ ~state_path () =
         "NIXPLOY_STATE_DB_UNWRITABLE: cannot open local deployment history %s \
          for writing (%s). Point NIXPLOY_STATE_DB or --state-db at a writable \
          file, or allow writes to its directory in this environment."
-        state_path (Error.to_string_hum error)
+        state_path
+        (Error.to_string_hum error)
 
 let begin_shutdown t =
   if not t.mutations.accepting then Already_shutting_down
@@ -338,6 +339,15 @@ let deploy_direct_deployment ?expected_project t ~working_directory ~source
       ~target ()
   in
   await_started_deployment started
+
+let dry_run_local_deployment ~working_directory ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind source = Source.local ~working_directory in
+  let%bind request =
+    Deferred.return
+      (Deployment_request.create ~working_directory ~source ~target ())
+  in
+  Deployment.dry_run ~request
 
 let live_status ~(scope : scope) =
   Status.load ~working_directory:scope.working_directory ~target:scope.target

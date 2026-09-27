@@ -41,6 +41,7 @@ The command surface is:
 
 ```console
 nixploy deploy --target production
+nixploy deploy --target production --dry-run
 nixploy status --target production
 nixploy logs --target production
 nixploy history --target production
@@ -75,6 +76,15 @@ signal number. A transport-uncertain child status is not proof the remote comman
 failed to execute. Runbook child codes 125 and 255 are conservatively treated as
 uncertain client/transport failures, even if the application could have returned
 that number; the code is preserved and the mutation marker remains.
+
+`deploy --dry-run` prepares the same source snapshot, evaluates the target, builds
+the image and decrypts secrets locally, then observes the host read-only: SSH and
+Podman connectivity, read-only bind sources, secret ownership (failing as a deploy
+would on a same-name legacy secret), the owned route, the candidate slot and
+whether anything already listens on its port, the mutation marker, and reboot
+readiness. It never loads images, installs secrets, runs containers, changes
+routes, takes the guard, or records history. Conditions that would make a deploy
+fail now are reported as blockers and exit 1.
 
 Status is read-only and never takes the mutation guard. It lists the owned
 containers with their role (non-web application, active slot, or unrouted),

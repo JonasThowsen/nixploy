@@ -283,62 +283,91 @@ let resources_command =
                     inventory);
                Deferred.unit))
 
+let deploy_dry_run ~target ~working_directory ~json =
+  with_target ~target (fun target ->
+      let open Deferred.Or_error.Let_syntax in
+      eprintf "Dry run: preparing local source snapshot...\n%!";
+      let%bind preview =
+        Application.dry_run_local_deployment ~working_directory ~target
+      in
+      printf "%s%!"
+        ((if json then Inspection_output.deploy_dry_run_json
+          else Inspection_output.deploy_dry_run)
+           preview);
+      if List.is_empty preview.blockers then return ()
+      else
+        Deferred.Or_error.errorf "Dry run found %d blocker(s)"
+          (List.length preview.blockers))
+
 let deploy_command =
   Async.Command.async
     ~summary:"Deploy one target from a consistent local source snapshot"
-    (let%map_open.Command flags = common_flags in
+    ~readme:(fun () ->
+      "With --dry-run, prepares the same snapshot, evaluates the target, \
+       builds the image and decrypts secrets locally, then checks SSH, Podman, \
+       bind sources, secret ownership, the route and candidate slot, the \
+       mutation marker and reboot readiness without changing the remote host, \
+       taking the guard or recording history. It exits 1 when it finds a \
+       blocker.")
+    (let%map_open.Command flags = common_flags
+     and dry_run =
+       flag "--dry-run" no_arg
+         ~doc:" build and check everything, change nothing remotely"
+     in
      fun () ->
        let target, working_directory, state_db, json = flags in
-       Nixploy.Process_runner.handle_termination_signals ();
-       with_application ~target ~state_db (fun application target ->
-           let open Deferred.Or_error.Let_syntax in
-           eprintf "Preparing local source snapshot...\n%!";
-           let%bind scope =
-             Deferred.return
-               (Application.local_scope ~working_directory ~target)
-           in
-           let%bind started =
-             Application.start_local_deployment application ~working_directory
-               ~target
-           in
-           let%bind observed =
-             Deployment_observer.observe_and_drain application ~scope started
-               ~render_stage:(fun stage message ->
-                 eprintf "%s: %s\n%!" stage message)
-           in
-           match observed with
-           | Deployment_observer.Interrupted signal ->
-               eprintf
-                 "Deploy interrupted by %s; remote uncertainty evidence may \
-                  require reconciliation\n\
-                  %!"
-                 (Signal.to_string signal);
-               Shutdown.exit 130
-           | Completed deployment -> (
-               if json then
-                 printf "%s%!" (Inspection_output.deployment_json deployment);
-               match Application.deployment_state deployment with
-               | Succeeded ->
-                   if not json then
-                     printf "Deployment %s succeeded\n%!"
-                       (Application.deployment_id deployment);
-                   let%bind.Deferred readiness =
-                     Application.host_readiness ~working_directory ~target
-                   in
-                   (match readiness with
-                   | Ok readiness ->
-                       List.iter (Nixploy.Host_readiness.warnings readiness)
-                         ~f:(fun warning ->
-                           eprintf "Warning: reboot readiness %s\n%!" warning)
-                   | Error error ->
-                       eprintf
-                         "Warning: could not check reboot readiness: %s\n%!"
-                         (Error.to_string_hum error));
-                   Deferred.Or_error.return ()
-               | Requested | Running | Failed | Cancelled ->
-                   Deferred.Or_error.errorf "Deploy failed at %s: %s"
-                     (Application.deployment_stage deployment)
-                     (Application.deployment_message deployment))))
+       if dry_run then deploy_dry_run ~target ~working_directory ~json
+       else (
+         Nixploy.Process_runner.handle_termination_signals ();
+         with_application ~target ~state_db (fun application target ->
+             let open Deferred.Or_error.Let_syntax in
+             eprintf "Preparing local source snapshot...\n%!";
+             let%bind scope =
+               Deferred.return
+                 (Application.local_scope ~working_directory ~target)
+             in
+             let%bind started =
+               Application.start_local_deployment application ~working_directory
+                 ~target
+             in
+             let%bind observed =
+               Deployment_observer.observe_and_drain application ~scope started
+                 ~render_stage:(fun stage message ->
+                   eprintf "%s: %s\n%!" stage message)
+             in
+             match observed with
+             | Deployment_observer.Interrupted signal ->
+                 eprintf
+                   "Deploy interrupted by %s; remote uncertainty evidence may \
+                    require reconciliation\n\
+                    %!"
+                   (Signal.to_string signal);
+                 Shutdown.exit 130
+             | Completed deployment -> (
+                 if json then
+                   printf "%s%!" (Inspection_output.deployment_json deployment);
+                 match Application.deployment_state deployment with
+                 | Succeeded ->
+                     if not json then
+                       printf "Deployment %s succeeded\n%!"
+                         (Application.deployment_id deployment);
+                     let%bind.Deferred readiness =
+                       Application.host_readiness ~working_directory ~target
+                     in
+                     (match readiness with
+                     | Ok readiness ->
+                         List.iter (Nixploy.Host_readiness.warnings readiness)
+                           ~f:(fun warning ->
+                             eprintf "Warning: reboot readiness %s\n%!" warning)
+                     | Error error ->
+                         eprintf
+                           "Warning: could not check reboot readiness: %s\n%!"
+                           (Error.to_string_hum error));
+                     Deferred.Or_error.return ()
+                 | Requested | Running | Failed | Cancelled ->
+                     Deferred.Or_error.errorf "Deploy failed at %s: %s"
+                       (Application.deployment_stage deployment)
+                       (Application.deployment_message deployment)))))
 
 let command =
   Command.group ~summary:"Daemonless deployment and operations over strict SSH"

@@ -158,6 +158,12 @@ case "$last" in
     fi
     ;;
   *"'curl' '-fsS' '--max-time' '2'"*) : ;;
+  "'test' '-d' '.nixploy-mutations/"*) exit 1 ;;
+  "'ss' "*)
+    if [ "${NIXPLOY_TEST_PORT_BUSY:-}" = "1" ]; then
+      printf 'LISTEN 0 4096 127.0.0.1:8081 0.0.0.0:*\n'
+    fi
+    ;;
   *"'-X' 'GET'"*"/config/apps/http/servers/nixploy"*) printf '\n200' ;;
   *"'-X' 'POST'"*"/config/apps/http/servers/nixploy/routes"*)
     body=$(cat)
@@ -334,6 +340,7 @@ exit 99
       "NIXPLOY_TEST_PRESTART_EXIT";
       "NIXPLOY_TEST_FAIL_BUILD";
       "NIXPLOY_TEST_SSH_DENIED";
+      "NIXPLOY_TEST_PORT_BUSY";
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
@@ -371,10 +378,16 @@ exit 99
         "NIXPLOY_TEST_PRESTART_EXIT";
         "NIXPLOY_TEST_FAIL_BUILD";
         "NIXPLOY_TEST_SSH_DENIED";
+        "NIXPLOY_TEST_PORT_BUSY";
+      "NIXPLOY_TEST_PORT_BUSY";
       "NIXPLOY_TEST_SSH_DENIED";
+      "NIXPLOY_TEST_PORT_BUSY";
         "NIXPLOY_TEST_FAIL_BUILD";
         "NIXPLOY_TEST_SSH_DENIED";
+        "NIXPLOY_TEST_PORT_BUSY";
+      "NIXPLOY_TEST_PORT_BUSY";
       "NIXPLOY_TEST_SSH_DENIED";
+      "NIXPLOY_TEST_PORT_BUSY";
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
@@ -842,6 +855,58 @@ exit 99
          over SSH (nixploy@worker.invalid: Permission denied (publickey).)";
       expect_error_containing denied "No usable SSH key was offered";
       assert (count (In_channel.read_lines trace) "nix|build|" = 0);
+
+      let dry_run () =
+        Nixploy.Deployment.dry_run
+          ~request:(request (Nixploy.Source.immutable commit))
+      in
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind planned = dry_run () in
+      let planned = assert_ok planned in
+      [%test_eq: string list] [] planned.blockers;
+      let route = Option.value_exn planned.route in
+      [%test_eq: int option] (Some 8080) route.active_port;
+      [%test_eq: int] 8081 route.candidate_port;
+      [%test_eq: string] "green" route.candidate_slot;
+      [%test_eq: bool option] (Some false) route.candidate_port_listener;
+      [%test_eq: string] "/nix/store/nixploy-fake-image" planned.image;
+      [%test_eq: string list list]
+        [ [ "/app/migrate" ]; [ "/app/seed" ] ]
+        planned.pre_start;
+      let lines = In_channel.read_lines trace in
+      [%test_eq: int] 1 (count lines "nix|build|");
+      List.iter
+        [
+          "'mkdir'";
+          "'rmdir'";
+          "|load|";
+          "|secret|create|";
+          "|secret|rm|";
+          "|run|";
+          "|rm|";
+          "'PATCH'";
+          "'POST'";
+          "'DELETE'";
+        ] ~f:(fun mutation ->
+          if count lines mutation > 0 then
+            failwithf "dry run performed a mutation: %s" mutation ());
+      [%test_eq: string list]
+        [ "8080"; "worker.example.invalid" ]
+        (In_channel.read_lines route_state);
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_EXISTING_WEB" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_PORT_BUSY" "1";
+      write route_state "8080\nworker.example.invalid\n";
+      let%bind busy = dry_run () in
+      let busy = assert_ok busy in
+      assert (
+        List.exists busy.blockers
+          ~f:(String.is_substring ~substring:"listens on candidate port 8081"));
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_BUILD" "1";

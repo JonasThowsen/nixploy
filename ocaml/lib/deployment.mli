@@ -39,6 +39,38 @@ val deploy :
   unit ->
   t Deferred.Or_error.t
 
+type dry_run_route = {
+  domain : string;
+  active_port : int option;
+  candidate_slot : string;
+  candidate_port : int;
+  candidate_port_listener : bool option;
+      (** Something already listens on the candidate port; [None] if unknown. *)
+}
+
+type dry_run = {
+  project : Project_name.t;
+  target : Target_name.t;
+  resource_key : Resource_key.t;
+  revision : string;
+  image : string;
+  route : dry_run_route option;
+  replaced : string list;
+  secrets : (string * [ `Create | `Replace ]) list;
+  pre_start : string list list;
+  guard : Mutation_guard.marker;
+  blockers : string list;
+  notes : string list;
+}
+
+val dry_run : request:Deployment_request.t -> dry_run Deferred.Or_error.t
+(** A full dry run that changes nothing on the remote host: prepares the same
+    source snapshot, evaluates the target, builds the image and decrypts secrets
+    locally, then read-only checks SSH, Podman, read-only bind sources, secret
+    ownership, the Caddy route and candidate slot, the mutation marker and
+    reboot readiness. Takes no mutation guard and records no history. [blockers]
+    are conditions under which a real deploy would fail now. *)
+
 val operation_id : t -> string
 val project : t -> Project_name.t
 val target : t -> Target_name.t

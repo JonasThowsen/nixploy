@@ -409,8 +409,7 @@ let execute_guarded ~settled ~store ~request ~operation_id prepared =
           cleanup_candidate
             ~note:
               "The previous application container was already replaced, so \
-               this target has no running application until a deploy \
-               succeeds."
+               this target has no running application until a deploy succeeds."
             ~settled ~redact ~connection candidate error)
   | Web web -> (
       let caddy = Caddy.create ~target ~resource_key ~web in
@@ -601,7 +600,193 @@ let execute_guarded ~settled ~store ~request ~operation_id prepared =
       | Error error ->
           cleanup_candidate ~settled ~redact ~connection candidate error)
 
-let execute ~store ~request ~operation_id prepared =
+type dry_run_route = {
+  domain : string;
+  active_port : int option;
+  candidate_slot : string;
+  candidate_port : int;
+  candidate_port_listener : bool option;
+}
+
+type dry_run = {
+  project : Project_name.t;
+  target : Target_name.t;
+  resource_key : Resource_key.t;
+  revision : string;
+  image : string;
+  route : dry_run_route option;
+  replaced : string list;
+  secrets : (string * [ `Create | `Replace ]) list;
+  pre_start : string list list;
+  guard : Mutation_guard.marker;
+  blockers : string list;
+  notes : string list;
+}
+
+let port_listener ~target port =
+  let%map.Deferred result =
+    Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 15.)
+      ~max_output_bytes:65_536
+      [ "ss"; "-H"; "-l"; "-t"; "-n"; sprintf "sport = :%d" port ]
+  in
+  match result with
+  | Ok { exit_status = Ok (); stdout; _ } ->
+      Some (not (String.is_empty (String.strip stdout)))
+  | _ -> None
+
+let dry_run_prepared (prepared : prepared) =
+  let open Deferred.Or_error.Let_syntax in
+  let { source; project; target_name; target; repository_identity; _ } =
+    prepared
+  in
+  let%bind resource_key =
+    Podman.select_resource_key ~project ~target ~repository_identity
+      ~candidates:prepared.candidates
+  in
+  let%bind connection = Podman.ensure_connection ~target ~resource_key in
+  let%bind () = Podman.preflight_read_only_bind_sources ~target in
+  let%bind guard = Mutation_guard.inspect ~project ~target in
+  let%bind image =
+    Podman.build_image ~source ~image_output:(Configuration.Target.image target)
+  in
+  let%bind secrets = Secrets.load ~source_root:(Source.path source) ~target in
+  let%bind secrets =
+    Podman.plan_secret_installation ~connection ~project ~target
+      ~repository_identity ~resource_key ~secrets
+  in
+  let find_placement placement =
+    Podman.find_owned_placement ~connection ~project ~target ~resource_key
+      ~repository_identity ~placement
+  in
+  let%bind route, replaced, blockers, notes =
+    match Configuration.Target.kind target with
+    | Configuration.Target.Non_web ->
+        let%map current = find_placement Deployment_plan.Single_container in
+        let replaced =
+          Option.to_list current |> List.map ~f:Podman.candidate_name
+        in
+        let notes =
+          if List.is_empty replaced then []
+          else
+            [
+              "a non-web deploy stops the current container before starting \
+               the new one, so the target is briefly down";
+            ]
+        in
+        (None, replaced, [], notes)
+    | Web web ->
+        let caddy = Caddy.create ~target ~resource_key ~web in
+        let%bind previous = Caddy.inspect caddy in
+        let active_port =
+          match previous with
+          | Caddy.Missing -> None
+          | Existing { active_port; _ } -> Some active_port
+        in
+        let%bind plan =
+          Deferred.return
+            (Deployment_plan.create
+               ~target_kind:(Configuration.Target.kind target)
+               ~active_port)
+        in
+        let%bind candidate_slot, candidate_port =
+          Deferred.return (Deployment_plan.web_placement plan)
+        in
+        let%bind active =
+          match Deployment_plan.active_slot plan with
+          | None -> Deferred.Or_error.return None
+          | Some slot ->
+              Podman.find_owned_slot ~connection ~project ~target ~resource_key
+                ~repository_identity ~slot
+        in
+        let%bind inactive =
+          Podman.find_owned_slot ~connection ~project ~target ~resource_key
+            ~repository_identity ~slot:candidate_slot
+        in
+        let%bind legacy_single =
+          find_placement Deployment_plan.Single_container
+        in
+        let%map listener = Deferred.ok (port_listener ~target candidate_port) in
+        let blockers =
+          List.filter_opt
+            [
+              Option.some_if
+                (Option.is_some active_port && Option.is_none active)
+                "the Caddy route's active slot has no owned container";
+              Option.some_if
+                (Option.equal Bool.equal listener (Some true)
+                && Option.is_none inactive)
+                (sprintf
+                   "something other than nixploy's inactive slot already \
+                    listens on candidate port %d, so the health check would \
+                    not test the new release"
+                   candidate_port);
+            ]
+        in
+        let notes =
+          List.filter_opt
+            [
+              Option.some_if (Option.is_none listener)
+                (sprintf "could not check whether port %d is free (ss failed)"
+                   candidate_port);
+              Option.some_if
+                (Option.is_none active_port)
+                "no owned Caddy route exists; the deploy creates it";
+            ]
+        in
+        let replaced =
+          List.filter_opt [ inactive; active; legacy_single ]
+          |> List.map ~f:Podman.candidate_name
+          |> List.dedup_and_sort ~compare:String.compare
+        in
+        ( Some
+            {
+              domain = Configuration.Web.domain web;
+              active_port;
+              candidate_slot = Deployment_plan.slot_name candidate_slot;
+              candidate_port;
+              candidate_port_listener = listener;
+            },
+          replaced,
+          blockers,
+          notes )
+  in
+  let%map.Deferred readiness = Host_readiness.inspect ~target in
+  let blockers =
+    (match guard with
+      | Mutation_guard.Absent -> []
+      | Present directory ->
+          [
+            sprintf
+              "mutation marker %s is held: another operation is running or \
+               left uncertainty evidence (see `nixploy unlock`)"
+              directory;
+          ])
+    @ blockers
+  in
+  Ok
+    {
+      project;
+      target = target_name;
+      resource_key;
+      revision = Source.revision source;
+      image;
+      route;
+      replaced;
+      secrets;
+      pre_start = Configuration.Run.pre_start (Configuration.Target.run target);
+      guard;
+      blockers;
+      notes = notes @ Host_readiness.warnings readiness;
+    }
+
+let dry_run ~request =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind prepared = prepare ~request in
+  Monitor.protect
+    ~finally:(fun () -> cleanup_prepared prepared)
+    (fun () -> dry_run_prepared prepared)
+
+let execute ~store ~request ~operation_id (prepared : prepared) =
   let settled = ref true in
   let%map.Deferred outcome =
     Mutation_guard.with_mutation ~project:prepared.project

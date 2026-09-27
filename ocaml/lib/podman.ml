@@ -51,8 +51,8 @@ let repository_label labels =
 
 let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
   Process_runner.run ?stdin ?ignore_termination
-    ~env:(Tool_environment.podman ()) ~timeout ~max_output_bytes:max_output
-    ~prog:"podman" ~args ()
+    ~env:(Tool_environment.podman ())
+    ~timeout ~max_output_bytes:max_output ~prog:"podman" ~args ()
 
 let run_ok ?stdin ?ignore_termination ?timeout ?(redact = Fn.id) args =
   let open Deferred.Or_error.Let_syntax in
@@ -282,8 +282,8 @@ let ensure_connection ~target ~resource_key =
   | Ok () -> Deferred.Or_error.return name
   | Error failure ->
       Deferred.Or_error.errorf
-        "NIXPLOY_PODMAN_CONNECTION_FAILED: SSH works, but Podman connection \
-         %s cannot reach the remote Podman service (%s): %s. %s"
+        "NIXPLOY_PODMAN_CONNECTION_FAILED: SSH works, but Podman connection %s \
+         cannot reach the remote Podman service (%s): %s. %s"
         name
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip info.stderr |> Fn.flip String.prefix 1024)
@@ -378,7 +378,7 @@ let load_owned_image ~connection ~resource_key ~revision output_path =
   in
   { reference = owned; id }
 
-let build_and_load ~connection ~resource_key ~source ~image_output () =
+let build_image ~source ~image_output =
   let open Deferred.Or_error.Let_syntax in
   let%bind build =
     Process_runner.run ~working_directory:(Source.nix_root source)
@@ -405,6 +405,11 @@ let build_and_load ~connection ~resource_key ~source ~image_output () =
             Deferred.Or_error.error_string
               "Nix build did not return one store path")
   in
+  Deferred.Or_error.return output_path
+
+let build_and_load ~connection ~resource_key ~source ~image_output () =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind output_path = build_image ~source ~image_output in
   load_owned_image ~connection ~resource_key ~revision:(Source.revision source)
     output_path
 
@@ -845,6 +850,43 @@ let execute_prepared_secret_prune prepared =
   in
   prepared_secret_prune_counts prepared
 
+let secret_replacements ~connection ~ownership ~resource_key ~secrets =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind existing = list_resource_secrets ~connection ~resource_key in
+  Deferred.Or_error.List.map secrets ~how:`Sequential ~f:(fun secret ->
+      let name =
+        Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
+      in
+      let existing =
+        List.find existing ~f:(fun s -> String.equal s.secret_name name)
+      in
+      match existing with
+      | None -> Deferred.Or_error.return None
+      | Some existing -> (
+          let%bind kind =
+            inspect_secret_ownership ~connection ~ownership existing
+          in
+          match kind with
+          | `Owned -> Deferred.Or_error.return (Some existing)
+          | `Legacy ->
+              Deferred.Or_error.errorf
+                "refusing to replace unlabelled legacy secret %s; explicit \
+                 operator migration required"
+                name))
+
+let plan_secret_installation ~connection ~project ~target ~repository_identity
+    ~resource_key ~secrets =
+  let open Deferred.Or_error.Let_syntax in
+  let ownership =
+    secret_ownership ~project ~target ~resource_key ~repository_identity
+  in
+  let%map replacements =
+    secret_replacements ~connection ~ownership ~resource_key ~secrets
+  in
+  List.map2_exn secrets replacements ~f:(fun secret replacement ->
+      ( Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret,
+        if Option.is_some replacement then `Replace else `Create ))
+
 let install_secrets ~connection ~project ~target ~repository_identity
     ~resource_key ~secrets =
   if List.is_empty secrets then Deferred.Or_error.return []
@@ -854,27 +896,8 @@ let install_secrets ~connection ~project ~target ~repository_identity
     let ownership =
       secret_ownership ~project ~target ~resource_key ~repository_identity
     in
-    let%bind existing = list_resource_secrets ~connection ~resource_key in
     let%bind replacements =
-      Deferred.Or_error.List.map secrets ~how:`Sequential ~f:(fun secret ->
-          let name =
-            Resource_key.to_string resource_key ^ "-" ^ Secrets.name secret
-          in
-          let existing =
-            List.find existing ~f:(fun s -> String.equal s.secret_name name)
-          in
-          match existing with
-          | None -> Deferred.Or_error.return None
-          | Some existing -> (
-              let%bind kind =
-                inspect_secret_ownership ~connection ~ownership existing
-              in
-              match kind with
-              | `Owned -> Deferred.Or_error.return (Some existing)
-              | `Legacy ->
-                  Deferred.Or_error.error_string
-                    "refusing to replace an unlabelled legacy secret; explicit \
-                     operator migration required"))
+      secret_replacements ~connection ~ownership ~resource_key ~secrets
     in
     Deferred.Or_error.List.map (List.zip_exn secrets replacements)
       ~how:`Sequential ~f:(fun (secret, replacement) ->
@@ -1423,7 +1446,8 @@ let exec_runbook ~connection ~container ~command =
     Deferred.Or_error.error_string
       "runbook requires a full immutable Podman container ID"
   else
-    Process_runner.run_streaming ~env:(Tool_environment.podman ())
+    Process_runner.run_streaming
+      ~env:(Tool_environment.podman ())
       ~interactive:(Configuration.Runbook_command.interactive command)
       ~prog:"podman"
       ~args:(runbook_argv ~connection ~container_id:container.id ~command)
@@ -1433,7 +1457,8 @@ let read_container_logs ?ignore_termination ?(max_bytes = 65_536)
     ?(max_lines = 500) ~connection container_id =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Process_runner.run ?ignore_termination ~env:(Tool_environment.podman ())
+    Process_runner.run ?ignore_termination
+      ~env:(Tool_environment.podman ())
       ~timeout:(Time_ns.Span.of_sec 30.) ~max_output_bytes:262_144
       ~prog:"podman"
       ~args:
@@ -1694,7 +1719,8 @@ let list_owned_images ~connection ~resource_key =
   (* Reference filters match repository prefixes and repeat entries, so the
      exact repository is selected here instead. *)
   let%bind result =
-    Process_runner.run ~env:(Tool_environment.podman ())
+    Process_runner.run
+      ~env:(Tool_environment.podman ())
       ~timeout:(Time_ns.Span.of_sec 60.) ~max_output_bytes:(4 * max_output)
       ~prog:"podman"
       ~args:[ "--connection"; connection; "images"; "--format"; "json" ]
@@ -1911,7 +1937,8 @@ let nixploy_images_of_listing output =
 let list_nixploy_images ~connection =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Process_runner.run ~env:(Tool_environment.podman ())
+    Process_runner.run
+      ~env:(Tool_environment.podman ())
       ~timeout:(Time_ns.Span.of_sec 60.) ~max_output_bytes:(4 * max_output)
       ~prog:"podman"
       ~args:[ "--connection"; connection; "images"; "--format"; "json" ]

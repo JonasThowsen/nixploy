@@ -14,3 +14,5 @@ val stop : Nixploy.Stop.t -> string
 val stop_json : Nixploy.Stop.t -> string
 val orphan_stop : Nixploy.Orphan_prune.stopped -> string
 val orphan_stop_json : Nixploy.Orphan_prune.stopped -> string
+val deploy_dry_run : Nixploy.Deployment.dry_run -> string
+val deploy_dry_run_json : Nixploy.Deployment.dry_run -> string

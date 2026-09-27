@@ -156,6 +156,22 @@ val install_secrets :
     operator migration. Owned replacements are removed by immutable ID, and a
     removal failure stops creation. The caller must hold the target guard. *)
 
+val build_image :
+  source:Source.t -> image_output:string -> string Deferred.Or_error.t
+(** Builds the target's image flake output locally and returns its store path.
+    Nothing is sent to the remote host. *)
+
+val plan_secret_installation :
+  connection:string ->
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  repository_identity:string ->
+  resource_key:Resource_key.t ->
+  secrets:Secrets.t list ->
+  (string * [ `Create | `Replace ]) list Deferred.Or_error.t
+(** Read-only: the remote secret names a deploy would create or replace, failing
+    as the deploy would on an unlabelled legacy secret of the same name. *)
+
 val run_pre_start :
   connection:string ->
   target:Configuration.Target.t ->

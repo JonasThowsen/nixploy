@@ -83,6 +83,7 @@ and `run.readOnlyBinds`; see [nix/target.nix](nix/target.nix).
 ## Operate a target
 
 ```sh
+nixploy deploy --target production --dry-run   # build and check, change nothing
 nixploy deploy --target production
 nixploy status --target production --json
 nixploy logs --target production
@@ -118,6 +119,14 @@ stream. History is local deployment evidence, not remote health.
 container's role, state, uptime, restarts, CPU and memory, plus the Caddy route,
 owned secrets, host-wide Podman storage and free disk, whether a mutation marker
 is held, and reboot readiness, followed by a list of issues that need attention.
+
+`deploy --dry-run` does everything a deploy does locally (snapshot, evaluation,
+image build, secret decryption) and then checks the host read-only: SSH, Podman,
+read-only bind sources, secret ownership, the Caddy route and the candidate slot
+and whether its port is already taken, the mutation marker, and reboot readiness.
+It prints the plan (slot, containers replaced, secrets created or replaced,
+pre-start commands) and exits 1 if it finds a blocker. It takes no guard and
+records no history.
 
 Deploy evaluates configuration, builds, and resolves secrets from one Git-aware
 snapshot: committed files, tracked modifications, and intent-to-add files are
