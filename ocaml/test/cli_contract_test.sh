@@ -24,6 +24,13 @@ for flag in '--target TARGET' '--directory DIRECTORY' '--json'; do
   grep -F -- "$flag" <<<"$resources_help" >/dev/null
 done
 ! grep -F -- '--state-db' <<<"$resources_help" >/dev/null
+$executable deploy --help | grep -F -- '--dry-run' >/dev/null
+grep -F -- 'unlock' <<<"$root_help" >/dev/null
+unlock_help=$($executable unlock --help 2>&1)
+for flag in '--target TARGET' '--directory DIRECTORY' '--json' '--yes'; do
+  grep -F -- "$flag" <<<"$unlock_help" >/dev/null
+done
+! grep -F -- '--state-db' <<<"$unlock_help" >/dev/null
 
 root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT

@@ -349,6 +349,74 @@ let dry_run_local_deployment ~working_directory ~target =
   in
   Deployment.dry_run ~request
 
+type unlock = {
+  unlock_project : Project_name.t;
+  unlock_target : Target_name.t;
+  holder : Mutation_guard.holder option;
+  holder_running_here : bool;
+  current_status : status Or_error.t;
+  removed : bool;
+}
+
+let holder_running_here (holder : Mutation_guard.holder) =
+  let field name = List.Assoc.find holder.owner ~equal:String.equal name in
+  match (field "host", Option.bind (field "pid") ~f:Int.of_string_opt) with
+  | Some host, Some pid when String.equal host (Core_unix.gethostname ()) -> (
+      match
+        In_channel.read_all (sprintf "/proc/%d/cmdline" pid)
+        |> String.split ~on:'\000'
+      with
+      | commandline ->
+          List.exists commandline ~f:(String.is_substring ~substring:"nixploy")
+      | exception _ -> false)
+  | _ -> false
+
+let unlock ~working_directory ~target:target_name ~confirmed =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind working_directory =
+    Deferred.return (canonical_working_directory working_directory)
+  in
+  let%bind configuration = Nix_configuration.load ~working_directory in
+  let%bind () =
+    Deferred.return
+      (Direct_mode.validate_configuration configuration ~target:target_name)
+  in
+  let%bind target =
+    Deferred.return (Configuration.find_target configuration target_name)
+  in
+  let project = Configuration.project configuration in
+  let%bind holder = Mutation_guard.inspect_holder ~project ~target in
+  let%bind.Deferred current_status =
+    Status.load ~working_directory ~target:target_name
+  in
+  let running = Option.exists holder ~f:holder_running_here in
+  let%map removed =
+    match holder with
+    | Some holder when confirmed ->
+        if running then
+          Deferred.Or_error.errorf
+            "NIXPLOY_UNLOCK_REFUSED: %s is held by a nixploy process that is \
+             still running on this machine (%s); wait for it or stop it first"
+            holder.directory
+            (List.Assoc.find holder.owner ~equal:String.equal "command"
+            |> Option.value ~default:"unknown command")
+        else
+          let%map () =
+            Mutation_guard.remove_retained ~project ~target
+              ~directory:holder.directory
+          in
+          true
+    | _ -> return false
+  in
+  {
+    unlock_project = project;
+    unlock_target = target_name;
+    holder;
+    holder_running_here = running;
+    current_status;
+    removed;
+  }
+
 let live_status ~(scope : scope) =
   Status.load ~working_directory:scope.working_directory ~target:scope.target
 

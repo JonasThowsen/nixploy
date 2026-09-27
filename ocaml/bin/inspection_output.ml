@@ -185,7 +185,7 @@ let json_section result ~f =
   | Ok value -> f value
   | Error error -> `Assoc [ ("error", `String (Error.to_string_hum error)) ]
 
-let status_json status =
+let status_value status =
   let module A = Nixploy.Application in
   let module S = Nixploy.Status in
   let module T = Nixploy.Configuration.Target in
@@ -322,29 +322,30 @@ let status_json status =
                ("remedy", `String check.remedy);
              ]))
   in
-  encode_json
-    (`Assoc
-       [
-         ( "project",
-           json_string
-             (A.status_project status |> Nixploy.Project_name.to_string) );
-         ("target", json_string (T.name target |> Nixploy.Target_name.to_string));
-         ("host", json_string (T.host target));
-         ( "resourceKey",
-           json_string
-             (A.status_resource_key status |> Nixploy.Resource_key.to_string) );
-         ("stopped", `Bool (S.stopped status));
-         ("containers", `List (List.map (S.containers status) ~f:container));
-         ("route", route);
-         ("secrets", secrets);
-         ("images", images);
-         ("storage", storage);
-         ("hostResources", host);
-         ("disk", disk);
-         ("guard", guard);
-         ("rebootReadiness", readiness);
-         ("issues", `List (List.map (S.issues status) ~f:json_string));
-       ])
+  `Assoc
+    [
+      ( "project",
+        json_string (A.status_project status |> Nixploy.Project_name.to_string)
+      );
+      ("target", json_string (T.name target |> Nixploy.Target_name.to_string));
+      ("host", json_string (T.host target));
+      ( "resourceKey",
+        json_string
+          (A.status_resource_key status |> Nixploy.Resource_key.to_string) );
+      ("stopped", `Bool (S.stopped status));
+      ("containers", `List (List.map (S.containers status) ~f:container));
+      ("route", route);
+      ("secrets", secrets);
+      ("images", images);
+      ("storage", storage);
+      ("hostResources", host);
+      ("disk", disk);
+      ("guard", guard);
+      ("rebootReadiness", readiness);
+      ("issues", `List (List.map (S.issues status) ~f:json_string));
+    ]
+
+let status_json status = encode_json (status_value status)
 
 let logs_json (logs : Nixploy.Application.log_snapshot) =
   encode_json
@@ -769,4 +770,71 @@ let deploy_dry_run_json (preview : Nixploy.Deployment.dry_run) =
            | Present directory -> json_string directory );
          ("blockers", `List (List.map preview.blockers ~f:json_string));
          ("notes", `List (List.map preview.notes ~f:json_string));
+       ])
+
+let unlock_acquired (holder : Nixploy.Mutation_guard.holder) =
+  Option.map holder.acquired_at_unix ~f:(fun seconds ->
+      Time_ns.of_int63_ns_since_epoch
+        (Int63.( * ) (Int63.of_int64_exn seconds) (Int63.of_int 1_000_000_000))
+      |> Time_ns.to_string_iso8601_basic ~zone:Time_float.Zone.utc)
+
+let unlock (result : Nixploy.Application.unlock) =
+  let buffer = Buffer.create 2048 in
+  let target = Nixploy.Target_name.to_string result.unlock_target in
+  (match result.holder with
+  | None -> bprintf buffer "Guard:    idle (no marker to remove)\n"
+  | Some holder ->
+      bprintf buffer "Marker:   %s%s\n" holder.directory
+        (if result.removed then " (removed)" else "");
+      Option.iter (unlock_acquired holder) ~f:(bprintf buffer "Acquired: %s\n");
+      if List.is_empty holder.owner then
+        bprintf buffer "Holder:   unknown (no owner record)\n"
+      else
+        List.iter holder.owner ~f:(fun (key, value) ->
+            bprintf buffer "Holder:   %s=%s\n" key value);
+      if result.holder_running_here then
+        bprintf buffer "Warning:  the holder is still running on this machine\n");
+  (match result.current_status with
+  | Ok current -> bprintf buffer "\nCurrent state:\n%s" (status current)
+  | Error error ->
+      bprintf buffer "\nCurrent state unavailable: %s\n"
+        (Error.to_string_hum error));
+  (match result.holder with
+  | Some _ when not result.removed ->
+      bprintf buffer
+        "\n\
+         If no nixploy command is still running against this target and the \
+         state above is what you expect (fix any issues with a deploy after \
+         unlocking), remove the marker with `nixploy unlock -t %s --yes`. A \
+         runbook command that may have partly run is not retried automatically.\n"
+        target
+  | _ -> ());
+  Buffer.contents buffer
+
+let unlock_json (result : Nixploy.Application.unlock) =
+  encode_json
+    (`Assoc
+       [
+         ( "project",
+           json_string (Nixploy.Project_name.to_string result.unlock_project) );
+         ( "target",
+           json_string (Nixploy.Target_name.to_string result.unlock_target) );
+         ( "marker",
+           Option.value_map result.holder ~default:`Null ~f:(fun holder ->
+               `Assoc
+                 [
+                   ("path", json_string holder.directory);
+                   ("acquiredAt", json_option (unlock_acquired holder));
+                   ( "owner",
+                     `Assoc
+                       (List.map holder.owner ~f:(fun (key, value) ->
+                            (key, json_string value))) );
+                 ]) );
+         ("holderRunningHere", `Bool result.holder_running_here);
+         ("removed", `Bool result.removed);
+         ( "status",
+           match result.current_status with
+           | Ok current -> status_value current
+           | Error error ->
+               `Assoc [ ("error", json_string (Error.to_string_hum error)) ] );
        ])

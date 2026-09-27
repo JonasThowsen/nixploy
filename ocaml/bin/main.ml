@@ -283,6 +283,48 @@ let resources_command =
                     inventory);
                Deferred.unit))
 
+let unlock_command =
+  Async.Command.async
+    ~summary:"Show and remove a retained mutation marker without SSH"
+    ~readme:(fun () ->
+      "A failed or interrupted deploy, stop, prune or run can leave the \
+       target's mutation marker when nixploy cannot be sure what changed. \
+       Without --yes, shows the marker, which command held it, and the \
+       target's current status, and exits 2. With --yes, removes exactly that \
+       marker; it refuses while the recorded holder is still running on this \
+       machine. Opens no local history.")
+    (let%map_open.Command target =
+       flag "--target" (required string) ~aliases:[ "-t" ]
+         ~doc:"TARGET target declared by .#nixploy"
+     and working_directory =
+       flag "--directory"
+         (optional_with_default "." string)
+         ~aliases:[ "-C" ] ~doc:"DIRECTORY project flake directory"
+     and json =
+       flag "--json" no_arg
+         ~doc:" emit structured output; diagnostics remain on stderr"
+     and confirmed =
+       flag "--yes" no_arg ~doc:" remove the marker after reviewing the state"
+     in
+     fun () ->
+       with_target ~target (fun target ->
+           let open Deferred.Or_error.Let_syntax in
+           let%bind result =
+             Application.unlock ~working_directory ~target ~confirmed
+           in
+           printf "%s%!"
+             ((if json then Inspection_output.unlock_json
+               else Inspection_output.unlock)
+                result);
+           match result.holder with
+           | Some _ when not result.removed ->
+               eprintf
+                 "NIXPLOY_UNLOCK_CONFIRMATION_REQUIRED: review the state, then \
+                  pass --yes; nothing was changed\n\
+                  %!";
+               Deferred.ok (Shutdown.exit 2)
+           | _ -> return ()))
+
 let deploy_dry_run ~target ~working_directory ~json =
   with_target ~target (fun target ->
       let open Deferred.Or_error.Let_syntax in
@@ -372,14 +414,14 @@ let deploy_command =
 let command =
   Command.group ~summary:"Daemonless deployment and operations over strict SSH"
     ~readme:(fun () ->
-      "Exit codes: 0 success; 1 operation or command-parser error; 2 invalid \
-       target or missing prune confirmation; 130 deployment interrupted after \
-       admission. JSON results use stdout; progress and errors use stderr. \
-       Preparation failures produce no result object. History is local \
-       evidence, not remote health. Logs are bounded to 500 lines and 64 KiB \
-       by the Podman adapter. Failed mutations retain remote uncertainty \
-       evidence: never retry or remove it until remote effects have been \
-       reconciled.")
+      "Exit codes: 0 success; 1 operation or command-parser error, or blockers \
+       found by deploy --dry-run; 2 invalid target or missing prune or unlock \
+       confirmation; 130 deployment interrupted after admission. JSON results \
+       use stdout; progress and errors use stderr. Preparation failures \
+       produce no result object. History is local evidence, not remote health. \
+       Logs are bounded to 500 lines and 64 KiB by the Podman adapter. A \
+       mutation whose remote outcome is uncertain keeps the target's mutation \
+       marker; review and remove it with `nixploy unlock`.")
     ([
        ("deploy", deploy_command);
        ("status", status_command);
@@ -388,6 +430,7 @@ let command =
        ("stop", stop_command);
        ("prune", prune_command);
        ("resources", resources_command);
+       ("unlock", unlock_command);
      ]
     @ Nixploy_runbook_cli.Runbook_commands.commands ~list:Application.runbook
         ~run:Application.run)

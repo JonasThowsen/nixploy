@@ -249,8 +249,10 @@ let issues t =
         [
           sprintf
             "mutation marker %s is present: an operation is running or left \
-             uncertainty evidence"
-            directory;
+             uncertainty evidence; `nixploy unlock -t %s` shows who holds it \
+             and removes it"
+            directory
+            (Target_name.to_string (Configuration.Target.name t.target));
         ]
     | Ok Absent | Error _ -> []
   in
@@ -319,7 +321,8 @@ let load ~working_directory ~target:target_name =
   let%bind connection_name = Podman.ensure_connection ~target ~resource_key in
   let names = Prune_plan.create ~resource_key |> Prune_plan.container_names in
   let query filters =
-    Process_runner.run_stdout ~env:(Tool_environment.podman ())
+    Process_runner.run_stdout
+      ~env:(Tool_environment.podman ())
       ~timeout:query_timeout ~max_output_bytes:max_podman_output_bytes
       ~prog:"podman"
       ~args:

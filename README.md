@@ -107,6 +107,10 @@ nixploy prune --target production --yes
 nixploy resources --target production
 nixploy stop --target production --orphan RESOURCE_KEY
 nixploy prune --target production --orphan RESOURCE_KEY --dry-run
+
+# A failed or interrupted operation kept the mutation marker: review and remove it.
+nixploy unlock --target production
+nixploy unlock --target production --yes
 ```
 
 Every command requires `--target` (`-t`). Use `--directory` (`-C`) to select a
@@ -172,7 +176,7 @@ Interactive commands require attached stdin and stdout terminals and explicitly
 enable stdin and terminal allocation; terminal streams may merge. Commands accept no extra
 CLI arguments and are never automatically replayed after a failure. Child codes
 125 and 255 are conservatively treated as uncertain client/transport outcomes:
-the code is preserved, but the mutation marker remains for manual reconciliation.
+the code is preserved, but the mutation marker remains until `nixploy unlock`.
 
 ## Mutation safety and recovery
 
@@ -189,10 +193,21 @@ restored and read back. The failure reports the candidate's state, exit code and
 last log lines (redacted), or the pre-start command's last output. Any other
 error after guard acquisition leaves the marker and blocks further mutations.
 Disconnects, cancellation, and elapsed time do not permit automatic takeover.
-Inspect remote containers, routes, and possibly still-running commands, reconcile
-their effects, and ensure no operator is still acting before manually removing
-only the reported marker. See [DEVELOPMENT.md](DEVELOPMENT.md#mutation-coordination)
-and [MIGRATION.md](MIGRATION.md). Never blindly retry a migration.
+
+Recover without SSH:
+
+```sh
+nixploy unlock --target production        # marker, holder, current status; exits 2
+nixploy unlock --target production --yes  # remove exactly that marker
+```
+
+`unlock` shows which command, host and process took the marker and when, followed
+by the target's full status and issues. With `--yes` it removes only that
+target's marker, and refuses while the recorded holder is still running on this
+machine. Check that no other machine or agent is still acting and that the state
+is what you expect, then unlock and redeploy to fix any remaining issues. See
+[DEVELOPMENT.md](DEVELOPMENT.md#mutation-coordination) and
+[MIGRATION.md](MIGRATION.md). Never blindly retry a migration.
 
 Prune requires `--yes` (or `--dry-run` to preview) and checks exact ownership
 before removal. It never removes a Caddy route or a running application: take a

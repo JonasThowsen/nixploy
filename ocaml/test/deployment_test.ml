@@ -149,6 +149,17 @@ if [ "${NIXPLOY_TEST_SSH_DENIED:-}" = "1" ]; then
 fi
 case "$last" in
   *"'podman' 'ps'"*) printf '[]\n' ;;
+  "'mkdir' '-m' '700' '--' '.nixploy-mutations/"*)
+    if [ -e "$NIXPLOY_TEST_MARKER" ]; then echo 'mkdir: File exists' >&2; exit 1; fi
+    : > "$NIXPLOY_TEST_MARKER"
+    ;;
+  "'rmdir' '--' '.nixploy-mutations/"*) rm -f "$NIXPLOY_TEST_MARKER" ;;
+  "'ln' '-s' '-f' '-n' '--' "*"'.nixploy-mutations/"*)
+    printf 'command=nixploy test\nhost=test\npid=1\n' > "$NIXPLOY_TEST_MARKER.owner"
+    ;;
+  "'readlink' '--' '.nixploy-mutations/"*) cat "$NIXPLOY_TEST_MARKER.owner" ;;
+  "'stat' '-c' '%Y' '--' '.nixploy-mutations/"*) printf '1700000000\n' ;;
+  "'rm' '-f' '--' '.nixploy-mutations/"*) rm -f "$NIXPLOY_TEST_MARKER.owner" ;;
   "'mkdir' "*|"'sync' "*|"'rmdir' "*) : ;;
   "'true'") : ;;
   "'test' '-e' '/srv/reference data'")
@@ -158,7 +169,7 @@ case "$last" in
     fi
     ;;
   *"'curl' '-fsS' '--max-time' '2'"*) : ;;
-  "'test' '-d' '.nixploy-mutations/"*) exit 1 ;;
+  "'test' '-d' '.nixploy-mutations/"*) [ -e "$NIXPLOY_TEST_MARKER" ] ;;
   "'ss' "*)
     if [ "${NIXPLOY_TEST_PORT_BUSY:-}" = "1" ]; then
       printf 'LISTEN 0 4096 127.0.0.1:8081 0.0.0.0:*\n'
@@ -341,6 +352,7 @@ exit 99
       "NIXPLOY_TEST_FAIL_BUILD";
       "NIXPLOY_TEST_SSH_DENIED";
       "NIXPLOY_TEST_PORT_BUSY";
+      "NIXPLOY_TEST_MARKER";
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
@@ -371,6 +383,8 @@ exit 99
   Caml_unix.putenv "NIXPLOY_TEST_TRACE" trace;
   Caml_unix.putenv "NIXPLOY_TEST_STATE" state;
   Caml_unix.putenv "NIXPLOY_TEST_ROUTE_STATE" route_state;
+  let marker = Filename.concat root "marker" in
+  Caml_unix.putenv "NIXPLOY_TEST_MARKER" marker;
   let clear_scenario () =
     List.iter
       [
@@ -379,15 +393,6 @@ exit 99
         "NIXPLOY_TEST_FAIL_BUILD";
         "NIXPLOY_TEST_SSH_DENIED";
         "NIXPLOY_TEST_PORT_BUSY";
-      "NIXPLOY_TEST_PORT_BUSY";
-      "NIXPLOY_TEST_SSH_DENIED";
-      "NIXPLOY_TEST_PORT_BUSY";
-        "NIXPLOY_TEST_FAIL_BUILD";
-        "NIXPLOY_TEST_SSH_DENIED";
-        "NIXPLOY_TEST_PORT_BUSY";
-      "NIXPLOY_TEST_PORT_BUSY";
-      "NIXPLOY_TEST_SSH_DENIED";
-      "NIXPLOY_TEST_PORT_BUSY";
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
@@ -411,7 +416,9 @@ exit 99
         "SOPS_AGE_SSH_PRIVATE_KEY_FILE";
       ]
       ~f:Core_unix.unsetenv;
-    List.iter [ state; route_state ] ~f:(fun path ->
+    List.iter
+      [ state; route_state; marker; marker ^ ".owner" ]
+      ~f:(fun path ->
         if Sys_unix.file_exists_exn path then Core_unix.unlink path);
     write trace ""
   in
@@ -922,7 +929,51 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_PRESTART_EXIT" "125";
       let%bind uncertain_pre_start = deploy "operation-pre-start-uncertain" in
       expect_error_containing uncertain_pre_start "NIXPLOY_MUTATION_UNCERTAIN";
+      expect_error_containing uncertain_pre_start "nixploy unlock -t worker";
       [%test_eq: int] 0 (count (In_channel.read_lines trace) "'rmdir'");
+
+      (* The retained marker blocks the next deploy until explicit unlock. *)
+      let guard_configuration =
+        Nixploy.Configuration.of_json
+          {|{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid"}}}|}
+        |> assert_ok
+      in
+      let guard_project = Nixploy.Configuration.project guard_configuration in
+      let guard_target =
+        Nixploy.Configuration.find_target guard_configuration target
+        |> assert_ok
+      in
+      let%bind holder =
+        Nixploy.Mutation_guard.inspect_holder ~project:guard_project
+          ~target:guard_target
+      in
+      let holder = assert_ok holder |> Option.value_exn in
+      assert (List.Assoc.mem holder.owner ~equal:String.equal "command");
+      assert (List.Assoc.mem holder.owner ~equal:String.equal "pid");
+      [%test_eq: int64 option] (Some 1700000000L) holder.acquired_at_unix;
+      Core_unix.unsetenv "NIXPLOY_TEST_FAIL_PRESTART";
+      Core_unix.unsetenv "NIXPLOY_TEST_PRESTART_EXIT";
+      let%bind blocked = deploy "operation-blocked" in
+      expect_error_containing blocked "NIXPLOY_MUTATION_BLOCKED";
+      expect_error_containing blocked "nixploy unlock -t worker";
+      let%bind wrong =
+        Nixploy.Mutation_guard.remove_retained ~project:guard_project
+          ~target:guard_target ~directory:".nixploy-mutations/other"
+      in
+      assert (Result.is_error wrong);
+      let%bind removed =
+        Nixploy.Mutation_guard.remove_retained ~project:guard_project
+          ~target:guard_target ~directory:holder.directory
+      in
+      assert_ok removed;
+      let%bind released =
+        Nixploy.Mutation_guard.inspect_holder ~project:guard_project
+          ~target:guard_target
+      in
+      assert (Option.is_none (assert_ok released));
+      assert (not (Sys_unix.file_exists_exn (marker ^ ".owner")));
+      let%bind unblocked = deploy "operation-unblocked" in
+      ignore (assert_ok unblocked : Nixploy.Deployment.t);
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
       let%bind () = expect_application_failure_leaves_unknown () in

@@ -130,6 +130,27 @@ val dry_run_local_deployment :
   Deployment.dry_run Deferred.Or_error.t
 (** [deploy --dry-run]: see {!Deployment.dry_run}. Opens no local history. *)
 
+type unlock = {
+  unlock_project : Project_name.t;
+  unlock_target : Target_name.t;
+  holder : Mutation_guard.holder option;
+  holder_running_here : bool;
+      (** The recorded holder process is still alive on this machine. *)
+  current_status : status Or_error.t;
+  removed : bool;
+}
+
+val unlock :
+  working_directory:string ->
+  target:Target_name.t ->
+  confirmed:bool ->
+  unlock Deferred.Or_error.t
+(** Explicit recovery from a retained mutation marker without SSH. Always
+    reports the marker, its recorded holder and the target's live status so the
+    operator can reconcile. With [confirmed] it removes exactly that marker,
+    refusing while the recorded holder is still running on this machine. Opens
+    no local history. *)
+
 val live_status : scope:scope -> status Deferred.Or_error.t
 (** Read-only; opens no local history. *)
 

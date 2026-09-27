@@ -42,6 +42,7 @@ The command surface is:
 ```console
 nixploy deploy --target production
 nixploy deploy --target production --dry-run
+nixploy unlock --target production
 nixploy status --target production
 nixploy logs --target production
 nixploy history --target production
@@ -68,10 +69,11 @@ history. Local Podman client state lives in a private per-process directory, and
 unset or unusable `SSH_AUTH_SOCK` falls back to the standard per-user agent socket,
 so commands behave the same in a terminal and in a sandboxed agent.
 
-Exit codes are 0 for success, 1 for operation or command-parser errors, 2 for an
-invalid target or missing prune confirmation, and 130 for interruption of a
-started deployment. Runbook execution propagates the child exit code exactly rather
-than mapping every nonzero outcome to 1; local signal failures use 128 plus the
+Exit codes are 0 for success, 1 for operation or command-parser errors (and
+blockers found by `deploy --dry-run`), 2 for an invalid target or missing prune or
+unlock confirmation, and 130 for interruption of a started deployment. Runbook
+execution propagates the child exit code exactly rather than mapping every
+nonzero outcome to 1; local signal failures use 128 plus the
 signal number. A transport-uncertain child status is not proof the remote command
 failed to execute. Runbook child codes 125 and 255 are conservatively treated as
 uncertain client/transport failures, even if the application could have returned
@@ -273,12 +275,17 @@ output tail, or the failed candidate's state, exit code and last log lines,
 captured before the candidate is removed. Secret values are redacted; this bounded
 diagnostic is kept in local history as the deployment's error.
 
-When blocked, use the marker path reported in the diagnostic. Ensure no cooperating
-client is still running; inspect the target's containers, route, secrets, and any
-possibly still-running runbook command, and reconcile remote effects. Only then
-may an operator manually remove that specific empty marker directory (using
-`rmdir`, not broad recursive deletion) under the same SSH account/login directory.
-Do not delete the entire guard directory or local history to bypass a failure.
+On acquisition the guard also writes a best-effort `<marker>.owner` file (command,
+host, pid, start time) next to the directory; older clients ignore it, and the
+directory alone remains the guard.
+
+When blocked, recover with `nixploy unlock -t TARGET`, never with SSH. Without
+`--yes` it shows the marker, its recorded holder and acquisition time, and the
+target's full live status and issues, and exits 2. With `--yes` it removes exactly
+that target's marker with `rmdir` (so unexpected content is kept), syncs, and
+removes the owner file; it refuses while the recorded holder process is still
+running on this machine. It cannot see processes on other machines or agents:
+the operator confirms none is still acting and that the shown state is expected.
 Killing a local CLI or observing an old timestamp does not prove the remote work
 stopped. A retry of a side-effecting runbook command is a new explicit operator
 decision, never automatic recovery.

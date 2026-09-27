@@ -47,6 +47,32 @@ val inspect :
     (relative to the SSH login directory). Presence means an operation is
     running or left uncertainty evidence; it is never removed here. *)
 
+type holder = {
+  directory : string;
+  owner : (string * string) list;
+      (** From the best-effort [<marker>.owner] file written at acquisition:
+          [command], [host], [pid] and [started]; empty when absent (for
+          example, a marker left by an older client). *)
+  acquired_at_unix : int64 option;
+}
+
+val inspect_holder :
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  holder option Deferred.Or_error.t
+(** Read-only: the held marker for this project/target and what is known about
+    its holder. *)
+
+val remove_retained :
+  project:Project_name.t ->
+  target:Configuration.Target.t ->
+  directory:string ->
+  unit Deferred.Or_error.t
+(** Explicit operator recovery ([nixploy unlock --yes]): removes exactly this
+    project/target's marker (refusing any other path) with [rmdir], so a marker
+    that unexpectedly holds files is kept, then syncs and removes its owner
+    file. The caller must have shown the operator the current remote state. *)
+
 module For_testing : sig
   val with_mutation :
     ?certainty:('a -> string option) ->

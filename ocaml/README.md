@@ -53,8 +53,10 @@ The guard is held across runbook selection and exec. Errors, interruption, or
 uncertain transport outcomes retain evidence and block later mutations; there is
 no timed expiry, automatic takeover, or replay. This deliberately includes errors
 that might precede actual remote application changes. Only a known completed
-outcome clears the marker; a release failure requires inspection too. Operators
-must reconcile remote effects before manually removing the reported marker.
+outcome clears the marker; a release failure requires inspection too. A deploy
+failure while the remote state is known (see `lib/deployment.ml`) is such an
+outcome. Operators reconcile with `nixploy unlock`, which shows the recorded
+holder and live status and removes exactly the target's marker with `--yes`.
 
 Runbook outcomes carry both the exact child exit code and optional uncertainty.
 A known nonzero command exit is a completed outcome, not grounds for replay or
