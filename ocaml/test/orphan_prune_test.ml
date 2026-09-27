@@ -88,7 +88,7 @@ for argument in "$@"; do last="$argument"; done
 case "$last" in
   *"'podman' 'ps'"*) printf '[{"Labels":%s}]\n' ;;
   "'find' '.nixploy-mutations'"*) exit 0 ;;
-  "'mkdir'"*|"'sync'"*|"'rmdir'"*) exit 0 ;;
+  "'mkdir'"*|"'sync'"*|"'rmdir'"*|"'true'") exit 0 ;;
   *) echo "unexpected ssh command: $last" >&2; exit 98 ;;
 esac
 |}

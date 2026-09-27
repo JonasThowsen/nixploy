@@ -22,6 +22,16 @@ let with_application ~target ~state_db action =
       in
       match result with Ok () -> Deferred.unit | Error error -> fail error)
 
+let with_target ~target action =
+  match Nixploy.Target_name.of_string target with
+  | Error error ->
+      eprintf "%s\n%!" (Error.to_string_hum error);
+      Shutdown.exit 2
+  | Ok target -> (
+      match%bind action target with
+      | Ok () -> Deferred.unit
+      | Error error -> fail error)
+
 let common_flags =
   let open Command.Let_syntax in
   let%map_open target =
@@ -45,14 +55,14 @@ let status_command =
   Async.Command.async ~summary:"Inspect one target"
     (let%map_open.Command flags = common_flags in
      fun () ->
-       let target, working_directory, state_db, json = flags in
-       with_application ~target ~state_db (fun application target ->
+       let target, working_directory, _state_db, json = flags in
+       with_target ~target (fun target ->
            let open Deferred.Or_error.Let_syntax in
            let%bind scope =
              Deferred.return
                (Application.local_scope ~working_directory ~target)
            in
-           let%map status = Application.live_status application ~scope in
+           let%map status = Application.live_status ~scope in
            printf "%s%!"
              ((if json then Inspection_output.status_json
                else Inspection_output.status)
@@ -85,12 +95,10 @@ let logs_command =
     ~summary:"Read a bounded snapshot of the owned running container's logs"
     (let%map_open.Command flags = common_flags in
      fun () ->
-       let target, working_directory, state_db, json = flags in
-       with_application ~target ~state_db (fun application target ->
+       let target, working_directory, _state_db, json = flags in
+       with_target ~target (fun target ->
            let open Deferred.Or_error.Let_syntax in
-           let%map logs =
-             Application.local_logs application ~working_directory ~target
-           in
+           let%map logs = Application.local_logs ~working_directory ~target in
            if json then printf "%s%!" (Inspection_output.logs_json logs)
            else (
              eprintf "Container: %s%s\n%!" logs.container_name
@@ -355,4 +363,8 @@ let command =
     @ Nixploy_runbook_cli.Runbook_commands.commands ~list:Application.runbook
         ~run:Application.run)
 
-let () = Command_unix.run ~version:"0.1.0-ocaml" command
+let () =
+  Option.iter (Nixploy.Tool_environment.adopt_ssh_agent ()) ~f:(fun socket ->
+      eprintf "Using ssh-agent %s because SSH_AUTH_SOCK was not usable\n%!"
+        socket);
+  Command_unix.run ~version:"0.1.0-ocaml" command

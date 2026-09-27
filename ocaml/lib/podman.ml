@@ -50,8 +50,9 @@ let repository_label labels =
   | _ -> Ok identity
 
 let run ?stdin ?ignore_termination ?(timeout = podman_timeout) args =
-  Process_runner.run ?stdin ?ignore_termination ~timeout
-    ~max_output_bytes:max_output ~prog:"podman" ~args ()
+  Process_runner.run ?stdin ?ignore_termination
+    ~env:(Tool_environment.podman ()) ~timeout ~max_output_bytes:max_output
+    ~prog:"podman" ~args ()
 
 let run_ok ?stdin ?ignore_termination ?timeout ?(redact = Fn.id) args =
   let open Deferred.Or_error.Let_syntax in
@@ -255,11 +256,15 @@ let add_connection ~target ~name ~identity =
 let ensure_connection ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
   let name = Resource_key.to_string resource_key in
+  (* Podman's own SSH client cannot decrypt a passphrase-protected key, so
+     prefer a reachable agent and fall back to the identity file. *)
   let identity =
-    match Sys.getenv "SSH_AUTH_SOCK" with
-    | Some socket when not (String.is_empty (String.strip socket)) -> None
-    | _ -> Remote_command.identity_file target
+    if Tool_environment.ssh_agent_usable () then None
+    else Remote_command.identity_file target
   in
+  (* OpenSSH diagnoses key, host-key and network problems far better than
+     Podman's client, so check it first on every use. *)
+  let%bind () = verify_ssh target in
   let%bind connections = list_connections () in
   let%bind () =
     match Podman_connection.find_by_name connections name with
@@ -268,15 +273,21 @@ let ensure_connection ~target ~resource_key =
            && Podman_connection.matches_identity connection identity ->
         Deferred.Or_error.return ()
     | Some _ ->
-        let%bind () = verify_ssh target in
         let%bind () = remove_connection ~name in
         add_connection ~target ~name ~identity
-    | None ->
-        let%bind () = verify_ssh target in
-        add_connection ~target ~name ~identity
+    | None -> add_connection ~target ~name ~identity
   in
-  let%map _ = run_ok [ "--connection"; name; "info" ] in
-  name
+  let%bind info = run [ "--connection"; name; "info" ] in
+  match info.exit_status with
+  | Ok () -> Deferred.Or_error.return name
+  | Error failure ->
+      Deferred.Or_error.errorf
+        "NIXPLOY_PODMAN_CONNECTION_FAILED: SSH works, but Podman connection \
+         %s cannot reach the remote Podman service (%s): %s. %s"
+        name
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip info.stderr |> Fn.flip String.prefix 1024)
+        (Remote_command.failure_hint target info.stderr)
 
 let preflight_read_only_bind_sources ~target =
   let open Deferred.Or_error.Let_syntax in
@@ -1412,7 +1423,7 @@ let exec_runbook ~connection ~container ~command =
     Deferred.Or_error.error_string
       "runbook requires a full immutable Podman container ID"
   else
-    Process_runner.run_streaming
+    Process_runner.run_streaming ~env:(Tool_environment.podman ())
       ~interactive:(Configuration.Runbook_command.interactive command)
       ~prog:"podman"
       ~args:(runbook_argv ~connection ~container_id:container.id ~command)
@@ -1422,8 +1433,9 @@ let read_container_logs ?ignore_termination ?(max_bytes = 65_536)
     ?(max_lines = 500) ~connection container_id =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Process_runner.run ?ignore_termination ~timeout:(Time_ns.Span.of_sec 30.)
-      ~max_output_bytes:262_144 ~prog:"podman"
+    Process_runner.run ?ignore_termination ~env:(Tool_environment.podman ())
+      ~timeout:(Time_ns.Span.of_sec 30.) ~max_output_bytes:262_144
+      ~prog:"podman"
       ~args:
         [
           "--connection";
@@ -1682,8 +1694,9 @@ let list_owned_images ~connection ~resource_key =
   (* Reference filters match repository prefixes and repeat entries, so the
      exact repository is selected here instead. *)
   let%bind result =
-    Process_runner.run ~timeout:(Time_ns.Span.of_sec 60.)
-      ~max_output_bytes:(4 * max_output) ~prog:"podman"
+    Process_runner.run ~env:(Tool_environment.podman ())
+      ~timeout:(Time_ns.Span.of_sec 60.) ~max_output_bytes:(4 * max_output)
+      ~prog:"podman"
       ~args:[ "--connection"; connection; "images"; "--format"; "json" ]
       ()
   in
@@ -1898,8 +1911,9 @@ let nixploy_images_of_listing output =
 let list_nixploy_images ~connection =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Process_runner.run ~timeout:(Time_ns.Span.of_sec 60.)
-      ~max_output_bytes:(4 * max_output) ~prog:"podman"
+    Process_runner.run ~env:(Tool_environment.podman ())
+      ~timeout:(Time_ns.Span.of_sec 60.) ~max_output_bytes:(4 * max_output)
+      ~prog:"podman"
       ~args:[ "--connection"; connection; "images"; "--format"; "json" ]
       ()
   in

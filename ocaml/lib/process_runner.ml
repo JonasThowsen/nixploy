@@ -294,7 +294,7 @@ let streaming_completion ~stopped ~cancelled completion =
   | `Completed _ | `Interrupted ->
       streaming_interruption ~cancelled ~before_exec:false
 
-let run_streaming ~interactive ~prog ~args () =
+let run_streaming ?env ~interactive ~prog ~args () =
   let open Deferred.Or_error.Let_syntax in
   handle_termination_signals ();
   let%bind attached = terminal_attached () |> Deferred.ok in
@@ -382,7 +382,7 @@ let run_streaming ~interactive ~prog ~args () =
                       if stopped () then None
                       else
                         let process =
-                          Core_unix.create_process_with_fds ~prog ~args
+                          Core_unix.create_process_with_fds ?env ~prog ~args
                             ~setpgid:Core_unix.Pgid.new_process_group
                             ~stdin:(Use_this stdin)
                             ~stdout:(Use_this Core_unix.stdout)

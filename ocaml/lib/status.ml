@@ -38,7 +38,6 @@ type t = {
 }
 
 let max_podman_output_bytes = 1_048_576
-let max_connection_output_bytes = 262_144
 let query_timeout = Time_ns.Span.of_sec 30.
 let project t = t.project
 let target t = t.target
@@ -317,29 +316,12 @@ let load ~working_directory ~target:target_name =
   let%bind resource_key =
     Podman.select_resource_key ~project ~target ~repository_identity ~candidates
   in
-  let%bind connection_output =
-    Process_runner.run_stdout ~timeout:query_timeout
-      ~max_output_bytes:max_connection_output_bytes ~prog:"podman"
-      ~args:[ "system"; "connection"; "list"; "--format"; "json" ]
-      ()
-  in
-  let%bind connections =
-    Deferred.return (Podman_connection.all_of_json connection_output)
-  in
-  let resource_key_text = Resource_key.to_string resource_key in
-  let%bind connection_name =
-    match Podman_connection.find_by_name connections resource_key_text with
-    | Some connection when Podman_connection.matches_target connection target ->
-        Deferred.Or_error.return (Podman_connection.name connection)
-    | Some _ ->
-        Deferred.Or_error.error_string
-          "the exact resource connection does not match the flake target"
-    | None -> Podman.ensure_connection ~target ~resource_key
-  in
+  let%bind connection_name = Podman.ensure_connection ~target ~resource_key in
   let names = Prune_plan.create ~resource_key |> Prune_plan.container_names in
   let query filters =
-    Process_runner.run_stdout ~timeout:query_timeout
-      ~max_output_bytes:max_podman_output_bytes ~prog:"podman"
+    Process_runner.run_stdout ~env:(Tool_environment.podman ())
+      ~timeout:query_timeout ~max_output_bytes:max_podman_output_bytes
+      ~prog:"podman"
       ~args:
         ([ "--connection"; connection_name; "ps"; "--all" ]
         @ List.concat_map filters ~f:(fun filter -> [ "--filter"; filter ])

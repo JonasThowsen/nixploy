@@ -127,6 +127,26 @@ host keys before connecting. Nix, SSH, Podman, and SOPS tooling are included in 
 package's runtime path; SSH and SOPS credentials remain the operator's responsibility.
 Never put private keys or plaintext secrets in flake values or the Nix store.
 
+### Agents and sandboxes
+
+nixploy behaves the same in a terminal and in a sandboxed coding agent:
+
+- Local Podman client state (connection records and its runtime directory) lives
+  in a private per-process directory under `$TMPDIR`, so a read-only `~/.config`
+  or `/run/user/UID` does not matter and your own `podman system connection list`
+  is left alone.
+- When `SSH_AUTH_SOCK` is unset or unusable, nixploy adopts the standard per-user
+  agent socket (`/run/user/UID/ssh-agent`, keyring, gcr or gpg-agent) and says so
+  on stderr. Podman's SSH client cannot decrypt a passphrase-protected key, so a
+  reachable agent is the supported way to use one.
+- SSH failures are `NIXPLOY_SSH_FAILED` errors that name the destination, the
+  last SSH messages, and the likely fix: no usable key (and which agent and
+  identity file this process can see), an untrusted host key, or an unreachable
+  network.
+- `status` and `logs` open no local history. `deploy`, `stop`, `prune` and
+  `history` need a writable history database: allow writes to
+  `~/.local/state/nixploy`, or set `NIXPLOY_STATE_DB`.
+
 ## Runbook behavior
 
 `runbook` lists local names and descriptions without SSH or execution. `run`

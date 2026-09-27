@@ -62,7 +62,10 @@ target. Deploy, status, logs, history, prune, resources, and runbook listing sup
 `run` streams command output and has no JSON wrapper. Diagnostics and deployment
 progress go to stderr. Preparation failures produce no deployment result object.
 Deploy/status/logs/history/prune accept `--state-db` for local SQLite history and
-uncertainty evidence; runbook listing and execution do not open history.
+uncertainty evidence; status, logs, runbook listing and execution do not open
+history. Local Podman client state lives in a private per-process directory, and an
+unset or unusable `SSH_AUTH_SOCK` falls back to the standard per-user agent socket,
+so commands behave the same in a terminal and in a sandboxed agent.
 
 Exit codes are 0 for success, 1 for operation or command-parser errors, 2 for an
 invalid target or missing prune confirmation, and 130 for interruption of a

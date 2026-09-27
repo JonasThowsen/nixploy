@@ -46,12 +46,6 @@ let run_tests () =
   in
   let project = Nixploy.Project_name.of_string "sample" |> assert_ok in
   let target_name = Nixploy.Target_name.of_string "worker" |> assert_ok in
-  let%bind application =
-    Nixploy.Application.open_
-      ~state_path:(Filename.concat root "state.sqlite")
-      ()
-  in
-  let application = assert_ok application in
   let scope =
     Nixploy.Application.local_scope ~working_directory:repository
       ~target:target_name
@@ -79,6 +73,7 @@ printf '\n' >> "$NIXPLOY_TEST_TRACE"
 last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
+  "'true'") : ;;
   "'id' '-u'") printf '1001\n' ;;
   "'loginctl' 'show-user' 'deployer' '--property=Linger' '--value'") printf 'yes\n' ;;
   "'systemctl' '--user' 'is-enabled' 'podman-restart.service'") printf 'disabled\n'; exit 1 ;;
@@ -99,6 +94,7 @@ printf 'podman' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$*" in
+  *" info") exit 0 ;;
   "system connection list --format json")
     printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_KEY"
     ;;
@@ -180,7 +176,7 @@ esac
   in
   Monitor.protect ~finally:cleanup (fun () ->
       clear_scenario ();
-      let%bind modern = Nixploy.Application.live_status application ~scope in
+      let%bind modern = Nixploy.Application.live_status ~scope in
       let modern = assert_ok modern in
       [%test_eq: int] 1
         (modern |> Nixploy.Application.status_workloads |> List.length);
@@ -237,7 +233,7 @@ esac
             clear_scenario ();
             Caml_unix.putenv "NIXPLOY_TEST_LABEL_MODE" mode;
             let%map inspected =
-              Nixploy.Application.live_status application ~scope
+              Nixploy.Application.live_status ~scope
             in
             expect_error_containing inspected
               "ownership does not match this repository and resource")

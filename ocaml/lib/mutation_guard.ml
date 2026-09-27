@@ -70,9 +70,12 @@ let with_mutation_for ?certainty ~host ~project ~target_name action =
     in
     match result.exit_status with
     | Ok () -> Deferred.Or_error.return ()
-    | Error _ ->
-        Deferred.Or_error.error_string
-          "NIXPLOY_MUTATION_GUARD_COMMAND_FAILED: remote guard command failed"
+    | Error failure ->
+        Deferred.Or_error.errorf
+          "NIXPLOY_MUTATION_GUARD_COMMAND_FAILED: remote %s failed (%s): %s"
+          (List.hd argv |> Option.value ~default:"command")
+          (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+          (String.prefix (String.strip result.stderr) 512)
   in
   with_guard ?certainty ~run
     ~interrupted:(fun () ->

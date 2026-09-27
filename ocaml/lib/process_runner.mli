@@ -43,6 +43,7 @@ val terminal_attached : unit -> bool Deferred.t
 (** Checks real stdin/stdout terminals off the Async scheduler. *)
 
 val run_streaming :
+  ?env:Core_unix.env ->
   interactive:bool ->
   prog:string ->
   args:string list ->

@@ -36,6 +36,10 @@ belong to the current CLI process, not a persistent service.
   `lib/runbook_runtime.mli` resolves an owned running container, using the owned
   Caddy route for web targets. Execution uses the inspected ID, never a name that
   could resolve to a replacement container.
+- `lib/tool_environment.mli` gives local Podman clients a private per-process
+  state directory and adopts the standard ssh-agent socket when `SSH_AUTH_SOCK`
+  is unusable; `lib/remote_command.mli` turns SSH failures into actionable
+  `NIXPLOY_SSH_FAILED` diagnostics.
 - `lib/podman.mli`, `lib/caddy.mli`, and `lib/secrets.mli` expose ownership-sensitive
   effects. Legacy unlabelled secrets are retained, not adopted or overwritten.
 - `lib/mutation_guard.mli` serializes deploy, prune, and run across clients sharing

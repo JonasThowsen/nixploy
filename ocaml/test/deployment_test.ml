@@ -143,6 +143,10 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 last=""
 for argument in "$@"; do last="$argument"; done
+if [ "${NIXPLOY_TEST_SSH_DENIED:-}" = "1" ]; then
+  echo 'nixploy@worker.invalid: Permission denied (publickey).' >&2
+  exit 255
+fi
 case "$last" in
   *"'podman' 'ps'"*) printf '[]\n' ;;
   "'mkdir' "*|"'sync' "*|"'rmdir' "*) : ;;
@@ -329,6 +333,7 @@ exit 99
       "NIXPLOY_TEST_FAIL_PRESTART";
       "NIXPLOY_TEST_PRESTART_EXIT";
       "NIXPLOY_TEST_FAIL_BUILD";
+      "NIXPLOY_TEST_SSH_DENIED";
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
@@ -365,7 +370,11 @@ exit 99
         "NIXPLOY_TEST_FAIL_PRESTART";
         "NIXPLOY_TEST_PRESTART_EXIT";
         "NIXPLOY_TEST_FAIL_BUILD";
+        "NIXPLOY_TEST_SSH_DENIED";
+      "NIXPLOY_TEST_SSH_DENIED";
         "NIXPLOY_TEST_FAIL_BUILD";
+        "NIXPLOY_TEST_SSH_DENIED";
+      "NIXPLOY_TEST_SSH_DENIED";
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
@@ -824,6 +833,15 @@ exit 99
       assert (count lines "|rm|-f|" = 0);
       assert (count lines "|run|-d|--name|" = 0);
       [%test_eq: int] 1 (count lines "'rmdir'");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_SSH_DENIED" "1";
+      let%bind denied = deploy "operation-ssh-denied" in
+      expect_error_containing denied
+        "NIXPLOY_SSH_FAILED: cannot run a command on root@worker.invalid:22 \
+         over SSH (nixploy@worker.invalid: Permission denied (publickey).)";
+      expect_error_containing denied "No usable SSH key was offered";
+      assert (count (In_channel.read_lines trace) "nix|build|" = 0);
 
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_BUILD" "1";

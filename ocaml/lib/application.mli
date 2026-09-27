@@ -47,6 +47,8 @@ type log_snapshot = {
 
 val create : store:Store.t -> unit -> t
 val open_ : state_path:string -> unit -> t Deferred.Or_error.t
+(** Opens local history for writing. An unwritable path is a
+    [NIXPLOY_STATE_DB_UNWRITABLE] error naming [NIXPLOY_STATE_DB]. *)
 
 val begin_shutdown : t -> shutdown_transition
 (** Cancels process-owned deployments and rejects new tracked mutations. *)
@@ -121,7 +123,8 @@ val prune_local :
     [mode] defaults to [Everything]. A dry run needs no confirmation, takes no
     guard, and changes nothing. *)
 
-val live_status : t -> scope:scope -> status Deferred.Or_error.t
+val live_status : scope:scope -> status Deferred.Or_error.t
+(** Read-only; opens no local history. *)
 
 val host_readiness :
   working_directory:string ->
@@ -146,7 +149,6 @@ val local_history :
   deployment list Deferred.Or_error.t
 
 val local_logs :
-  t ->
   working_directory:string ->
   target:Target_name.t ->
   log_snapshot Deferred.Or_error.t
