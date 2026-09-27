@@ -116,7 +116,9 @@ nixploy unlock --target production --yes
 Every command requires `--target` (`-t`). Use `--directory` (`-C`) to select a
 different application checkout. Deploy, status, logs, history, prune, resources,
 and runbook listing support `--json`; `run` streams the command's output instead. Diagnostics
-and deployment progress go to stderr. Logs are a bounded snapshot, not a follow
+and deployment progress go to stderr. With `--json`, a failure also prints
+`{"error":{"code":"NIXPLOY_...","message":"..."}}` on stdout, so scripts and agents
+can branch on the code. Logs are a bounded snapshot, not a follow
 stream. History is local deployment evidence, not remote health.
 
 `status` replaces logging in to run `podman ps` on the server. It shows each owned

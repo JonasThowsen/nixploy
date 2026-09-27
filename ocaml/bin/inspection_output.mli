@@ -18,3 +18,11 @@ val deploy_dry_run : Nixploy.Deployment.dry_run -> string
 val deploy_dry_run_json : Nixploy.Deployment.dry_run -> string
 val unlock : Nixploy.Application.unlock -> string
 val unlock_json : Nixploy.Application.unlock -> string
+
+val error_code : string -> string option
+(** The first [NIXPLOY_*] code written as [NIXPLOY_CODE:] in a diagnostic;
+    environment variable names mentioned in hints are not codes. *)
+
+val error_json : string -> string
+(** [{"error":{"code":...,"message":...}}] for a failed command run with
+    [--json]; the same diagnostic also goes to stderr. *)

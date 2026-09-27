@@ -838,3 +838,39 @@ let unlock_json (result : Nixploy.Application.unlock) =
            | Error error ->
                `Assoc [ ("error", json_string (Error.to_string_hum error)) ] );
        ])
+
+let error_code message =
+  let is_code_char c =
+    Char.is_uppercase c || Char.is_digit c || Char.equal c '_'
+  in
+  let length = String.length message in
+  let rec search position =
+    match String.substr_index message ~pos:position ~pattern:"NIXPLOY_" with
+    | None -> None
+    | Some start ->
+        let rec code_end index =
+          if index < length && is_code_char message.[index] then
+            code_end (index + 1)
+          else index
+        in
+        let finish = code_end (start + 8) in
+        if
+          finish > start + 8
+          && finish < length
+          && Char.equal message.[finish] ':'
+        then Some (String.sub message ~pos:start ~len:(finish - start))
+        else search finish
+  in
+  search 0
+
+let error_json message =
+  encode_json
+    (`Assoc
+       [
+         ( "error",
+           `Assoc
+             [
+               ("code", json_option (error_code message));
+               ("message", json_string message);
+             ] );
+       ])

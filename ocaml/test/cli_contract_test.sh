@@ -115,7 +115,10 @@ OBSOLETE=1 $executable deploy -t test -C "$repo" --state-db "$root/state.sqlite"
 code=$?
 set -e
 test "$code" = 1
-test ! -s "$root/out"
+# A --json failure prints one error object on stdout and the diagnostic on stderr.
+test "$(wc -l <"$root/out")" = 1
+grep -F '{"error":{"code":' "$root/out" >/dev/null
+grep -F 'controlPlane' "$root/out" >/dev/null
 grep -F 'controlPlane' "$root/err" >/dev/null
 ! grep -F 'unexpected remote access' "$root/err" >/dev/null
 printf 'CLI contract: direct-only help, confirmation, JSON history, migration rejection, separated diagnostics passed\n'

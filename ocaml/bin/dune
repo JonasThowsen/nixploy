@@ -11,7 +11,7 @@
 (library
  (name nixploy_runbook_cli)
  (modules runbook_commands)
- (libraries nixploy core async yojson)
+ (libraries nixploy nixploy_cli_mapping core async yojson)
  (preprocess
   (pps ppx_jane)))
 

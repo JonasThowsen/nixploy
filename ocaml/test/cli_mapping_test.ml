@@ -43,3 +43,18 @@ let () =
   let rendered_history = Inspection_output.history [ failed ] in
   assert (String.is_substring rendered_history ~substring:"operation-123");
   assert (String.is_substring rendered_history ~substring:"failed")
+
+let () =
+  [%test_eq: string option] (Some "NIXPLOY_SSH_FAILED")
+    (Inspection_output.error_code
+       "NIXPLOY_SSH_FAILED: cannot run a command. Set \
+        NIXPLOY_SSH_IDENTITY_FILE.");
+  [%test_eq: string option] (Some "NIXPLOY_MUTATION_UNCERTAIN")
+    (Inspection_output.error_code
+       "(\"NIXPLOY_MUTATION_UNCERTAIN: evidence retained\" \"inner\")");
+  [%test_eq: string option] None
+    (Inspection_output.error_code
+       "no usable key; set NIXPLOY_SSH_IDENTITY_FILE or NIXPLOY_STATE_DB");
+  let json = Yojson.Safe.from_string (Inspection_output.error_json "boom") in
+  [%test_eq: string] {|{"error":{"code":null,"message":"boom"}}|}
+    (Yojson.Safe.to_string json)

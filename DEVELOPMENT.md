@@ -62,7 +62,10 @@ deployment requires no root-owned application registry or Nixploy service.
 Use `--directory` (`-C`) to select the checkout and `--target` (`-t`) to select the
 target. Deploy, status, logs, history, prune, resources, and runbook listing support `--json`;
 `run` streams command output and has no JSON wrapper. Diagnostics and deployment
-progress go to stderr. Preparation failures produce no deployment result object.
+progress go to stderr. With `--json`, a command that fails before producing its
+result prints one `{"error":{"code":...,"message":...}}` object on stdout (the code
+is the leading `NIXPLOY_*` identifier, or null) as well as the diagnostic on
+stderr; a started deploy that fails prints its deployment object instead.
 Deploy/status/logs/history/prune accept `--state-db` for local SQLite history and
 uncertainty evidence; status, logs, runbook listing and execution do not open
 history. Local Podman client state lives in a private per-process directory, and an

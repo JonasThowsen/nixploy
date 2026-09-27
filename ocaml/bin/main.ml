@@ -4,15 +4,15 @@ module Application = Nixploy.Application
 module Deployment_observer = Nixploy_cli_mapping.Deployment_observer
 module Inspection_output = Nixploy_cli_mapping.Inspection_output
 
-let fail error =
-  eprintf "%s\n%!" (Error.to_string_hum error);
-  Shutdown.exit 1
+let fail ?(exit_code = 1) ~json error =
+  let message = Error.to_string_hum error in
+  eprintf "%s\n%!" message;
+  if json then printf "%s%!" (Inspection_output.error_json message);
+  Shutdown.exit exit_code
 
-let with_application ~target ~state_db action =
+let with_application ~json ~target ~state_db action =
   match Nixploy.Target_name.of_string target with
-  | Error error ->
-      eprintf "%s\n%!" (Error.to_string_hum error);
-      Shutdown.exit 2
+  | Error error -> fail ~exit_code:2 ~json error
   | Ok target -> (
       let open Deferred.Let_syntax in
       let%bind result =
@@ -20,17 +20,17 @@ let with_application ~target ~state_db action =
         let%bind application = Application.open_ ~state_path:state_db () in
         action application target
       in
-      match result with Ok () -> Deferred.unit | Error error -> fail error)
+      match result with
+      | Ok () -> Deferred.unit
+      | Error error -> fail ~json error)
 
-let with_target ~target action =
+let with_target ~json ~target action =
   match Nixploy.Target_name.of_string target with
-  | Error error ->
-      eprintf "%s\n%!" (Error.to_string_hum error);
-      Shutdown.exit 2
+  | Error error -> fail ~exit_code:2 ~json error
   | Ok target -> (
       match%bind action target with
       | Ok () -> Deferred.unit
-      | Error error -> fail error)
+      | Error error -> fail ~json error)
 
 let common_flags =
   let open Command.Let_syntax in
@@ -56,7 +56,7 @@ let status_command =
     (let%map_open.Command flags = common_flags in
      fun () ->
        let target, working_directory, _state_db, json = flags in
-       with_target ~target (fun target ->
+       with_target ~json ~target (fun target ->
            let open Deferred.Or_error.Let_syntax in
            let%bind scope =
              Deferred.return
@@ -79,7 +79,7 @@ let history_command =
      in
      fun () ->
        let target, working_directory, state_db, json = flags in
-       with_application ~target ~state_db (fun application target ->
+       with_application ~json ~target ~state_db (fun application target ->
            let open Deferred.Or_error.Let_syntax in
            let%map deployments =
              Application.local_history application ~working_directory ~target
@@ -96,7 +96,7 @@ let logs_command =
     (let%map_open.Command flags = common_flags in
      fun () ->
        let target, working_directory, _state_db, json = flags in
-       with_target ~target (fun target ->
+       with_target ~json ~target (fun target ->
            let open Deferred.Or_error.Let_syntax in
            let%map logs = Application.local_logs ~working_directory ~target in
            if json then printf "%s%!" (Inspection_output.logs_json logs)
@@ -163,21 +163,20 @@ let prune_command =
        in
        match mode with
        | Error message ->
-           eprintf "%s; no resources were changed\n%!" message;
-           Shutdown.exit 2
+           fail ~exit_code:2 ~json
+             (Error.createf "%s; no resources were changed" message)
        | Ok _ when confirmed && dry_run ->
-           eprintf "pass either --yes or --dry-run, not both\n%!";
-           Shutdown.exit 2
+           fail ~exit_code:2 ~json
+             (Error.of_string "pass either --yes or --dry-run, not both")
        | Ok _ when not (confirmed || dry_run) ->
-           eprintf
-             "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes, or --dry-run to \
-              preview; no resources were changed\n\
-              %!";
-           Shutdown.exit 2
+           fail ~exit_code:2 ~json
+             (Error.of_string
+                "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED: pass --yes, or --dry-run \
+                 to preview; no resources were changed")
        | Ok (`Orphan resource_key) ->
            if not dry_run then
              Nixploy.Process_runner.handle_termination_signals ();
-           with_application ~target ~state_db (fun application target ->
+           with_application ~json ~target ~state_db (fun application target ->
                let open Deferred.Or_error.Let_syntax in
                let%map result =
                  Application.prune_orphan application ~dry_run
@@ -190,7 +189,7 @@ let prune_command =
        | Ok (`Target mode) ->
            if not dry_run then
              Nixploy.Process_runner.handle_termination_signals ();
-           with_application ~target ~state_db (fun application target ->
+           with_application ~json ~target ~state_db (fun application target ->
                let open Deferred.Or_error.Let_syntax in
                let%map result =
                  Application.prune_local application ~mode ~dry_run
@@ -223,7 +222,7 @@ let stop_command =
      fun () ->
        let target, working_directory, state_db, json = flags in
        Nixploy.Process_runner.handle_termination_signals ();
-       with_application ~target ~state_db (fun application target ->
+       with_application ~json ~target ~state_db (fun application target ->
            let open Deferred.Or_error.Let_syntax in
            match orphan with
            | None ->
@@ -266,22 +265,15 @@ let resources_command =
          ~doc:" emit structured output; diagnostics remain on stderr"
      in
      fun () ->
-       match Nixploy.Target_name.of_string target with
-       | Error error ->
-           eprintf "%s\n%!" (Error.to_string_hum error);
-           Shutdown.exit 2
-       | Ok target -> (
-           let%bind.Deferred inventory =
+       with_target ~json ~target (fun target ->
+           let open Deferred.Or_error.Let_syntax in
+           let%map inventory =
              Application.resources ~working_directory ~target
            in
-           match inventory with
-           | Error error -> fail error
-           | Ok inventory ->
-               printf "%s%!"
-                 ((if json then Inspection_output.resources_json
-                   else Inspection_output.resources)
-                    inventory);
-               Deferred.unit))
+           printf "%s%!"
+             ((if json then Inspection_output.resources_json
+               else Inspection_output.resources)
+                inventory)))
 
 let unlock_command =
   Async.Command.async
@@ -307,7 +299,7 @@ let unlock_command =
        flag "--yes" no_arg ~doc:" remove the marker after reviewing the state"
      in
      fun () ->
-       with_target ~target (fun target ->
+       with_target ~json ~target (fun target ->
            let open Deferred.Or_error.Let_syntax in
            let%bind result =
              Application.unlock ~working_directory ~target ~confirmed
@@ -326,7 +318,7 @@ let unlock_command =
            | _ -> return ()))
 
 let deploy_dry_run ~target ~working_directory ~json =
-  with_target ~target (fun target ->
+  with_target ~json ~target (fun target ->
       let open Deferred.Or_error.Let_syntax in
       eprintf "Dry run: preparing local source snapshot...\n%!";
       let%bind preview =
@@ -337,9 +329,10 @@ let deploy_dry_run ~target ~working_directory ~json =
           else Inspection_output.deploy_dry_run)
            preview);
       if List.is_empty preview.blockers then return ()
-      else
-        Deferred.Or_error.errorf "Dry run found %d blocker(s)"
-          (List.length preview.blockers))
+      else (
+        (* The result object already describes the blockers. *)
+        eprintf "Dry run found %d blocker(s)\n%!" (List.length preview.blockers);
+        Deferred.ok (Shutdown.exit 1)))
 
 let deploy_command =
   Async.Command.async
@@ -361,7 +354,7 @@ let deploy_command =
        if dry_run then deploy_dry_run ~target ~working_directory ~json
        else (
          Nixploy.Process_runner.handle_termination_signals ();
-         with_application ~target ~state_db (fun application target ->
+         with_application ~json ~target ~state_db (fun application target ->
              let open Deferred.Or_error.Let_syntax in
              eprintf "Preparing local source snapshot...\n%!";
              let%bind scope =
@@ -407,9 +400,16 @@ let deploy_command =
                            (Error.to_string_hum error));
                      Deferred.Or_error.return ()
                  | Requested | Running | Failed | Cancelled ->
-                     Deferred.Or_error.errorf "Deploy failed at %s: %s"
-                       (Application.deployment_stage deployment)
-                       (Application.deployment_message deployment)))))
+                     let error =
+                       Error.createf "Deploy failed at %s: %s"
+                         (Application.deployment_stage deployment)
+                         (Application.deployment_message deployment)
+                     in
+                     if json then (
+                       (* The deployment object on stdout carries the error. *)
+                       eprintf "%s\n%!" (Error.to_string_hum error);
+                       Deferred.ok (Shutdown.exit 1))
+                     else Deferred.Or_error.fail error))))
 
 let command =
   Command.group ~summary:"Daemonless deployment and operations over strict SSH"
@@ -417,11 +417,12 @@ let command =
       "Exit codes: 0 success; 1 operation or command-parser error, or blockers \
        found by deploy --dry-run; 2 invalid target or missing prune or unlock \
        confirmation; 130 deployment interrupted after admission. JSON results \
-       use stdout; progress and errors use stderr. Preparation failures \
-       produce no result object. History is local evidence, not remote health. \
-       Logs are bounded to 500 lines and 64 KiB by the Podman adapter. A \
-       mutation whose remote outcome is uncertain keeps the target's mutation \
-       marker; review and remove it with `nixploy unlock`.")
+       use stdout; progress and errors use stderr. With --json, a failure also \
+       prints {\"error\":{\"code\":...,\"message\":...}} on stdout. History is \
+       local evidence, not remote health. Logs are bounded to 500 lines and 64 \
+       KiB by the Podman adapter. A mutation whose remote outcome is uncertain \
+       keeps the target's mutation marker; review and remove it with `nixploy \
+       unlock`.")
     ([
        ("deploy", deploy_command);
        ("status", status_command);

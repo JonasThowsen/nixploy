@@ -46,7 +46,12 @@ let commands ~list ~run =
          with_target target (fun target ->
              let%bind result = list ~working_directory ~target in
              match result with
-             | Error error -> report_error error
+             | Error error ->
+                 if json then
+                   printf "%s%!"
+                     (Nixploy_cli_mapping.Inspection_output.error_json
+                        (Error.to_string_hum error));
+                 report_error error
              | Ok commands ->
                  let module C = Nixploy.Configuration.Runbook_command in
                  if json then

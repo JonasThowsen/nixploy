@@ -99,7 +99,7 @@
 (test
  (name cli_mapping_test)
  (modules cli_mapping_test)
- (libraries nixploy nixploy_cli_mapping core)
+ (libraries nixploy nixploy_cli_mapping core yojson)
  (preprocess
   (pps ppx_jane)))
 
