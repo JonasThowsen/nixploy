@@ -60,7 +60,9 @@ let expect_error_containing result text =
   match result with
   | Ok _ -> failwith "deployment unexpectedly succeeded"
   | Error error ->
-      assert (String.is_substring (Error.to_string_hum error) ~substring:text)
+      let message = Error.to_string_hum error in
+      if not (String.is_substring message ~substring:text) then
+        failwithf "expected error containing %S, got: %s" text message ()
 
 let run_tests () =
   let open Deferred.Let_syntax in
@@ -101,7 +103,13 @@ JSON
 JSON
     fi
     ;;
-  build) printf '/nix/store/nixploy-fake-image\n' ;;
+  build)
+    if [ "${NIXPLOY_TEST_FAIL_BUILD:-}" = "1" ]; then
+      echo 'error: builder for image failed' >&2
+      exit 1
+    fi
+    printf '/nix/store/nixploy-fake-image\n'
+    ;;
   *) echo "unexpected nix command" >&2; exit 97 ;;
 esac
 |};
@@ -211,11 +219,13 @@ case "$*" in
   *" images --format json") printf '[]\n'; exit 0 ;;
   *" update --restart no "*) exit 0 ;;
   *" stop "*) exit 0 ;;
+  *" container inspect --format "*) printf 'exited 3 \n'; exit 0 ;;
+  *" logs --tail 80 --timestamps candidate-id") printf '2026-01-01T00:00:00Z boom: DATABASE_URL is missing\n'; exit 0 ;;
 esac
 if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
   if [ "${NIXPLOY_TEST_FAIL_PRESTART:-}" = "1" ] && printf '%s\n' "$*" | grep -q '/app/migrate'; then
     echo 'pre-start failed' >&2
-    exit 42
+    exit "${NIXPLOY_TEST_PRESTART_EXIT:-42}"
   fi
   exit 0
 fi
@@ -317,6 +327,8 @@ exit 99
       "NIXPLOY_TEST_STATE";
       "NIXPLOY_TEST_ROUTE_STATE";
       "NIXPLOY_TEST_FAIL_PRESTART";
+      "NIXPLOY_TEST_PRESTART_EXIT";
+      "NIXPLOY_TEST_FAIL_BUILD";
       "NIXPLOY_TEST_UNOWNED";
       "NIXPLOY_TEST_VERIFY_MISMATCH";
       "NIXPLOY_TEST_WEB";
@@ -351,6 +363,9 @@ exit 99
     List.iter
       [
         "NIXPLOY_TEST_FAIL_PRESTART";
+        "NIXPLOY_TEST_PRESTART_EXIT";
+        "NIXPLOY_TEST_FAIL_BUILD";
+        "NIXPLOY_TEST_FAIL_BUILD";
         "NIXPLOY_TEST_UNOWNED";
         "NIXPLOY_TEST_VERIFY_MISMATCH";
         "NIXPLOY_TEST_WEB";
@@ -799,12 +814,32 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
       let%bind failed_pre_start = deploy "operation-pre-start" in
-      expect_error failed_pre_start;
+      expect_error_containing failed_pre_start
+        "pre-start command [/app/migrate] failed (exited with code 42)";
+      expect_error_containing failed_pre_start "| pre-start failed";
+      expect_error_containing failed_pre_start "mutation guard was released";
       let lines = In_channel.read_lines trace in
       assert (count lines "|run|--rm|" = 1);
       assert (count lines "|inspect|--type|container|" = 0);
       assert (count lines "|rm|-f|" = 0);
       assert (count lines "|run|-d|--name|" = 0);
+      [%test_eq: int] 1 (count lines "'rmdir'");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_BUILD" "1";
+      let%bind failed_build = deploy "operation-build-failure" in
+      expect_error_containing failed_build "builder for image failed";
+      expect_error_containing failed_build "mutation guard was released";
+      let lines = In_channel.read_lines trace in
+      assert (count lines "|run|" = 0);
+      [%test_eq: int] 1 (count lines "'rmdir'");
+
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
+      Caml_unix.putenv "NIXPLOY_TEST_PRESTART_EXIT" "125";
+      let%bind uncertain_pre_start = deploy "operation-pre-start-uncertain" in
+      expect_error_containing uncertain_pre_start "NIXPLOY_MUTATION_UNCERTAIN";
+      [%test_eq: int] 0 (count (In_channel.read_lines trace) "'rmdir'");
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_PRESTART" "1";
       let%bind () = expect_application_failure_leaves_unknown () in
@@ -844,6 +879,12 @@ exit 99
       in
       expect_error_containing restored_after_readback_failure
         "Caddy readback did not select candidate";
+      expect_error_containing restored_after_readback_failure
+        "(state exited, exit code 3), last output:\n\
+        \  | boom: DATABASE_URL is missing";
+      expect_error_containing restored_after_readback_failure
+        "mutation guard was released";
+      [%test_eq: int] 1 (count (In_channel.read_lines trace) "'rmdir'");
       [%test_eq: string list]
         [ "8080"; "worker.example.invalid" ]
         (In_channel.read_lines route_state);
@@ -865,9 +906,10 @@ exit 99
       clear_scenario ();
       Caml_unix.putenv "NIXPLOY_TEST_VERIFY_MISMATCH" "1";
       let%bind mismatch = deploy "operation-mismatch" in
-      expect_error mismatch;
+      expect_error_containing mismatch "mutation guard was released";
       let lines = In_channel.read_lines trace in
       [%test_eq: int] 2 (count lines "|rm|-f|");
+      [%test_eq: int] 1 (count lines "'rmdir'");
       let removals =
         List.filter lines ~f:(String.is_substring ~substring:"|rm|-f|")
       in

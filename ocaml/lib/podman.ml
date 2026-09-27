@@ -13,6 +13,7 @@ type runtime_container = {
   started_at : string option;
 }
 
+type command_failure = Known_exit of Error.t | Uncertain_exit of Error.t
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
 
@@ -892,6 +893,119 @@ let install_secrets ~connection ~project ~target ~repository_identity
         in
         { source = remote_name; target = Secrets.name secret })
 
+let parse_log_line line =
+  match String.lsplit2 line ~on:' ' with
+  | Some (timestamp, text)
+    when String.mem timestamp 'T' && String.is_suffix timestamp ~suffix:"Z" ->
+      { timestamp = Some timestamp; text }
+  | _ -> { timestamp = None; text = line }
+
+let redact_log_line line =
+  let keys =
+    [
+      "authorization";
+      "database_url";
+      "api_key";
+      "api-key";
+      "password";
+      "passwd";
+      "token";
+      "secret";
+      "cookie";
+    ]
+  in
+  let is_space character = Char.is_whitespace character in
+  let is_value_end character =
+    is_space character || Char.equal character ',' || Char.equal character ';'
+  in
+  let rec redact line position =
+    let lowercase = String.lowercase line in
+    let found =
+      List.filter_map keys ~f:(fun key ->
+          String.substr_index lowercase ~pos:position ~pattern:key
+          |> Option.map ~f:(fun index -> (index, key)))
+      |> List.min_elt ~compare:(fun (left, _) (right, _) ->
+          Int.compare left right)
+    in
+    match found with
+    | None -> line
+    | Some (index, key) ->
+        let after_key = index + String.length key in
+        let rec skip_spaces cursor =
+          if cursor < String.length line && is_space line.[cursor] then
+            skip_spaces (cursor + 1)
+          else cursor
+        in
+        let after_key =
+          if after_key < String.length line && Char.equal line.[after_key] '"'
+          then after_key + 1
+          else after_key
+        in
+        let separator = skip_spaces after_key in
+        if
+          separator >= String.length line
+          || not
+               (Char.equal line.[separator] ':'
+               || Char.equal line.[separator] '=')
+        then redact line after_key
+        else
+          let value_start = skip_spaces (separator + 1) in
+          let quoted =
+            value_start < String.length line
+            && (Char.equal line.[value_start] '"'
+               || Char.equal line.[value_start] '\'')
+          in
+          let secret_start = if quoted then value_start + 1 else value_start in
+          let rec value_end cursor =
+            if cursor >= String.length line then cursor
+            else if quoted && Char.equal line.[cursor] line.[value_start] then
+              cursor
+            else if
+              (not quoted)
+              &&
+              if String.equal key "authorization" || String.equal key "cookie"
+              then Char.equal line.[cursor] ',' || Char.equal line.[cursor] ';'
+              else is_value_end line.[cursor]
+            then cursor
+            else value_end (cursor + 1)
+          in
+          let value_end = value_end secret_start in
+          if Int.equal secret_start value_end then redact line value_end
+          else
+            let replacement = "[REDACTED]" in
+            let line =
+              String.prefix line secret_start
+              ^ replacement
+              ^ String.drop_prefix line value_end
+            in
+            redact line (secret_start + String.length replacement)
+  in
+  redact line 0
+
+let bound_logs ?(max_bytes = 65_536) ?(max_lines = 500) output =
+  let input = String.rstrip output |> String.split_lines in
+  let rec take lines bytes count kept truncated =
+    match lines with
+    | [] ->
+        {
+          lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
+          truncated;
+        }
+    | line :: rest ->
+        let line_bytes = String.length line + 1 in
+        if count >= max_lines || bytes + line_bytes > max_bytes then
+          {
+            lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
+            truncated = true;
+          }
+        else take rest (bytes + line_bytes) (count + 1) (line :: kept) truncated
+  in
+  take (List.rev input) 0 0 [] false
+
+let render_log_tail snapshot =
+  List.map snapshot.lines ~f:(fun line -> "  | " ^ line.text)
+  |> String.concat ~sep:"\n"
+
 let read_only_bind_args run =
   Configuration.Run.read_only_binds run
   |> List.concat_map ~f:(fun bind ->
@@ -941,18 +1055,50 @@ let runtime_argv ~connection ~name ~run:run_config ~port ~revision ~secret_args
 
 let run_pre_start ~connection ~target ~placement ~source ~image ~secrets
     ~secret_mounts =
-  let open Deferred.Or_error.Let_syntax in
   let run_config = Configuration.Target.run target in
   let port = Deployment_plan.runtime_port placement in
-  Deferred.Or_error.List.iter
-    (pre_start_argvs ~connection ~run:run_config ~port
-       ~revision:(Some (Source.revision source))
-       ~secret_args:(secret_args secret_mounts)
-       ~image_reference:image.reference)
-    ~how:`Sequential
-    ~f:(fun argv ->
-      let%map _ = run_ok ~redact:(Secrets.redact secrets) argv in
-      ())
+  let redact = Secrets.redact secrets in
+  let commands = Configuration.Run.pre_start run_config in
+  let argvs =
+    pre_start_argvs ~connection ~run:run_config ~port
+      ~revision:(Some (Source.revision source))
+      ~secret_args:(secret_args secret_mounts)
+      ~image_reference:image.reference
+  in
+  let rec run_all = function
+    | [] -> Deferred.return (Ok ())
+    | (command, argv) :: rest -> (
+        let%bind.Deferred result = run argv in
+        match result with
+        | Error error -> Deferred.return (Error (Uncertain_exit error))
+        | Ok { exit_status = Ok (); _ } -> run_all rest
+        | Ok { exit_status = Error failure; stdout; stderr } ->
+            let output =
+              String.concat ~sep:"\n"
+                (List.filter ~f:(Fn.non String.is_empty)
+                   [ String.rstrip stdout; String.rstrip stderr ])
+            in
+            let tail = bound_logs ~max_bytes:16_384 ~max_lines:80 output in
+            let error =
+              Error.createf
+                "pre-start command [%s] failed (%s), last output:\n%s"
+                (String.concat ~sep:" " command)
+                (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+                (match tail.lines with
+                | [] -> "  (no output)"
+                | _ -> redact (render_log_tail tail))
+            in
+            let known =
+              match failure with
+              | `Exit_non_zero code ->
+                  not (List.mem [ 125; 255 ] code ~equal:Int.equal)
+              | `Signal _ -> false
+            in
+            Deferred.return
+              (Error (if known then Known_exit error else Uncertain_exit error))
+        )
+  in
+  run_all (List.zip_exn commands argvs)
 
 let cleanup_ambiguous_start ~connection ~project ~target ~resource_key
     ~operation_id ~name =
@@ -1272,121 +1418,11 @@ let exec_runbook ~connection ~container ~command =
       ~args:(runbook_argv ~connection ~container_id:container.id ~command)
       ()
 
-let parse_log_line line =
-  match String.lsplit2 line ~on:' ' with
-  | Some (timestamp, text)
-    when String.mem timestamp 'T' && String.is_suffix timestamp ~suffix:"Z" ->
-      { timestamp = Some timestamp; text }
-  | _ -> { timestamp = None; text = line }
-
-let redact_log_line line =
-  let keys =
-    [
-      "authorization";
-      "database_url";
-      "api_key";
-      "api-key";
-      "password";
-      "passwd";
-      "token";
-      "secret";
-      "cookie";
-    ]
-  in
-  let is_space character = Char.is_whitespace character in
-  let is_value_end character =
-    is_space character || Char.equal character ',' || Char.equal character ';'
-  in
-  let rec redact line position =
-    let lowercase = String.lowercase line in
-    let found =
-      List.filter_map keys ~f:(fun key ->
-          String.substr_index lowercase ~pos:position ~pattern:key
-          |> Option.map ~f:(fun index -> (index, key)))
-      |> List.min_elt ~compare:(fun (left, _) (right, _) ->
-          Int.compare left right)
-    in
-    match found with
-    | None -> line
-    | Some (index, key) ->
-        let after_key = index + String.length key in
-        let rec skip_spaces cursor =
-          if cursor < String.length line && is_space line.[cursor] then
-            skip_spaces (cursor + 1)
-          else cursor
-        in
-        let after_key =
-          if after_key < String.length line && Char.equal line.[after_key] '"'
-          then after_key + 1
-          else after_key
-        in
-        let separator = skip_spaces after_key in
-        if
-          separator >= String.length line
-          || not
-               (Char.equal line.[separator] ':'
-               || Char.equal line.[separator] '=')
-        then redact line after_key
-        else
-          let value_start = skip_spaces (separator + 1) in
-          let quoted =
-            value_start < String.length line
-            && (Char.equal line.[value_start] '"'
-               || Char.equal line.[value_start] '\'')
-          in
-          let secret_start = if quoted then value_start + 1 else value_start in
-          let rec value_end cursor =
-            if cursor >= String.length line then cursor
-            else if quoted && Char.equal line.[cursor] line.[value_start] then
-              cursor
-            else if
-              (not quoted)
-              &&
-              if String.equal key "authorization" || String.equal key "cookie"
-              then Char.equal line.[cursor] ',' || Char.equal line.[cursor] ';'
-              else is_value_end line.[cursor]
-            then cursor
-            else value_end (cursor + 1)
-          in
-          let value_end = value_end secret_start in
-          if Int.equal secret_start value_end then redact line value_end
-          else
-            let replacement = "[REDACTED]" in
-            let line =
-              String.prefix line secret_start
-              ^ replacement
-              ^ String.drop_prefix line value_end
-            in
-            redact line (secret_start + String.length replacement)
-  in
-  redact line 0
-
-let bound_logs output =
-  let max_bytes = 65_536 in
-  let max_lines = 500 in
-  let input = String.rstrip output |> String.split_lines in
-  let rec take lines bytes count kept truncated =
-    match lines with
-    | [] ->
-        {
-          lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
-          truncated;
-        }
-    | line :: rest ->
-        let line_bytes = String.length line + 1 in
-        if count >= max_lines || bytes + line_bytes > max_bytes then
-          {
-            lines = List.map kept ~f:(Fn.compose parse_log_line redact_log_line);
-            truncated = true;
-          }
-        else take rest (bytes + line_bytes) (count + 1) (line :: kept) truncated
-  in
-  take (List.rev input) 0 0 [] false
-
-let read_logs ~connection ~container =
+let read_container_logs ?ignore_termination ?(max_bytes = 65_536)
+    ?(max_lines = 500) ~connection container_id =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
-    Process_runner.run ~timeout:(Time_ns.Span.of_sec 30.)
+    Process_runner.run ?ignore_termination ~timeout:(Time_ns.Span.of_sec 30.)
       ~max_output_bytes:262_144 ~prog:"podman"
       ~args:
         [
@@ -1394,9 +1430,9 @@ let read_logs ~connection ~container =
           connection;
           "logs";
           "--tail";
-          "500";
+          Int.to_string max_lines;
           "--timestamps";
-          container.id;
+          container_id;
         ]
       ()
   in
@@ -1410,7 +1446,51 @@ let read_logs ~connection ~container =
         if String.is_empty result.stderr then result.stdout
         else result.stdout ^ "\n" ^ result.stderr
       in
-      Deferred.Or_error.return (bound_logs output)
+      Deferred.Or_error.return (bound_logs ~max_bytes ~max_lines output)
+
+let read_logs ~connection ~container =
+  read_container_logs ~connection container.id
+
+let failed_candidate_state ~connection ~(candidate : candidate) =
+  let%map.Deferred.Or_error inspected =
+    run_ok ~ignore_termination:true
+      [
+        "--connection";
+        connection;
+        "container";
+        "inspect";
+        "--format";
+        "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}";
+        candidate.id;
+      ]
+  in
+  match String.split (String.strip inspected.stdout) ~on:' ' with
+  | status :: exit_code :: error ->
+      let error = String.concat ~sep:" " error |> String.strip in
+      sprintf "state %s, exit code %s%s" status exit_code
+        (if String.is_empty error then "" else ", error: " ^ error)
+  | _ -> String.strip inspected.stdout
+
+let describe_failed_candidate ~redact ~connection ~(candidate : candidate) =
+  let%bind.Deferred state = failed_candidate_state ~connection ~candidate in
+  let%map.Deferred logs =
+    read_container_logs ~ignore_termination:true ~max_bytes:16_384 ~max_lines:80
+      ~connection candidate.id
+  in
+  let state =
+    match state with
+    | Ok state -> state
+    | Error error -> "state unavailable: " ^ Error.to_string_hum error
+  in
+  let logs =
+    match logs with
+    | Ok { lines = []; _ } -> "  (no output)"
+    | Ok snapshot ->
+        (if snapshot.truncated then "  | ... (earlier output omitted)\n" else "")
+        ^ redact (render_log_tail snapshot)
+    | Error error -> "  (logs unavailable: " ^ Error.to_string_hum error ^ ")"
+  in
+  sprintf "Candidate %s (%s), last output:\n%s" candidate.name state logs
 
 let numeric_string fields names =
   List.find_map names ~f:(fun name ->
@@ -2122,7 +2202,7 @@ module For_testing = struct
   let managed_containers_of_json = managed_containers_of_json
   let labelled_secrets_of_inspect = labelled_secrets_of_inspect
   let nixploy_images_of_listing = nixploy_images_of_listing
-  let bound_logs = bound_logs
+  let bound_logs output = bound_logs output
   let secret_names_of_output = secret_names_of_output
   let owned_candidate_collision = owned_candidate_collision
 end

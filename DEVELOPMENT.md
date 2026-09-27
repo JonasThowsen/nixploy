@@ -245,11 +245,20 @@ identities. It does not coordinate separate remote accounts or non-cooperating
 tools. Resource mutation still requires complete repository/project/target
 ownership checks; the guard's broader scope is not ownership authorization.
 
-Deploy, stop, prune, and run all use this guard. Any callback error conservatively
-retains the marker, even if the error may have preceded remote application changes.
-Cancellation, lost clients, and transport uncertainty also retain evidence. There
-is no age-based expiry, forced acquisition, or automatic replay. A known completed
-outcome clears it; failure to confirm release must also be investigated.
+Deploy, stop, prune, and run all use this guard. A known completed outcome clears
+it. For deploy, a failure is a known outcome while the remote state is known:
+before any serving container is touched (evaluation, build, image load, secret
+installation), after a pre-start command's known nonzero exit (not 125 or 255),
+or after a failed candidate was removed and, for web targets, the previous route
+was restored and read back. Any other callback error retains the marker, as do
+cancellation, lost clients, and transport uncertainty. There is no age-based
+expiry, forced acquisition, or automatic replay; failure to confirm release must
+also be investigated.
+
+A failed deploy reports what failed: a pre-start command's bounded, redacted
+output tail, or the failed candidate's state, exit code and last log lines,
+captured before the candidate is removed. Secret values are redacted; this bounded
+diagnostic is kept in local history as the deployment's error.
 
 When blocked, use the marker path reported in the diagnostic. Ensure no cooperating
 client is still running; inspect the target's containers, route, secrets, and any

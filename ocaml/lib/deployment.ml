@@ -129,16 +129,45 @@ let run_build_with_durable_heartbeats ~store ~operation_id build =
       | Error build_error -> Error (combine_failure heartbeat_error build_error)
       )
 
-let cleanup_candidate ~connection candidate primary =
+(* [settled] is true while the remote target is in a known state: either no
+   serving resource has been touched yet, or every change was compensated and
+   read back. A failure while it is true releases the mutation guard. *)
+let unsettled settled step =
+  settled := false;
+  let%map.Deferred result = step () in
+  if Result.is_ok result then settled := true;
+  result
+
+let with_candidate_diagnostics ~redact ~connection candidate primary =
+  let%map.Deferred diagnostics =
+    Podman.describe_failed_candidate ~redact ~connection ~candidate
+  in
+  Error.of_string (Error.to_string_hum primary ^ "\n" ^ diagnostics)
+
+let cleanup_candidate ?note ~settled ~redact ~connection candidate primary =
+  let open Deferred.Let_syntax in
+  let%bind primary =
+    with_candidate_diagnostics ~redact ~connection candidate primary
+  in
+  let primary =
+    Option.value_map note ~default:primary ~f:(fun note ->
+        Error.of_string (Error.to_string_hum primary ^ "\n" ^ note))
+  in
   let%map cleanup = Podman.remove_candidate ~connection ~candidate in
   match cleanup with
-  | Ok () -> Error primary
+  | Ok () ->
+      settled := true;
+      Error primary
   | Error cleanup_error ->
       Cancellation.mark_cleanup_failed ();
       Error (combine_failure primary cleanup_error)
 
-let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
+let restore_and_cleanup ~settled ~redact ~caddy ~previous ~connection ~candidate
+    primary =
   let open Deferred.Let_syntax in
+  let%bind primary =
+    with_candidate_diagnostics ~redact ~connection candidate primary
+  in
   let%bind restored = Caddy.restore caddy ~previous in
   match restored with
   | Error restoration ->
@@ -148,12 +177,29 @@ let restore_and_cleanup ~caddy ~previous ~connection ~candidate primary =
       let%map removed = Podman.remove_candidate ~connection ~candidate in
       let error =
         match removed with
-        | Ok () -> primary
+        | Ok () ->
+            settled := true;
+            primary
         | Error cleanup ->
             Cancellation.mark_cleanup_failed ();
             combine_failure primary cleanup
       in
       Error error
+
+let run_pre_start ~settled ~connection ~target ~placement ~source ~image
+    ~secrets ~secret_mounts =
+  settled := false;
+  match%map.Deferred
+    Podman.run_pre_start ~connection ~target ~placement ~source ~image ~secrets
+      ~secret_mounts
+  with
+  | Ok () ->
+      settled := true;
+      Ok ()
+  | Error (Podman.Known_exit error) ->
+      settled := true;
+      Error error
+  | Error (Uncertain_exit error) -> Error error
 
 type prepared = {
   request : Deployment_request.t;
@@ -233,7 +279,7 @@ let prepare ~request =
       let%map.Deferred () = Source.cleanup source in
       Error error
 
-let execute_guarded ~store ~request ~operation_id prepared =
+let execute_guarded ~settled ~store ~request ~operation_id prepared =
   let record_stage stage message =
     Store.record_stage store ~id:operation_id ~stage:(stage_name stage) ~message
   in
@@ -313,7 +359,7 @@ let execute_guarded ~store ~request ~operation_id prepared =
           "Running flake-declared pre-start commands"
       in
       let%bind () =
-        Podman.run_pre_start ~connection ~target ~placement ~source ~image
+        run_pre_start ~settled ~connection ~target ~placement ~source ~image
           ~secrets ~secret_mounts
       in
       let%bind () =
@@ -321,18 +367,22 @@ let execute_guarded ~store ~request ~operation_id prepared =
           "Replacing only the owned application container"
       in
       let%bind () =
-        Podman.prepare_candidate ~connection ~project ~target ~resource_key
-          ~repository_identity ~placement
+        unsettled settled (fun () ->
+            Podman.prepare_candidate ~connection ~project ~target ~resource_key
+              ~repository_identity ~placement)
       in
       let%bind () =
         record_stage Starting "Starting the application container"
       in
       let%bind candidate =
-        Podman.start_candidate ~connection ~project ~target ~resource_key
-          ~repository_identity ~placement ~source ~configuration_digest
-          ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
-          ~secret_mounts
+        unsettled settled (fun () ->
+            Podman.start_candidate ~connection ~project ~target ~resource_key
+              ~repository_identity ~placement ~source ~configuration_digest
+              ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
+              ~secret_mounts)
       in
+      settled := false;
+      let redact = Secrets.redact secrets in
       let after_candidate =
         let open Deferred.Or_error.Let_syntax in
         let%bind () =
@@ -355,7 +405,13 @@ let execute_guarded ~store ~request ~operation_id prepared =
       let%bind.Deferred result = after_candidate in
       match result with
       | Ok deployment -> Deferred.Or_error.return deployment
-      | Error error -> cleanup_candidate ~connection candidate error)
+      | Error error ->
+          cleanup_candidate
+            ~note:
+              "The previous application container was already replaced, so \
+               this target has no running application until a deploy \
+               succeeds."
+            ~settled ~redact ~connection candidate error)
   | Web web -> (
       let caddy = Caddy.create ~target ~resource_key ~web in
       let%bind () =
@@ -412,26 +468,30 @@ let execute_guarded ~store ~request ~operation_id prepared =
         record_stage Preparing_candidate "Removing only the owned inactive slot"
       in
       let%bind () =
-        Podman.prepare_candidate ~connection ~project ~target ~resource_key
-          ~repository_identity ~placement
+        unsettled settled (fun () ->
+            Podman.prepare_candidate ~connection ~project ~target ~resource_key
+              ~repository_identity ~placement)
       in
       let%bind () =
         record_stage Running_pre_start
           "Running flake-declared pre-start commands"
       in
       let%bind () =
-        Podman.run_pre_start ~connection ~target ~placement ~source ~image
+        run_pre_start ~settled ~connection ~target ~placement ~source ~image
           ~secrets ~secret_mounts
       in
       let%bind () =
         record_stage Starting "Starting the inactive candidate slot"
       in
       let%bind candidate =
-        Podman.start_candidate ~connection ~project ~target ~resource_key
-          ~repository_identity ~placement ~source ~configuration_digest
-          ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
-          ~secret_mounts
+        unsettled settled (fun () ->
+            Podman.start_candidate ~connection ~project ~target ~resource_key
+              ~repository_identity ~placement ~source ~configuration_digest
+              ~operation_id ~deployed_at:(timestamp ()) ~image ~secrets
+              ~secret_mounts)
       in
+      settled := false;
+      let redact = Secrets.redact secrets in
       let switched = ref false in
       let after_candidate =
         let open Deferred.Or_error.Let_syntax in
@@ -536,23 +596,43 @@ let execute_guarded ~store ~request ~operation_id prepared =
       match result with
       | Ok deployment -> Deferred.Or_error.return deployment
       | Error error when !switched ->
-          restore_and_cleanup ~caddy ~previous ~connection ~candidate error
-      | Error error -> cleanup_candidate ~connection candidate error)
+          restore_and_cleanup ~settled ~redact ~caddy ~previous ~connection
+            ~candidate error
+      | Error error ->
+          cleanup_candidate ~settled ~redact ~connection candidate error)
 
 let execute ~store ~request ~operation_id prepared =
-  Mutation_guard.with_mutation ~project:prepared.project ~target:prepared.target
-    (fun () ->
-      let open Deferred.Or_error.Let_syntax in
-      let%bind deployment =
-        execute_guarded ~store ~request ~operation_id prepared
-      in
-      match deployment.warning with
-      | None -> Deferred.Or_error.return deployment
-      | Some warning ->
-          Deferred.Or_error.errorf
-            "NIXPLOY_DEPLOYMENT_PARTIAL: application is active but cleanup is \
-             not confirmed: %s"
-            warning)
+  let settled = ref true in
+  let%map.Deferred outcome =
+    Mutation_guard.with_mutation ~project:prepared.project
+      ~target:prepared.target (fun () ->
+        let%bind.Deferred result =
+          execute_guarded ~settled ~store ~request ~operation_id prepared
+        in
+        match result with
+        | Ok { warning = None; _ } as deployment ->
+            Deferred.Or_error.return deployment
+        | Ok { warning = Some warning; _ } ->
+            Deferred.Or_error.errorf
+              "NIXPLOY_DEPLOYMENT_PARTIAL: application is active but cleanup \
+               is not confirmed: %s"
+              warning
+        | Error error when !settled ->
+            (* A known, compensated failure is a completed outcome: returning
+               it as a value lets the guard release the marker. *)
+            Deferred.Or_error.return (Error error)
+        | Error error -> Deferred.Or_error.fail error)
+  in
+  match outcome with
+  | Ok (Ok deployment) -> Ok deployment
+  | Ok (Error error) ->
+      Error
+        (Error.of_string
+           (Error.to_string_hum error
+          ^ "\n\
+             The mutation guard was released: remote state is unchanged or was \
+             restored and read back, so a corrected deploy can run."))
+  | Error error -> Error error
 
 let deploy ~store ~request ~operation_id () =
   let open Deferred.Or_error.Let_syntax in

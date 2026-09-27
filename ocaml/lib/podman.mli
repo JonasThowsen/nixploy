@@ -36,6 +36,7 @@ val execute_prepared_secret_prune :
     Returns removed and retained counts. Never requests secret data. The caller
     must hold the target mutation guard from preflight through execution. *)
 
+type command_failure = Known_exit of Error.t | Uncertain_exit of Error.t
 type log_line = { timestamp : string option; text : string }
 type log_snapshot = { lines : log_line list; truncated : bool }
 
@@ -163,7 +164,11 @@ val run_pre_start :
   image:image ->
   secrets:Secrets.t list ->
   secret_mounts:secret_mount list ->
-  unit Deferred.Or_error.t
+  (unit, command_failure) Result.t Deferred.t
+(** Runs each pre-start command once, in order, in a temporary container. A
+    failure carries a bounded, redacted tail of the command's output. A known
+    nonzero child exit is [Known_exit]; Podman errors (125), transport failures
+    (255), signals and runner errors are [Uncertain_exit]. *)
 
 val start_candidate :
   connection:string ->
@@ -196,6 +201,15 @@ val verify_candidate :
 
 val remove_candidate :
   connection:string -> candidate:candidate -> unit Deferred.Or_error.t
+
+val describe_failed_candidate :
+  redact:(string -> string) ->
+  connection:string ->
+  candidate:candidate ->
+  string Deferred.t
+(** Best-effort, bounded diagnostic for a candidate about to be removed: its
+    state, exit code, and the last lines of its logs, redacted. Never fails; an
+    unavailable part is described instead. *)
 
 val image_reference : image -> string
 val image_id : image -> string

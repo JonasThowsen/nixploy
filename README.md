@@ -152,8 +152,13 @@ using the **same SSH account and login directory** coordinate through an atomic
 directory under `.nixploy-mutations/`. This is uncertainty evidence, not an
 expiring lease; different SSH accounts are not coordinated by this mechanism.
 
-Errors after guard acquisition conservatively leave the marker and block further
-mutations, even when a failure might have occurred before changing the application.
+A deploy that fails while the remote state is known releases the marker, so a
+corrected deploy can run right away. That covers failures before any application
+container is touched (evaluation, build, image load, secrets), a pre-start command
+with a known nonzero exit, and a failed candidate that was removed with the route
+restored and read back. The failure reports the candidate's state, exit code and
+last log lines (redacted), or the pre-start command's last output. Any other
+error after guard acquisition leaves the marker and blocks further mutations.
 Disconnects, cancellation, and elapsed time do not permit automatic takeover.
 Inspect remote containers, routes, and possibly still-running commands, reconcile
 their effects, and ensure no operator is still acting before manually removing
