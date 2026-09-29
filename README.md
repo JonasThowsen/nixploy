@@ -25,6 +25,24 @@ systemd.user.services.podman-restart.wantedBy = [ "default.target" ];
 services.caddy.resume = true; # web targets only
 ```
 
+A container copies the host's `/etc/resolv.conf` when it starts. If the host's
+DNS is written late, for example by Tailscale MagicDNS, `podman-restart` can
+start the containers first and they come up with no nameserver until they are
+restarted. Make it wait for one:
+
+```nix
+systemd.user.services.podman-restart.serviceConfig = {
+  ExecStartPre = "${pkgs.writeShellScript "wait-for-nameserver" ''
+    for _ in $(${pkgs.coreutils}/bin/seq 120); do
+      ${pkgs.gnugrep}/bin/grep -q '^nameserver' /etc/resolv.conf && exit 0
+      ${pkgs.coreutils}/bin/sleep 1
+    done
+    echo "no nameserver in /etc/resolv.conf after 120 s; starting containers anyway" >&2
+  ''}";
+  TimeoutStartSec = "5min";
+};
+```
+
 `deploy` and `status` check these settings read-only and warn when a target
 would not come back after a reboot. Containers deployed before the restart policy was
 introduced gain it on their next deployment.
