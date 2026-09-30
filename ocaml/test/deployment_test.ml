@@ -1216,7 +1216,8 @@ exit 99
       clear_scenario ();
       let%bind refused =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:false
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:false
       in
       expect_error_containing refused "NIXPLOY_PRUNE_CONFIRMATION_REQUIRED";
       [%test_eq: int] 0 (List.length (In_channel.read_lines trace));
@@ -1224,7 +1225,8 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_UNOWNED" "1";
       let%bind foreign =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true
       in
       expect_error_containing foreign "not owned by this repository";
       [%test_eq: int] 0 (count (In_channel.read_lines trace) "|rm|-f|");
@@ -1232,7 +1234,8 @@ exit 99
       clear_scenario ();
       let%bind pruned =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true
       in
       let pruned = assert_ok pruned in
       [%test_eq: int] 1 (Nixploy.Application.prune_containers_removed pruned);
@@ -1247,7 +1250,8 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_RUNNING" "1";
       let%bind running =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true
       in
       expect_error_containing running "NIXPLOY_PRUNE_ACTIVE";
       [%test_eq: int] 0 (count (In_channel.read_lines trace) "|rm|-f|");
@@ -1262,7 +1266,8 @@ exit 99
       write route_state "8080\nworker.example.invalid\n";
       let%bind routed =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true ~dry_run:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true ~dry_run:true
       in
       expect_error_containing routed "nixploy stop -t worker";
       let lines = In_channel.read_lines trace in
@@ -1298,7 +1303,8 @@ exit 99
       write trace "";
       let%bind pruned_after_stop =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true
       in
       let pruned_after_stop = assert_ok pruned_after_stop in
       assert (
@@ -1315,7 +1321,8 @@ exit 99
       Caml_unix.putenv "NIXPLOY_TEST_FAIL_RETIREMENT" "old-slot-id";
       let%bind partial =
         Nixploy.Application.prune_local application
-          ~working_directory:repository ~target ~confirmed:true
+          ~mode:Nixploy.Application.Everything ~working_directory:repository
+          ~target ~confirmed:true
       in
       expect_error_containing partial "NIXPLOY_MUTATION_UNCERTAIN";
       let lines = In_channel.read_lines trace in

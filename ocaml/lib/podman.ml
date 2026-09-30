@@ -2129,7 +2129,7 @@ let read_storage_usage ~connection =
 type host_info = {
   cpus : int option;
   memory_total_bytes : int64 option;
-  memory_free_bytes : int64 option;
+  memory_available_bytes : int64 option;
   graph_root : string option;
 }
 
@@ -2156,7 +2156,9 @@ let parse_host_info output =
         {
           cpus = int64 host "cpus" |> Option.map ~f:Int64.to_int_exn;
           memory_total_bytes = int64 host "memTotal";
-          memory_free_bytes = int64 host "memFree";
+          (* Podman reports MemFree, which excludes reclaimable page cache;
+             status reads MemAvailable from /proc/meminfo instead. *)
+          memory_available_bytes = None;
           graph_root = label (section "store") "graphRoot";
         }
   | _ -> Or_error.error_string "Podman info must be a JSON object"

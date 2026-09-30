@@ -45,15 +45,15 @@ let status status =
   bprintf buffer "Host:     %s@%s:%d%s\n" (Target.user target)
     (Target.host target) (Target.port target)
     (match host with
-    | Ok { cpus; memory_total_bytes; memory_free_bytes; _ } ->
+    | Ok { cpus; memory_total_bytes; memory_available_bytes; _ } ->
         let parts =
           List.filter_opt
             [
               Option.map cpus ~f:(sprintf "%d CPUs");
               Option.map memory_total_bytes ~f:(fun total ->
                   sprintf "%s memory" (human total));
-              Option.map memory_free_bytes ~f:(fun free ->
-                  sprintf "%s free" (human free));
+              Option.map memory_available_bytes ~f:(fun available ->
+                  sprintf "%s available" (human available));
             ]
         in
         if List.is_empty parts then ""
@@ -283,8 +283,8 @@ let status_value status =
             ( "memoryTotalBytes",
               Option.value_map host.memory_total_bytes ~default:`Null
                 ~f:json_int64 );
-            ( "memoryFreeBytes",
-              Option.value_map host.memory_free_bytes ~default:`Null
+            ( "memoryAvailableBytes",
+              Option.value_map host.memory_available_bytes ~default:`Null
                 ~f:json_int64 );
           ])
   in
@@ -637,7 +637,8 @@ let stopped_text ~label ~route_removed ~containers =
   | containers ->
       List.iter containers
         ~f:(bprintf buffer "  container  %s (restart disabled)\n"));
-  bprintf buffer "Deploy to start it again, or prune with --yes to remove it.\n";
+  bprintf buffer
+    "Deploy to start it again, or `nixploy prune --all --yes` to remove it.\n";
   Buffer.contents buffer
 
 let stop result =

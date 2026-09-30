@@ -433,8 +433,8 @@ let host_readiness ~working_directory ~target =
   let%bind.Deferred.Or_error target = load_target ~working_directory ~target in
   Host_readiness.inspect ~target |> Deferred.ok
 
-let prune_local ?(mode = Everything) ?(dry_run = false) t ~working_directory
-    ~target ~confirmed =
+let prune_local ?(mode = Stale { keep = 2 }) ?(dry_run = false) t
+    ~working_directory ~target ~confirmed =
   let open Deferred.Or_error.Let_syntax in
   let%bind working_directory =
     Deferred.return (canonical_working_directory working_directory)

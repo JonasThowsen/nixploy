@@ -121,8 +121,8 @@ val prune_local :
   confirmed:bool ->
   prune_result Deferred.Or_error.t
 (** Explicit scoped cleanup using the same durable remote guard as deploy/run.
-    [mode] defaults to [Everything]. A dry run needs no confirmation, takes no
-    guard, and changes nothing. *)
+    [mode] defaults to [Stale { keep = 2 }]. A dry run needs no confirmation,
+    takes no guard, and changes nothing. *)
 
 val dry_run_local_deployment :
   working_directory:string ->

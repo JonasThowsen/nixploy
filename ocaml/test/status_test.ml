@@ -74,6 +74,7 @@ last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
   "'true'") : ;;
+  "'cat' '/proc/meminfo'") printf 'MemTotal:        8388608 kB\nMemFree:         2097152 kB\nMemAvailable:    5242880 kB\n' ;;
   "'id' '-u'") printf '1001\n' ;;
   "'loginctl' 'show-user' 'deployer' '--property=Linger' '--value'") printf 'yes\n' ;;
   "'systemctl' '--user' 'is-enabled' 'podman-restart.service'") printf 'disabled\n'; exit 1 ;;
@@ -185,7 +186,7 @@ esac
         [
           "Project:  sample";
           resource_key;
-          "(4 CPUs, 8.0 GiB memory, 2.0 GiB free)";
+          "(4 CPUs, 8.0 GiB memory, 5.0 GiB available)";
           "Up 3 hours";
           "1.5%";
           "256.0 MiB / 1.0 GiB";
@@ -232,9 +233,7 @@ esac
           ] ~how:`Sequential ~f:(fun mode ->
             clear_scenario ();
             Caml_unix.putenv "NIXPLOY_TEST_LABEL_MODE" mode;
-            let%map inspected =
-              Nixploy.Application.live_status ~scope
-            in
+            let%map inspected = Nixploy.Application.live_status ~scope in
             expect_error_containing inspected
               "ownership does not match this repository and resource")
       in

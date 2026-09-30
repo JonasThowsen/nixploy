@@ -111,8 +111,10 @@ let stale_route ~target route =
 
 let active_error ~target =
   Or_error.errorf
-    "NIXPLOY_PRUNE_ACTIVE: target %s is still live; run `nixploy stop -t %s` \
-     first. Prune never removes a route or a running application."
+    "NIXPLOY_PRUNE_ACTIVE: target %s is still live, so --all would remove it. \
+     Plain `nixploy prune -t %s` removes only what the live deployment does \
+     not use; to remove everything, run `nixploy stop -t %s` first."
+    (Target_name.to_string (Configuration.Target.name target))
     (Target_name.to_string (Configuration.Target.name target))
     (Target_name.to_string (Configuration.Target.name target))
 

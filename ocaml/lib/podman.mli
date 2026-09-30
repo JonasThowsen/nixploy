@@ -57,7 +57,7 @@ type storage_usage = {
 type host_info = {
   cpus : int option;
   memory_total_bytes : int64 option;
-  memory_free_bytes : int64 option;
+  memory_available_bytes : int64 option;
   graph_root : string option;
 }
 

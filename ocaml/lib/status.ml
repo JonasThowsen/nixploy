@@ -87,6 +87,26 @@ let read_disk ~target ~path =
         (Core_unix.Exit_or_signal.to_string_hum (Error failure))
         (String.strip result.stderr)
 
+let parse_mem_available output =
+  String.split_lines output
+  |> List.find_map ~f:(fun line ->
+      match
+        String.split line ~on:' ' |> List.filter ~f:(Fn.non String.is_empty)
+      with
+      | [ "MemAvailable:"; kilobytes; "kB" ] ->
+          Int64.of_string_opt kilobytes
+          |> Option.map ~f:(fun kilobytes -> Int64.(kilobytes * 1024L))
+      | _ -> None)
+
+let read_mem_available ~target =
+  let%map.Deferred result =
+    Remote_command.run ~target ~timeout:query_timeout ~max_output_bytes:65_536
+      [ "cat"; "/proc/meminfo" ]
+  in
+  match result with
+  | Ok { exit_status = Ok (); stdout; _ } -> parse_mem_available stdout
+  | _ -> None
+
 let slot_of_port web port =
   if Int.equal port (Configuration.Web.blue_port web) then
     Some Deployment_plan.Blue
@@ -291,7 +311,7 @@ let issues t =
     if stopped t then
       [
         "target is stopped (`nixploy stop`): deploy to start it again, or \
-         `nixploy prune --yes` to remove it";
+         `nixploy prune --all --yes` to remove it";
       ]
     else not_running @ deployment @ restart @ unrouted
   in
@@ -365,7 +385,12 @@ let load ~working_directory ~target:target_name =
   let%map images = Podman.list_owned_images ~connection ~resource_key
   and storage = Podman.read_storage_usage ~connection
   and host, disk =
-    let%bind host = Podman.read_host_info ~connection in
+    let%bind host = Podman.read_host_info ~connection
+    and mem_available = read_mem_available ~target in
+    let host =
+      Or_error.map host ~f:(fun host ->
+          { host with Podman.memory_available_bytes = mem_available })
+    in
     let%map disk =
       match host with
       | Ok { graph_root = Some path; _ } -> read_disk ~target ~path
@@ -413,6 +438,8 @@ let load ~working_directory ~target:target_name =
     }
 
 module For_testing = struct
+  let parse_mem_available = parse_mem_available
+
   let create ~project ~target ~resource_key ~containers ~route ~secrets ~disk
       ~guard ~readiness =
     let not_observed = Or_error.error_string "not observed" in

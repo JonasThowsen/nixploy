@@ -6,10 +6,11 @@ type route = Not_configured | Missing | Kept [@@deriving compare, equal, sexp]
 
 type mode =
   | Everything
-      (** Owned containers, owned secrets and owned image references of a target
-          that [nixploy stop] has taken offline. *)
+      (** [prune --all]: owned containers, owned secrets and owned image
+          references of a target that [nixploy stop] has taken offline. *)
   | Stale of { keep : int }
-      (** Only resources the live deployment does not use; see {!Stale_plan}. *)
+      (** The default: only resources the live deployment does not use; see
+          {!Stale_plan}. *)
 [@@deriving compare, equal, sexp]
 
 type t

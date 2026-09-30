@@ -112,32 +112,37 @@ let logs_command =
 let prune_command =
   Async.Command.async
     ~summary:
-      "Remove a stopped target's containers, secrets and images, or only stale \
-       ones"
+      "Remove what the live deployment does not use, or all of a stopped target"
     ~readme:(fun () ->
-      "Prune never removes a Caddy route or a running application: run \
-       `nixploy stop` first. Without --stale, removes everything a stopped \
-       target owns: containers, fully owned secrets and owned image \
-       references; it refuses while the route exists or a container runs. With \
-       --stale, removes only what the live deployment does not use: containers \
-       the route does not serve, owned secrets no retained container mounts, \
-       and owned images beyond the newest --keep. With --orphan KEY, removes \
-       one stopped resource key listed by `nixploy resources` whose target \
-       this flake no longer declares. Unlabelled secrets, other images, \
-       volumes and data are always retained. Pass --dry-run to preview without \
-       changing anything, or --yes to remove.")
+      "By default, removes only what the live deployment does not use: \
+       containers the route does not serve, owned secrets no retained \
+       container mounts, and owned images beyond those in use and the newest \
+       --keep (default 2). The route, the running application and its image \
+       are never touched. With --all, removes everything a target owns \
+       (containers, fully owned secrets and owned image references) after \
+       `nixploy stop` has taken it offline; it refuses while the route exists \
+       or a container runs. With --orphan KEY, removes one stopped resource \
+       key listed by `nixploy resources` whose target this flake no longer \
+       declares. Unlabelled secrets, other images, volumes and data are always \
+       retained. Pass --dry-run to preview without changing anything, or --yes \
+       to remove.")
     (let%map_open.Command flags = common_flags
      and confirmed =
        flag "--yes" no_arg ~doc:" confirm removal without prompting"
      and dry_run =
        flag "--dry-run" no_arg
          ~doc:" show what would be removed; change nothing"
+     and all =
+       flag "--all" no_arg
+         ~doc:
+           " remove everything a stopped target owns (run `nixploy stop` first)"
      and stale =
        flag "--stale" no_arg
-         ~doc:" remove only resources the live deployment does not use"
+         ~doc:" remove only what the live deployment does not use (the default)"
      and keep =
        flag "--keep" (optional int)
-         ~doc:"COUNT newest owned images to keep with --stale (default 2)"
+         ~doc:
+           "COUNT newest owned images to keep besides those in use (default 2)"
      and orphan =
        flag "--orphan" (optional string)
          ~doc:
@@ -150,13 +155,15 @@ let prune_command =
            ( [ `Orphan of string | `Target of Application.prune_mode ],
              string )
            Result.t =
-         match (stale, keep, orphan) with
-         | true, _, Some _ | false, Some _, Some _ ->
-             Error "--orphan cannot be combined with --stale or --keep"
-         | false, None, Some key -> Ok (`Orphan key)
-         | false, None, None -> Ok (`Target Application.Everything)
-         | false, Some _, None -> Error "--keep requires --stale"
-         | true, keep, None ->
+         match (all, stale, keep, orphan) with
+         | _, _, _, Some _ when all || stale || Option.is_some keep ->
+             Error "--orphan cannot be combined with --all, --stale or --keep"
+         | false, false, None, Some key -> Ok (`Orphan key)
+         | true, true, _, _ -> Error "--all and --stale are alternatives"
+         | true, _, Some _, _ ->
+             Error "--keep applies to the default stale cleanup, not --all"
+         | true, false, None, _ -> Ok (`Target Application.Everything)
+         | false, _, keep, _ ->
              let keep = Option.value keep ~default:2 in
              if keep < 1 then Error "--keep must be at least 1"
              else Ok (`Target (Application.Stale { keep }))
@@ -211,9 +218,9 @@ let stop_command =
       "Removes the target's owned Caddy route first, then sets each owned \
        container's restart policy to no and stops it, so it stays down after a \
        reboot. Nothing is deleted: `nixploy deploy` starts the target again, \
-       and `nixploy prune --yes` removes a stopped target. With --orphan KEY, \
-       stops a resource key listed by `nixploy resources` whose target this \
-       flake no longer declares.")
+       and `nixploy prune --all --yes` removes a stopped target. With --orphan \
+       KEY, stops a resource key listed by `nixploy resources` whose target \
+       this flake no longer declares.")
     (let%map_open.Command flags = common_flags
      and orphan =
        flag "--orphan" (optional string)

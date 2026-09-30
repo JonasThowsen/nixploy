@@ -1159,6 +1159,13 @@ let%test_module "status parsing and issues" =
         |> assert_ok
       in
       [%test_eq: int option] (Some 4) host.cpus;
+      [%test_eq: int64 option] (Some 5_368_709_120L)
+        (Status.For_testing.parse_mem_available
+           "MemTotal:        7937412 kB\n\
+            MemFree:         2097152 kB\n\
+            MemAvailable:    5242880 kB\n");
+      [%test_eq: int64 option] None
+        (Status.For_testing.parse_mem_available "MemTotal: 1 kB\n");
       [%test_eq: string option]
         (Some "/home/nixploy/.local/share/containers/storage") host.graph_root;
       let disk =

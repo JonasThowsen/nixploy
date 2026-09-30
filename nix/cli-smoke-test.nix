@@ -303,22 +303,26 @@ pkgs.testers.runNixOSTest {
 
     with subtest("explicit scoped cleanup"):
         machine.fail(command("prune", "worker"))
-        code, output = machine.execute(command("prune", "worker", "--yes") + " 2>&1")
+        # Plain prune only removes what the live deployment does not use.
+        kept = json.loads(machine.succeed(command("prune", "worker", "--yes --json")))
+        assert kept["mode"] == "stale", kept
+        machine.succeed(command("run", "worker", "probe"))
+        code, output = machine.execute(command("prune", "worker", "--all --yes") + " 2>&1")
         assert code != 0 and "NIXPLOY_PRUNE_ACTIVE" in output, output
         machine.succeed(command("stop", "worker"))
         worker_status = json.loads(machine.succeed(command("status", "worker", "--json")))
         assert worker_status["stopped"], worker_status
-        machine.succeed(command("prune", "worker", "--yes"))
+        machine.succeed(command("prune", "worker", "--all --yes"))
         machine.fail(command("run", "worker", "probe"))
         machine.succeed(command("run", "web", "probe"))
-        code, output = machine.execute(command("prune", "web", "--yes") + " 2>&1")
+        code, output = machine.execute(command("prune", "web", "--all --yes") + " 2>&1")
         assert code != 0 and "NIXPLOY_PRUNE_ACTIVE" in output, output
         machine.succeed("curl --fail -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
         stopped = json.loads(machine.succeed(command("stop", "web", "--json")))
         assert stopped["routeRemoved"] and len(stopped["containers"]) == 1, stopped
         # Caddy answers unmatched hosts with an empty 200, so check the body.
         machine.fail("curl --silent -H 'Host: app.test' http://127.0.0.1/health | grep healthy")
-        machine.succeed(command("prune", "web", "--yes"))
+        machine.succeed(command("prune", "web", "--all --yes"))
         machine.succeed("curl --fail http://127.0.0.1:8088 | grep 'unrelated application'")
         assert machine.succeed("podman ps --filter label=io.nixploy.managed=true --format '{{.ID}}'").strip() == ""
         assert "localhost/nixploy/" not in machine.succeed("podman images --format '{{.Repository}}'")

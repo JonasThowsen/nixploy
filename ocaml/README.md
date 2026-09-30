@@ -68,10 +68,10 @@ stdin/TTY explicitly, and may merge output streams.
 `lib/stop.mli` takes a target offline: route first, then each owned container with
 its restart policy set to `no`. Prune requires explicit confirmation (or a read-only
 `--dry-run`) and exact resource ownership, and never removes a route or a running
-application. It preflights ownership before removing a stopped target's owned
-containers, fully owned secrets, and owned image references, or,
-with `--stale`, only what `lib/stale_plan.mli` decides the live deployment no
-longer uses. Unlabelled secrets, unowned images, volumes, and data are retained.
+application. It preflights ownership before removing, by default, only what
+`lib/stale_plan.mli` decides the live deployment no longer uses, or, with `--all`,
+a stopped target's owned containers, fully owned secrets, and owned image
+references. Unlabelled secrets, unowned images, volumes, and data are retained.
 `lib/inventory.mli` classifies every nixploy resource on a host against the local
 flake; `lib/orphan_prune.mli` removes one undeclared resource key under its own
 guard after re-observing the host. Local

@@ -68,6 +68,9 @@ val issues : t -> string list
     Empty means nothing needs attention. *)
 
 module For_testing : sig
+  val parse_mem_available : string -> int64 option
+  (** [MemAvailable] from [/proc/meminfo], in bytes. *)
+
   val create :
     project:Project_name.t ->
     target:Configuration.Target.t ->

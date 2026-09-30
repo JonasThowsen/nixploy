@@ -47,8 +47,9 @@ nixploy status --target production
 nixploy logs --target production
 nixploy history --target production
 nixploy stop --target production
+nixploy prune --target production --dry-run
 nixploy prune --target production --yes
-nixploy prune --target production --stale --dry-run
+nixploy prune --target production --all --yes
 nixploy resources --target production
 nixploy prune --target production --orphan RESOURCE_KEY --dry-run
 nixploy runbook --target production
@@ -110,11 +111,12 @@ target again. Status reports a stopped target as such.
 
 Prune requires `--yes` or `--dry-run` without prompting, checks exact ownership, and
 preflights ownership before removing anything. Prune never removes a Caddy route or
-a running application. By default it removes a stopped target's owned containers,
-fully owned secrets, and owned image references, and refuses (`NIXPLOY_PRUNE_ACTIVE`)
+a running application. `--all` removes a stopped target's owned containers, fully
+owned secrets, and owned image references, and refuses (`NIXPLOY_PRUNE_ACTIVE`)
 while the owned route exists or an owned container runs. Prune observes and plans
 read-only before taking the mutation guard, so such a refusal leaves no marker;
-the guarded run observes again before removing anything. `--stale` removes only what the live deployment
+the guarded run observes again before removing anything. By default (`--stale`
+is accepted as an explicit synonym) prune removes only what the live deployment
 does not use: containers in a placement the owned route does not serve, owned
 secrets that no retained container mounts, and owned images beyond those in use and
 the newest `--keep` (default 2). When the live slot cannot be identified (missing

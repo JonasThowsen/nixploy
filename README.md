@@ -110,15 +110,15 @@ nixploy runbook --target production
 nixploy run --target production migrate
 nixploy run --target production console
 
-# Preview, then remove what the live deployment no longer uses: unserved
+# Preview, then remove what the live deployment does not use: unserved
 # containers, unmounted owned secrets, and owned images beyond the newest two.
-nixploy prune --target production --stale --dry-run
-nixploy prune --target production --stale --yes
+nixploy prune --target production --dry-run
+nixploy prune --target production --yes
 
 # Take a target offline (route removed, containers stopped, restart disabled),
-# then remove its containers, secrets, and images. Prune refuses a live target.
+# then remove all its containers, secrets, and images. --all refuses a live target.
 nixploy stop --target production
-nixploy prune --target production --yes
+nixploy prune --target production --all --yes
 
 # Everything nixploy owns on the target's host, including renamed or deleted
 # targets and other projects; then remove one leftover by its resource key.
@@ -230,13 +230,14 @@ is what you expect, then unlock and redeploy to fix any remaining issues. See
 [MIGRATION.md](MIGRATION.md). Never blindly retry a migration.
 
 Prune requires `--yes` (or `--dry-run` to preview) and checks exact ownership
-before removal. It never removes a Caddy route or a running application: take a
-target offline with `stop` first, which removes its route and stops its containers
-with restart disabled; `deploy` brings a stopped target back. Without `--stale`,
-prune removes a stopped target's owned containers, fully owned secrets, and owned
-images. With `--stale` it keeps the live
-deployment and removes only what it no longer uses; `--keep` sets how many recent
-owned images survive. Deploy tags images into `localhost/nixploy/<resource key>`,
+before removal. It never removes a Caddy route or a running application. By
+default it keeps the live deployment (route, serving container, its image and
+secrets) and removes only what that deployment does not use; `--keep` sets how
+many recent owned images survive besides those in use. To remove a target
+entirely, take it offline with `stop` first, which removes its route and stops its
+containers with restart disabled, then run `prune --all`, which removes its owned
+containers, fully owned secrets, and owned images; `deploy` brings a stopped
+target back. Deploy tags images into `localhost/nixploy/<resource key>`,
 so images loaded before that change are not owned and are never pruned. Volumes
 and data are always retained.
 
