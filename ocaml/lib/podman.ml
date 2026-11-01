@@ -1453,24 +1453,28 @@ let exec_runbook ~connection ~container ~command =
       ~args:(runbook_argv ~connection ~container_id:container.id ~command)
       ()
 
+(* With --since, Podman returns the newest --tail lines of that window. Asking
+   for one line more than is kept lets [bound_logs] keep the newest [max_lines]
+   and report a longer window as truncated. *)
+let logs_argv ~connection ~max_lines ~since ~container_id =
+  let tail, since =
+    match since with
+    | None -> (max_lines, [])
+    | Some since -> (max_lines + 1, [ "--since"; Log_since.to_string since ])
+  in
+  [ "--connection"; connection; "logs"; "--tail"; Int.to_string tail ]
+  @ since
+  @ [ "--timestamps"; container_id ]
+
 let read_container_logs ?ignore_termination ?(max_bytes = 65_536)
-    ?(max_lines = 500) ~connection container_id =
+    ?(max_lines = 500) ?since ~connection container_id =
   let open Deferred.Or_error.Let_syntax in
   let%bind result =
     Process_runner.run ?ignore_termination
       ~env:(Tool_environment.podman ())
       ~timeout:(Time_ns.Span.of_sec 30.) ~max_output_bytes:262_144
       ~prog:"podman"
-      ~args:
-        [
-          "--connection";
-          connection;
-          "logs";
-          "--tail";
-          Int.to_string max_lines;
-          "--timestamps";
-          container_id;
-        ]
+      ~args:(logs_argv ~connection ~max_lines ~since ~container_id)
       ()
   in
   match result.exit_status with
@@ -1485,8 +1489,8 @@ let read_container_logs ?ignore_termination ?(max_bytes = 65_536)
       in
       Deferred.Or_error.return (bound_logs ~max_bytes ~max_lines output)
 
-let read_logs ~connection ~container =
-  read_container_logs ~connection container.id
+let read_logs ?since ~connection ~container () =
+  read_container_logs ?since ~connection container.id
 
 let failed_candidate_state ~connection ~(candidate : candidate) =
   let%map.Deferred.Or_error inspected =
@@ -2234,6 +2238,11 @@ module For_testing = struct
   let runbook_argv = runbook_argv
   let pre_start_argvs = pre_start_argvs
   let runtime_argv = runtime_argv
+  let logs_argv = logs_argv
+
+  let read_container_logs ?since ~connection container_id =
+    read_container_logs ?since ~connection container_id
+
   let loaded_reference = loaded_reference
   let resource_keys_of_containers = resource_keys_of_containers
   let parse_stats = parse_stats

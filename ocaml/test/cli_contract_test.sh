@@ -31,6 +31,7 @@ for flag in '--target TARGET' '--directory DIRECTORY' '--json' '--yes'; do
   grep -F -- "$flag" <<<"$unlock_help" >/dev/null
 done
 ! grep -F -- '--state-db' <<<"$unlock_help" >/dev/null
+$executable logs --help | grep -F -- '--since TIME' >/dev/null
 
 root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
@@ -45,6 +46,7 @@ git -C "$repo" add flake.nix flake.lock
 git -C "$repo" commit -m fixture >/dev/null
 cat > "$root/bin/nix" <<'EOF'
 #!/bin/sh
+if [ -n "${CALLS:-}" ]; then printf 'nix %s\n' "$*" >> "$CALLS"; fi
 set -eu
 if [ "${OBSOLETE:-}" = 1 ]; then
   printf '%s\n' '{"__schema":"v0.4","project":"fixture","controlPlane":{"authorityAlias":"old","managedApplicationKey":"fixture"},"targets":{"test":{"image":"image","ip":"test.invalid"}}}'
@@ -54,6 +56,7 @@ fi
 EOF
 cat > "$root/bin/ssh" <<'EOF'
 #!/bin/sh
+if [ -n "${CALLS:-}" ]; then printf 'ssh %s\n' "$*" >> "$CALLS"; fi
 case "$*" in
   *"'podman' 'ps'"*) printf '[]\n'; exit 0 ;;
   *"'true'"*) exit 0 ;;
@@ -63,6 +66,7 @@ exit 99
 EOF
 cat > "$root/bin/podman" <<'EOF'
 #!/bin/sh
+if [ -n "${CALLS:-}" ]; then printf 'podman %s\n' "$*" >> "$CALLS"; fi
 case "$*" in
   'system connection list --format json'|*' ps --all '*) printf '[]\n' ;;
   'system connection add '*|*' info') exit 0 ;;
@@ -100,6 +104,25 @@ for arguments in '--all --keep 2 --yes' '--all --stale --yes' '--keep 0 --dry-ru
   test ! -s "$root/out"
 done
 
+# An invalid --since is refused before the flake, SSH or Podman is touched.
+for since in yesterday 10m 2026-11-01 '2026-11-01T10:00:00' '2026-02-30T10:00:00Z'; do
+  set +e
+  CALLS="$root/calls" $executable logs -t test -C "$repo" --since "$since" >"$root/out" 2>"$root/err"
+  code=$?
+  set -e
+  test "$code" = 2
+  test ! -s "$root/out"
+  grep -F 'is not an RFC 3339 instant' "$root/err" >/dev/null
+  test ! -e "$root/calls"
+done
+set +e
+CALLS="$root/calls" $executable logs -t test -C "$repo" --since yesterday --json >"$root/out" 2>"$root/err"
+code=$?
+set -e
+test "$code" = 2
+test "$(cat "$root/out")" = '{"error":{"code":null,"message":"since time \"yesterday\" is not an RFC 3339 instant such as 2026-11-01T10:00:00Z"}}'
+test ! -e "$root/calls"
+
 $executable history -t test -C "$repo" --state-db "$root/state.sqlite" --json >"$root/out" 2>"$root/err"
 test "$(cat "$root/out")" = '[]'
 test ! -s "$root/err"
@@ -121,4 +144,4 @@ grep -F '{"error":{"code":' "$root/out" >/dev/null
 grep -F 'controlPlane' "$root/out" >/dev/null
 grep -F 'controlPlane' "$root/err" >/dev/null
 ! grep -F 'unexpected remote access' "$root/err" >/dev/null
-printf 'CLI contract: direct-only help, confirmation, JSON history, migration rejection, separated diagnostics passed\n'
+printf 'CLI contract: direct-only help, confirmation, logs --since refusal, JSON history, migration rejection, separated diagnostics passed\n'

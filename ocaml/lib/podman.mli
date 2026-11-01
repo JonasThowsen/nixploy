@@ -258,9 +258,14 @@ val find_running_slot :
   runtime_container Deferred.Or_error.t
 
 val read_logs :
+  ?since:Log_since.t ->
   connection:string ->
   container:runtime_container ->
+  unit ->
   log_snapshot Deferred.Or_error.t
+(** Reads at most the newest 500 lines and 64 KiB of the container's logs, with
+    their timestamps and credentials redacted. With [since], only lines from
+    that instant on are read. [truncated] is set when anything was cut. *)
 
 val exec_runbook :
   connection:string ->
@@ -415,6 +420,19 @@ module For_testing : sig
     labels:(string * string) list ->
     image_reference:string ->
     string list
+
+  val logs_argv :
+    connection:string ->
+    max_lines:int ->
+    since:Log_since.t option ->
+    container_id:string ->
+    string list
+
+  val read_container_logs :
+    ?since:Log_since.t ->
+    connection:string ->
+    string ->
+    log_snapshot Deferred.Or_error.t
 
   val loaded_reference : string -> string Or_error.t
 

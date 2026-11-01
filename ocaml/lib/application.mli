@@ -177,9 +177,13 @@ val local_history :
   deployment list Deferred.Or_error.t
 
 val local_logs :
+  ?since:Log_since.t ->
   working_directory:string ->
   target:Target_name.t ->
+  unit ->
   log_snapshot Deferred.Or_error.t
+(** A bounded snapshot of the owned running container's logs, from [since] on
+    when given. *)
 
 val resource_state_for_scope :
   t -> scope:scope -> resource_state Deferred.Or_error.t

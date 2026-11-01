@@ -536,7 +536,7 @@ let resource_state_for_scope t ~(scope : scope) =
   Store.resource_state t.store ~working_directory:scope.working_directory
     ~target:scope.target
 
-let local_logs ~working_directory ~target:target_name =
+let local_logs ?since ~working_directory ~target:target_name () =
   let open Deferred.Or_error.Let_syntax in
   let%bind configuration = Nix_configuration.load ~working_directory in
   let%bind () =
@@ -563,7 +563,7 @@ let local_logs ~working_directory ~target:target_name =
   in
   let connection = Runbook_runtime.connection runtime in
   let container = Runbook_runtime.container runtime in
-  let%map logs = Podman.read_logs ~connection ~container in
+  let%map logs = Podman.read_logs ?since ~connection ~container () in
   {
     container_name = Podman.runtime_container_name container;
     revision = Podman.runtime_container_revision container;

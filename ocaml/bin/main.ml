@@ -93,21 +93,38 @@ let history_command =
 let logs_command =
   Async.Command.async
     ~summary:"Read a bounded snapshot of the owned running container's logs"
-    (let%map_open.Command flags = common_flags in
+    (let%map_open.Command flags = common_flags
+     and since =
+       flag "--since" (optional string)
+         ~doc:
+           "TIME only lines from this RFC 3339 instant on, such as \
+            2026-11-01T10:00:00Z"
+     in
      fun () ->
        let target, working_directory, _state_db, json = flags in
-       with_target ~json ~target (fun target ->
-           let open Deferred.Or_error.Let_syntax in
-           let%map logs = Application.local_logs ~working_directory ~target in
-           if json then printf "%s%!" (Inspection_output.logs_json logs)
-           else (
-             eprintf "Container: %s%s\n%!" logs.container_name
-               (if logs.truncated then " (truncated)" else "");
-             List.iter logs.lines ~f:(fun line ->
-                 printf "%s%s\n%!"
-                   (Option.value_map line.timestamp ~default:""
-                      ~f:(fun timestamp -> timestamp ^ " "))
-                   line.text))))
+       let since =
+         match since with
+         | None -> Ok None
+         | Some since ->
+             Nixploy.Log_since.of_string since |> Or_error.map ~f:Option.some
+       in
+       match since with
+       | Error error -> fail ~exit_code:2 ~json error
+       | Ok since ->
+           with_target ~json ~target (fun target ->
+               let open Deferred.Or_error.Let_syntax in
+               let%map logs =
+                 Application.local_logs ?since ~working_directory ~target ()
+               in
+               if json then printf "%s%!" (Inspection_output.logs_json logs)
+               else (
+                 eprintf "Container: %s%s\n%!" logs.container_name
+                   (if logs.truncated then " (truncated)" else "");
+                 List.iter logs.lines ~f:(fun line ->
+                     printf "%s%s\n%!"
+                       (Option.value_map line.timestamp ~default:""
+                          ~f:(fun timestamp -> timestamp ^ " "))
+                       line.text))))
 
 let prune_command =
   Async.Command.async

@@ -1021,6 +1021,88 @@ let%test_unit "runtime logs preserve timestamps and bound retained lines" =
   [%test_eq: string] {|{"token":"[REDACTED]","authorization":"[REDACTED]"}|}
     (List.hd_exn structured.lines).text
 
+let%test_unit "logs since accepts RFC 3339 instants and gives Podman UTC" =
+  let canonical value =
+    Nixploy.Log_since.of_string value
+    |> assert_ok |> Nixploy.Log_since.to_string
+  in
+  [%test_eq: string] "2026-11-01T10:00:00Z" (canonical "2026-11-01T10:00:00Z");
+  [%test_eq: string] "2026-11-01T10:00:00Z" (canonical "2026-11-01t10:00:00z");
+  [%test_eq: string] "2026-11-01T10:00:00Z"
+    (canonical "2026-11-01T12:00:00+02:00");
+  [%test_eq: string] "2026-11-01T00:30:00Z"
+    (canonical "2026-10-31T23:00:00-01:30");
+  [%test_eq: string] "2026-11-01T10:00:00.5Z"
+    (canonical "2026-11-01T10:00:00.500Z");
+  [%test_eq: string] "2026-11-01T10:00:00.000000001Z"
+    (canonical "2026-11-01T10:00:00.000000001Z");
+  [%test_eq: string] "2028-02-29T00:00:00Z" (canonical "2028-02-29T00:00:00Z")
+
+let%test_unit "logs since refuses anything but an RFC 3339 instant" =
+  List.iter
+    [
+      "";
+      "yesterday";
+      "10m";
+      "1761991200";
+      "2026-11-01";
+      "2026-11-01T10:00Z";
+      "2026-11-01T10:00:00";
+      "2026-11-01 10:00:00Z";
+      "2026-11-01T10:00:00+0200";
+      "2026-11-01T10:00:00+24:00";
+      "2026-11-01T10:00:00.Z";
+      "2026-11-01T10:00:00.0000000001Z";
+      "2026-11-01T10:00:00Z ";
+      "2026-13-01T10:00:00Z";
+      "2026-02-29T10:00:00Z";
+      "2026-11-31T10:00:00Z";
+      "2026-11-01T24:00:00Z";
+      "2026-11-01T10:60:00Z";
+      "2026-11-01T10:00:60Z";
+      "1969-12-31T23:59:59Z";
+      "2101-01-01T00:00:00Z";
+      "+2026-11-01T10:00:00Z";
+    ] ~f:(fun value ->
+      match Nixploy.Log_since.of_string value with
+      | Ok _ -> failwithf "accepted %S" value ()
+      | Error error ->
+          assert (
+            String.is_substring
+              (Error.to_string_hum error)
+              ~substring:"RFC 3339"))
+
+let%test_unit "Podman logs argv asks for one line more only with since" =
+  let argv since =
+    Nixploy.Podman.For_testing.logs_argv ~connection:"connection" ~max_lines:500
+      ~since ~container_id:"container-id"
+  in
+  [%test_eq: string list]
+    [
+      "--connection";
+      "connection";
+      "logs";
+      "--tail";
+      "500";
+      "--timestamps";
+      "container-id";
+    ]
+    (argv None);
+  let since = Nixploy.Log_since.of_string "2026-11-01T12:00:00+02:00" in
+  [%test_eq: string list]
+    [
+      "--connection";
+      "connection";
+      "logs";
+      "--tail";
+      "501";
+      "--since";
+      "2026-11-01T10:00:00Z";
+      "--timestamps";
+      "container-id";
+    ]
+    (argv (Some (assert_ok since)))
+
 let%test_module "host reboot readiness" =
   (module struct
     module Readiness = Nixploy.Host_readiness

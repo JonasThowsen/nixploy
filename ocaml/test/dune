@@ -67,6 +67,12 @@
  (libraries nixploy core core_unix.command_unix async)
  (preprocess (pps ppx_jane)))
 
+(test
+ (name podman_logs_test)
+ (modules podman_logs_test)
+ (libraries nixploy core core_unix.command_unix async)
+ (preprocess (pps ppx_jane)))
+
 (library
  (name core_test)
  (modules core_test)

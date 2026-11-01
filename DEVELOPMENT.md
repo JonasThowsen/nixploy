@@ -45,6 +45,7 @@ nixploy deploy --target production --dry-run
 nixploy unlock --target production
 nixploy status --target production
 nixploy logs --target production
+nixploy logs --target production --since 2026-11-01T10:00:00Z
 nixploy history --target production
 nixploy stop --target production
 nixploy prune --target production --dry-run
@@ -74,8 +75,8 @@ unset or unusable `SSH_AUTH_SOCK` falls back to the standard per-user agent sock
 so commands behave the same in a terminal and in a sandboxed agent.
 
 Exit codes are 0 for success, 1 for operation or command-parser errors (and
-blockers found by `deploy --dry-run`), 2 for an invalid target or missing prune or
-unlock confirmation, and 130 for interruption of a started deployment. Runbook
+blockers found by `deploy --dry-run`), 2 for an invalid target, an invalid
+`logs --since` time, or missing prune or unlock confirmation, and 130 for interruption of a started deployment. Runbook
 execution propagates the child exit code exactly rather than mapping every
 nonzero outcome to 1; local signal failures use 128 plus the
 signal number. A transport-uncertain child status is not proof the remote command
@@ -101,6 +102,12 @@ issues. Failure to verify container ownership fails the command, while a failed
 supplementary query is shown as unavailable in its own section.
 
 Logs return a snapshot bounded to 500 lines and 64 KiB, not a follow stream.
+`--since TIME` reads only the lines from an RFC 3339 instant on, such as
+`2026-11-01T10:00:00Z` or `2026-11-01T12:00:00+02:00` (passed to Podman in
+UTC). The same bound applies and the newest lines are kept; nixploy asks Podman
+for one line more than it keeps, so `truncated` is true when the window held
+more than 500 lines or 64 KiB. Any other TIME, such as a duration or a bare
+date, is refused with exit code 2 before the flake, SSH or Podman is used.
 History defaults to 25 operations (`--limit` accepts 1–100); it is local evidence,
 not remote health.
 

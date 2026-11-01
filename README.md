@@ -105,6 +105,7 @@ nixploy deploy --target production --dry-run   # build and check, change nothing
 nixploy deploy --target production
 nixploy status --target production --json
 nixploy logs --target production
+nixploy logs --target production --since 2026-11-01T10:00:00Z
 nixploy history --target production --limit 25
 nixploy runbook --target production
 nixploy run --target production migrate
@@ -136,8 +137,9 @@ different application checkout. Deploy, status, logs, history, prune, resources,
 and runbook listing support `--json`; `run` streams the command's output instead. Diagnostics
 and deployment progress go to stderr. With `--json`, a failure also prints
 `{"error":{"code":"NIXPLOY_...","message":"..."}}` on stdout, so scripts and agents
-can branch on the code. Logs are a bounded snapshot, not a follow
-stream. History is local deployment evidence, not remote health.
+can branch on the code. Logs are a bounded snapshot of the newest 500 lines,
+not a follow stream; `--since` takes an RFC 3339 instant and limits them to
+lines from then on. History is local deployment evidence, not remote health.
 
 `status` replaces logging in to run `podman ps` on the server. It shows each owned
 container's role, state, uptime, restarts, CPU and memory, plus the Caddy route,
