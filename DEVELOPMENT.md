@@ -101,13 +101,14 @@ mutation marker is held; and reboot readiness. It ends with a list of derived
 issues. Failure to verify container ownership fails the command, while a failed
 supplementary query is shown as unavailable in its own section.
 
-Logs return a snapshot bounded to 500 lines and 64 KiB, not a follow stream.
+Logs return a snapshot of the newest lines bounded to 500 lines and 64 KiB, not
+a follow stream. nixploy asks Podman for one line more than it keeps, so
+`truncated` is true when the logs held more than 500 lines or 64 KiB.
 `--since TIME` reads only the lines from an RFC 3339 instant on, such as
 `2026-11-01T10:00:00Z` or `2026-11-01T12:00:00+02:00` (passed to Podman in
-UTC). The same bound applies and the newest lines are kept; nixploy asks Podman
-for one line more than it keeps, so `truncated` is true when the window held
-more than 500 lines or 64 KiB. Any other TIME, such as a duration or a bare
-date, is refused with exit code 2 before the flake, SSH or Podman is used.
+UTC), with the same bound and the same `truncated` rule. Any other TIME, such
+as a duration or a bare date, is refused with exit code 2 before the flake, SSH
+or Podman is used.
 History defaults to 25 operations (`--limit` accepts 1–100); it is local evidence,
 not remote health.
 

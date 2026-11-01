@@ -1453,16 +1453,18 @@ let exec_runbook ~connection ~container ~command =
       ~args:(runbook_argv ~connection ~container_id:container.id ~command)
       ()
 
-(* With --since, Podman returns the newest --tail lines of that window. Asking
-   for one line more than is kept lets [bound_logs] keep the newest [max_lines]
-   and report a longer window as truncated. *)
+(* Podman returns the newest --tail lines, of the --since window when one is
+   given. Asking for one line more than is kept lets [bound_logs] keep the
+   newest [max_lines] and report longer logs as truncated. *)
 let logs_argv ~connection ~max_lines ~since ~container_id =
-  let tail, since =
+  let since =
     match since with
-    | None -> (max_lines, [])
-    | Some since -> (max_lines + 1, [ "--since"; Log_since.to_string since ])
+    | None -> []
+    | Some since -> [ "--since"; Log_since.to_string since ]
   in
-  [ "--connection"; connection; "logs"; "--tail"; Int.to_string tail ]
+  [
+    "--connection"; connection; "logs"; "--tail"; Int.to_string (max_lines + 1);
+  ]
   @ since
   @ [ "--timestamps"; container_id ]
 

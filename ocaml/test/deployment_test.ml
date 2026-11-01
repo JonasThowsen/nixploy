@@ -241,7 +241,7 @@ case "$*" in
   *" update --restart no "*) exit 0 ;;
   *" stop "*) exit 0 ;;
   *" container inspect --format "*) printf 'exited 3 \n'; exit 0 ;;
-  *" logs --tail 80 --timestamps candidate-id") printf '2026-01-01T00:00:00Z boom: DATABASE_URL is missing\n'; exit 0 ;;
+  *" logs --tail 81 --timestamps candidate-id") printf '2026-01-01T00:00:00Z boom: DATABASE_URL is missing\n'; exit 0 ;;
 esac
 if [ "${3:-}" = "run" ] && [ "${4:-}" = "--rm" ]; then
   if [ "${NIXPLOY_TEST_FAIL_PRESTART:-}" = "1" ] && printf '%s\n' "$*" | grep -q '/app/migrate'; then

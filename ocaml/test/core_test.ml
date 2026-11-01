@@ -1072,7 +1072,7 @@ let%test_unit "logs since refuses anything but an RFC 3339 instant" =
               (Error.to_string_hum error)
               ~substring:"RFC 3339"))
 
-let%test_unit "Podman logs argv asks for one line more only with since" =
+let%test_unit "Podman logs argv asks for one line more than it keeps" =
   let argv since =
     Nixploy.Podman.For_testing.logs_argv ~connection:"connection" ~max_lines:500
       ~since ~container_id:"container-id"
@@ -1083,7 +1083,7 @@ let%test_unit "Podman logs argv asks for one line more only with since" =
       "connection";
       "logs";
       "--tail";
-      "500";
+      "501";
       "--timestamps";
       "container-id";
     ]

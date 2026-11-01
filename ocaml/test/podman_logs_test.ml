@@ -4,7 +4,7 @@ open Nixploy
 
 let ok = Or_error.ok_exn
 
-(* The fake podman keeps a log of [window] lines, all after the requested
+(* The fake podman keeps a log of [window] lines, all after any requested
    instant, and answers like Podman: the newest --tail lines of the window. *)
 let run_tests () =
   let open Deferred.Let_syntax in
@@ -66,11 +66,17 @@ done
   assert (not snapshot.truncated);
   [%test_eq: int] 500 (List.length snapshot.lines);
   [%test_eq: string] "line-0001 token=[REDACTED]" (List.hd_exn (texts snapshot));
-  (* Without since, Podman is asked exactly as before. *)
-  let%map snapshot, argv = read ~lines:3 () in
+  (* Without since, longer logs are bounded and reported the same way. *)
+  let%bind snapshot, argv = read ~lines:600 () in
   [%test_eq: string list]
-    [ "--connection test logs --tail 500 --timestamps container-id" ]
+    [ "--connection test logs --tail 501 --timestamps container-id" ]
     argv;
+  assert snapshot.truncated;
+  [%test_eq: int] 500 (List.length snapshot.lines);
+  [%test_eq: string] "line-0101 token=[REDACTED]" (List.hd_exn (texts snapshot));
+  [%test_eq: string] "line-0600 token=[REDACTED]"
+    (List.last_exn (texts snapshot));
+  let%map snapshot, _ = read ~lines:3 () in
   assert (not snapshot.truncated);
   [%test_eq: int] 3 (List.length snapshot.lines)
 
