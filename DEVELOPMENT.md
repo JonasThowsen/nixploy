@@ -237,8 +237,7 @@ CLI -> Application operations -> Git / Nix / SSH / Podman / SOPS / Caddy
 ```
 
 OCaml remains the implementation language. Preserve the working deployment
-engine rather than starting another rewrite. The original user-facing C# CLI
-under `legacy/` is compatibility evidence, not the architectural template.
+engine rather than starting another rewrite.
 
 - Keep CLI parsing and rendering separate from deployment/runbook orchestration.
 - Use focused modules with explicit `.mli` interfaces, validated invariant-bearing

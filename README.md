@@ -253,8 +253,8 @@ migration, not prefix-based deletion; see [legacy secret migration](MIGRATION.md
 
 ## Development
 
-OCaml is the active implementation. Historical code under
-[legacy/](legacy/README.md) is compatibility evidence, not an active dependency.
+OCaml is the only implementation; `ocaml/` holds the CLI and `nix/` its packaging
+and configuration library.
 
 ```sh
 nix develop . -c dune runtest --root ocaml

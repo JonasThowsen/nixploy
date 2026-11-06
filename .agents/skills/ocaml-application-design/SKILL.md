@@ -10,8 +10,7 @@ compatibility: nixploy repository; Nix development shell; OCaml 5.2, Dune, Core,
 
 Follow the daemonless CLI product and runbook contract in `DEVELOPMENT.md` and
 the removal sequence in `ROADMAP.md`. Keep the working deployment engine while
-subtracting control-plane infrastructure. Code under `legacy/` is compatibility
-evidence, not an active dependency or a template for a new rewrite.
+subtracting control-plane infrastructure.
 
 ## Required reading
 
