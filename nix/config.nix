@@ -13,6 +13,18 @@ let
           example = "my-app";
         };
 
+        repositoryIdentity = lib.mkOption {
+          type = lib.types.nullOr (lib.types.strMatching "[^\n]+");
+          default = null;
+          description = ''
+            The repository identity in resource keys and ownership labels,
+            instead of the checkout's Git origin. A project that moves to
+            another repository sets its old origin here, so its running
+            workloads, secrets and routes stay its own.
+          '';
+          example = "git@github.com:example/my-app.git";
+        };
+
         controlPlane = lib.mkOption {
           default = null;
           description = "Managed control-plane identity; never a transport URI or credential.";
@@ -51,7 +63,9 @@ in
         ];
       };
     in
-    evaluated.config
+    # An undeclared identity is left out, so the configuration of a project
+    # that does not declare one is exactly as before.
+    lib.filterAttrs (name: value: !(name == "repositoryIdentity" && value == null)) evaluated.config
     // {
       __schema = schema;
     };

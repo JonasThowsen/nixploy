@@ -98,6 +98,20 @@ not this example. Omit `web` for a non-web container and configure its runtime
 environment as needed. Optional target fields include `secrets`, `run.preStart`,
 and `run.readOnlyBinds`; see [nix/target.nix](nix/target.nix).
 
+nixploy tells a project's workloads, secrets and routes apart by the
+repository's Git origin, the project and the target. A project that moves to
+another repository (into a monorepo, say) sets `repositoryIdentity` to its old
+origin, so its running deployment stays its own instead of looking like a new
+one:
+
+```nix
+nixploy.lib.makeConfig {
+  project = "my-app";
+  repositoryIdentity = "git@github.com:example/my-app.git";
+  targets.production = { /* ... */ };
+}
+```
+
 ## Operate a target
 
 ```sh

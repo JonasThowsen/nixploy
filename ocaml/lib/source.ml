@@ -96,6 +96,11 @@ let repository_identity ~working_directory =
   let%map origin = repository_origin ~working_directory in
   Option.value origin ~default:working_directory
 
+let resource_identity ~declared ~working_directory =
+  match declared with
+  | Some identity -> Deferred.Or_error.return identity
+  | None -> repository_identity ~working_directory
+
 let describe ~working_directory revision =
   let open Deferred.Or_error.Let_syntax in
   let%bind output =

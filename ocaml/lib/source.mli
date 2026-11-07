@@ -14,6 +14,14 @@ val repository_identity : working_directory:string -> string Deferred.Or_error.t
 (** Returns the configured [remote.origin.url], or the canonical working
     directory when the repository has no origin. *)
 
+val resource_identity :
+  declared:string option ->
+  working_directory:string ->
+  string Deferred.Or_error.t
+(** The repository identity of resource keys and ownership labels: the project's
+    declared identity when it has one ({!Configuration.repository_identity}),
+    else {!repository_identity}. *)
+
 val repository_origin :
   working_directory:string -> string option Deferred.Or_error.t
 (** Returns only the explicit Git origin, without a local-path fallback. *)

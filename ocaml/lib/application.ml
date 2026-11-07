@@ -548,7 +548,9 @@ let local_logs ?since ~working_directory ~target:target_name () =
   in
   let project = Configuration.project configuration in
   let%bind repository_identity =
-    Source.repository_identity ~working_directory
+    Source.resource_identity
+      ~declared:(Configuration.repository_identity configuration)
+      ~working_directory
   in
   let%bind candidates =
     Deferred.return

@@ -259,7 +259,9 @@ let prune_local ~store ~working_directory ~target:target_name ~confirmed ~mode
   in
   let project = Configuration.project configuration in
   let%bind repository_identity =
-    Source.repository_identity ~working_directory
+    Source.resource_identity
+      ~declared:(Configuration.repository_identity configuration)
+      ~working_directory
   in
   let operation_id =
     Uuid.create_random (Random.State.make_self_init ()) |> Uuid.to_string

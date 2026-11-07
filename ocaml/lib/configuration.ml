@@ -489,11 +489,13 @@ end
 
 type t = {
   project : Project_name.t;
+  repository_identity : string option;
   control_plane : Control_plane.t option;
   targets : Target.t list;
 }
 
 let project t = t.project
+let repository_identity t = t.repository_identity
 let control_plane t = t.control_plane
 
 let require_daemonless t =
@@ -651,7 +653,13 @@ let of_json input =
         validate_members ~field:"nixploy configuration"
           ~allowed:
             (String.Set.of_list
-               [ "__schema"; "project"; "controlPlane"; "targets" ])
+               [
+                 "__schema";
+                 "project";
+                 "repositoryIdentity";
+                 "controlPlane";
+                 "targets";
+               ])
           fields
       in
       let%bind schema = required fields "__schema" non_empty_string in
@@ -664,6 +672,13 @@ let of_json input =
       in
       let%bind project_text = required fields "project" non_empty_string in
       let%bind project = Project_name.of_string project_text in
+      let%bind repository_identity =
+        optional fields "repositoryIdentity"
+          (fun ~field -> function
+            | `Null -> Ok None
+            | json -> Or_error.map (non_empty_string ~field json) ~f:Option.some)
+          ~default:None
+      in
       let%bind control_plane =
         optional fields "controlPlane"
           (fun ~field:_ -> function
@@ -685,7 +700,7 @@ let of_json input =
       let%map targets =
         Or_error.all (List.map targets_json ~f:(parse_target ~schema))
       in
-      { project; control_plane; targets }
+      { project; repository_identity; control_plane; targets }
   | _ -> Or_error.error_string "nixploy configuration must be an object"
 
 let find_target t name =

@@ -91,6 +91,13 @@ type t
 
 val of_json : string -> t Or_error.t
 val project : t -> Project_name.t
+
+val repository_identity : t -> string option
+(** The repository identity the project declares ([repositoryIdentity]), used in
+    resource keys and ownership labels instead of the checkout's origin. A
+    project that moves to another repository declares its old origin here so
+    that its existing workloads, secrets and routes stay its own. *)
+
 val control_plane : t -> Control_plane.t option
 
 val require_daemonless : t -> unit Or_error.t

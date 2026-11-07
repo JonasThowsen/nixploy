@@ -231,7 +231,9 @@ let load ~working_directory ~target:target_name =
     Configuration.targets configuration |> List.map ~f:Configuration.Target.name
   in
   let%bind repository_identity =
-    Source.repository_identity ~working_directory
+    Source.resource_identity
+      ~declared:(Configuration.repository_identity configuration)
+      ~working_directory
   in
   let%bind candidates =
     Deferred.return

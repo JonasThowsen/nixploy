@@ -250,7 +250,11 @@ let prepare ~request =
     let%bind target =
       Deferred.return (Configuration.find_target configuration target_name)
     in
-    let repository_identity = Source.repository source in
+    let repository_identity =
+      Option.value
+        (Configuration.repository_identity configuration)
+        ~default:(Source.repository source)
+    in
     let%bind candidates =
       Deferred.return
         (Resource_key.candidates ~project ~target:target_name

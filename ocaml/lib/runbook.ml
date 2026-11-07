@@ -58,7 +58,9 @@ let prepare ~working_directory ~target ~name =
   in
   let project = Configuration.project configuration in
   let%bind repository_identity =
-    Source.repository_identity ~working_directory
+    Source.resource_identity
+      ~declared:(Configuration.repository_identity configuration)
+      ~working_directory
   in
   let%bind resource_key =
     Deferred.return

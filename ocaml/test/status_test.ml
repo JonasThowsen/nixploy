@@ -62,7 +62,11 @@ set -eu
 printf 'nix' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
-printf '%s\n' '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deployer","port":2222}}}'
+if [ -n "${NIXPLOY_TEST_DECLARED_IDENTITY:-}" ]; then
+  printf '{"__schema":"v0.5","project":"sample","repositoryIdentity":"%s","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deployer","port":2222}}}\n' "$NIXPLOY_TEST_DECLARED_IDENTITY"
+else
+  printf '%s\n' '{"__schema":"v0.3","project":"sample","targets":{"worker":{"image":"workerImage","ip":"worker.invalid","user":"deployer","port":2222}}}'
+fi
 |};
   install_executable bin "ssh"
     {|#!/bin/sh
@@ -156,6 +160,7 @@ esac
       "NIXPLOY_TEST_TRACE";
       "NIXPLOY_TEST_KEY";
       "NIXPLOY_TEST_LABEL_MODE";
+      "NIXPLOY_TEST_DECLARED_IDENTITY";
     ]
   in
   let old_environment =
@@ -167,6 +172,7 @@ esac
   Caml_unix.putenv "NIXPLOY_TEST_KEY" resource_key;
   let clear_scenario () =
     Core_unix.unsetenv "NIXPLOY_TEST_LABEL_MODE";
+    Core_unix.unsetenv "NIXPLOY_TEST_DECLARED_IDENTITY";
     write trace ""
   in
   let cleanup () =
@@ -237,6 +243,34 @@ esac
             expect_error_containing inspected
               "ownership does not match this repository and resource")
       in
+      (* The project moves to another repository and declares its old origin:
+         its workload, under the same resource key, is still its own. *)
+      let%bind _ =
+        run_git ~working_directory:repository
+          [ "config"; "remote.origin.url"; "git@example.invalid:monorepo.git" ]
+      in
+      clear_scenario ();
+      let%bind undeclared = Nixploy.Application.live_status ~scope in
+      (* Undeclared, the new origin gives another resource key: nixploy would
+         treat it as a different deployment. *)
+      let moved_key =
+        Nixploy.Resource_key.derive ~project ~target:target_name
+          ~repository_identity:"git@example.invalid:monorepo.git"
+        |> assert_ok |> Nixploy.Resource_key.to_string
+      in
+      assert (not (String.equal moved_key resource_key));
+      expect_error_containing undeclared moved_key;
+      clear_scenario ();
+      Caml_unix.putenv "NIXPLOY_TEST_DECLARED_IDENTITY"
+        "git@example.invalid:sample.git";
+      let%bind moved = Nixploy.Application.live_status ~scope in
+      let moved = assert_ok moved in
+      [%test_eq: int] 1
+        (moved |> Nixploy.Application.status_workloads |> List.length);
+      assert (
+        String.is_substring
+          (Inspection_output.status moved)
+          ~substring:resource_key);
       Deferred.unit)
 
 let () =

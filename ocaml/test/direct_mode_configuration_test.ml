@@ -40,3 +40,21 @@ let () =
   assert (String.is_substring managed ~substring:"controlPlane");
   assert_ok
     (Nixploy.Direct_mode.validate_configuration undeclared_profile ~target)
+
+let () =
+  let declared json =
+    Nixploy.Configuration.of_json
+      (sprintf
+         {|{"__schema":"v0.5","project":"sample",%s"targets":{"staging":{"image":"image","ip":"target.example.invalid","nonProduction":{"coordinationScope":"sample-staging"}}}}|}
+         json)
+  in
+  [%test_eq: string option] None
+    (declared "" |> assert_ok |> Nixploy.Configuration.repository_identity);
+  [%test_eq: string option] None
+    (declared {|"repositoryIdentity":null,|}
+    |> assert_ok |> Nixploy.Configuration.repository_identity);
+  [%test_eq: string option] (Some "git@example.invalid:old.git")
+    (declared {|"repositoryIdentity":"git@example.invalid:old.git",|}
+    |> assert_ok |> Nixploy.Configuration.repository_identity);
+  assert (Result.is_error (declared {|"repositoryIdentity":"",|}));
+  assert (Result.is_error (declared {|"repositoryIdentity":7,|}))

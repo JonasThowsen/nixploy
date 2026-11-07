@@ -17,6 +17,8 @@ Nixploy web service does not remove Caddy or your application containers.
 4. Preserve your repository origin, project name, target names, container labels,
    Podman secrets, Caddy routes, and server data. Changing these identities during
    migration can make an existing application look like a different deployment.
+   An application that changes repository keeps its old origin with
+   `repositoryIdentity` in `makeConfig` (README.md).
 
 ## Update configuration
 
