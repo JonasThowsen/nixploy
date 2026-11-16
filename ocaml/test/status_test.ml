@@ -74,6 +74,13 @@ set -eu
 printf 'ssh' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
+case "$*" in *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;; esac
 last=""
 for argument in "$@"; do last="$argument"; done
 case "$last" in
@@ -100,6 +107,7 @@ printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
 case "$*" in
   *" info") exit 0 ;;
+  "system connection remove $NIXPLOY_TEST_KEY"|"system connection add $NIXPLOY_TEST_KEY unix:///"*) ;;
   "system connection list --format json")
     printf '[{"Name":"%s","URI":"ssh://deployer@worker.invalid:2222/run/user/1000/podman/podman.sock"}]\n' "$NIXPLOY_TEST_KEY"
     ;;

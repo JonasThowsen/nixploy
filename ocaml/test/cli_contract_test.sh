@@ -57,7 +57,14 @@ EOF
 cat > "$root/bin/ssh" <<'EOF'
 #!/bin/sh
 if [ -n "${CALLS:-}" ]; then printf 'ssh %s\n' "$*" >> "$CALLS"; fi
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
 case "$*" in
+  *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;;
   *"'podman' 'ps'"*) printf '[]\n'; exit 0 ;;
   *"'true'"*) exit 0 ;;
 esac

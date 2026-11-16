@@ -171,6 +171,13 @@ esac
     {|#!/bin/sh
 set -eu
 printf 'ssh|%s\n' "$*" >> "$NIXPLOY_TEST_TRACE"
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
+case "$*" in *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;; esac
 case "$*" in *"'podman' 'ps'"*) printf '[]\n' ;; esac
 exit 0
 |};

@@ -141,6 +141,13 @@ set -eu
 printf 'ssh' >> "$NIXPLOY_TEST_TRACE"
 printf '|%s' "$@" >> "$NIXPLOY_TEST_TRACE"
 printf '\n' >> "$NIXPLOY_TEST_TRACE"
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
+case "$*" in *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;; esac
 last=""
 for argument in "$@"; do last="$argument"; done
 if [ "${NIXPLOY_TEST_SSH_DENIED:-}" = "1" ]; then

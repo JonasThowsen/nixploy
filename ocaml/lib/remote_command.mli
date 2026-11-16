@@ -3,6 +3,19 @@ open Core
 
 val identity_file : Configuration.Target.t -> string option
 
+val unix_forward_args :
+  Configuration.Target.t ->
+  local_socket:string ->
+  remote_socket:string ->
+  string list
+(** OpenSSH argv forwarding [local_socket] to [remote_socket] on the target,
+    with the same strict, non-interactive options as {!run}: the system
+    ssh_config (HostName, HostKeyAlias, ...), StrictHostKeyChecking=yes and
+    [NIXPLOY_SSH_KNOWN_HOSTS_FILE] all apply. *)
+
+val ssh_failure : Configuration.Target.t -> string -> Error.t
+(** The [NIXPLOY_SSH_FAILED] error for ssh's own failure, from its stderr. *)
+
 val failure_hint : Configuration.Target.t -> string -> string
 (** An actionable explanation of an SSH or Podman-over-SSH connection failure
     from its stderr: no usable key (describing the ssh-agent socket and

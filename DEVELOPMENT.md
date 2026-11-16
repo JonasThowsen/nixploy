@@ -72,7 +72,10 @@ Deploy/status/logs/history/prune accept `--state-db` for local SQLite history an
 uncertainty evidence; status, logs, runbook listing and execution do not open
 history. Local Podman client state lives in a private per-process directory, and an
 unset or unusable `SSH_AUTH_SOCK` falls back to the standard per-user agent socket,
-so commands behave the same in a terminal and in a sandboxed agent.
+so commands behave the same in a terminal and in a sandboxed agent. Podman never
+dials SSH: its connection is a local Unix socket that OpenSSH forwards to the
+remote Podman API socket with the same strict options as every other remote
+command, so ssh_config aliases and strict host-key checking apply throughout.
 
 Exit codes are 0 for success, 1 for operation or command-parser errors (and
 blockers found by `deploy --dry-run`), 2 for an invalid target, an invalid

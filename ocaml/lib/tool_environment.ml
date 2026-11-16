@@ -82,3 +82,18 @@ let podman () =
       ("PODMAN_CONNECTIONS_CONF", Filename.concat root "connections.json");
       ("XDG_RUNTIME_DIR", runtime);
     ]
+
+(* sun_path holds 108 bytes on Linux and 104 on macOS, including the NUL. *)
+let maximum_socket_path = 103
+let socket_count = ref 0
+
+let private_socket_path () =
+  let root, _ = Lazy.force private_directory in
+  incr socket_count;
+  let path = Filename.concat root (sprintf "s%d.sock" !socket_count) in
+  if String.length path > maximum_socket_path then
+    Or_error.errorf
+      "the private socket path %s is longer than %d bytes; set TMPDIR to a \
+       shorter directory"
+      path maximum_socket_path
+  else Ok path

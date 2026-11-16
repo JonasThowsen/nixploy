@@ -229,53 +229,85 @@ let remove_connection ~name =
   let%map result = run_ok [ "system"; "connection"; "remove"; name ] in
   Or_error.map result ~f:(fun _ -> ())
 
-let add_connection ~target ~name ~identity =
-  let identity_args =
-    Option.value_map identity ~default:[] ~f:(fun path ->
-        [ "--identity"; path ])
-  in
+let add_connection ~name ~socket =
   let%map result =
-    run_ok
-      ([
-         "system";
-         "connection";
-         "add";
-         name;
-         "--port";
-         Int.to_string (Configuration.Target.port target);
-       ]
-      @ identity_args
-      @ [
-          Configuration.Target.user target
-          ^ "@"
-          ^ Configuration.Target.host target;
-        ])
+    run_ok [ "system"; "connection"; "add"; name; "unix://" ^ socket ]
   in
   Or_error.map result ~f:(fun _ -> ())
 
+let remote_socket_path ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let%bind result =
+    Remote_command.run ~target ~timeout:(Time_ns.Span.of_sec 30.)
+      ~max_output_bytes:65_536
+      [ "podman"; "info"; "--format"; "{{.Host.RemoteSocket.Path}}" ]
+  in
+  let path =
+    String.strip result.stdout |> String.chop_prefix_if_exists ~prefix:"unix://"
+  in
+  match result.exit_status with
+  | Ok ()
+    when String.is_prefix path ~prefix:"/"
+         && not (String.exists path ~f:Char.is_whitespace) ->
+      return path
+  | Ok () ->
+      Deferred.Or_error.errorf
+        "NIXPLOY_PODMAN_CONNECTION_FAILED: remote Podman reported no usable \
+         API socket path (%S)"
+        (String.prefix path 256)
+  | Error failure ->
+      Deferred.Or_error.errorf
+        "NIXPLOY_PODMAN_CONNECTION_FAILED: remote `podman info` failed (%s): %s"
+        (Core_unix.Exit_or_signal.to_string_hum (Error failure))
+        (String.strip result.stderr |> Fn.flip String.prefix 1024)
+
+(* One OpenSSH forward per SSH destination for the life of the process. *)
+let forwarded_sockets : (string, string) Hashtbl.t = Hashtbl.create (module String)
+
+let forwarded_socket ~target =
+  let open Deferred.Or_error.Let_syntax in
+  let key =
+    String.concat ~sep:"\000"
+      [
+        Configuration.Target.user target;
+        Configuration.Target.host target;
+        Int.to_string (Configuration.Target.port target);
+        Remote_command.identity_file target |> Option.value ~default:"";
+      ]
+  in
+  match Hashtbl.find forwarded_sockets key with
+  | Some socket -> return socket
+  | None ->
+      let%bind remote_socket = remote_socket_path ~target in
+      let%bind local_socket =
+        Deferred.return (Tool_environment.private_socket_path ())
+      in
+      let%map () =
+        Ssh_tunnel.open_unix_forward ~target ~local_socket ~remote_socket
+      in
+      Hashtbl.set forwarded_sockets ~key ~data:local_socket;
+      local_socket
+
+(* Podman's own SSH client ignores ssh_config (HostName, HostKeyAlias) and
+   trusts unknown host keys on first use, so Podman never dials SSH itself: it
+   talks to a local socket that OpenSSH forwards, under the same strict options
+   as every other remote command. *)
 let ensure_connection ~target ~resource_key =
   let open Deferred.Or_error.Let_syntax in
   let name = Resource_key.to_string resource_key in
-  (* Podman's own SSH client cannot decrypt a passphrase-protected key, so
-     prefer a reachable agent and fall back to the identity file. *)
-  let identity =
-    if Tool_environment.ssh_agent_usable () then None
-    else Remote_command.identity_file target
-  in
-  (* OpenSSH diagnoses key, host-key and network problems far better than
-     Podman's client, so check it first on every use. *)
+  (* OpenSSH diagnoses key, host-key and network problems well, so check it
+     first on every use. *)
   let%bind () = verify_ssh target in
+  let%bind socket = forwarded_socket ~target in
   let%bind connections = list_connections () in
   let%bind () =
     match Podman_connection.find_by_name connections name with
-    | Some connection
-      when Podman_connection.matches_target connection target
-           && Podman_connection.matches_identity connection identity ->
+    | Some connection when Podman_connection.serves_socket connection socket ->
         Deferred.Or_error.return ()
     | Some _ ->
         let%bind () = remove_connection ~name in
-        add_connection ~target ~name ~identity
-    | None -> add_connection ~target ~name ~identity
+        add_connection ~name ~socket
+    | None -> add_connection ~name ~socket
   in
   let%bind info = run [ "--connection"; name; "info" ] in
   match info.exit_status with

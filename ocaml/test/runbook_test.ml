@@ -206,6 +206,13 @@ cat "$RUNBOOK_FIXTURE/config.json"
     (Filename.concat fake_bin "ssh")
     {|#!/bin/sh
 set -eu
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
+case "$*" in *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;; esac
 [ -e "$RUNBOOK_FIXTURE/guard" ] || exit 92
 printf '%s\n' "$*" >> "$RUNBOOK_FIXTURE/ssh-log"
 case "$*" in

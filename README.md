@@ -186,8 +186,13 @@ nixploy behaves the same in a terminal and in a sandboxed coding agent:
   is left alone.
 - When `SSH_AUTH_SOCK` is unset or unusable, nixploy adopts the standard per-user
   agent socket (`/run/user/UID/ssh-agent`, keyring, gcr or gpg-agent) and says so
-  on stderr. Podman's SSH client cannot decrypt a passphrase-protected key, so a
-  reachable agent is the supported way to use one.
+  on stderr. A reachable agent is the supported way to use a
+  passphrase-protected key.
+- Podman never dials SSH itself. nixploy forwards the remote Podman API socket
+  to a local socket with OpenSSH, under the same options as its other SSH calls,
+  so your ssh_config (`HostName`, `HostKeyAlias`, ...), `StrictHostKeyChecking=yes`
+  and `NIXPLOY_SSH_KNOWN_HOSTS_FILE` apply to everything nixploy does on a host.
+  Podman's own SSH client would ignore ssh_config and trust unknown host keys.
 - SSH failures are `NIXPLOY_SSH_FAILED` errors that name the destination, the
   last SSH messages, and the likely fix: no usable key (and which agent and
   identity file this process can see), an untrusted host key, or an unreachable

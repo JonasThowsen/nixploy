@@ -37,6 +37,13 @@ printf '%s\n' '{"__schema":"v0.5","project":"example","targets":{"test":{"image"
     {|#!/bin/sh
 set -eu
 printf 'ssh|%s\n' "$*" >> "$FACADE_TRACE"
+forward=""; previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-L" ]; then forward="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$forward" ]; then : > "${forward%%:*}"; exit 0; fi
+case "$*" in *"'podman' 'info' '--format' '{{.Host.RemoteSocket.Path}}'"*) printf '/run/user/1000/podman/podman.sock\n'; exit 0 ;; esac
 last=""
 for arg in "$@"; do last="$arg"; done
 case "$last" in

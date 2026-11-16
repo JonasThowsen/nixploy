@@ -21,3 +21,8 @@ val podman : unit -> Core_unix.env
     [$TMPDIR], removed at shutdown, so a read-only [~/.config] or
     [/run/user/UID] cannot break deployment and the user's own connection list
     is never modified. *)
+
+val private_socket_path : unit -> string Core.Or_error.t
+(** A fresh, unused path for a Unix socket in the private per-process
+    directory, removed at shutdown. Fails when [$TMPDIR] is too long for a
+    Unix socket path. *)

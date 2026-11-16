@@ -17,7 +17,7 @@ let identity_file target =
   Option.first_some configured (Configuration.Target.identity_file target)
   |> Option.map ~f:expand_home
 
-let ssh_args target remote_argv =
+let ssh_options target =
   let identity =
     identity_file target
     |> Option.value_map ~default:[] ~f:(fun path -> [ "-i"; path ])
@@ -38,10 +38,35 @@ let ssh_args target remote_argv =
     Int.to_string (Configuration.Target.port target);
   ]
   @ known_hosts @ identity
+
+let login target =
+  Configuration.Target.user target ^ "@" ^ Configuration.Target.host target
+
+let ssh_args target remote_argv =
+  ssh_options target
   @ [
       "--";
-      Configuration.Target.user target ^ "@" ^ Configuration.Target.host target;
+      login target;
       String.concat ~sep:" " (List.map remote_argv ~f:shell_quote);
+    ]
+
+let unix_forward_args target ~local_socket ~remote_socket =
+  ssh_options target
+  @ [
+      "-N";
+      "-T";
+      "-o";
+      "ExitOnForwardFailure=yes";
+      "-o";
+      "StreamLocalBindUnlink=yes";
+      "-o";
+      "ServerAliveInterval=15";
+      "-o";
+      "ServerAliveCountMax=4";
+      "-L";
+      local_socket ^ ":" ^ remote_socket;
+      "--";
+      login target;
     ]
 
 let destination target =

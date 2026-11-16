@@ -628,8 +628,27 @@ let%test_unit "status workload readback requires complete modern ownership" =
       if Result.is_ok (parse labels) then
         failwithf "status accepted %s ownership labels" case ())
 
-let%test_unit "connection resolution uses the target SSH endpoint, not its name"
-    =
+let%test_unit "a Podman connection is reused only for the forwarded socket" =
+  let connections =
+    Nixploy.Podman_connection.all_of_json
+      {|[
+        {"Name":"forwarded","URI":"unix:///tmp/nixploy-podman-x/s1.sock"},
+        {"Name":"direct","URI":"ssh://deploy@server.internal:2222/tmp/nixploy-podman-x/s1.sock","Identity":"/run/key"}
+      ]|}
+    |> assert_ok
+  in
+  let find name =
+    Nixploy.Podman_connection.find_by_name connections name |> Option.value_exn
+  in
+  let socket = "/tmp/nixploy-podman-x/s1.sock" in
+  assert (Nixploy.Podman_connection.serves_socket (find "forwarded") socket);
+  assert (
+    not
+      (Nixploy.Podman_connection.serves_socket (find "forwarded")
+         "/tmp/nixploy-podman-x/s2.sock"));
+  assert (not (Nixploy.Podman_connection.serves_socket (find "direct") socket))
+
+let%test_unit "the Podman socket forward uses strict OpenSSH options" =
   let configuration =
     Nixploy.Configuration.of_json
       {|{
@@ -650,25 +669,28 @@ let%test_unit "connection resolution uses the target SSH endpoint, not its name"
   let target =
     Nixploy.Configuration.find_target configuration target_name |> assert_ok
   in
-  let connections =
-    Nixploy.Podman_connection.all_of_json
-      {|[
-        {"Name":"stale-resource-name","URI":"ssh://deploy@server.internal:2222/run/user/1000/podman/podman.sock","Identity":"/run/credentials/retired/key"},
-        {"Name":"wrong-user","URI":"ssh://root@server.internal:2222/run/podman/podman.sock"}
-      ]|}
-    |> assert_ok
+  let args =
+    Nixploy.Remote_command.unix_forward_args target
+      ~local_socket:"/tmp/local.sock"
+      ~remote_socket:"/run/user/1000/podman/podman.sock"
   in
-  let connection =
-    Nixploy.Podman_connection.find_for_target connections target |> assert_ok
+  let has_option option =
+    List.exists args ~f:(String.equal option)
   in
-  [%test_eq: string] "stale-resource-name"
-    (Nixploy.Podman_connection.name connection);
-  [%test_eq: string option] (Some "/run/credentials/retired/key")
-    (Nixploy.Podman_connection.identity connection);
+  assert (has_option "StrictHostKeyChecking=yes");
+  assert (has_option "BatchMode=yes");
+  assert (has_option "ExitOnForwardFailure=yes");
+  assert (has_option "-N");
+  assert (
+    has_option "/tmp/local.sock:/run/user/1000/podman/podman.sock");
+  (* The destination is the configured address, so ssh_config's Host
+     sections (HostName, HostKeyAlias) apply to it. *)
+  [%test_eq: string list] [ "--"; "deploy@server.internal" ]
+    (List.drop args (List.length args - 2));
   assert (
     not
-      (Nixploy.Podman_connection.matches_identity connection
-         (Some "/run/credentials/current/key")))
+      (List.exists args
+         ~f:(String.is_prefix ~prefix:"StrictHostKeyChecking=no")))
 
 let%test_unit
     "relative secret paths cannot traverse or follow symlinks outside source" =
